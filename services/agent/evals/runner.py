@@ -27,6 +27,7 @@ from pathlib import Path
 
 from codeguard_agent.config import Settings
 from codeguard_agent.llm.client import build_llm
+from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
 from codeguard_agent.pipeline.reviewer import review
 
 from evals.dataset import load_cases
@@ -39,16 +40,15 @@ logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s", stream=
 logger = logging.getLogger("codeguard.evals")
 
 
-def run_once(cases, llm, settings, judge_llm) -> list[MatchOutcome]:
-    """跑一遍全数据集,返回每条用例的判定结果。"""
+def run_once(cases, review_fn, judge_llm) -> list[MatchOutcome]:
+    """跑一遍全数据集,返回每条用例的判定结果。
+
+    review_fn: 接收一段 diff 文本、返回 ReviewResult 的可调用对象。
+        由 main() 按 --mode 注入(single=baseline 单次调用 / pipeline=多阶段管线)。
+    """
     outcomes: list[MatchOutcome] = []
     for case in cases:
-        result = review(
-            llm,
-            case.diff,
-            max_retries=settings.max_retries,
-            structured_method=settings.structured_method,
-        )
+        result = review_fn(case.diff)
         outcome = evaluate_case(case, result.issues, judge_llm=judge_llm)
         logger.info(
             "[%s] TP=%d FP=%d FN=%d (报告 %d / 标答 %d)",
@@ -66,6 +66,12 @@ def run_once(cases, llm, settings, judge_llm) -> list[MatchOutcome]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="codeguard-evals", description="Codeguard 审查质量评测")
     parser.add_argument("--runs", type=int, default=1, help="重复跑测次数(>1 才能统计方差)")
+    parser.add_argument(
+        "--mode",
+        choices=["single", "pipeline"],
+        default="single",
+        help="审查方式:single=单次安全审查(阶段1 baseline);pipeline=并行多领域审查(阶段2)。默认 single",
+    )
     parser.add_argument("--judge", action="store_true", help="开启 LLM-as-judge 语义复核+质量打分")
     parser.add_argument(
         "--report",
@@ -76,7 +82,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()
-    logger.info("provider=%s model=%s runs=%d judge=%s", settings.provider, settings.model, args.runs, args.judge)
+    logger.info(
+        "provider=%s model=%s mode=%s runs=%d judge=%s",
+        settings.provider, settings.model, args.mode, args.runs, args.judge,
+    )
 
     if settings.provider == "mock":
         logger.warning(
@@ -93,10 +102,27 @@ def main(argv: list[str] | None = None) -> int:
         logger.warning("mock 模式下无法做 LLM-as-judge,已自动跳过 judge")
         judge_llm = None
 
+    # 按 --mode 注入审查函数:single=baseline 单次调用 / pipeline=多阶段管线。
+    if args.mode == "pipeline":
+        orchestrator = PipelineOrchestrator()
+        def review_fn(diff: str):
+            return orchestrator.run(
+                llm, diff,
+                max_retries=settings.max_retries,
+                structured_method=settings.structured_method,
+            )
+    else:
+        def review_fn(diff: str):
+            return review(
+                llm, diff,
+                max_retries=settings.max_retries,
+                structured_method=settings.structured_method,
+            )
+
     all_runs: list[list[MatchOutcome]] = []
     for i in range(args.runs):
         logger.info("===== 第 %d/%d 次跑测 =====", i + 1, args.runs)
-        all_runs.append(run_once(cases, llm, settings, judge_llm))
+        all_runs.append(run_once(cases, review_fn, judge_llm))
 
     metrics = aggregate(all_runs)
 

@@ -1,13 +1,14 @@
-"""管线编排器(阶段 1 版本:单阶段直线)。
+"""管线编排器。
 
 把若干 PipelineStage 串成一条管线,依次在共享 PipelineContext 上执行,最后产出 ReviewResult。
 
 ⚠️ 这是 reviewer.review() 之外**并存**的新实现,不替换它(见 ADR-002)。
-阶段 1 的默认管线只有 SecurityReviewerStage,跑出来应与 baseline 逐条一致——
-这一步的目的就是验证"引入管线骨架没有改变审查结果"。
+    --mode single 走 reviewer.review()(冻结基准);--mode pipeline 走这里。
 
-后续阶段在 build_default_pipeline() 里往里加:
-    阶段 2:摘要 → 并行审查(security/logic/quality)→ 聚合去重 → 误报过滤
+进度:
+    阶段 1:默认管线只有单个审查 stage,与 baseline 等价(已验证)。
+    阶段 2:默认管线 = 并行审查(security/logic/quality 三个领域审查员)。← 当前
+后续会继续往 build_default_pipeline() 里加:摘要 → [审查] → 聚合去重 → 误报过滤。
 """
 
 from __future__ import annotations
@@ -16,14 +17,18 @@ import logging
 
 from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.pipeline.stages.base import PipelineContext, PipelineStage
-from codeguard_agent.pipeline.stages.security_reviewer import SecurityReviewerStage
+from codeguard_agent.pipeline.stages.reviewer_stage import ReviewerStage
 
 logger = logging.getLogger("codeguard")
 
 
 def build_default_pipeline() -> list[PipelineStage]:
-    """构造默认管线。阶段 1:只有安全审查一个 stage。"""
-    return [SecurityReviewerStage()]
+    """构造默认管线。
+
+    阶段 2:一个并行审查 stage(security/logic/quality 三个领域审查员)。
+    后续会在它前后加:摘要 → [审查] → 聚合去重 → 误报过滤。
+    """
+    return [ReviewerStage()]
 
 
 class PipelineOrchestrator:
