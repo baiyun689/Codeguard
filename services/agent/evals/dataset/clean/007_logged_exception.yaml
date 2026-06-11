@@ -1,0 +1,21 @@
+id: clean_logged_exception_001
+category: clean
+dimension: quality
+language: java
+description: catch 块里记录了日志——看着像吞异常,其实是合理处理,不应报
+diff: |
+  diff --git a/src/main/java/com/demo/PaymentClient.java b/src/main/java/com/demo/PaymentClient.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/PaymentClient.java
+  +++ b/src/main/java/com/demo/PaymentClient.java
+  @@ -18,6 +18,13 @@ public class PaymentClient {
+  +
+  +    public void notify(String orderId) {
+  +        try {
+  +            httpPost("/notify", orderId);
+  +        } catch (Exception e) {
+  +            log.error("notify failed for order {}", orderId, e);
+  +        }
+  +    }
+   }
+expected: []

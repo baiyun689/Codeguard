@@ -65,6 +65,30 @@ def render_report(
             f"{o.true_positives} | {o.false_positives} | {o.false_negatives} |"
         )
 
+    # 级别诊断:逐条列出"期望级别 vs 报告级别",定位是哪几条把级别判错了。
+    # 只统计标了期望 severity 的命中项(漏报的 FN 不会出现在这里)。
+    severity_rows = [
+        (o.case_id, d)
+        for o in runs[-1]
+        for d in o.severity_detail
+    ]
+    if severity_rows:
+        miss = sum(1 for _, d in severity_rows if d.get("match") == "✗")
+        lines += [
+            "",
+            "## 级别诊断(最后一次跑测)",
+            "",
+            f"只统计标了期望级别的命中项(漏报项不计)。共 {len(severity_rows)} 项,其中 {miss} 项级别判错(✗)。",
+            "",
+            "| 用例 | 类型 | 期望级别 | 报告级别 | 判定 |",
+            "|---|---|---|---|---|",
+        ]
+        for case_id, d in severity_rows:
+            lines.append(
+                f"| {case_id} | {d.get('type', '')} | "
+                f"{d.get('expected', '')} | {d.get('reported', '')} | {d.get('match', '')} |"
+            )
+
     lines += [
         "",
         "## 怎么读这份报告",

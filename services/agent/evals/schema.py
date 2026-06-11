@@ -46,6 +46,11 @@ class EvalCase(BaseModel):
 
     id: str = Field(description="用例唯一标识,如 'sql_injection_001'")
     category: str = Field(description="类别,如 'SQL注入' / 'clean'")
+    dimension: str = Field(
+        default="security",
+        description="审查维度:security / logic / quality(clean 样本随便标)。"
+        "阶段 2 起按维度拆分 recall,衡量各领域审查员的价值。",
+    )
     language: str = Field(default="java", description="代码语言")
     description: str = Field(default="", description="这条用例考的是什么")
     diff: str = Field(description="unified diff 文本,喂给 reviewer.review() 的输入")
@@ -81,6 +86,10 @@ class MatchOutcome(BaseModel):
     localization_hits: int = Field(default=0, description="命中项里行号也对上的数量")
     severity_hits: int = Field(default=0, description="命中项里级别也对上的数量(仅标了 severity 的)")
     severity_checked: int = Field(default=0, description="参与级别校验的命中项数量")
+    severity_detail: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="逐项级别诊断:每个参与校验的命中项的 期望级别 vs 报告级别,便于定位是哪几条判错",
+    )
     judge_scores: list[JudgeScore] = Field(default_factory=list, description="LLM 质量打分明细")
 
 

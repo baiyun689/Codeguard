@@ -1,0 +1,21 @@
+id: clean_try_with_resources_001
+category: clean
+dimension: logic
+language: java
+description: 用 try-with-resources 正确管理流——看着像资源泄漏,其实保证关闭,不应报
+diff: |
+  diff --git a/src/main/java/com/demo/ConfigLoader.java b/src/main/java/com/demo/ConfigLoader.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/ConfigLoader.java
+  +++ b/src/main/java/com/demo/ConfigLoader.java
+  @@ -9,6 +9,13 @@ public class ConfigLoader {
+  +
+  +    public Properties load(String path) throws IOException {
+  +        try (FileInputStream in = new FileInputStream(path)) {
+  +            Properties props = new Properties();
+  +            props.load(in);
+  +            return props;
+  +        }
+  +    }
+   }
+expected: []

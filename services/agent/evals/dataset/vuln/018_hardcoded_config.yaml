@@ -1,0 +1,23 @@
+id: hardcoded_config_001
+category: 硬编码配置
+dimension: quality
+language: java
+description: 数据库连接地址写死在代码里(非密钥),应外部化为配置
+diff: |
+  diff --git a/src/main/java/com/demo/ReportRepository.java b/src/main/java/com/demo/ReportRepository.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/ReportRepository.java
+  +++ b/src/main/java/com/demo/ReportRepository.java
+  @@ -10,6 +10,11 @@ public class ReportRepository {
+  +
+  +    public Connection connect() throws SQLException {
+  +        String url = "jdbc:mysql://10.20.30.40:3306/prod_report";
+  +        return DriverManager.getConnection(url, "report", "report");
+  +    }
+   }
+expected:
+  - type_keywords: ["硬编码", "hardcoded", "配置", "外部化", "config"]
+    file: ReportRepository.java
+    line: 13
+    severity: INFO
+    note: 生产库地址写死在代码中,换环境需改代码重新打包,应外部化到配置文件/环境变量

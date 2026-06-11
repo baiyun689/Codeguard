@@ -1,0 +1,25 @@
+id: resource_leak_001
+category: 资源泄漏
+dimension: logic
+language: java
+description: FileInputStream 打开后未关闭,异常路径下泄漏文件句柄
+diff: |
+  diff --git a/src/main/java/com/demo/ConfigLoader.java b/src/main/java/com/demo/ConfigLoader.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/ConfigLoader.java
+  +++ b/src/main/java/com/demo/ConfigLoader.java
+  @@ -9,6 +9,12 @@ public class ConfigLoader {
+  +
+  +    public Properties load(String path) throws IOException {
+  +        FileInputStream in = new FileInputStream(path);
+  +        Properties props = new Properties();
+  +        props.load(in);
+  +        return props;
+  +    }
+   }
+expected:
+  - type_keywords: ["资源泄漏", "未关闭", "leak", "close", "stream"]
+    file: ConfigLoader.java
+    line: 12
+    severity: WARNING
+    note: FileInputStream 未在 finally / try-with-resources 中关闭,props.load 抛异常时句柄泄漏

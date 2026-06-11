@@ -168,8 +168,17 @@ def evaluate_case(
         # 级别准确率:仅对标注了 severity 的标准答案统计
         if expected.severity is not None:
             outcome.severity_checked += 1
-            if issue.severity == expected.severity:
+            hit = issue.severity == expected.severity
+            if hit:
                 outcome.severity_hits += 1
+            # 记录逐项诊断:到底哪条期望 X 却报成了 Y,便于定位级别误判
+            outcome.severity_detail.append({
+                "type": issue.type or (expected.type_keywords[0] if expected.type_keywords else ""),
+                "file": expected.file,
+                "expected": expected.severity.value,
+                "reported": issue.severity.value,
+                "match": "✓" if hit else "✗",
+            })
 
     # 没匹配上任何标准答案的报告 = 误报
     outcome.false_positives = len(reported) - len(matched_report_idx)
