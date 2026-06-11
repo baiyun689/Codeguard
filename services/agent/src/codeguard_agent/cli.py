@@ -18,6 +18,7 @@ from codeguard_agent.config import Settings
 from codeguard_agent.git.diff_collector import collect_diff
 from codeguard_agent.llm.client import build_llm
 from codeguard_agent.models.schemas import ReviewResult, Severity
+from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
 from codeguard_agent.pipeline.reviewer import review
 
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s", stream=sys.stderr)
@@ -60,6 +61,12 @@ def main(argv: list[str] | None = None) -> int:
     review_parser = subparsers.add_parser("review", help="审查代码变更")
     review_parser.add_argument("--repo", default=".", help="git 仓库路径(默认当前目录)")
     review_parser.add_argument("--base", default="HEAD", help="diff 对比基准(默认 HEAD)")
+    review_parser.add_argument(
+        "--mode",
+        choices=["single", "pipeline"],
+        default="single",
+        help="审查方式:single=单次直接调用(阶段1 baseline);pipeline=多阶段管线(阶段2 起)。默认 single",
+    )
 
     args = parser.parse_args(argv)
 
@@ -73,12 +80,24 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         llm = build_llm(settings)
-        result = review(
-            llm,
-            diff_text,
-            max_retries=settings.max_retries,
-            structured_method=settings.structured_method,
-        )
+        if args.mode == "pipeline":
+            # 阶段2 起的多阶段管线。阶段1 默认管线只有 SecurityReviewerStage,
+            # 结果应与 single 模式一致(验证管线骨架未改变审查结果)。
+            logger.info("审查方式:pipeline(多阶段管线)")
+            result = PipelineOrchestrator().run(
+                llm,
+                diff_text,
+                max_retries=settings.max_retries,
+                structured_method=settings.structured_method,
+            )
+        else:
+            logger.info("审查方式:single(单次直接调用 · baseline)")
+            result = review(
+                llm,
+                diff_text,
+                max_retries=settings.max_retries,
+                structured_method=settings.structured_method,
+            )
         _print_result(result)
 
         # 退出码约定:发现 CRITICAL 问题时返回非 0,方便接入 CI 做门禁
