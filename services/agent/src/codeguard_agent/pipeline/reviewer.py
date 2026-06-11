@@ -32,13 +32,20 @@ def _load_prompt(name: str) -> str:
     return (_PROMPT_DIR / name).read_text(encoding="utf-8")
 
 
-def review(llm: Any, diff_text: str, max_retries: int = 3) -> ReviewResult:
+def review(
+    llm: Any,
+    diff_text: str,
+    max_retries: int = 3,
+    structured_method: str = "function_calling",
+) -> ReviewResult:
     """对一段 diff 执行安全审查。
 
     参数:
         llm: LangChain Chat 模型;为 None 时走 mock 模式
         diff_text: unified diff 文本
         max_retries: LLM 调用重试次数
+        structured_method: 结构化输出方式。默认 function_calling(工具调用),
+            兼容性最好;DeepSeek 等不支持 json_schema(response_format)的端点必须用它。
 
     返回:
         结构化的 ReviewResult
@@ -56,7 +63,9 @@ def review(llm: Any, diff_text: str, max_retries: int = 3) -> ReviewResult:
 
     # with_structured_output:让 LLM 直接吐出符合 ReviewResult schema 的结构化结果,
     # 省去自己解析 JSON 的麻烦。这是 LangChain 提供的关键能力。
-    structured_llm = llm.with_structured_output(ReviewResult)
+    # method 决定底层机制:function_calling(工具调用,兼容性最好)/ json_schema(OpenAI 原生,
+    # DeepSeek 不支持)/ json_mode。默认走 function_calling,避免打到不支持 json_schema 的端点。
+    structured_llm = llm.with_structured_output(ReviewResult, method=structured_method)
     result = invoke_with_retry(
         structured_llm,
         [("system", system_prompt), ("human", user_prompt)],

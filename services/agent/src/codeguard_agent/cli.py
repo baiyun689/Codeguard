@@ -73,7 +73,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         llm = build_llm(settings)
-        result = review(llm, diff_text, max_retries=settings.max_retries)
+        result = review(
+            llm,
+            diff_text,
+            max_retries=settings.max_retries,
+            structured_method=settings.structured_method,
+        )
         _print_result(result)
 
         # 退出码约定:发现 CRITICAL 问题时返回非 0,方便接入 CI 做门禁

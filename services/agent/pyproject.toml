@@ -5,6 +5,8 @@ description = "Codeguard Agent —— AI 代码审查的 Python 服务核心"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.10.0",
+    # 从 .env 文件加载环境变量(零配置体验)
+    "python-dotenv>=1.0.0",
     # LLM 相关依赖:mock 模式下不会真正导入,接入真实模型时才需要
     "langchain>=0.3.0",
     "langchain-openai>=0.3.0",

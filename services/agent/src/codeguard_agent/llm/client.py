@@ -27,24 +27,37 @@ def build_llm(settings: Settings) -> Any:
     if settings.provider == "mock":
         return None
 
-    if settings.provider == "claude":
+    # 调真实 API 前先校验密钥,缺失时给出清晰可操作的报错,
+    # 而不是等到 invoke 时才抛一个晦涩的 401。
+    if settings.needs_api_key and not settings.api_key:
+        raise ValueError(
+            f"provider='{settings.provider}' 需要 API 密钥,但 CODEGUARD_API_KEY 为空。\n"
+            "请在 .env 或环境变量中设置 CODEGUARD_API_KEY;"
+            "若只想验证流水线连通,可设 CODEGUARD_PROVIDER=mock 走假数据。"
+        )
+
+    if settings.provider == "openai":
         # 延迟导入:没装对应包 / 用 mock 模式时不强制依赖
-        from langchain_anthropic import ChatAnthropic
+        from langchain_openai import ChatOpenAI
 
         kwargs: dict[str, Any] = {"model": settings.model, "api_key": settings.api_key}
         if settings.api_base_url:
             kwargs["base_url"] = settings.api_base_url
-        return ChatAnthropic(**kwargs)
+        if settings.disable_thinking:
+            # DeepSeek 推理模型默认开启 thinking,会与 function_calling/结构化输出冲突。
+            # 通过 extra_body 透传给底层请求体显式关闭。(真正的 OpenAI 不认此字段,故仅按需启用)
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        return ChatOpenAI(**kwargs)
 
-    if settings.provider == "openai":
-        from langchain_openai import ChatOpenAI
+    if settings.provider == "claude":
+        from langchain_anthropic import ChatAnthropic
 
         kwargs = {"model": settings.model, "api_key": settings.api_key}
         if settings.api_base_url:
             kwargs["base_url"] = settings.api_base_url
-        return ChatOpenAI(**kwargs)
+        return ChatAnthropic(**kwargs)
 
-    raise ValueError(f"不支持的 provider: {settings.provider}")
+    raise ValueError(f"不支持的 provider: {settings.provider}(可选:openai | claude | mock)")
 
 
 def invoke_with_retry(llm: Any, messages: list[tuple[str, str]], max_retries: int = 3) -> Any:

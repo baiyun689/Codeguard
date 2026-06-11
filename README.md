@@ -33,14 +33,17 @@ cd services/agent
 # 1) 安装依赖(推荐用 uv,或用 pip)
 pip install -e .
 
-# 2) 不配密钥也能跑(mock 模式,验证流水线连通)
-python -m codeguard_agent review
-
-# 3) 接入真实 LLM
-export CODEGUARD_PROVIDER=claude
+# 2) 默认调真实 OpenAI API(需配密钥)
 export CODEGUARD_API_KEY=sk-xxx
 python -m codeguard_agent review --repo . --base HEAD
+
+# 3) 不想配密钥?用 mock 模式先验证流水线连通
+export CODEGUARD_PROVIDER=mock
+python -m codeguard_agent review
 ```
+
+> 也可把上述变量写进项目根目录的 `.env` 文件(已被 gitignore),程序会自动就近加载,
+> 之后直接 `python -m codeguard_agent review` 即可,无需每次 export。已显式设置的环境变量优先于 `.env`。
 
 环境变量见 [`.env.example`](.env.example)。
 
