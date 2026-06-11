@@ -21,6 +21,8 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.8.0",
     "mypy>=1.11",
+    # 评测框架(evals/)读取 YAML 数据集用
+    "pyyaml>=6.0",
 ]
 
 [build-system]

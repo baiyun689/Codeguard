@@ -1,0 +1,22 @@
+id: weak_crypto_001
+category: 不安全加密
+language: java
+description: 用 MD5 存储口令
+diff: |
+  diff --git a/src/main/java/com/demo/PasswordUtil.java b/src/main/java/com/demo/PasswordUtil.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/PasswordUtil.java
+  +++ b/src/main/java/com/demo/PasswordUtil.java
+  @@ -6,6 +6,10 @@ public class PasswordUtil {
+       public String hash(String password) throws NoSuchAlgorithmException {
+  +        MessageDigest md = MessageDigest.getInstance("MD5");
+  +        byte[] digest = md.digest(password.getBytes());
+  +        return Base64.getEncoder().encodeToString(digest);
+       }
+   }
+expected:
+  - type_keywords: ["md5", "弱", "weak", "加密", "哈希", "hash"]
+    file: PasswordUtil.java
+    line: 8
+    severity: WARNING
+    note: MD5 不适合存口令,应用 bcrypt/argon2 加盐

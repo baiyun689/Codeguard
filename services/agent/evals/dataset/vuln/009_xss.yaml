@@ -1,0 +1,22 @@
+id: xss_001
+category: XSS
+language: java
+description: 把用户输入未转义直接写进 HTTP 响应
+diff: |
+  diff --git a/src/main/java/com/demo/SearchServlet.java b/src/main/java/com/demo/SearchServlet.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/SearchServlet.java
+  +++ b/src/main/java/com/demo/SearchServlet.java
+  @@ -11,6 +11,9 @@ public class SearchServlet extends HttpServlet {
+       protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+  +        String q = req.getParameter("q");
+  +        resp.setContentType("text/html");
+  +        resp.getWriter().write("<div>你搜索了: " + q + "</div>");
+       }
+   }
+expected:
+  - type_keywords: ["xss", "跨站", "转义", "escape", "脚本"]
+    file: SearchServlet.java
+    line: 13
+    severity: WARNING
+    note: q 未转义直接输出到 HTML,存在反射型 XSS

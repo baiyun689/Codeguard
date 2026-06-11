@@ -1,0 +1,20 @@
+id: clean_rename_001
+category: clean
+language: java
+description: 重命名局部变量,纯重构
+diff: |
+  diff --git a/src/main/java/com/demo/Calculator.java b/src/main/java/com/demo/Calculator.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/Calculator.java
+  +++ b/src/main/java/com/demo/Calculator.java
+  @@ -5,8 +5,8 @@ public class Calculator {
+       public int sum(int[] values) {
+  -        int s = 0;
+  -        for (int v : values) s += v;
+  -        return s;
+  +        int total = 0;
+  +        for (int v : values) total += v;
+  +        return total;
+       }
+   }
+expected: []

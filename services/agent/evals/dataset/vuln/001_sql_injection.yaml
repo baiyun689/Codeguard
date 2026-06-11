@@ -1,0 +1,25 @@
+id: sql_injection_001
+category: SQL注入
+language: java
+description: 用户输入直接字符串拼接进 SQL 语句
+diff: |
+  diff --git a/src/main/java/com/demo/UserDao.java b/src/main/java/com/demo/UserDao.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/UserDao.java
+  +++ b/src/main/java/com/demo/UserDao.java
+  @@ -10,6 +10,11 @@ public class UserDao {
+       public User findByName(String name) throws SQLException {
+  -        return template.queryForObject("SELECT * FROM users WHERE id = ?", name);
+  +        Statement stmt = connection.createStatement();
+  +        String sql = "SELECT * FROM users WHERE name = '" + name + "'";
+  +        ResultSet rs = stmt.executeQuery(sql);
+  +        rs.next();
+  +        return mapRow(rs);
+       }
+   }
+expected:
+  - type_keywords: ["sql", "注入", "injection"]
+    file: UserDao.java
+    line: 13
+    severity: CRITICAL
+    note: name 直接拼进 SQL,应使用 PreparedStatement 参数化

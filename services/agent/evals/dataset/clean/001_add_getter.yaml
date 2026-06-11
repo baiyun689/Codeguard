@@ -1,0 +1,17 @@
+id: clean_getter_001
+category: clean
+language: java
+description: 新增一个普通 getter,无任何安全问题
+diff: |
+  diff --git a/src/main/java/com/demo/Order.java b/src/main/java/com/demo/Order.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/Order.java
+  +++ b/src/main/java/com/demo/Order.java
+  @@ -8,6 +8,10 @@ public class Order {
+       private BigDecimal amount;
+  +
+  +    public BigDecimal getAmount() {
+  +        return amount;
+  +    }
+   }
+expected: []

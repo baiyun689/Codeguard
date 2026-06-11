@@ -1,0 +1,22 @@
+id: xxe_001
+category: XXE
+language: java
+description: 解析 XML 未禁用外部实体
+diff: |
+  diff --git a/src/main/java/com/demo/XmlParser.java b/src/main/java/com/demo/XmlParser.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/XmlParser.java
+  +++ b/src/main/java/com/demo/XmlParser.java
+  @@ -10,6 +10,10 @@ public class XmlParser {
+       public Document parse(InputStream xml) throws Exception {
+  +        DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+  +        DocumentBuilder db = dbf.newDocumentBuilder();
+  +        return db.parse(xml);
+       }
+   }
+expected:
+  - type_keywords: ["xxe", "外部实体", "entity", "xml"]
+    file: XmlParser.java
+    line: 12
+    severity: WARNING
+    note: 未禁用 DTD/外部实体,存在 XXE

@@ -1,0 +1,19 @@
+id: clean_prepared_stmt_001
+category: clean
+language: java
+description: 用参数化查询(正确写法),不应报 SQL 注入
+diff: |
+  diff --git a/src/main/java/com/demo/ProductDao.java b/src/main/java/com/demo/ProductDao.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/ProductDao.java
+  +++ b/src/main/java/com/demo/ProductDao.java
+  @@ -10,6 +10,11 @@ public class ProductDao {
+       public Product findById(long id) throws SQLException {
+  +        PreparedStatement ps = conn.prepareStatement("SELECT * FROM products WHERE id = ?");
+  +        ps.setLong(1, id);
+  +        ResultSet rs = ps.executeQuery();
+  +        rs.next();
+  +        return mapRow(rs);
+       }
+   }
+expected: []

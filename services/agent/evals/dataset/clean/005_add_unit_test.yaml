@@ -1,0 +1,16 @@
+id: clean_unit_test_001
+category: clean
+language: java
+description: 新增一个单元测试
+diff: |
+  diff --git a/src/test/java/com/demo/CalculatorTest.java b/src/test/java/com/demo/CalculatorTest.java
+  index 1111111..2222222 100644
+  --- a/src/test/java/com/demo/CalculatorTest.java
+  +++ b/src/test/java/com/demo/CalculatorTest.java
+  @@ -10,6 +10,11 @@ class CalculatorTest {
+  +    @Test
+  +    void sum_returnsTotal() {
+  +        assertEquals(6, new Calculator().sum(new int[]{1, 2, 3}));
+  +    }
+   }
+expected: []

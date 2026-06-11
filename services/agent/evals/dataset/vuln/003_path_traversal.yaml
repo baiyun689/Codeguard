@@ -1,0 +1,21 @@
+id: path_traversal_001
+category: 路径穿越
+language: java
+description: 用户传入的文件名直接拼到基目录后读取
+diff: |
+  diff --git a/src/main/java/com/demo/FileController.java b/src/main/java/com/demo/FileController.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/FileController.java
+  +++ b/src/main/java/com/demo/FileController.java
+  @@ -12,6 +12,9 @@ public class FileController {
+       public byte[] download(String filename) throws IOException {
+  +        File f = new File("/var/data/" + filename);
+  +        return Files.readAllBytes(f.toPath());
+       }
+   }
+expected:
+  - type_keywords: ["路径", "穿越", "traversal", "path"]
+    file: FileController.java
+    line: 14
+    severity: CRITICAL
+    note: filename 可含 ../ 实现目录穿越,需规范化并校验白名单

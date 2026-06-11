@@ -71,4 +71,13 @@ def review(
         [("system", system_prompt), ("human", user_prompt)],
         max_retries=max_retries,
     )
+
+    # with_structured_output 可能返回 None:当模型那一轮没有正确发起工具调用、
+    # 或没吐出可解析的结构化结果时(function_calling 模式下尤其常见,DeepSeek 等
+    # 工具调用稳定性较弱的端点更容易触发)。这里兜底成空结果,避免把 None 抛给
+    # 上层(CLI 打印、评测管线都会因 None.issues 崩溃)。
+    if result is None:
+        logger.warning("LLM 未返回可解析的结构化结果,本次按'无问题'处理(可能是模型未发起工具调用)")
+        return ReviewResult(summary="模型未返回结构化结果,本次审查为空。")
+
     return result

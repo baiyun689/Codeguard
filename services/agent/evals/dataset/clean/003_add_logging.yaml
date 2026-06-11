@@ -1,0 +1,16 @@
+id: clean_logging_001
+category: clean
+language: java
+description: 打印非敏感的业务日志
+diff: |
+  diff --git a/src/main/java/com/demo/OrderService.java b/src/main/java/com/demo/OrderService.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/OrderService.java
+  +++ b/src/main/java/com/demo/OrderService.java
+  @@ -22,6 +22,8 @@ public class OrderService {
+       public void submit(Order order) {
+  +        log.info("order submitted id={} status={}", order.getId(), order.getStatus());
+           repository.save(order);
+       }
+   }
+expected: []

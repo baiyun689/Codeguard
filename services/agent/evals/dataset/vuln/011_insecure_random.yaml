@@ -1,0 +1,22 @@
+id: insecure_random_001
+category: 不安全随机数
+language: java
+description: 用 java.util.Random 生成安全令牌
+diff: |
+  diff --git a/src/main/java/com/demo/TokenService.java b/src/main/java/com/demo/TokenService.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/TokenService.java
+  +++ b/src/main/java/com/demo/TokenService.java
+  @@ -7,6 +7,9 @@ public class TokenService {
+       public String newToken() {
+  +        Random r = new Random();
+  +        long v = r.nextLong();
+  +        return Long.toHexString(v);
+       }
+   }
+expected:
+  - type_keywords: ["随机", "random", "securerandom", "可预测", "弱"]
+    file: TokenService.java
+    line: 9
+    severity: WARNING
+    note: java.util.Random 可预测,安全令牌应用 SecureRandom
