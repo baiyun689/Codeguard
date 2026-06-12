@@ -1,6 +1,6 @@
 # Codeguard 审查质量评测报告
 
-- 生成时间:2026-06-12 16:49:24
+- 生成时间:2026-06-12 20:11:17
 - Provider / Model:`openai` / `deepseek-v4-pro`
 - 数据集:27 条(漏洞 19 / 干净 8)
 - 重复跑测:3 次
@@ -12,44 +12,44 @@
 
 | 指标 | 数值 | 含义 |
 |---|---|---|
-| **Precision** | 0.401 (±0.032) | 报出的问题里真问题占比(越高=噪音越少) |
+| **Precision** | 0.381 (±0.012) | 报出的问题里真问题占比(越高=噪音越少) |
 | **Recall** | 0.971 (±0.020) | 该审出的问题被审出占比(越高=漏报越少) |
-| **F1** | 0.568 | Precision 与 Recall 的调和平均 |
-| 误报率(每条干净 diff) | 0.667 | 干净代码上平均误报几个(越低越好) |
+| **F1** | 0.547 | Precision 与 Recall 的调和平均 |
+| 误报率(每条干净 diff) | 0.750 | 干净代码上平均误报几个(越低越好) |
 | 定位准确率 | 1.000 | 命中项里行号也对上的比例 |
-| 级别准确率 | 0.642 | 命中项里 severity 也对上的比例 |
+| 级别准确率 | 0.597 | 命中项里 severity 也对上的比例 |
 
 ## 逐用例明细(最后一次跑测)
 
 | 用例 | 类别 | 标答 | 报告 | TP | FP | FN |
 |---|---|---|---|---|---|---|
 | clean_getter_001 | clean | 0 | 0 | 0 | 0 | 0 |
-| clean_prepared_stmt_001 | clean | 0 | 3 | 0 | 3 | 0 |
+| clean_prepared_stmt_001 | clean | 0 | 5 | 0 | 5 | 0 |
 | clean_logging_001 | clean | 0 | 0 | 0 | 0 | 0 |
 | clean_rename_001 | clean | 0 | 0 | 0 | 0 | 0 |
 | clean_unit_test_001 | clean | 0 | 0 | 0 | 0 | 0 |
-| clean_try_with_resources_001 | clean | 0 | 1 | 0 | 1 | 0 |
-| clean_logged_exception_001 | clean | 0 | 1 | 0 | 1 | 0 |
+| clean_try_with_resources_001 | clean | 0 | 2 | 0 | 2 | 0 |
+| clean_logged_exception_001 | clean | 0 | 0 | 0 | 0 | 0 |
 | clean_bounded_loop_001 | clean | 0 | 0 | 0 | 0 | 0 |
-| sql_injection_001 | vuln | 3 | 6 | 3 | 3 | 0 |
+| sql_injection_001 | vuln | 3 | 5 | 3 | 2 | 0 |
 | command_injection_001 | vuln | 1 | 5 | 1 | 4 | 0 |
-| path_traversal_001 | vuln | 1 | 2 | 1 | 1 | 0 |
+| path_traversal_001 | vuln | 1 | 3 | 1 | 2 | 0 |
 | hardcoded_secret_001 | vuln | 1 | 2 | 1 | 1 | 0 |
-| weak_crypto_001 | vuln | 1 | 3 | 1 | 2 | 0 |
+| weak_crypto_001 | vuln | 1 | 2 | 1 | 1 | 0 |
 | sensitive_log_001 | vuln | 1 | 2 | 1 | 1 | 0 |
-| insecure_deser_001 | vuln | 1 | 6 | 1 | 5 | 0 |
-| ssrf_001 | vuln | 1 | 3 | 1 | 2 | 0 |
-| xss_001 | vuln | 1 | 5 | 1 | 4 | 0 |
-| missing_authz_001 | vuln | 1 | 3 | 1 | 2 | 0 |
+| insecure_deser_001 | vuln | 1 | 3 | 1 | 2 | 0 |
+| ssrf_001 | vuln | 1 | 1 | 1 | 0 | 0 |
+| xss_001 | vuln | 1 | 4 | 1 | 3 | 0 |
+| missing_authz_001 | vuln | 1 | 1 | 1 | 0 | 0 |
 | insecure_random_001 | vuln | 1 | 3 | 1 | 2 | 0 |
 | xxe_001 | vuln | 1 | 1 | 1 | 0 | 0 |
-| npe_map_get_001 | vuln | 1 | 3 | 1 | 2 | 0 |
+| npe_map_get_001 | vuln | 1 | 2 | 1 | 1 | 0 |
 | resource_leak_001 | vuln | 1 | 2 | 1 | 1 | 0 |
 | off_by_one_001 | vuln | 1 | 2 | 1 | 1 | 0 |
-| concurrent_modification_001 | vuln | 1 | 2 | 1 | 1 | 0 |
-| swallowed_exception_001 | vuln | 1 | 1 | 1 | 0 | 0 |
-| hardcoded_config_001 | vuln | 2 | 2 | 2 | 0 | 0 |
-| magic_number_001 | vuln | 2 | 2 | 2 | 0 | 0 |
+| concurrent_modification_001 | vuln | 1 | 3 | 1 | 2 | 0 |
+| swallowed_exception_001 | vuln | 1 | 4 | 1 | 3 | 0 |
+| hardcoded_config_001 | vuln | 2 | 5 | 2 | 3 | 0 |
+| magic_number_001 | vuln | 2 | 1 | 1 | 0 | 1 |
 
 ## 规则尺 vs 裁判尺(最后一次跑测)
 
@@ -60,7 +60,7 @@
 
 ## 级别诊断(最后一次跑测)
 
-只统计标了期望级别的命中项(漏报项不计)。共 23 项,其中 7 项级别判错(✗)。
+只统计标了期望级别的命中项(漏报项不计)。共 22 项,其中 8 项级别判错(✗)。
 
 | 用例 | 类型 | 期望级别 | 报告级别 | 判定 |
 |---|---|---|---|---|
@@ -69,24 +69,23 @@
 | sql_injection_001 | 空指针 | WARNING | CRITICAL | ✗ |
 | command_injection_001 | 命令注入 | CRITICAL | CRITICAL | ✓ |
 | path_traversal_001 | 路径穿越 | CRITICAL | CRITICAL | ✓ |
-| hardcoded_secret_001 | 硬编码凭证 | CRITICAL | CRITICAL | ✓ |
+| hardcoded_secret_001 | 硬编码密钥 | CRITICAL | CRITICAL | ✓ |
 | weak_crypto_001 | 弱加密算法 | WARNING | WARNING | ✓ |
-| sensitive_log_001 | 敏感信息泄露 | WARNING | CRITICAL | ✗ |
+| sensitive_log_001 | 敏感信息泄漏 | WARNING | WARNING | ✓ |
 | insecure_deser_001 | 不安全反序列化 | CRITICAL | CRITICAL | ✓ |
-| ssrf_001 | SSRF（服务端请求伪造） | WARNING | WARNING | ✓ |
-| xss_001 | 跨站脚本(XSS) | WARNING | CRITICAL | ✗ |
+| ssrf_001 | SSRF（服务端请求伪造） | WARNING | CRITICAL | ✗ |
+| xss_001 | XSS (反射型) | WARNING | WARNING | ✓ |
 | missing_authz_001 | 鉴权缺失 | CRITICAL | CRITICAL | ✓ |
-| insecure_random_001 | 不安全的随机数 | WARNING | WARNING | ✓ |
-| xxe_001 | XXE 漏洞 | WARNING | WARNING | ✓ |
-| npe_map_get_001 | 空指针风险 | WARNING | WARNING | ✓ |
-| resource_leak_001 | 资源泄漏 | WARNING | CRITICAL | ✗ |
+| insecure_random_001 | 不安全随机数 | WARNING | CRITICAL | ✗ |
+| xxe_001 | XXE (XML 外部实体注入) | WARNING | WARNING | ✓ |
+| npe_map_get_001 | 空指针 | WARNING | WARNING | ✓ |
+| resource_leak_001 | 资源泄漏 | WARNING | WARNING | ✓ |
 | off_by_one_001 | 数组越界 | CRITICAL | CRITICAL | ✓ |
-| concurrent_modification_001 | 并发修改异常 | CRITICAL | CRITICAL | ✓ |
-| swallowed_exception_001 | 异常吞没 | WARNING | WARNING | ✓ |
-| hardcoded_config_001 | 硬编码 | INFO | CRITICAL | ✗ |
-| hardcoded_config_001 | 硬编码数据库凭证 | CRITICAL | CRITICAL | ✓ |
+| concurrent_modification_001 | 并发修改异常 / 逻辑错误 | CRITICAL | WARNING | ✗ |
+| swallowed_exception_001 | 异常吞噬 | WARNING | CRITICAL | ✗ |
+| hardcoded_config_001 | 硬编码地址 | INFO | CRITICAL | ✗ |
+| hardcoded_config_001 | 敏感信息泄漏 — 硬编码凭据 | CRITICAL | CRITICAL | ✓ |
 | magic_number_001 | 魔法数字 | INFO | WARNING | ✗ |
-| magic_number_001 | 空指针 | WARNING | WARNING | ✓ |
 
 ## 怎么读这份报告
 
