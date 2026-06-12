@@ -27,6 +27,11 @@ target/
 .vscode/
 *.iml
 
+#AI
+openspec/
+.codex
+.claude
+
 # 系统
 .DS_Store
 Thumbs.db
