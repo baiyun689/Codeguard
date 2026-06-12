@@ -23,3 +23,13 @@ expected:
     line: 13
     severity: CRITICAL
     note: name 直接拼进 SQL,应使用 PreparedStatement 参数化
+  - type_keywords: ["资源泄漏", "未关闭", "leak", "close", "stream", "statement", "resultset"]
+    file: UserDao.java
+    line: 13
+    severity: WARNING
+    note: Statement/ResultSet 未在 try-with-resources 或 finally 中关闭,异常路径下泄漏数据库资源
+  - type_keywords: ["rs.next", "返回值", "未检查", "空结果", "next"]
+    file: UserDao.java
+    line: 14
+    severity: WARNING
+    note: rs.next() 返回值被忽略,查询无结果时 mapRow(rs) 会读取无效游标抛 SQLException

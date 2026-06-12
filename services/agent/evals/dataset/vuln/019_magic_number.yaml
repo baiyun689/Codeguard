@@ -20,3 +20,8 @@ expected:
     line: 9
     severity: INFO
     note: 1.17 和 8.5 含义不明(税率?手续费?),应提取为有名字的常量
+  - type_keywords: ["空指针", "npe", "null", "判空", "解引用"]
+    file: InvoiceCalculator.java
+    line: 9
+    severity: WARNING
+    note: amount 未判 null,调用方传入 null 时 amount.multiply(...) 抛 NullPointerException
