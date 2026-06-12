@@ -65,6 +65,34 @@ def render_report(
             f"{o.true_positives} | {o.false_positives} | {o.false_negatives} |"
         )
 
+    # 规则尺 vs 裁判尺交叉校验:仅当本次确有用例走 LLM 主判时才有意义。
+    # 主判(LLM)与规则尺判出的 TP/FP/FN 不一致的用例,正是"关键词撞词/漏配"被裁判纠正之处,
+    # 也是核对裁判是否离谱、留存可复现凭证的地方。
+    last = runs[-1]
+    if any(o.primary_judge == "llm" for o in last):
+        diverged = [
+            o for o in last
+            if (o.true_positives, o.false_positives, o.false_negatives)
+            != (o.rule_true_positives, o.rule_false_positives, o.rule_false_negatives)
+        ]
+        lines += [
+            "",
+            "## 规则尺 vs 裁判尺(最后一次跑测)",
+            "",
+            "主判为 LLM 裁判(语义配对),规则尺并行作确定性交叉校验。下表只列两尺判定不一致的用例;"
+            f"共 {len(diverged)} 条分歧。分歧多说明规则尺的关键词匹配偏差大(裁判在纠偏);"
+            "分歧为 0 则两尺一致,可放心用规则尺做廉价回归。",
+            "",
+            "| 用例 | 裁判 TP/FP/FN | 规则 TP/FP/FN |",
+            "|---|---|---|",
+        ]
+        for o in diverged:
+            lines.append(
+                f"| {o.case_id} | "
+                f"{o.true_positives}/{o.false_positives}/{o.false_negatives} | "
+                f"{o.rule_true_positives}/{o.rule_false_positives}/{o.rule_false_negatives} |"
+            )
+
     # 级别诊断:逐条列出"期望级别 vs 报告级别",定位是哪几条把级别判错了。
     # 只统计标了期望 severity 的命中项(漏报的 FN 不会出现在这里)。
     severity_rows = [

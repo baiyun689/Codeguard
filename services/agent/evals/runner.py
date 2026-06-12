@@ -8,7 +8,10 @@
     export CODEGUARD_API_KEY=sk-xxx
     python -m evals.runner --runs 3
 
-    # 额外开启 LLM-as-judge 做语义复核 + 质量打分(更准,成本更高)
+    # 额外开启 LLM 裁判做案例级语义配对(更准,成本更高)。
+    # 裁判默认沿用主模型;强烈建议另配一家"不同/更强"的模型当裁判,降低自我评判偏差:
+    #   CODEGUARD_JUDGE_PROVIDER=claude CODEGUARD_JUDGE_MODEL=claude-sonnet-4-20250514 \
+    #   CODEGUARD_JUDGE_API_KEY=sk-ant-... python -m evals.runner --runs 3 --judge
     python -m evals.runner --runs 3 --judge
 
     # 指定报告输出路径
@@ -72,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         default="single",
         help="审查方式:single=单次安全审查(阶段1 baseline);pipeline=并行多领域审查(阶段2)。默认 single",
     )
-    parser.add_argument("--judge", action="store_true", help="开启 LLM-as-judge 语义复核+质量打分")
+    parser.add_argument("--judge", action="store_true", help="开启 LLM 裁判做案例级语义配对(主判);规则尺仍并行作交叉校验")
     parser.add_argument(
         "--report",
         default="evals/reports/baseline.md",
@@ -97,10 +100,22 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("加载用例 %d 条", len(cases))
 
     llm = build_llm(settings)
-    judge_llm = llm if args.judge else None
-    if args.judge and llm is None:
-        logger.warning("mock 模式下无法做 LLM-as-judge,已自动跳过 judge")
-        judge_llm = None
+
+    # 裁判模型:独立配置(CODEGUARD_JUDGE_*),temperature=0 锁确定性,尽量与审查器异源(见 ADR-005)。
+    judge_llm = None
+    if args.judge:
+        judge_settings = Settings.judge_from_env()
+        judge_llm = build_llm(judge_settings, temperature=0)
+        if judge_llm is None:
+            logger.warning("裁判为 mock,无法做 LLM 主判,已自动跳过(只用规则尺)")
+        else:
+            same = (judge_settings.provider == settings.provider
+                    and judge_settings.model == settings.model)
+            logger.info(
+                "裁判 provider=%s model=%s%s",
+                judge_settings.provider, judge_settings.model,
+                "  ⚠️ 与审查器同源,存在自我评判偏差(建议另配 CODEGUARD_JUDGE_*)" if same else "",
+            )
 
     # 按 --mode 注入审查函数:single=baseline 单次调用 / pipeline=多阶段管线。
     if args.mode == "pipeline":

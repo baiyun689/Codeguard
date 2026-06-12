@@ -64,8 +64,31 @@ class EvalCase(BaseModel):
         return len(self.expected) == 0
 
 
+class JudgeMatch(BaseModel):
+    """裁判对**一条标准答案**的命中判定(案例级 LLM 判分的最小单元)。
+
+    裁判只做语义配对这件难事:把报告对到标准答案;TP/FP/FN/级别 由代码据此确定性算出
+    (见 matcher.py)。这样裁判的不确定性被限制在"配对"一处,其余仍可复现。
+    """
+
+    expected_id: int = Field(description="标准答案编号(prompt 里 [E#] 的 #)")
+    reported_id: int = Field(
+        default=-1, description="命中它的报告编号([R#] 的 #);-1 表示无人命中(漏报)"
+    )
+    reason: str = Field(default="", description="判定依据,便于人工复核")
+
+
+class CaseJudgement(BaseModel):
+    """裁判对一条用例的整体判定:逐条标准答案给出是否被命中、被哪条命中。"""
+
+    matches: list[JudgeMatch] = Field(
+        default_factory=list, description="对每条标准答案各一条 match"
+    )
+    comment: str = Field(default="", description="整体简评")
+
+
 class JudgeScore(BaseModel):
-    """LLM-as-judge 对一条"命中的报告"的质量打分(可选,仅 --judge 时产生)。"""
+    """LLM-as-judge 对一条"命中的报告"的质量打分(旧逐对打分模型,暂留作兼容)。"""
 
     semantic_match: bool = Field(description="语义上是否真的命中了这条标准答案")
     message_quality: int = Field(ge=1, le=5, description="问题描述质量 1~5")
@@ -90,7 +113,16 @@ class MatchOutcome(BaseModel):
         default_factory=list,
         description="逐项级别诊断:每个参与校验的命中项的 期望级别 vs 报告级别,便于定位是哪几条判错",
     )
-    judge_scores: list[JudgeScore] = Field(default_factory=list, description="LLM 质量打分明细")
+    judge_scores: list[JudgeScore] = Field(default_factory=list, description="LLM 质量打分明细(旧路径,暂留)")
+
+    # ---- 规则尺交叉校验(仅当本用例用了 LLM 裁判时才有对比意义)----
+    primary_judge: str = Field(
+        default="rule",
+        description="本用例主判由谁出:rule=纯规则;llm=LLM 裁判语义配对",
+    )
+    rule_true_positives: int = Field(default=0, description="规则尺判出的 TP(交叉校验用)")
+    rule_false_positives: int = Field(default=0, description="规则尺判出的 FP(交叉校验用)")
+    rule_false_negatives: int = Field(default=0, description="规则尺判出的 FN(交叉校验用)")
 
 
 class CaseMetrics(BaseModel):

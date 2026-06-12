@@ -16,13 +16,16 @@ from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
 logger = logging.getLogger("codeguard")
 
 
-def build_llm(settings: Settings) -> Any:
+def build_llm(settings: Settings, temperature: float | None = None) -> Any:
     """根据配置创建一个 LangChain Chat 模型。
 
     返回的对象都实现了 LangChain 的 BaseChatModel 接口,
     因此上层代码无需关心底层到底是 Claude 还是 OpenAI。
 
     provider='mock' 时返回 None,由调用方走假数据分支(见 reviewer.py)。
+
+    temperature:显式传入时透传给底层模型;评测裁判用 temperature=0 锁住确定性,
+        让"尺子"自身尽量不抖(见 ADR-005)。None 表示不设,用 provider 默认。
     """
     if settings.provider == "mock":
         return None
@@ -43,6 +46,8 @@ def build_llm(settings: Settings) -> Any:
         kwargs: dict[str, Any] = {"model": settings.model, "api_key": settings.api_key}
         if settings.api_base_url:
             kwargs["base_url"] = settings.api_base_url
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         if settings.disable_thinking:
             # DeepSeek 推理模型默认开启 thinking,会与 function_calling/结构化输出冲突。
             # 通过 extra_body 透传给底层请求体显式关闭。(真正的 OpenAI 不认此字段,故仅按需启用)
@@ -55,6 +60,8 @@ def build_llm(settings: Settings) -> Any:
         kwargs = {"model": settings.model, "api_key": settings.api_key}
         if settings.api_base_url:
             kwargs["base_url"] = settings.api_base_url
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         return ChatAnthropic(**kwargs)
 
     raise ValueError(f"不支持的 provider: {settings.provider}(可选:openai | claude | mock)")

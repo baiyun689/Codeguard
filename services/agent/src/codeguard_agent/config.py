@@ -79,3 +79,53 @@ class Settings:
             structured_method=structured_method,
             disable_thinking=disable_thinking,
         )
+
+    @classmethod
+    def judge_from_env(cls) -> "Settings":
+        """评测裁判模型的配置:优先读 CODEGUARD_JUDGE_*,未设则回退主 CODEGUARD_*。
+
+        评测应尽量用与被测审查器**不同/更强**的模型当裁判,降低"自己评自己"的偏差
+        (见 DECISIONS.md ADR-005)。典型用法:审查器用 DeepSeek,裁判另配一家:
+            CODEGUARD_JUDGE_PROVIDER=claude
+            CODEGUARD_JUDGE_MODEL=claude-sonnet-4-20250514
+            CODEGUARD_JUDGE_API_KEY=sk-ant-...
+        只设了 JUDGE_PROVIDER 而没给 MODEL 时,回退到该 provider 的默认模型。
+
+        注意"同端点"而非"同 provider":DeepSeek 和通义千问都借 `provider=openai` 这条路,
+        但 base_url 不同、是两家厂商。只有 provider **且** base_url 都与主配置一致时,才算同一个
+        端点、才沿用主配置的密钥/地址/thinking 开关;否则密钥必须单独给,thinking 默认关
+        (那个 `disable_thinking` 的 extra_body 是 DeepSeek 专用,塞给千问会出错)。
+        """
+        base = cls.from_env()
+        provider = os.environ.get("CODEGUARD_JUDGE_PROVIDER", "").strip().lower() or base.provider
+
+        api_key = os.environ.get("CODEGUARD_JUDGE_API_KEY", "").strip()
+        api_base_url = os.environ.get("CODEGUARD_JUDGE_API_BASE_URL", "").strip()
+
+        # 同端点:provider 相同,且没单独指定 base_url(或指定的与主一致)。
+        same_endpoint = provider == base.provider and api_base_url in ("", base.api_base_url)
+
+        model = os.environ.get("CODEGUARD_JUDGE_MODEL", "").strip()
+        if not model:
+            model = base.model if same_endpoint else _DEFAULT_MODELS.get(provider, base.model)
+
+        if same_endpoint:
+            api_key = api_key or base.api_key
+            api_base_url = api_base_url or base.api_base_url
+
+        # disable_thinking 是厂商相关的:显式给了就听显式;否则只有同端点才沿用主配置,换家默认关。
+        explicit_dt = os.environ.get("CODEGUARD_JUDGE_DISABLE_THINKING", "").strip().lower()
+        if explicit_dt:
+            disable_thinking = explicit_dt in ("1", "true", "yes", "on")
+        else:
+            disable_thinking = base.disable_thinking if same_endpoint else False
+
+        return cls(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base_url=api_base_url,
+            max_retries=base.max_retries,
+            structured_method=base.structured_method,
+            disable_thinking=disable_thinking,
+        )
