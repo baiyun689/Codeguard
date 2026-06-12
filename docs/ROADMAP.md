@@ -77,8 +77,8 @@ git diff → 一次 LLM 调用 → 返回结构化 issues → 打印
 > - 若并行仍简单(只有审查员 *或* 只有 chunk),线程池继续够用;
 > - 若变成 chunks × reviewers 的二维 fan-out 且需全局限流,async(Semaphore + gather)更干净。
 > sync→async 是机械 retrofit,且 chunking 本就要大改 orchestrator,届时一起换。
-> ⚠️ 借鉴提醒:Diffguard 的 chunking(token 预算打包 + hunk 切分 + 重写 @@ 头,约 800 行)是其最过度工程处,
-> 做最小版即可(超阈值按文件切 + 跨 chunk 去重),别照搬。
+> ⚠️ 提醒:chunking(token 预算打包 + hunk 切分 + 重写 @@ 头)极易过度工程,
+> 做最小版即可(超阈值按文件切 + 跨 chunk 去重),别一上来就上复杂方案。
 
 ---
 
