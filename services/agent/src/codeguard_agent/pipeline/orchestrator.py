@@ -7,8 +7,9 @@
 
 进度:
     阶段 1:默认管线只有单个审查 stage,与 baseline 等价(已验证)。
-    阶段 2:默认管线 = 并行审查(security/logic/quality 三个领域审查员)。← 当前
-后续会继续往 build_default_pipeline() 里加:摘要 → [审查] → 聚合去重 → 误报过滤。
+    阶段 2:并行审查(security/logic/quality 三个领域审查员)。
+    阶段 3:并行审查 → 聚合去重。← 当前
+后续会继续往 build_default_pipeline() 里加:摘要 → [审查] → [聚合去重] → 误报过滤。
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from __future__ import annotations
 import logging
 
 from codeguard_agent.models.schemas import ReviewResult
+from codeguard_agent.pipeline.stages.aggregation import AggregationStage
 from codeguard_agent.pipeline.stages.base import PipelineContext, PipelineStage
 from codeguard_agent.pipeline.stages.reviewer_stage import ReviewerStage
 
@@ -25,10 +27,10 @@ logger = logging.getLogger("codeguard")
 def build_default_pipeline() -> list[PipelineStage]:
     """构造默认管线。
 
-    阶段 2:一个并行审查 stage(security/logic/quality 三个领域审查员)。
-    后续会在它前后加:摘要 → [审查] → 聚合去重 → 误报过滤。
+    阶段 3:并行审查(security/logic/quality)→ 聚合去重。
+    后续会继续加:摘要 → [审查] → [聚合去重] → 误报过滤。
     """
-    return [ReviewerStage()]
+    return [ReviewerStage(), AggregationStage()]
 
 
 class PipelineOrchestrator:

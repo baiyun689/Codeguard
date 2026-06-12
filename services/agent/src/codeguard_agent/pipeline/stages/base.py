@@ -1,8 +1,8 @@
 """管线阶段抽象 + 阶段间传递的上下文。
 
-设计要点(借鉴 Diffguard,但刻意简化):
+设计要点(刻意从简):
 - 用 PipelineStage 抽象 + 共享 PipelineContext,把"一次审查"拆成可组合、可增删的环节。
-- 阶段间传**类型化对象**(Issue / ReviewResult),不传 JSON 字符串——比 Diffguard 更不易出错。
+- 阶段间传**类型化对象**(Issue / ReviewResult),不传 JSON 字符串——比传字符串更不易出错。
 - 阶段 1 不引入 async、不引入 chunking、不引入工具会话:那些是后续阶段/过度工程,现在不要。
 
 PipelineContext 当前是一个扁平 dataclass。等阶段数变多(摘要/审查/聚合各有产出)再考虑
