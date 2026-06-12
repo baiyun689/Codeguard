@@ -33,10 +33,16 @@ class PipelineContext:
     llm: Any = None  # LangChain Chat 模型;None 表示 mock 模式(由下游识别)
     max_retries: int = 3
     structured_method: str = "function_calling"
+    # 误报过滤第二段的验证模型;为 None 时回退到 llm。
+    # 应尽量与审查器**异源**,避免"同一模型核查自己刚报的结论"的自我确认偏差(见 ADR-005)。
+    fp_verify_llm: Any = None
 
     # --- 输出(stage 累积写入)---
     issues: list[Issue] = field(default_factory=list)
     summary: str = ""
+    # 误报过滤阶段写入的统计(FilterStats);None 表示该阶段未运行。
+    # 用 Any 避免 base 反向依赖 fp_filter(后者要 import 本模块的 PipelineStage)。
+    filter_stats: Any = None
 
 
 class PipelineStage(ABC):

@@ -117,14 +117,29 @@ def main(argv: list[str] | None = None) -> int:
                 "  ⚠️ 与审查器同源,存在自我评判偏差(建议另配 CODEGUARD_JUDGE_*)" if same else "",
             )
 
+    # 误报过滤第二段的验证模型:开了 fp_llm_verify 才建,优先异源(复用独立模型配置,
+    # 避免审查器核查自己的结论 → 自我确认偏差,见 ADR-005)。temperature=0 锁确定性。
+    fp_verify_llm = None
+    if settings.fp_llm_verify:
+        verify_settings = Settings.judge_from_env()
+        fp_verify_llm = build_llm(verify_settings, temperature=0)
+        same = (verify_settings.provider == settings.provider
+                and verify_settings.model == settings.model)
+        logger.info(
+            "误报过滤验证模型 provider=%s model=%s%s",
+            verify_settings.provider, verify_settings.model,
+            "  ⚠️ 与审查器同源,存在自我确认偏差(建议配 CODEGUARD_JUDGE_* 异源)" if same else "",
+        )
+
     # 按 --mode 注入审查函数:single=baseline 单次调用 / pipeline=多阶段管线。
     if args.mode == "pipeline":
-        orchestrator = PipelineOrchestrator()
+        orchestrator = PipelineOrchestrator(fp_llm_verify=settings.fp_llm_verify)
         def review_fn(diff: str):
             return orchestrator.run(
                 llm, diff,
                 max_retries=settings.max_retries,
                 structured_method=settings.structured_method,
+                fp_verify_llm=fp_verify_llm,
             )
     else:
         def review_fn(diff: str):

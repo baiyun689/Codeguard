@@ -1,0 +1,51 @@
+ # 误报过滤——确定性规则配置
+#
+# 只放**可正则化/路径化的确定性规则**:命中即剔除,零成本、可复现、可单测。
+# 语义型判断(如"PreparedStatement 不是 SQL 注入")属于审查员 prompt 的职责,这里不重复。
+#
+# ⚠️ 规则必须与评测数据集对齐:不要写会误删真漏洞的规则。
+#    例如数据集有真实的 resource_leak / npe 用例,所以这里**不**排除"资源泄漏/空指针"类。
+#    加规则后务必跑 evals 确认 recall 没掉(clean 误报率才是该降的指标)。
+
+# 按 issue 的 type/message 做正则匹配(忽略大小写),命中即剔除。
+# 只放"泛泛、无具体问题"的噪音措辞——真问题都有具体描述,不会命中这些。
+message_patterns:
+  generic-refactor:
+    - "consider refactoring"
+    - "could be (improved|better)"
+    - "建议(重构|改进|优化代码结构)"
+  generic-caching:
+    - "(consider |should )?add(ing)? .*cach"
+    - "建议(添加|加|引入).{0,4}缓存"
+  generic-best-practice:
+    - "follow .*(best practice|coding standard)"
+    - "(遵循|符合).{0,4}(最佳实践|编码规范)"
+  generic-comments:
+    - "add (more )?(comments|documentation)"
+    - "(补充|添加|增加).{0,4}(注释|文档)"
+
+# 按文件路径子串剔除(路径转小写后做包含匹配)。
+path_substrings:
+  build-or-vendor-dirs:
+    - "node_modules/"
+    - "/target/"
+    - "/build/"
+    - "/dist/"
+    - "__pycache__/"
+    - "/vendor/"
+
+# 按文件名(basename,转小写)做正则匹配剔除。
+path_filename_patterns:
+  test-files:
+    - "(^|/|_)test"
+    - "test(s)?\\.(java|kt|py|js|ts)$"
+    - "spec\\.(java|kt|ts|tsx)$"
+    - "\\.(test|spec)\\.(ts|tsx|js|jsx)$"
+  doc-files:
+    - "\\.(md|markdown|txt|rst|adoc)$"
+  generated-files:
+    - "\\.(min|bundle)\\.js$"
+
+# 置信度阈值:低于该值的 issue 直接剔除(模型对自己都没把握的多半是噪音)。
+confidence:
+  auto_exclude_below: 0.5

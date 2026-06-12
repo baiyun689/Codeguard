@@ -19,18 +19,25 @@ import logging
 from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.pipeline.stages.aggregation import AggregationStage
 from codeguard_agent.pipeline.stages.base import PipelineContext, PipelineStage
+from codeguard_agent.pipeline.stages.fp_filter import FalsePositiveFilterStage
 from codeguard_agent.pipeline.stages.reviewer_stage import ReviewerStage
 
 logger = logging.getLogger("codeguard")
 
 
-def build_default_pipeline() -> list[PipelineStage]:
+def build_default_pipeline(fp_llm_verify: bool = False) -> list[PipelineStage]:
     """构造默认管线。
 
-    阶段 3:并行审查(security/logic/quality)→ 聚合去重。
-    后续会继续加:摘要 → [审查] → [聚合去重] → 误报过滤。
+    阶段 4:并行审查(security/logic/quality)→ 聚合去重 → 误报过滤。
+    后续可在审查之前补"摘要"阶段。
+
+    fp_llm_verify:误报过滤是否启用第二段 LLM 验证(默认关)。
     """
-    return [ReviewerStage(), AggregationStage()]
+    return [
+        ReviewerStage(),
+        AggregationStage(),
+        FalsePositiveFilterStage(enable_llm_verification=fp_llm_verify),
+    ]
 
 
 class PipelineOrchestrator:
@@ -40,8 +47,12 @@ class PipelineOrchestrator:
         stages: 可选的自定义 stage 列表;不传则用 build_default_pipeline()。
     """
 
-    def __init__(self, stages: list[PipelineStage] | None = None) -> None:
-        self.stages = stages or build_default_pipeline()
+    def __init__(
+        self,
+        stages: list[PipelineStage] | None = None,
+        fp_llm_verify: bool = False,
+    ) -> None:
+        self.stages = stages or build_default_pipeline(fp_llm_verify=fp_llm_verify)
 
     def run(
         self,
@@ -49,13 +60,18 @@ class PipelineOrchestrator:
         diff_text: str,
         max_retries: int = 3,
         structured_method: str = "function_calling",
+        fp_verify_llm=None,
     ) -> ReviewResult:
-        """跑完整条管线,返回结构化的 ReviewResult。"""
+        """跑完整条管线,返回结构化的 ReviewResult。
+
+        fp_verify_llm:误报过滤第二段的验证模型(建议异源);None 时回退到 llm。
+        """
         context = PipelineContext(
             diff_text=diff_text,
             llm=llm,
             max_retries=max_retries,
             structured_method=structured_method,
+            fp_verify_llm=fp_verify_llm,
         )
 
         for stage in self.stages:

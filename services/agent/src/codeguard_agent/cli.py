@@ -84,11 +84,16 @@ def main(argv: list[str] | None = None) -> int:
             # 阶段2 起的多阶段管线。阶段1 默认管线只有 SecurityReviewerStage,
             # 结果应与 single 模式一致(验证管线骨架未改变审查结果)。
             logger.info("审查方式:pipeline(多阶段管线)")
-            result = PipelineOrchestrator().run(
+            # 误报过滤第二段验证模型(开了才建,优先异源,见 ADR-005)。
+            fp_verify_llm = None
+            if settings.fp_llm_verify:
+                fp_verify_llm = build_llm(Settings.judge_from_env(), temperature=0)
+            result = PipelineOrchestrator(fp_llm_verify=settings.fp_llm_verify).run(
                 llm,
                 diff_text,
                 max_retries=settings.max_retries,
                 structured_method=settings.structured_method,
+                fp_verify_llm=fp_verify_llm,
             )
         else:
             logger.info("审查方式:single(单次直接调用 · baseline)")

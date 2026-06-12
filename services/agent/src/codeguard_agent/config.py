@@ -43,6 +43,7 @@ class Settings:
     max_retries: int        # LLM 调用最大重试次数
     structured_method: str  # 结构化输出方式:function_calling | json_schema | json_mode
     disable_thinking: bool  # 是否禁用思考模式(DeepSeek 等推理模型需要)
+    fp_llm_verify: bool = False  # 误报过滤是否启用第二段 LLM 验证(默认关,零成本)
 
     @property
     def needs_api_key(self) -> bool:
@@ -70,6 +71,10 @@ class Settings:
         disable_thinking = os.environ.get(
             "CODEGUARD_DISABLE_THINKING", "false"
         ).strip().lower() in ("1", "true", "yes", "on")
+        # 误报过滤第二段 LLM 验证开关:默认关(零成本即可用,见 ADR-003 的零配置原则)。
+        fp_llm_verify = os.environ.get(
+            "CODEGUARD_FP_LLM_VERIFY", "false"
+        ).strip().lower() in ("1", "true", "yes", "on")
         return cls(
             provider=provider,
             model=model,
@@ -78,6 +83,7 @@ class Settings:
             max_retries=int(os.environ.get("CODEGUARD_MAX_RETRIES", "3")),
             structured_method=structured_method,
             disable_thinking=disable_thinking,
+            fp_llm_verify=fp_llm_verify,
         )
 
     @classmethod
