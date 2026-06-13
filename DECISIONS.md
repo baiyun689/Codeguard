@@ -267,4 +267,47 @@ try-with-resources 当资源泄漏)等语义型误报。
 
 ---
 
-<!-- 后续在这里继续追加 ADR-009、ADR-010 …… -->
+## ADR-009 · 阶段 3 引入双语言:工具调用 Agent + Java 护栏层,与无工具基准按配置分流
+
+**背景**:阶段 1–2 的审查员只能看到 diff 文本,审不出"需要 diff 之外上下文"的问题(被改方法的完整定义、调用方、相关类)。阶段 3 要把审查员升级成**能自主获取上下文的 ReAct Agent**,并引入双语言架构。这是 Agent 与"更花哨的 LLM 调用"的本质分界:**能自主决定去读什么**。本期遵循"先做减法 / 一次只加一个工具",只落地 `get_file_content`。
+
+**决策**:
+
+1. **职责边界(统领后续所有阶段)**:Python = 智能编排层(推理 / 编排 / 对审查结论的加工);Java = 护栏 + 地面真值层(安全沙箱 / 重静态计算 / 把 Agent 断言钉到真实代码)。判定规则:功能本质是"获取/校验代码事实 + 安全隔离 + 重计算"→ Java;否则要发起 LLM 调用/非确定判断 → Python,纯规则/装配 → Python 编排侧。四条不变量:① 单向依赖(Python 调 Java,Java 不回调、不碰 LLM);② 代码探索只走 Java 沙箱(Python 除采集 diff 外不直接读被审仓库其它文件);③ 不确定性只在 Python;④ Java 不判断"是不是问题"。
+
+2. **agent 放在 `ReviewerStage` 内按配置分流,而非新增 `--mode`**:`ToolAgentEngine`(ReAct)vs `DirectEngine`(直连,= 阶段 2 行为)按 `tool_client` 是否存在二选一。对照实验因此只变"工具开/关"一个变量,无工具 pipeline 天然留作基准。引擎抽象也是阶段 4 换 LangGraph 的接缝。`--mode single`(`reviewer.py`)冻结基准完全不碰。
+
+3. **通用工具协议 + 注册表**:`POST /api/v1/tools/{name}` 单路由 + Java `ToolRegistry`/`AgentTool`,加工具 = 注册一个实现,协议两端不动。比"一工具一路由"更省扩展成本。
+
+4. **现在就立工具会话层,本期不填充共享**:create/destroy 会话端点 + `X-Session-Id`;会话持 repo 路径 + 改动文件集合 + 沙箱。为后续按 project 共享重资源(调用图/RAG/记忆)预埋挂载点,但 `get_file_content` 是无状态只读,本期只立结构不做共享缓存。
+
+5. **`get_file_content` 受 `FileAccessSandbox` 护栏**:防路径穿越(规范化后须仍在 repo 根内 + 拒 `..`)+ 仅限本次 diff 改动文件集合 + 大小上限;四类拒绝都以结构化错误返回,绝不抛断。
+
+6. **保持同步**:`recursion_limit` 约束的 langgraph 图在现有线程池里 fan-out,不引入 async(守 ROADMAP "async 留到 chunking" 的岔路口)。
+
+**实现期修正(诚实记录)**:
+
+- **ReAct 框架从 0.3 API 改用 v1 `create_agent`**:proposal/design 初稿按 `create_tool_calling_agent` + `AgentExecutor`(langchain 0.3)设计,但实装环境是 langchain 1.3 / core 1.4,这两个符号已移除。改用 v1 `create_agent(model, tools, *, system_prompt=, response_format=ReviewResult)`。这是**更优解**:`response_format` 内置结构化收口,免去"逼 prompt 吐 JSON 再正则解析";且 langgraph 基础与阶段 4「LangGraph 重构编排」同源,是提前铺路;改动被引擎抽象封死在 `ToolAgentEngine` 一个类内。详见 design.md D5。
+
+**效果(诚实记录——本 ADR 核心)**:
+
+- **端到端定性证据(真有效)**:构造一个"被改方法调用了文件别处定义的 `sanitize`、其实现不在 diff 上下文里"的用例,真实 DeepSeek 跑 pipeline+tools:**两个领域审查员自主调用 `get_file_content` 读了整文件、读懂了 `sanitize` 的真实实现并据此推理**(Java 日志可证)。这正是阶段 3 的核心命题——agent 自主获取 diff 之外的上下文——被坐实。
+- **量化对照(本期测不出,如实记)**:现有评测数据集是**合成 diff、磁盘上无对应文件**,工具开档下 `get_file_content` 必返回"文件不存在",agent 退回只看 diff。在此数据集上跑"工具开 vs 关"是**结构性无效**(测的是数据集喂不了工具,不是工具有没有用),故**不跑**这组会误导的数字——与 ADR-004/008 "测不出就如实记、不硬凑" 同一原则。`--tools` 评测开关已实现就位(harness ready)。
+
+**放弃的备选**:
+
+- 新增 `--mode agent` 独立链路:放弃,对照实验会掺多个变量,且偏离"基准 = 同管线关工具"的本意。
+- 一工具一路由:放弃,每加工具改两端,样板重复。
+- 完全无状态(不立会话):放弃,后续重资源共享需要会话挂载点(用户拍板现在就预埋)。
+- 锁 `langchain<1.0` 降级环境贴合初稿:放弃,退回废弃 API 且扰动可用环境。
+- 在合成数据集上硬跑对照拿"P/R 基本不变":放弃,结构性无效且易被误读成"工具没用"。
+
+**衍生待办**:
+
+- **repo-backed 评测用例**:造一批带真实多文件仓库的评测用例,才能量化工具调用的真实增益(本期定性已证,量化待此)。这是阶段 3 继续深入前最该补的一环。
+- 逐个加重型工具(`get_method_definition`/`get_call_graph`/`semantic_search` 等),沿通用协议 + 会话接缝叠加;届时按需在会话层填"按 project 共享重资源"。
+- 工具利用率/耗时纳入评测报告(现仅 Java 日志可见单次调用)。
+
+**日期**:2026-06-13
+
+<!-- 后续在这里继续追加 ADR-010、ADR-011 …… -->

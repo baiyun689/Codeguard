@@ -86,11 +86,11 @@ git diff → 一次 LLM 调用 → 返回结构化 issues → 打印
 
 **目标:引入 Java Tool Server,把审查员升级成真正的 Agent。双语言架构登场。一次只加一个工具。**
 
-- [ ] 用 Javalin 起一个最简 Java Tool Server,实现第一个工具 `get_file_content`
-- [ ] 把 Python 审查员从"单次直接调用"改成 ReAct Agent(`create_tool_calling_agent` + `AgentExecutor`)
-- [ ] 让 Agent 能自主决定是否读文件、读哪个文件
-- [ ] **【关键实验】** 用同一段 diff 跑"阶段 1 无工具版" vs "阶段 3 有工具版",记录质量差异
-- [ ] 逐个加重型工具:
+- [x] 用 Javalin 起一个最简 Java Tool Server,实现第一个工具 `get_file_content`(+ 文件访问护栏 + 会话层)
+- [x] 把 Python 审查员从"单次直接调用"改成 ReAct Agent(实装为 langchain v1 `create_agent`;与直连基准按配置分流,见 ADR-009)
+- [x] 让 Agent 能自主决定是否读文件、读哪个文件(已端到端定性坐实:审查员自主调 `get_file_content` 读整文件推理)
+- [~] **【关键实验】** "无工具 vs 有工具"对照:harness(`--tools`)已就位;**定性已证有效**,量化待 repo-backed 评测用例(现合成数据集喂不了文件工具,ADR-009)
+- [ ] 逐个加重型工具(沿通用 `/tools/{name}` 协议 + 会话接缝叠加):
   - [ ] `get_method_definition`(Java + JavaParser 做 AST)
   - [ ] `get_call_graph`(自建代码调用图)
   - [ ] `semantic_search`(向量库 RAG)

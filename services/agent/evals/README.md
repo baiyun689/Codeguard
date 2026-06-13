@@ -23,9 +23,18 @@ python -m evals.runner --runs 3
 
 # 3) 额外开 LLM-as-judge(语义复核 + 描述/建议质量打分,更准、更贵)
 python -m evals.runner --runs 3 --judge
+
+# 4) 阶段3 工具开档(审查员走 ReAct,可调 Java 工具);需先起工具服务并配 URL
+#    CODEGUARD_TOOL_SERVER_URL=http://localhost:9090 python -m evals.runner --mode pipeline --tools
 ```
 
 报告默认写到 `evals/reports/baseline.md`,控制台也会打印速览。
+
+## ⚠️ 工具开档(`--tools`)与数据集的现状错配
+
+`--tools` 让审查员走 ReAct、可调 `get_file_content`。但**当前数据集是合成 diff,磁盘上没有对应的真实文件**,所以工具开档下 `get_file_content` 基本只会返回"文件不存在",agent 退回只看 diff——这导致"工具开 vs 关"在本数据集上是**结构性无效**的对照(测的是数据集喂不了工具,不是工具有没有用,见 `DECISIONS.md` ADR-009)。
+
+工具的真实价值已在 repo 上**定性坐实**(审查员会自主读整文件再推理)。要**量化**工具增益,需补一批 **repo-backed 评测用例**(每条用例带一个真实小仓库,diff 改动其中文件,关键上下文在 diff 之外)——这是下一步该补的数据集工作,不是工具本身的问题。`--tools` 的 harness 已就位,数据集补上即可直接量化。
 
 ## 指标含义
 
