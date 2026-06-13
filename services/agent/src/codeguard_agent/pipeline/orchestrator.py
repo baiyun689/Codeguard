@@ -8,8 +8,9 @@
 进度:
     阶段 1:默认管线只有单个审查 stage,与 baseline 等价(已验证)。
     阶段 2:并行审查(security/logic/quality 三个领域审查员)。
-    阶段 3:并行审查 → 聚合去重。← 当前
-后续会继续往 build_default_pipeline() 里加:摘要 → [审查] → [聚合去重] → 误报过滤。
+    阶段 3:并行审查 → 聚合去重。
+    本次:摘要(软路由)→ 并行审查 → 两段式聚合 → 误报过滤。← 当前
+摘要阶段可由 enable_summary 开关控制;关闭时退回"无摘要、审查员吃整份 diff"的现状路径。
 """
 
 from __future__ import annotations
@@ -21,23 +22,32 @@ from codeguard_agent.pipeline.stages.aggregation import AggregationStage
 from codeguard_agent.pipeline.stages.base import PipelineContext, PipelineStage
 from codeguard_agent.pipeline.stages.fp_filter import FalsePositiveFilterStage
 from codeguard_agent.pipeline.stages.reviewer_stage import ReviewerStage
+from codeguard_agent.pipeline.stages.summary import SummaryStage
 
 logger = logging.getLogger("codeguard")
 
 
-def build_default_pipeline(fp_llm_verify: bool = False) -> list[PipelineStage]:
-    """构造默认管线。
-
-    阶段 4:并行审查(security/logic/quality)→ 聚合去重 → 误报过滤。
-    后续可在审查之前补"摘要"阶段。
+def build_default_pipeline(
+    fp_llm_verify: bool = False,
+    enable_summary: bool = True,
+) -> list[PipelineStage]:
+    """构造默认管线:[摘要] → 并行审查 → 聚合去重(两段式)→ 误报过滤。
 
     fp_llm_verify:误报过滤是否启用第二段 LLM 验证(默认关)。
+    enable_summary:是否启用前置摘要/分派阶段(默认开);关闭时跳过该阶段,
+        审查员吃整份 diff,行为与摘要引入前一致(见 design.md D6)。
     """
-    return [
-        ReviewerStage(),
-        AggregationStage(),
-        FalsePositiveFilterStage(enable_llm_verification=fp_llm_verify),
-    ]
+    stages: list[PipelineStage] = []
+    if enable_summary:
+        stages.append(SummaryStage())
+    stages.extend(
+        [
+            ReviewerStage(),
+            AggregationStage(),
+            FalsePositiveFilterStage(enable_llm_verification=fp_llm_verify),
+        ]
+    )
+    return stages
 
 
 class PipelineOrchestrator:
@@ -51,8 +61,11 @@ class PipelineOrchestrator:
         self,
         stages: list[PipelineStage] | None = None,
         fp_llm_verify: bool = False,
+        enable_summary: bool = True,
     ) -> None:
-        self.stages = stages or build_default_pipeline(fp_llm_verify=fp_llm_verify)
+        self.stages = stages or build_default_pipeline(
+            fp_llm_verify=fp_llm_verify, enable_summary=enable_summary
+        )
 
     def run(
         self,

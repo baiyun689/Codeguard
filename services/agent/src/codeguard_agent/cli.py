@@ -112,7 +112,10 @@ def main(argv: list[str] | None = None) -> int:
                     tool_client = None
 
             try:
-                result = PipelineOrchestrator(fp_llm_verify=settings.fp_llm_verify).run(
+                result = PipelineOrchestrator(
+                    fp_llm_verify=settings.fp_llm_verify,
+                    enable_summary=settings.enable_summary,
+                ).run(
                     llm,
                     diff_text,
                     max_retries=settings.max_retries,

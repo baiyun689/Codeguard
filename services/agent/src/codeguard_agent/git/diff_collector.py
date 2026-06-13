@@ -72,3 +72,43 @@ def parse_changed_files(diff_text: str) -> list[str]:
     files = {m.group(1).strip() for m in _PLUS_HEADER.finditer(diff_text)}
     files.discard("")
     return sorted(files)
+
+
+def split_diff_by_file(diff_text: str) -> dict[str, str]:
+    """把 unified diff 按文件拆成 {现文件相对路径: 该文件的 diff 片段}。
+
+    用途:摘要阶段产出 file_groups(reviewer→相关文件)后,审查阶段据此为每个审查员
+    拼出其维度相关文件的裁剪 diff(见 design.md D2)。
+
+    设计要点:
+    - 以 `diff --git ` 行为分段边界,每段保留完整的文件头与 hunk。
+    - 段的 key 取该段内 `+++ b/<path>` 头(与 parse_changed_files 同口径,确保和 file_groups 键对齐)。
+    - 删除文件的新文件头是 `+++ /dev/null`,没有"现文件"路径,跳过(裁剪场景用不到)。
+    - 确定性纯函数,可独立单测、不触发 IO;空 diff / 无法解析 → 返回空 dict。
+    """
+    if not diff_text:
+        return {}
+
+    # 先按 `diff --git ` 切块;首个 `diff --git ` 之前的内容(正常 git diff 没有)忽略。
+    blocks: list[list[str]] = []
+    current: list[str] | None = None
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            if current is not None:
+                blocks.append(current)
+            current = [line]
+        elif current is not None:
+            current.append(line)
+    if current is not None:
+        blocks.append(current)
+
+    sections: dict[str, str] = {}
+    for block in blocks:
+        path: str | None = None
+        for line in block:
+            if line.startswith("+++ b/"):
+                path = line[len("+++ b/"):].split("\t", 1)[0].strip()
+                break
+        if path:
+            sections[path] = "\n".join(block)
+    return sections

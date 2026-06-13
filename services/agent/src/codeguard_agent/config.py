@@ -47,6 +47,9 @@ class Settings:
     # 阶段 3:Java 工具服务地址。非空 → pipeline 审查员走 ReAct(可调工具);
     # 空 → 走无工具直连基准(见 design.md D1)。不在代码里硬编码地址。
     tool_server_url: str = ""
+    # 前置摘要/分派阶段开关:默认开(质量优先)。关闭时管线退回"无摘要、各审查员吃整份 diff"
+    # 的现状路径,便于控成本与做对照(见 design.md D6)。
+    enable_summary: bool = True
 
     @property
     def needs_api_key(self) -> bool:
@@ -78,6 +81,10 @@ class Settings:
         fp_llm_verify = os.environ.get(
             "CODEGUARD_FP_LLM_VERIFY", "false"
         ).strip().lower() in ("1", "true", "yes", "on")
+        # 摘要阶段开关:默认开。设为 0/false/no/off 时关闭,退回无摘要的现状路径。
+        enable_summary = os.environ.get(
+            "CODEGUARD_ENABLE_SUMMARY", "true"
+        ).strip().lower() not in ("0", "false", "no", "off")
         return cls(
             provider=provider,
             model=model,
@@ -88,6 +95,7 @@ class Settings:
             disable_thinking=disable_thinking,
             fp_llm_verify=fp_llm_verify,
             tool_server_url=os.environ.get("CODEGUARD_TOOL_SERVER_URL", "").strip(),
+            enable_summary=enable_summary,
         )
 
     @classmethod
