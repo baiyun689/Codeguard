@@ -2,6 +2,25 @@
 
 > 当前进度快照。下次接手从「下次从哪开始」一节读起即可。
 
+## 审查员编排治理(前置软路由 + 两段式聚合 + prompt 赛道纪律)—— 已完成 ✅
+
+openspec change:`improve-reviewer-orchestration`。动机:多维度提交上三审查员对一份 diff 共报 18 条、聚合**合并 0 条**,根因是审查员越线多报 + 规则去重因行号漂移失效(详见 ADR-010)。
+
+落地:① 前置 `SummaryStage`(软路由,可 `CODEGUARD_ENABLE_SUMMARY` 开关);② `ReviewerStage` 按 `file_groups` 裁剪 diff("明显更小才用");③ `AggregationStage` 升级两段式(规则去重 + **LLM 语义综合**,LLM 只输出分组、代码来合并,杜绝臆造);④ 三个审查员 prompt 补赛道边界 + 分步方法论 + 置信度阈值(<0.7 不报)+ 扩充判例/排除。全程同步签名,失败一律回退。25 个新增 pytest 全绿(共 83 passed)。
+
+**before/after 实测(同一 fixture:springboot-review-demo `HEAD~1`,工具开档,DeepSeek):**
+
+| | 审查员原始 | 规则去重后 | LLM 综合后 | 误报过滤后 | **最终** |
+|---|---|---|---|---|---|
+| **before(改造前)** | 18 | 18(合并 0) | — | 17(−1) | **17** |
+| **after(全开)** | 12 | 12(合并 0) | 7(−5) | 7 | **7** |
+
+两个杠杆可清晰拆开:
+- **prompt 赛道纪律 + 置信度阈值**:把"源头过度上报"从 18 压到 12(before 里资源泄漏被报 3 次、空 catch 2 次、硬编码 3 次、还有 logic/quality 越线报"鉴权缺失";after 各审查员显式声明"该项不归我",越线明显收敛)。
+- **LLM 语义综合**:规则去重两轮都是"合并 0"(印证行号漂移使精确指纹失效),真正把 12 收到 7 的是第二段语义合并——它合掉了规则抓不住的"同源、跨审查员、行号相邻"重复。
+
+结果:17 → **7**(−59%),落在目标 ~7~9 区间;且**未丢任何一类真问题**(路径穿越 / 资源泄漏 / 空 catch / 硬编码密钥 / 弱签名 / 魔法字符串均在)。`--mode single` 与误报过滤对外行为不变。
+
 ## 阶段 3 第一步(工具调用 Agent · 双语言登场)—— 已完成 ✅
 
 目标:把审查员从"单次直连"升级成**会用工具的 ReAct Agent**,引入 Java 护栏层,只落地第一个工具 `get_file_content`,跑通整条双语言链路。openspec change:`phase3-tool-calling-agent`(proposal/design/specs/tasks 齐备并 validate)。

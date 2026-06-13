@@ -35,10 +35,15 @@ Python 智能层 + Java 护栏层。审查路径(基准不删,见 ADR-002):
 
 ```
 --mode single  (冻结基准):  git diff → 一次 LLM 调用 → ReviewResult → 打印
---mode pipeline(无工具)   :git diff → 并行三审查员(直连) → 聚合去重 → 误报过滤 → 打印
+--mode pipeline(无工具)   :git diff → [摘要/软分派] → 并行三审查员(直连) → 两段式聚合 → 误报过滤 → 打印
 --mode pipeline(有工具)   :配置 CODEGUARD_TOOL_SERVER_URL 后,审查员改走 ReAct,
                             可调 Java 工具(get_file_content)获取 diff 之外上下文,其余阶段不变
 ```
+
+管线四阶段(摘要 → 审查 → 聚合 → 误报过滤)已补齐:
+
+- **摘要/软分派(SummaryStage)**:并行审查前用一次结构化调用产出变更摘要 + `file_focus`(reviewer→相关文件)。**软路由**:三审查员始终全跑,`file_focus` 只用于裁剪各自看到的 diff,绝不据此跳过谁;未分派的文件默认发给所有审查员(保 recall)。由 `CODEGUARD_ENABLE_SUMMARY` 控制(默认开),关闭即退回"无摘要、各审查员吃整份 diff"的现状路径。mock / 调用失败一律退回无摘要路径,不中断管线。
+- **两段式聚合(AggregationStage)**:第一段确定性规则去重(文件+行号+type 精确指纹,零成本);第二段 LLM 语义综合,把"同源、跨审查员、措辞不同、行号相邻"的发现合并为一条——LLM **只输出分组**,最终条目由代码从原始 issue 里挑,从结构上杜绝臆造;失败/无效输出回退第一段结果(见 ADR / openspec design.md D3)。
 
 审查员的"执行方式"抽成可插拔引擎(`pipeline/engines.py`):`DirectEngine`(无工具基准)/ `ToolAgentEngine`(ReAct,基于 langchain v1 `create_agent`)。`ReviewerStage` 按 `tool_client` 是否存在分流(见 ADR-009 / openspec design.md D1、D5)。
 
@@ -73,10 +78,11 @@ Codeguard/
     │   │   ├── pipeline/reviewer.py       # ★单次审查(阶段1 冻结基准,--mode single)
     │   │   ├── pipeline/orchestrator.py   # 多阶段管线编排(--mode pipeline)
     │   │   ├── pipeline/engines.py        # ★审查员执行引擎:DirectEngine(直连基准)/ ToolAgentEngine(ReAct)
-    │   │   ├── pipeline/stages/           # 各阶段:reviewer_stage(并行三审查员,按 tool_client 分流)/
-    │   │   │                              #   aggregation(去重)/ fp_filter(误报过滤)
+    │   │   ├── pipeline/stages/           # 各阶段:summary(摘要/软分派)/ reviewer_stage(并行三审查员,
+    │   │   │                              #   按 tool_client 分流、按 file_groups 裁剪 diff)/
+    │   │   │                              #   aggregation(规则去重 + LLM 语义综合)/ fp_filter(误报过滤)
     │   │   ├── pipeline/fp_rules.py       # 误报过滤的确定性规则(纯函数,可单测)
-    │   │   └── prompts/                   # security/logic/quality.txt + fp_verify.txt
+    │   │   └── prompts/                   # security/logic/quality.txt + summary-*.txt + aggregation-*.txt + fp_verify.txt
     │   ├── config/false-positive-rules.yaml  # 误报过滤的确定性规则配置(YAML)
     │   ├── tests/                 # pytest:测工程正确性
     │   └── evals/                 # ★审查质量评测框架(量化效果,见 §5)
@@ -157,6 +163,7 @@ python -m evals.runner --runs 3 --judge  # 额外开 LLM-as-judge
 | `CODEGUARD_STRUCTURED_METHOD` | `function_calling` | 结构化输出方式 |
 | `CODEGUARD_DISABLE_THINKING` | `false` | 用 DeepSeek 推理模型时设 `true` |
 | `CODEGUARD_MAX_RETRIES` | `3` | LLM 调用重试次数 |
+| `CODEGUARD_ENABLE_SUMMARY` | `true` | 前置摘要/软分派阶段开关;关闭则审查员吃整份 diff(仅 pipeline) |
 
 > **Windows/PowerShell 注意**:bash 的 `VAR=value cmd` 内联写法在 PowerShell 不生效,要先 `$env:VAR="value"` 再跑命令;或直接写 `.env`(推荐)。
 

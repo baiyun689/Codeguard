@@ -61,9 +61,9 @@ git diff → 一次 LLM 调用 → 返回结构化 issues → 打印
 
 **目标:把单次调用拆成多阶段,加并行审查员。仍是"工作流",不是 Agent。**
 
-- [ ] 拆出四阶段:**摘要 → 并行审查 → 聚合去重 → 误报过滤**(摘要尚缺,其余三段已成)
+- [x] 拆出四阶段:**摘要 → 并行审查 → 聚合去重 → 误报过滤**(四段补齐:摘要/软分派已落地,可开关)
 - [x] 实现三个并行领域审查员(安全 / 逻辑 / 质量),用**线程池**并行(I/O 密集,线程足矣,暂不切 async)
-- [x] 实现跨审查员的 issue 去重(纯规则、确定性)
+- [x] 实现跨审查员的 issue 去重(纯规则、确定性);并升级为**两段式聚合**(规则去重 + LLM 语义综合,治理"行号漂移导致去重失效")
 - [x] 实现两段式误报过滤:先正则(零成本)再 LLM 验证(默认关)
 - [ ] 把每阶段做成可组合、可配置(YAML)(误报规则已 YAML 化)
 
@@ -90,6 +90,7 @@ git diff → 一次 LLM 调用 → 返回结构化 issues → 打印
 - [x] 把 Python 审查员从"单次直接调用"改成 ReAct Agent(实装为 langchain v1 `create_agent`;与直连基准按配置分流,见 ADR-009)
 - [x] 让 Agent 能自主决定是否读文件、读哪个文件(已端到端定性坐实:审查员自主调 `get_file_content` 读整文件推理)
 - [~] **【关键实验】** "无工具 vs 有工具"对照:harness(`--tools`)已就位;**定性已证有效**,量化待 repo-backed 评测用例(现合成数据集喂不了文件工具,ADR-009)
+- [~] **【关键实验·编排治理】** 同一多维度 fixture 上量化"前置软路由 + 两段式聚合 + prompt 赛道纪律"的效果:before=18 条/合并 0(规则去重因行号漂移失效);after 目标 ~7~9 且不丢任何一类真问题。before/after 数字以 repo-backed 实跑为准(见 openspec `improve-reviewer-orchestration`、HANDOFF.md)
 - [ ] 逐个加重型工具(沿通用 `/tools/{name}` 协议 + 会话接缝叠加):
   - [ ] `get_method_definition`(Java + JavaParser 做 AST)
   - [ ] `get_call_graph`(自建代码调用图)
