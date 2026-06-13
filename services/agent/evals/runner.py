@@ -25,13 +25,16 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
 from codeguard_agent.config import Settings
+from codeguard_agent.git.diff_collector import parse_changed_files
 from codeguard_agent.llm.client import build_llm
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
 from codeguard_agent.pipeline.reviewer import review
+from codeguard_agent.tools.tool_client import create_tool_session, destroy_tool_session
 
 from evals.dataset import load_cases
 from evals.matcher import evaluate_case
@@ -76,6 +79,18 @@ def main(argv: list[str] | None = None) -> int:
         help="审查方式:single=单次安全审查(阶段1 baseline);pipeline=并行多领域审查(阶段2)。默认 single",
     )
     parser.add_argument("--judge", action="store_true", help="开启 LLM 裁判做案例级语义配对(主判);规则尺仍并行作交叉校验")
+    parser.add_argument(
+        "--tools",
+        action="store_true",
+        help="工具开档:pipeline 审查员走 ReAct,可调 Java 工具服务(需配 CODEGUARD_TOOL_SERVER_URL)。"
+        "用于做'工具开 vs 关'两档对照(仅此一个变量不同)。",
+    )
+    parser.add_argument(
+        "--repo-base",
+        default="",
+        help="工具开档下,工具会话的 repo 根路径。注意:当前数据集是合成 diff、磁盘上无对应文件,"
+        "get_file_content 会返回'文件不存在'——真要量化工具增益需用 repo-backed 用例(见 README)。",
+    )
     parser.add_argument(
         "--report",
         default="evals/reports/baseline.md",
@@ -131,16 +146,45 @@ def main(argv: list[str] | None = None) -> int:
             "  ⚠️ 与审查器同源,存在自我确认偏差(建议配 CODEGUARD_JUDGE_* 异源)" if same else "",
         )
 
+    # 工具开档:仅 pipeline 生效,需配置工具服务地址且为真实 LLM。
+    use_tools = args.tools and args.mode == "pipeline" and llm is not None and bool(settings.tool_server_url)
+    if args.tools and not use_tools:
+        logger.warning(
+            "--tools 未生效:需 --mode pipeline + 真实 LLM + CODEGUARD_TOOL_SERVER_URL 三者齐备,本次按无工具跑"
+        )
+    if use_tools:
+        repo_base = os.path.abspath(args.repo_base or ".")
+        logger.warning(
+            "工具开档:repo 根=%s。当前合成数据集磁盘上无对应文件,get_file_content 多半返回'文件不存在';"
+            "真要量化工具增益需 repo-backed 用例(见 evals/README.md)。",
+            repo_base,
+        )
+
     # 按 --mode 注入审查函数:single=baseline 单次调用 / pipeline=多阶段管线。
     if args.mode == "pipeline":
         orchestrator = PipelineOrchestrator(fp_llm_verify=settings.fp_llm_verify)
         def review_fn(diff: str):
-            return orchestrator.run(
-                llm, diff,
-                max_retries=settings.max_retries,
-                structured_method=settings.structured_method,
-                fp_verify_llm=fp_verify_llm,
-            )
+            tool_client = None
+            if use_tools:
+                try:
+                    tool_client = create_tool_session(
+                        settings.tool_server_url, repo_base, parse_changed_files(diff)
+                    )
+                except Exception as exc:  # noqa: BLE001 工具服务不可用则降级无工具,不中断评测
+                    logger.warning("创建工具会话失败,本条按无工具跑: %s", exc)
+            try:
+                return orchestrator.run(
+                    llm, diff,
+                    max_retries=settings.max_retries,
+                    structured_method=settings.structured_method,
+                    fp_verify_llm=fp_verify_llm,
+                    repo_path=repo_base if use_tools else None,
+                    allowed_files=parse_changed_files(diff) if use_tools else None,
+                    tool_client=tool_client,
+                )
+            finally:
+                if tool_client is not None:
+                    destroy_tool_session(tool_client)
     else:
         def review_fn(diff: str):
             return review(

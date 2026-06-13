@@ -61,10 +61,15 @@ class PipelineOrchestrator:
         max_retries: int = 3,
         structured_method: str = "function_calling",
         fp_verify_llm=None,
+        repo_path: str | None = None,
+        allowed_files: list[str] | None = None,
+        tool_client=None,
     ) -> ReviewResult:
         """跑完整条管线,返回结构化的 ReviewResult。
 
         fp_verify_llm:误报过滤第二段的验证模型(建议异源);None 时回退到 llm。
+        repo_path / allowed_files / tool_client:阶段 3 工具调用上下文;
+            tool_client 非 None 时审查员走 ReAct(可调工具),否则走直连基准(见 design.md D1)。
         """
         context = PipelineContext(
             diff_text=diff_text,
@@ -72,6 +77,9 @@ class PipelineOrchestrator:
             max_retries=max_retries,
             structured_method=structured_method,
             fp_verify_llm=fp_verify_llm,
+            repo_path=repo_path,
+            allowed_files=allowed_files or [],
+            tool_client=tool_client,
         )
 
         for stage in self.stages:

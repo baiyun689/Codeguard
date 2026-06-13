@@ -33,6 +33,13 @@ class PipelineContext:
     llm: Any = None  # LangChain Chat 模型;None 表示 mock 模式(由下游识别)
     max_retries: int = 3
     structured_method: str = "function_calling"
+    # 阶段 3:工具调用上下文(见 design.md D6)。
+    # repo_path:被审仓库根(绝对路径),供工具会话/沙箱解析文件;
+    # allowed_files:本次 diff 涉及的文件集合,沙箱据此授权;
+    # tool_client:绑定到工具会话的客户端。三者均为 None/空表示"无工具",审查员走直连基准。
+    repo_path: str | None = None
+    allowed_files: list[str] = field(default_factory=list)
+    tool_client: Any = None
     # 误报过滤第二段的验证模型;为 None 时回退到 llm。
     # 应尽量与审查器**异源**,避免"同一模型核查自己刚报的结论"的自我确认偏差(见 ADR-005)。
     fp_verify_llm: Any = None

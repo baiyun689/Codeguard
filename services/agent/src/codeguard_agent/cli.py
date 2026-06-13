@@ -14,12 +14,15 @@ import argparse
 import logging
 import sys
 
+import os
+
 from codeguard_agent.config import Settings
-from codeguard_agent.git.diff_collector import collect_diff
+from codeguard_agent.git.diff_collector import collect_diff, parse_changed_files
 from codeguard_agent.llm.client import build_llm
 from codeguard_agent.models.schemas import ReviewResult, Severity
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
 from codeguard_agent.pipeline.reviewer import review
+from codeguard_agent.tools.tool_client import create_tool_session, destroy_tool_session
 
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s", stream=sys.stderr)
 
@@ -88,13 +91,40 @@ def main(argv: list[str] | None = None) -> int:
             fp_verify_llm = None
             if settings.fp_llm_verify:
                 fp_verify_llm = build_llm(Settings.judge_from_env(), temperature=0)
-            result = PipelineOrchestrator(fp_llm_verify=settings.fp_llm_verify).run(
-                llm,
-                diff_text,
-                max_retries=settings.max_retries,
-                structured_method=settings.structured_method,
-                fp_verify_llm=fp_verify_llm,
-            )
+
+            # 阶段 3:配置了工具服务且为真实 LLM 时,为本次审查建工具会话,审查员走 ReAct;
+            # 否则 tool_client 为 None,走无工具直连基准(见 design.md D1)。mock 模式不建会话。
+            tool_client = None
+            repo_abspath = os.path.abspath(args.repo)
+            allowed_files = parse_changed_files(diff_text)
+            if settings.tool_server_url and llm is not None:
+                try:
+                    tool_client = create_tool_session(
+                        settings.tool_server_url, repo_abspath, allowed_files
+                    )
+                    logger.info(
+                        "已创建工具会话(%s),审查员走 ReAct;允许文件 %d 个",
+                        tool_client.session_id,
+                        len(allowed_files),
+                    )
+                except Exception as exc:  # noqa: BLE001 工具服务不可用时降级为无工具,不中断审查
+                    logger.warning("创建工具会话失败,降级为无工具直连: %s", exc)
+                    tool_client = None
+
+            try:
+                result = PipelineOrchestrator(fp_llm_verify=settings.fp_llm_verify).run(
+                    llm,
+                    diff_text,
+                    max_retries=settings.max_retries,
+                    structured_method=settings.structured_method,
+                    fp_verify_llm=fp_verify_llm,
+                    repo_path=repo_abspath,
+                    allowed_files=allowed_files,
+                    tool_client=tool_client,
+                )
+            finally:
+                if tool_client is not None:
+                    destroy_tool_session(tool_client)
         else:
             logger.info("审查方式:single(单次直接调用 · baseline)")
             result = review(

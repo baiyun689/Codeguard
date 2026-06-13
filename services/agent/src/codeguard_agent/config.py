@@ -44,6 +44,9 @@ class Settings:
     structured_method: str  # 结构化输出方式:function_calling | json_schema | json_mode
     disable_thinking: bool  # 是否禁用思考模式(DeepSeek 等推理模型需要)
     fp_llm_verify: bool = False  # 误报过滤是否启用第二段 LLM 验证(默认关,零成本)
+    # 阶段 3:Java 工具服务地址。非空 → pipeline 审查员走 ReAct(可调工具);
+    # 空 → 走无工具直连基准(见 design.md D1)。不在代码里硬编码地址。
+    tool_server_url: str = ""
 
     @property
     def needs_api_key(self) -> bool:
@@ -84,6 +87,7 @@ class Settings:
             structured_method=structured_method,
             disable_thinking=disable_thinking,
             fp_llm_verify=fp_llm_verify,
+            tool_server_url=os.environ.get("CODEGUARD_TOOL_SERVER_URL", "").strip(),
         )
 
     @classmethod
