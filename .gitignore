@@ -32,6 +32,9 @@ openspec/
 .codex
 .claude
 
+# 评测运行归档(每次跑生成的趋势数据,本地累积,不入库)
+services/agent/evals/runs/
+
 # 系统
 .DS_Store
 Thumbs.db
