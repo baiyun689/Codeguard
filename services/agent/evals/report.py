@@ -1,6 +1,9 @@
-"""把聚合指标渲染成 Markdown 评测报告。
+"""把聚合指标与历史归档渲染成 Markdown 评测报告。
 
-报告就是要被固化下来的 baseline 凭证:阶段 3 加 Agent 后再跑一份,两份并排对比。
+两部分:
+  - render_report:单次运行的详细报告(核心指标 + 逐用例明细 + 诊断)。
+  - render_history_views:从历史归档渲染趋势 / profile 对照 / 能力切片三类视图,
+    构成"系统怎么演进都能纵向比、横向比"的回归基建视图(纯函数,吃归档 dict)。
 """
 
 from __future__ import annotations
@@ -10,6 +13,93 @@ from datetime import datetime
 from codeguard_agent.config import Settings
 
 from evals.schema import AggregateMetrics, MatchOutcome
+
+
+def _fmt(x, nd: int = 3) -> str:
+    """格式化指标数值;缺失时占位。"""
+    try:
+        return f"{float(x):.{nd}f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def render_history_views(records: list[dict], trend_limit: int = 8) -> str:
+    """从历史归档记录渲染三类视图:趋势 / profile 对照 / 能力切片。
+
+    records:archive.load_archives() 读出的归档 dict 列表(已按时间升序)。
+    这是统一标准下的回归视图——数据集与指标固定,任意 profile(工具/编排/未来规则)同框比较。
+    """
+    if not records:
+        return "## 趋势 / 对照 / 能力切片\n\n_(暂无历史归档,跑一次评测后即可生成)_\n"
+
+    lines: list[str] = []
+
+    # ① 历史趋势(最近 trend_limit 次,跨 profile 合并按时间排)
+    lines += [
+        "## 历史趋势(最近 %d 次)" % trend_limit,
+        "",
+        "| 时间 | git | profile | 工具 | P | R | F1 | 误报率 |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for r in records[-trend_limit:]:
+        prof = r.get("profile", {})
+        m = r.get("metrics", {})
+        tools = "开" if prof.get("tools_enabled") else "关"
+        lines.append(
+            f"| {r.get('timestamp', '—')} | {r.get('git_sha', '—')} | "
+            f"{prof.get('name', '—')} | {tools} | "
+            f"{_fmt(m.get('precision'))} | {_fmt(m.get('recall'))} | "
+            f"{_fmt(m.get('f1'))} | {_fmt(m.get('false_positives_on_clean'))} |"
+        )
+
+    # 各 profile 取最近一次(对照与能力切片都基于"最新快照")
+    latest_by_profile: dict[str, dict] = {}
+    for r in records:
+        latest_by_profile[r.get("profile", {}).get("name", "?")] = r
+    profiles_sorted = sorted(latest_by_profile)
+
+    # ② profile 横向对照(各 profile 最近一次)
+    lines += [
+        "",
+        "## profile 横向对照(各 profile 最近一次)",
+        "",
+        "| profile | 工具 | P | R | F1 | 误报率 |",
+        "|---|---|---|---|---|---|",
+    ]
+    for name in profiles_sorted:
+        r = latest_by_profile[name]
+        m = r.get("metrics", {})
+        tools = "开" if r.get("profile", {}).get("tools_enabled") else "关"
+        lines.append(
+            f"| {name} | {tools} | {_fmt(m.get('precision'))} | {_fmt(m.get('recall'))} | "
+            f"{_fmt(m.get('f1'))} | {_fmt(m.get('false_positives_on_clean'))} |"
+        )
+
+    # ③ 按能力切片(行=能力,列=profile,值=该子集 recall;recall 最能体现工具增益)
+    all_caps = sorted({
+        cap for r in latest_by_profile.values() for cap in (r.get("by_capability") or {})
+    })
+    if all_caps:
+        header = "| 能力 \\ profile | " + " | ".join(profiles_sorted) + " |"
+        sep = "|---" * (len(profiles_sorted) + 1) + "|"
+        lines += [
+            "",
+            "## 按能力切片(各 profile 最近一次的 Recall)",
+            "",
+            "在'需要该能力'的用例子集上各 profile 的 Recall;同一能力行内比较即该能力的工具/编排增益。",
+            "",
+            header,
+            sep,
+        ]
+        for cap in all_caps:
+            row = [f"| {cap}"]
+            for name in profiles_sorted:
+                bycap = latest_by_profile[name].get("by_capability") or {}
+                cell = bycap.get(cap)
+                row.append(_fmt(cell.get("recall")) if cell else "—")
+            lines.append(" | ".join(row) + " |")
+
+    return "\n".join(lines) + "\n"
 
 
 def render_report(
@@ -35,8 +125,8 @@ def render_report(
         f"- 数据集:{metrics.num_cases} 条(漏洞 {metrics.num_vuln_cases} / 干净 {metrics.num_clean_cases})",
         f"- 重复跑测:{metrics.runs} 次",
         "",
-        "> 这份报告是**阶段 1「无 Agent 基准版」的 baseline**。阶段 3 引入工具调用 Agent 后,",
-        "> 用同一数据集、同一脚本再跑一份,两份对比即 Agent 的价值证明(见 DECISIONS.md ADR-002)。",
+        "> 审查质量以固定的数据集 + 指标为统一标准;被测目标(mode / 工具 / 模型)由 profile 描述。",
+        "> 跨 profile、跨版本的纵向趋势与横向对照见下方「历史趋势 / profile 对照 / 能力切片」。",
         "",
         "## 核心指标",
         "",

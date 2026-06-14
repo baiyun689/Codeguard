@@ -11,9 +11,21 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+import logging
+
+from pydantic import BaseModel, Field, field_validator
 
 from codeguard_agent.models.schemas import Severity
+
+logger = logging.getLogger("codeguard.evals")
+
+# 能力标签:一条用例"审准它至少需要哪类上下文",对应工具背后的地面真值来源分层。
+#   diff-only  仅看 diff 即可判定
+#   file       需读改动文件之外的整文件(get_file_content)
+#   ast        需单文件结构/方法签名(未来 get_method_definition)
+#   call-graph 需跨文件调用/影响关系(未来 get_call_graph / get_related_files)
+#   rag        需按语义检索项目别处实现(未来 semantic_search)
+VALID_CAPABILITIES = ("diff-only", "file", "ast", "call-graph", "rag")
 
 
 class ExpectedIssue(BaseModel):
@@ -57,11 +69,44 @@ class EvalCase(BaseModel):
     expected: list[ExpectedIssue] = Field(
         default_factory=list, description="标准答案;clean 样本留空"
     )
+    repo_path: str = Field(
+        default="",
+        description="repo-backed 用例的仓库根路径(指向快照 repo/ 目录,代表变更后的工程状态);"
+        "空表示纯内联合成用例(磁盘无对应文件,工具读不到)。",
+    )
+    capability: list[str] = Field(
+        default_factory=lambda: ["diff-only"],
+        description="能力标签:审准本用例至少需要哪类上下文(见 VALID_CAPABILITIES)。"
+        "仅用于评测归类与切片,绝不改变审查链路行为。缺省为 ['diff-only']。",
+    )
+
+    @field_validator("capability", mode="before")
+    @classmethod
+    def _normalise_capability(cls, value):
+        """归一化能力标签:过滤非法值并告警,去重保序;为空则退回 ['diff-only']。"""
+        if not value:
+            return ["diff-only"]
+        if isinstance(value, str):
+            value = [value]
+        seen: list[str] = []
+        for raw in value:
+            tag = str(raw).strip().lower()
+            if tag not in VALID_CAPABILITIES:
+                logger.warning("忽略非法能力标签 %r(合法取值:%s)", raw, ", ".join(VALID_CAPABILITIES))
+                continue
+            if tag not in seen:
+                seen.append(tag)
+        return seen or ["diff-only"]
 
     @property
     def is_clean(self) -> bool:
         """是否为无问题样本(专门用来量误报)。"""
         return len(self.expected) == 0
+
+    @property
+    def is_repo_backed(self) -> bool:
+        """是否为 repo-backed 用例(带真实可读的仓库快照)。"""
+        return bool(self.repo_path)
 
 
 class JudgeMatch(BaseModel):

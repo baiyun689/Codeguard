@@ -36,10 +36,18 @@ from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
 from codeguard_agent.pipeline.reviewer import review
 from codeguard_agent.tools.tool_client import create_tool_session, destroy_tool_session
 
+from evals.archive import (
+    archive_now_timestamp,
+    build_archive_record,
+    git_short_sha,
+    load_archives,
+    write_archive,
+)
 from evals.dataset import load_cases
 from evals.matcher import evaluate_case
-from evals.metrics import aggregate
-from evals.report import render_report
+from evals.metrics import aggregate, aggregate_by_capability
+from evals.profiles import resolve_profile, tools_effective
+from evals.report import render_history_views, render_report
 from evals.schema import MatchOutcome
 
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s", stream=sys.stderr)
@@ -49,12 +57,13 @@ logger = logging.getLogger("codeguard.evals")
 def run_once(cases, review_fn, judge_llm) -> list[MatchOutcome]:
     """跑一遍全数据集,返回每条用例的判定结果。
 
-    review_fn: 接收一段 diff 文本、返回 ReviewResult 的可调用对象。
-        由 main() 按 --mode 注入(single=baseline 单次调用 / pipeline=多阶段管线)。
+    review_fn: 接收一条 EvalCase、返回 ReviewResult 的可调用对象。
+        由 main() 按 profile 注入(single=baseline 单次调用 / pipeline=多阶段管线,
+        工具会话按用例自带的 repo_path 建立)。
     """
     outcomes: list[MatchOutcome] = []
     for case in cases:
-        result = review_fn(case.diff)
+        result = review_fn(case)
         outcome = evaluate_case(case, result.issues, judge_llm=judge_llm)
         logger.info(
             "[%s] TP=%d FP=%d FN=%d (报告 %d / 标答 %d)",
@@ -73,10 +82,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="codeguard-evals", description="Codeguard 审查质量评测")
     parser.add_argument("--runs", type=int, default=1, help="重复跑测次数(>1 才能统计方差)")
     parser.add_argument(
+        "--profile",
+        default="",
+        help="被测目标 profile(见 evals/profiles.yaml,如 pipeline-file)。"
+        "指定后覆盖 --mode/--tools;不指定则用 --mode/--tools 合成 ad-hoc profile(等价旧行为)",
+    )
+    parser.add_argument(
         "--mode",
         choices=["single", "pipeline"],
         default="single",
-        help="审查方式:single=单次安全审查(阶段1 baseline);pipeline=并行多领域审查(阶段2)。默认 single",
+        help="审查方式:single=单次安全审查(阶段1 baseline);pipeline=并行多领域审查(阶段2)。"
+        "默认 single。未指定 --profile 时生效",
     )
     parser.add_argument("--judge", action="store_true", help="开启 LLM 裁判做案例级语义配对(主判);规则尺仍并行作交叉校验")
     parser.add_argument(
@@ -100,9 +116,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()
+
+    # 解析被测目标 profile:指定 --profile 从 profiles.yaml 取;否则用 --mode/--tools 合成
+    # ad-hoc profile(等价旧行为)。profile 决定 mode、启用哪些工具、可选模型覆盖。
+    try:
+        profile = resolve_profile(args.profile or None, mode=args.mode, tools=args.tools)
+    except KeyError as exc:
+        logger.error("%s", exc)
+        return 2
+    if profile.model:
+        settings.model = profile.model  # profile 显式覆盖模型
+
     logger.info(
-        "provider=%s model=%s mode=%s runs=%d judge=%s",
-        settings.provider, settings.model, args.mode, args.runs, args.judge,
+        "profile=%s mode=%s tools=%s provider=%s model=%s runs=%d judge=%s",
+        profile.name, profile.mode, profile.tools or "(无)",
+        settings.provider, settings.model, args.runs, args.judge,
     )
 
     if settings.provider == "mock":
@@ -146,49 +174,51 @@ def main(argv: list[str] | None = None) -> int:
             "  ⚠️ 与审查器同源,存在自我确认偏差(建议配 CODEGUARD_JUDGE_* 异源)" if same else "",
         )
 
-    # 工具开档:仅 pipeline 生效,需配置工具服务地址且为真实 LLM。
-    use_tools = args.tools and args.mode == "pipeline" and llm is not None and bool(settings.tool_server_url)
-    if args.tools and not use_tools:
+    # 工具实际启用 = profile 想开工具 + 真实 LLM + 配了工具服务地址,三者齐备。
+    # 任一不满足则自动降级为无工具(沿用现有 harness 行为),并如实记录"工具实际启用状态"。
+    use_tools = tools_effective(profile, has_llm=llm is not None, tool_server_url=settings.tool_server_url)
+    if profile.wants_tools and not use_tools:
         logger.warning(
-            "--tools 未生效:需 --mode pipeline + 真实 LLM + CODEGUARD_TOOL_SERVER_URL 三者齐备,本次按无工具跑"
+            "profile %s 想开工具但本次降级为无工具:需真实 LLM + CODEGUARD_TOOL_SERVER_URL",
+            profile.name,
         )
+    # repo-backed 用例自带 repo_path;无 repo_path 的合成用例回退到 --repo-base(磁盘多半无文件)。
+    fallback_repo = os.path.abspath(args.repo_base or ".")
     if use_tools:
-        repo_base = os.path.abspath(args.repo_base or ".")
-        logger.warning(
-            "工具开档:repo 根=%s。当前合成数据集磁盘上无对应文件,get_file_content 多半返回'文件不存在';"
-            "真要量化工具增益需 repo-backed 用例(见 evals/README.md)。",
-            repo_base,
-        )
+        logger.info("工具开档:%s。repo-backed 用例按各自 repo_path 建会话", profile.tools)
 
-    # 按 --mode 注入审查函数:single=baseline 单次调用 / pipeline=多阶段管线。
-    if args.mode == "pipeline":
+    # 按 profile.mode 注入审查函数:single=baseline 单次调用 / pipeline=多阶段管线。
+    # review_fn 接收整条 case,以便 pipeline 工具会话用该用例自带的 repo_path。
+    if profile.mode == "pipeline":
         orchestrator = PipelineOrchestrator(fp_llm_verify=settings.fp_llm_verify)
-        def review_fn(diff: str):
+        def review_fn(case):
+            diff = case.diff
+            repo_root = case.repo_path or fallback_repo
             tool_client = None
             if use_tools:
                 try:
                     tool_client = create_tool_session(
-                        settings.tool_server_url, repo_base, parse_changed_files(diff)
+                        settings.tool_server_url, repo_root, parse_changed_files(diff)
                     )
                 except Exception as exc:  # noqa: BLE001 工具服务不可用则降级无工具,不中断评测
-                    logger.warning("创建工具会话失败,本条按无工具跑: %s", exc)
+                    logger.warning("[%s] 创建工具会话失败,本条按无工具跑: %s", case.id, exc)
             try:
                 return orchestrator.run(
                     llm, diff,
                     max_retries=settings.max_retries,
                     structured_method=settings.structured_method,
                     fp_verify_llm=fp_verify_llm,
-                    repo_path=repo_base if use_tools else None,
-                    allowed_files=parse_changed_files(diff) if use_tools else None,
+                    repo_path=repo_root if tool_client is not None else None,
+                    allowed_files=parse_changed_files(diff) if tool_client is not None else None,
                     tool_client=tool_client,
                 )
             finally:
                 if tool_client is not None:
                     destroy_tool_session(tool_client)
     else:
-        def review_fn(diff: str):
+        def review_fn(case):
             return review(
-                llm, diff,
+                llm, case.diff,
                 max_retries=settings.max_retries,
                 structured_method=settings.structured_method,
             )
@@ -200,11 +230,38 @@ def main(argv: list[str] | None = None) -> int:
 
     metrics = aggregate(all_runs)
 
+    # 按能力切片聚合(归因维度:在"需要某能力"的用例上各 profile 的表现)。
+    case_caps = {c.id: c.capability for c in cases}
+    by_capability = aggregate_by_capability(all_runs, case_caps)
+
+    # 历史归档:每次运行落一份带时间/gitsha/profile 的结构化结果,追加累积,作趋势底座。
+    record = build_archive_record(
+        profile_name=profile.name,
+        profile_mode=profile.mode,
+        profile_tools=profile.tools,
+        tools_enabled=use_tools,
+        provider=settings.provider,
+        model=settings.model or "(mock)",
+        runs=args.runs,
+        metrics=metrics,
+        by_capability=by_capability,
+        last_run=all_runs[-1],
+        git_sha=git_short_sha(),
+        timestamp=archive_now_timestamp(),
+    )
+    archive_path = write_archive(record)
+    logger.info("归档已写入: %s", archive_path)
+
+    # 报告 = 本次详细报告 + 从历史归档(含本次)渲染的趋势/对照/能力切片三视图。
+    history = load_archives()
+    report_body = (
+        render_report(metrics, settings, all_runs, cases)
+        + "\n"
+        + render_history_views(history)
+    )
     report_path = Path(args.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(
-        render_report(metrics, settings, all_runs, cases), encoding="utf-8"
-    )
+    report_path.write_text(report_body, encoding="utf-8")
 
     # 控制台速览
     print("\n" + "=" * 60)

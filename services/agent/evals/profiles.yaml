@@ -1,0 +1,33 @@
+# 被测目标 profile 清单(评测的"被测系统"维度)。
+#
+# 一个 profile = mode(single/pipeline) + 启用工具集 + 可选模型覆盖。
+# 加一个工具 / 换一种编排 = 在此加一行,数据集与指标零改动(见 design.md D3)。
+# 用法:python -m evals.runner --profile pipeline-file
+# 不指定 --profile 时,用 --mode/--tools 合成 ad-hoc profile,等价旧命令行为。
+
+profiles:
+  # 阶段 1 无 Agent 基准:单次直接调用。
+  baseline-single:
+    mode: single
+    tools: []
+
+  # 管线但不开工具:并行三审查员直连(= 阶段 2 行为)。
+  pipeline-notools:
+    mode: pipeline
+    tools: []
+
+  # 管线 + 文件工具:审查员走 ReAct,可调 get_file_content 读 diff 之外的文件。
+  # 与 pipeline-notools 仅差"是否开工具"这一个变量,用于量化 file 能力的工具增益。
+  pipeline-file:
+    mode: pipeline
+    tools: [get_file_content]
+
+  # —— 扩展占位(零成本预留,框架无需改动)——
+  # 后续逐个加重型工具时,在此追加 profile 即可:
+  # pipeline-ast:    { mode: pipeline, tools: [get_file_content, get_method_definition] }
+  # pipeline-graph:  { mode: pipeline, tools: [get_file_content, get_call_graph] }
+  # pipeline-rag:    { mode: pipeline, tools: [get_file_content, semantic_search] }
+  #
+  # 将来引入规则引擎检测器(后续独立 change)时,亦表现为新增 profile:
+  # rules-only:      { mode: pipeline, tools: [] }      # 仅规则检测
+  # rules+llm:       { mode: pipeline, tools: [get_file_content] }  # 规则 + LLM 并联

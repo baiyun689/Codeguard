@@ -35,6 +35,32 @@ def aggregate_run(outcomes: list[MatchOutcome]) -> tuple[float, float]:
     return _safe_div(tp, tp + fp), _safe_div(tp, tp + fn)
 
 
+def aggregate_by_capability(
+    runs: list[list[MatchOutcome]],
+    case_capabilities: dict[str, list[str]],
+) -> dict[str, AggregateMetrics]:
+    """按能力标签切片聚合:对"需要某能力"的用例子集各算一组指标。
+
+    这是回归基建的归因维度——在标注为需要 `file` 的用例上比较开/关工具的 profile,
+    指标差即该能力的工具增益,比笼统的"工具开 vs 关"精确(见 design.md D2)。
+
+    参数:
+        runs: 多次跑测,每次是一组 MatchOutcome。
+        case_capabilities: case_id → 能力标签列表(来自 EvalCase.capability)。
+    返回:
+        能力标签 → 该子集的 AggregateMetrics;无对应用例的标签不出现。
+    """
+    tags = sorted({t for caps in case_capabilities.values() for t in caps})
+    sliced: dict[str, AggregateMetrics] = {}
+    for tag in tags:
+        ids = {cid for cid, caps in case_capabilities.items() if tag in caps}
+        filtered = [[o for o in run if o.case_id in ids] for run in runs]
+        if not any(filtered):  # 该能力下没有用例,跳过
+            continue
+        sliced[tag] = aggregate(filtered)
+    return sliced
+
+
 def aggregate(runs: list[list[MatchOutcome]]) -> AggregateMetrics:
     """把 N 次跑测(每次是一组 MatchOutcome)聚合成最终指标。
 
