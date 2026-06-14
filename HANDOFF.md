@@ -1,6 +1,23 @@
-# 交接清单（2026-06-13）
+# 交接清单（2026-06-14）
 
 > 当前进度快照。下次接手从「下次从哪开始」一节读起即可。
+
+## 评测升级：repo-backed 回归基建（数据集×profile×统一指标）—— 已完成 ✅
+
+openspec change：`repo-backed-eval-harness`。动机：引入工具后,合成 diff 喂不动 `get_file_content`("工具开 vs 关"结构性无效,ADR-009);更根本的是评测把"被测系统"和"评测标准"耦合,工具一多就组合爆炸、不可复用。
+
+落地:**被测系统与评测标准彻底解耦**——数据集(repo-backed 自包含快照)+ 指标(P/R/F1/误报率/定位/级别)固定不变作统一标准;工具/编排/未来规则引擎都只是可插拔的 **profile**(`evals/profiles.yaml` + `--profile`)。加一个工具 = 加一行 profile,框架零改动。新增:能力标签(`diff-only/file/ast/call-graph/rag`,按地面真值分层)、JSON 历史归档(`evals/runs/`,带 git sha/profile + 按能力聚合)、增强报告(趋势 + profile 对照 + 能力切片)。旧 27 条合成用例零改动仍跑;新增 27 个 pytest(共 110 passed)。
+
+**首个 repo-backed 实测(3 条 `file` 能力用例,真实 DeepSeek,工具实启用)**:
+
+| profile | 工具 | P | R | F1 | 误报率 |
+|---|---|---|---|---|---|
+| pipeline-notools | 关 | 0.429 | 1.000 | 0.600 | 0.000 |
+| pipeline-file | 开 | 0.429 | 1.000 | 0.600 | 0.000 |
+
+**如实记录(不硬凑增益)**:工具**确实被调用且成功**(网关日志证:`get_file_content(FileController.java) -> ok` ×3),但两档指标**完全一致**——这 3 条用例从 diff 本身就足够"猜中"漏洞(`download(name)`+路径、无校验的 transfer、`find().trim()`),模型不读文件也报得出;而 FP 是 prompt 过度上报所致,读文件并不能压。**结论:harness 已打通、工具真被用,但"量化增益"需要更难的用例——diff-only 看着没问题、读了文件才暴露的那种**(当前同文件 hunk 外的设计仍太好猜)。这与 ADR-004/008/009"不跑会误导的数字"一脉相承。
+
+衍生洞察:**当前 `get_file_content` 只能读"被改文件本身"(沙箱白名单=diff 文件)**,跨文件上下文要等后续 `get_related_files`/扩 scope。这定了后续工具的一个实际优先级。
 
 ## 审查员编排治理(前置软路由 + 两段式聚合 + prompt 赛道纪律)—— 已完成 ✅
 

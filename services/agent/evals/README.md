@@ -30,6 +30,30 @@ python -m evals.runner --runs 3 --judge
 
 报告默认写到 `evals/reports/baseline.md`,控制台也会打印速览。
 
+## profile:把"被测系统"做成可插拔(统一标准下做对照)
+
+评测的**统一标准 = 固定数据集 + 固定指标**;"用什么配置跑"由 **profile** 描述,见
+`evals/profiles.yaml`(`mode` + 启用工具集 + 可选模型)。**加一个工具 / 换一种编排 = 加一行
+profile,数据集与指标零改动。**
+
+```bash
+# 按 profile 跑(覆盖 --mode/--tools);不指定则用 --mode/--tools 合成 ad-hoc(等价旧命令)
+python -m evals.runner --profile pipeline-notools --runs 1
+CODEGUARD_TOOL_SERVER_URL=http://localhost:9090 \
+  python -m evals.runner --profile pipeline-file --runs 1   # 工具开档,需先起工具服务
+```
+
+每次运行落一份历史归档到 `evals/runs/<时间>_<gitsha>_<profile>.json`(整体指标 + 逐用例 +
+按能力聚合,追加不覆盖)。报告从历史渲染三类视图:
+
+- **历史趋势**:同一 profile 跨版本/时间的指标变化(防退化)。
+- **profile 横向对照**:各 profile 最近一次的同组指标并排(老的"工具开 vs 关"只是其特例)。
+- **按能力切片**:在"需要某能力"的用例子集上各 profile 的 Recall——同一能力行内一比即该能力的
+  工具/编排增益,比笼统的"工具开 vs 关"精确。
+
+> 工具增益要测得出,前提是用例**真的需要该能力**(diff-only 看着没问题、读了文件/上下文才暴露)。
+> 若一条用例从 diff 本身就能猜中,开/关工具指标会一样——那是用例不够"难",不是工具没用。
+
 ## ⚠️ 工具开档(`--tools`)与数据集的现状错配
 
 `--tools` 让审查员走 ReAct、可调 `get_file_content`。但**当前数据集是合成 diff,磁盘上没有对应的真实文件**,所以工具开档下 `get_file_content` 基本只会返回"文件不存在",agent 退回只看 diff——这导致"工具开 vs 关"在本数据集上是**结构性无效**的对照(测的是数据集喂不了工具,不是工具有没有用,见 `DECISIONS.md` ADR-009)。
@@ -67,6 +91,42 @@ expected:                   # 标准答案;clean 样本留空 []
     severity: CRITICAL      # 可选,仅统计级别准确率
     note: 给人看的说明
 ```
+
+## repo-backed 自包含快照用例(让工具有用武之地)
+
+内联合成用例磁盘上没有真实文件,工具读不到 —— 量化不了"读 diff 之外上下文"的增益。
+**repo-backed 用例**为此而生:每条用例自带一个可解析的最小工程,工具能真读到文件。
+
+目录约定(放在 `dataset/repo/<case_id>/`):
+
+```
+dataset/repo/<case_id>/
+├── repo/          # 变更后的最小可解析工程(工具据此读文件;关键上下文应放在被改文件之外)
+│   └── src/main/java/...
+├── changes.diff   # 被审查的 unified diff(diff 来源,优先于 case.yaml 内联)
+└── case.yaml      # 标答 + 能力标签等元数据(无需写 diff,由 changes.diff 提供)
+```
+
+`case.yaml` 模板:
+
+```yaml
+id: file_path_traversal_001
+category: 路径穿越
+dimension: security
+capability: [file]          # 审准它至少需要哪类上下文;repo-backed 缺省即 [file]
+description: 被改方法调用了 diff 之外定义的校验/拼接逻辑,只看 diff 判不准
+expected:
+  - type_keywords: ["路径", "traversal", "path"]
+    file: FileController.java
+    line: 14
+    tolerance: 3
+    severity: CRITICAL
+    note: filename 经 diff 外的 PathUtil.join 拼接,未规范化
+```
+
+设计要点:**`repo/` 是"变更后"的工程**,且要刻意把"判定所需的关键上下文"放在被改文件**之外**
+(如被调用方法的定义、父类约定),这样"开工具 vs 关工具"才有可量化的差距。能力标签取值见
+`schema.py:VALID_CAPABILITIES`(`diff-only`/`file`/`ast`/`call-graph`/`rag`)。
 
 ## 匹配逻辑(怎么判"报对了")
 

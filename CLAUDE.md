@@ -119,6 +119,31 @@ Codeguard/
 
 ## 5. 怎么跑
 
+> **开发环境**:Python 侧用 conda 环境 `codeguard`。命令前缀统一为
+> `conda run -n codeguard --no-capture-output ...`(下方为简洁省略,真实跑请带上)。
+> Windows 用 PowerShell;bash 的 `VAR=value cmd` 内联写法不生效(见 §5 末尾)。
+
+### 命令速查
+
+```powershell
+# —— Python Agent(services/agent)——
+conda run -n codeguard python -m pytest tests/ -q          # 全部单测(工程正确性)
+conda run -n codeguard python -m pytest tests/test_xxx.py::test_name   # 跑单个测试
+conda run -n codeguard ruff check src/                     # lint
+conda run -n codeguard mypy src/                           # 类型检查
+conda run -n codeguard python -m evals.runner --mode pipeline --judge --runs 3   # 评测
+conda run -n codeguard python -m evals.runner --profile pipeline-file --runs 1   # 按 profile 评测(见 evals/profiles.yaml)
+
+# —— Java Gateway(services/gateway,阶段3工具服务)——
+mvn package                # 跑单测 + 出 fat jar
+mvn test                   # 只跑单测
+java -jar target/codeguard-gateway.jar    # 启动工具服务(默认 9090,CODEGUARD_TOOL_SERVER_PORT 可覆盖)
+
+# —— 真实 ReAct 审查(工具开档:先起 Java 工具服务,再设 URL)——
+$env:CODEGUARD_TOOL_SERVER_URL="http://localhost:9090"
+conda run -n codeguard python -m codeguard_agent review --repo <repo> --mode pipeline
+```
+
 ### 命令行审查
 
 ```bash
@@ -136,8 +161,10 @@ python -m codeguard_agent review --repo . --base HEAD
 ### 单元测试(工程正确性)
 
 ```bash
-cd services/agent && pytest
+cd services/agent && conda run -n codeguard python -m pytest tests/ -q
 ```
+
+> 跑单个用例见上方「命令速查」;Java 侧单测随 `mvn package` / `mvn test` 执行。
 
 ### 评测框架(审查质量,量化"效果")★
 
