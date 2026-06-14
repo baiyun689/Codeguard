@@ -1,0 +1,15 @@
+diff --git a/src/main/java/com/demo/AccountController.java b/src/main/java/com/demo/AccountController.java
+index 1111111..2222222 100644
+--- a/src/main/java/com/demo/AccountController.java
++++ b/src/main/java/com/demo/AccountController.java
+@@ -3,6 +3,11 @@ public class AccountController {
+ public class AccountController {
+
+     private final long[] balances = new long[100];
+
++    public String transfer(int from, int to, long amount) {
++        doTransfer(from, to, amount);
++        return "ok";
++    }
++
+     private void doTransfer(int from, int to, long amount) {

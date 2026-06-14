@@ -1,0 +1,14 @@
+diff --git a/src/main/java/com/demo/UserLookup.java b/src/main/java/com/demo/UserLookup.java
+index 1111111..2222222 100644
+--- a/src/main/java/com/demo/UserLookup.java
++++ b/src/main/java/com/demo/UserLookup.java
+@@ -6,6 +6,11 @@ public class UserLookup {
+ public class UserLookup {
+
+     private final Map<String, String> idByName = new HashMap<>();
+
++    public String idOf(String name) {
++        return find(name).trim();
++    }
++
+     private String find(String name) {

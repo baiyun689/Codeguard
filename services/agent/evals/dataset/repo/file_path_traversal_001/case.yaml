@@ -1,0 +1,15 @@
+id: file_path_traversal_001
+category: 路径穿越
+dimension: security
+capability: [file]
+description: >
+  download 把用户名交给同文件的 resolve 拼路径。diff 只显示 download,看不到 resolve 的实现;
+  必须读整文件(get_file_content)才能看到 resolve 朴素拼接、未规范化、无越界校验,
+  从而确认这是路径穿越。
+expected:
+  - type_keywords: ["路径", "穿越", "traversal", "path"]
+    file: FileController.java
+    line: 12
+    tolerance: 3
+    severity: CRITICAL
+    note: name 不可信,经同文件 hunk 外的 resolve 朴素拼接,可用 ../ 穿越目录

@@ -1,0 +1,15 @@
+id: file_npe_contract_001
+category: 空指针
+dimension: logic
+capability: [file]
+description: >
+  idOf 对同文件 find 的返回值直接 .trim()。diff 只显示 idOf,看不到 find 的实现;
+  必须读整文件才能看到 find 用 Map.get 实现、找不到时返回 null,
+  因此 .trim() 会触发 NPE。
+expected:
+  - type_keywords: ["空指针", "npe", "null", "null pointer"]
+    file: UserLookup.java
+    line: 11
+    tolerance: 3
+    severity: WARNING
+    note: find 经 Map.get 可能返回 null,未判空即 .trim(),存在 NPE 风险

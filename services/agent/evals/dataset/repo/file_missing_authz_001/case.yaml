@@ -1,0 +1,15 @@
+id: file_missing_authz_001
+category: 缺失鉴权
+dimension: security
+capability: [file]
+description: >
+  新增 transfer 接口调用同文件的 doTransfer。diff 只显示 transfer,看不到 doTransfer 的实现;
+  必须读整文件才能看到 doTransfer 直接改余额、对调用者身份与账户所有权零校验,
+  却被 public transfer 对外暴露——这是越权访问。
+expected:
+  - type_keywords: ["鉴权", "授权", "越权", "authz", "authorization", "access control"]
+    file: AccountController.java
+    line: 8
+    tolerance: 3
+    severity: CRITICAL
+    note: doTransfer 无身份/所有权校验,经 public transfer 暴露,任意调用者可转任意账户的钱
