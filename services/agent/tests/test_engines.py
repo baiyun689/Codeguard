@@ -62,3 +62,33 @@ def test_extract_json_object_代码块():
 def test_extract_json_object_无_json_返回_none():
     assert _extract_json_object("no json at all") is None
     assert _extract_json_object("") is None
+
+
+def _resolve_tool_names(enabled):
+    """复刻 ToolAgentEngine.review 里的工具白名单解析逻辑(不构造真实 agent)。"""
+    available = ["get_repo_map", "get_file_content"]
+    names = list(available) if enabled is None else enabled
+    tools = [n for n in names if n in available]
+    if not tools:
+        tools = list(available)
+    return tools
+
+
+def test_工具白名单_none_则全开():
+    assert _resolve_tool_names(None) == ["get_repo_map", "get_file_content"]
+
+
+def test_工具白名单_只开_file():
+    assert _resolve_tool_names(["get_file_content"]) == ["get_file_content"]
+
+
+def test_工具白名单_repomap_档保持声明顺序():
+    assert _resolve_tool_names(["get_repo_map", "get_file_content"]) == [
+        "get_repo_map",
+        "get_file_content",
+    ]
+
+
+def test_工具白名单_空或未知_回退全开():
+    assert _resolve_tool_names([]) == ["get_repo_map", "get_file_content"]
+    assert _resolve_tool_names(["nope"]) == ["get_repo_map", "get_file_content"]

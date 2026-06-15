@@ -211,6 +211,8 @@ def main(argv: list[str] | None = None) -> int:
                     repo_path=repo_root if tool_client is not None else None,
                     allowed_files=parse_changed_files(diff) if tool_client is not None else None,
                     tool_client=tool_client,
+                    # profile.tools 即工具白名单:让"开哪些工具"成为对照的唯一变量。
+                    enabled_tools=profile.tools if tool_client is not None else None,
                 )
             finally:
                 if tool_client is not None:

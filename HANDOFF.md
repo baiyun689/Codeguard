@@ -1,6 +1,22 @@
-# 交接清单（2026-06-14）
+# 交接清单（2026-06-15）
 
 > 当前进度快照。下次接手从「下次从哪开始」一节读起即可。
+
+## 第二个工具 get_repo_map（借鉴 aider repo map）+ 沙箱放宽 —— 已完成 ✅（量化实跑待补）
+
+openspec change:`add-repo-map-tool`。动机:`get_file_content` 只能读"被改文件本身",审不出跨文件问题;根因是审查员不知道"该读哪个 diff 外文件"(只见 diff 文本)+ 沙箱白名单=diff 文件(读不到 diff 外)。走第三条路线:借鉴 **aider repo map**(tree-sitter→PageRank→预算压缩)给一份"diff 邻域代码地图"做导航,栈换成 Java 原生。详见 ADR-012。
+
+落地:
+- **Java(`services/gateway/agent/repomap/`)**:`TagExtractor`(JavaParser 抽 def/ref)→ `RepoMapRanker`(建图 + 自实现加权 personalized PageRank,diff 改动文件为种子,rank 沿出边分摊到 `(文件,符号)`)→ `RepoMapRenderer`(签名级 + token 预算贪心裁剪)→ `RepoMapBuilder`(扫仓库串联)→ `GetRepoMapTool`(注册进会话,沿 `/tools/{name}` 协议)。
+- **沙箱放宽(ADR-012 决策6)**:`FileAccessSandbox` 读授权从"仅 diff 改动文件"→"repo 根内 + 源码扩展名白名单"(保留穿越防御 + 大小上限 + 排除非源码/配置/密钥)。`get_file_content` 由此能读 repo map 指向的 diff 外定义文件。`allowedFiles` 保留作 repo map 种子。
+- **Python**:`tool_client.get_repo_map()` + `make_repo_map_tool`(动作触发式描述)挂入 ReAct 工具集(repo_map 在前,file_content 在后);三审查员 prompt 补"导航→细读"纪律(因缺 diff 外上下文致 confidence<0.7 时先 repo_map 定位再 file_content 细读,而非漏报/硬报)。
+- **顺带修对照可控性**:发现 ReAct 引擎原本硬编码工具集,会让 `pipeline-file` 也暴露 repo_map、污染对照。补了**工具白名单透传**(`profile.tools → enabled_tools → ToolAgentEngine`),使"开哪些工具"成为对照唯一变量。
+
+**对比 aider repomap.py(task 2.5,进 ADR-012)**:rank 沿出边分摊到 `(文件,符号)` **照搬**(最易写歪处,亲手对照确认);边权**借数值删 Python 特有项**(留驼峰/超高频/种子/×50,删 snake/`_`);token 预算**简化**(aider 二分 → 我贪心,diff-scoped 够用);**不回读源码**(签名直接存 tag)、**不缓存**(每次现算)。
+
+**工程正确性已坐实**:Java **26 单测**(11→26,+15)、Python **118 测**(110→118,+8)全绿。mock 跑通确认 harness 加载新难例(31 条)与 `pipeline-repomap` profile 解析、工具白名单透传。
+
+**量化增益待实跑(诚实记录,不编数字)**:难例 `repomap_npe_crossfile_001`(跨文件 NPE:diff 只见 `codeOf` 调 `repository.findCode().trim()`,缺陷在另一文件 `OrderRepository` 的 `findCode` 返回 null)+ `pipeline-repomap` profile 已就位,但**真实 DeepSeek + 起 gateway 的 before/after 本环境跑不了**(无 key/服务),故不编数字——同 ADR-004/008/009/011。这是阶段 3 继续前该补的实跑。
 
 ## 评测升级：repo-backed 回归基建（数据集×profile×统一指标）—— 已完成 ✅
 
@@ -94,9 +110,17 @@ conda run -n codeguard --no-capture-output python -m evals.runner --mode pipelin
 
 ## 👉 下次从哪开始
 
-1. **补 repo-backed 评测用例**(最该先做):带真实多文件仓库的用例,才能量化"工具开 vs 关"的真实增益——本期已定性证明工具有效,量化就差这个数据集。
-2. **逐个加重型工具**:`get_method_definition`(JavaParser AST)→ `get_call_graph` → `semantic_search`(RAG),沿通用协议 + 会话接缝叠加;届时按需在会话层填"按 project 共享重资源"。
+1. **实跑 repo_map before/after**(最该先做):起 gateway(`java -jar target/codeguard-gateway.jar`)+ 配真实 DeepSeek + `CODEGUARD_TOOL_SERVER_URL`,在跨文件难例上跑 `--profile pipeline-file` vs `--profile pipeline-repomap`,如实记录增益或"测不出",回填本文件与 ADR-012。难例 `repomap_npe_crossfile_001` 与 profile 均已就位。
+   ```powershell
+   cd services/gateway; mvn package; java -jar target/codeguard-gateway.jar   # 起工具服务(9090)
+   $env:CODEGUARD_TOOL_SERVER_URL="http://localhost:9090"
+   cd ../agent
+   conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-file --runs 3
+   conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-repomap --runs 3
+   ```
+2. **逐个加重型工具**:`get_method_definition`(JavaParser AST,可复用本期 TagExtractor)→ `get_call_graph` → `semantic_search`(RAG),沿通用协议 + 会话接缝叠加;届时按需在会话层填"按 project 共享重资源"。`get_definition` 暂缓的边界理由见 ADR-012。
 3. 工具利用率/耗时纳入评测报告。
+4. repo map 若在大仓库慢,补按 mtime 的 tags 缓存(对齐 aider)。
 
 ## 衍生待办(散落在各 ADR)
 

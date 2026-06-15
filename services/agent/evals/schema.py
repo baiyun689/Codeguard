@@ -22,10 +22,11 @@ logger = logging.getLogger("codeguard.evals")
 # 能力标签:一条用例"审准它至少需要哪类上下文",对应工具背后的地面真值来源分层。
 #   diff-only  仅看 diff 即可判定
 #   file       需读改动文件之外的整文件(get_file_content)
+#   repo-map   需先定位"diff 调用的符号定义在哪个跨文件"再细读(get_repo_map 导航 + get_file_content)
 #   ast        需单文件结构/方法签名(未来 get_method_definition)
 #   call-graph 需跨文件调用/影响关系(未来 get_call_graph / get_related_files)
 #   rag        需按语义检索项目别处实现(未来 semantic_search)
-VALID_CAPABILITIES = ("diff-only", "file", "ast", "call-graph", "rag")
+VALID_CAPABILITIES = ("diff-only", "file", "repo-map", "ast", "call-graph", "rag")
 
 
 class ExpectedIssue(BaseModel):

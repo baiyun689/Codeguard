@@ -2,8 +2,10 @@ package com.codeguard.toolserver;
 
 import com.codeguard.agent.core.AgentContext;
 import com.codeguard.agent.core.AgentTool;
+import com.codeguard.agent.repomap.RepoMapBuilder;
 import com.codeguard.agent.tools.FileAccessSandbox;
 import com.codeguard.agent.tools.GetFileContentTool;
+import com.codeguard.agent.tools.GetRepoMapTool;
 import com.codeguard.agent.tools.ToolRegistry;
 
 import java.nio.file.Path;
@@ -48,8 +50,10 @@ public final class ToolSessionManager {
 
             FileAccessSandbox sandbox = new FileAccessSandbox(repoRoot, allowedFiles);
             this.registry = new ToolRegistry();
-            // 本期唯一工具。后续在这里继续 register(...) 即可,无需改协议。
+            // 加工具 = 在这里 register 一个实现即可,无需改协议(扩展接缝 design.md D2)。
             this.registry.register(new GetFileContentTool(sandbox));
+            // get_repo_map:无状态,从 context 拿 repoRoot + diff 种子现算地图。
+            this.registry.register(new GetRepoMapTool(new RepoMapBuilder()));
         }
 
         public String getId() {

@@ -51,17 +51,31 @@ class GetFileContentToolTest {
     }
 
     @Test
-    void rejectsOutOfScopeFile(@TempDir Path repo) throws IOException {
-        // 文件真实存在于仓库内,但不在本次 diff 的允许集合里。
+    void readsDiffExternalSourceFile(@TempDir Path repo) throws IOException {
+        // 护栏放宽后(design.md D5):repo 内的源码文件即便不在 diff 改动集合里,也应可读
+        // —— 这正是 get_repo_map 指向的、diff 之外定义文件的读取路径。
         Path f = repo.resolve("src/Other.java");
         Files.createDirectories(f.getParent());
         Files.writeString(f, "class Other {}");
 
-        Set<String> allowed = Set.of("src/App.java");
+        Set<String> allowed = Set.of("src/App.java"); // Other.java 不在内
         ToolResult r = toolFor(repo, allowed).execute("src/Other.java", ctx(repo, allowed));
 
+        assertTrue(r.isSuccess());
+        assertTrue(r.getResult().contains("class Other {}"));
+    }
+
+    @Test
+    void rejectsNonSourceFile(@TempDir Path repo) throws IOException {
+        // 非源码类型(配置/密钥/文本)即便在仓库内也拒读,守住放宽后的边界。
+        Path f = repo.resolve("application.properties");
+        Files.writeString(f, "db.password=secret");
+
+        Set<String> allowed = Set.of("application.properties");
+        ToolResult r = toolFor(repo, allowed).execute("application.properties", ctx(repo, allowed));
+
         assertFalse(r.isSuccess());
-        assertTrue(r.getError().contains("不在审查范围"));
+        assertTrue(r.getError().contains("源码"));
     }
 
     @Test

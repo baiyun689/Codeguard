@@ -31,6 +31,34 @@ def make_file_content_tool(client: ToolClient):
         description=(
             "读取仓库中指定文件的完整内容,用于了解 diff 之外的上下文"
             "(被改方法的完整定义、调用方、相关类等)。"
-            "输入为相对仓库根的文件路径;仅限本次变更涉及的文件。"
+            "输入为相对仓库根的文件路径;可读 repo 内的源码文件(含 diff 之外、get_repo_map 指向的定义文件)。"
+        ),
+    )
+
+
+def make_repo_map_tool(client: ToolClient):
+    """构造 get_repo_map 工具(导航)。
+
+    返回一个无入参的 LangChain StructuredTool:产出"与本次改动相关"的签名级代码地图,
+    告诉审查员"diff 调用/引用的某符号定义在哪个文件",再配合 get_file_content 细读。
+    描述写成**动作触发式**(何时调),把调用时机绑到审查员的判断点(见 design.md D6)。
+    """
+    from langchain_core.tools import StructuredTool
+
+    def _get_repo_map() -> str:
+        """获取与本次改动相关的代码地图(签名级)。
+
+        当你看到 diff 调用/引用了一个**定义不在 diff 内**的符号、需要定位它在哪个文件时调用。
+        返回若干相关定义的签名与所在文件;需要看实现再用 get_file_content 读对应文件。
+        """
+        return client.get_repo_map().as_tool_output()
+
+    return StructuredTool.from_function(
+        func=_get_repo_map,
+        name="get_repo_map",
+        description=(
+            "获取与本次改动相关的代码地图(签名级:列出 diff 改动符号的定义文件与最相关的若干符号签名)。"
+            "当你看到 diff 调用/引用了一个定义不在 diff 内的符号、需要定位它在哪个文件时调用。"
+            "无需入参。拿到地图后,用 get_file_content 读取目标文件确认实现。"
         ),
     )

@@ -77,12 +77,14 @@ class PipelineOrchestrator:
         repo_path: str | None = None,
         allowed_files: list[str] | None = None,
         tool_client=None,
+        enabled_tools: list[str] | None = None,
     ) -> ReviewResult:
         """跑完整条管线,返回结构化的 ReviewResult。
 
         fp_verify_llm:误报过滤第二段的验证模型(建议异源);None 时回退到 llm。
         repo_path / allowed_files / tool_client:阶段 3 工具调用上下文;
             tool_client 非 None 时审查员走 ReAct(可调工具),否则走直连基准(见 design.md D1)。
+        enabled_tools:暴露给审查员的工具白名单(评测 profile 控制);None=全开(CLI 默认)。
         """
         context = PipelineContext(
             diff_text=diff_text,
@@ -93,6 +95,7 @@ class PipelineOrchestrator:
             repo_path=repo_path,
             allowed_files=allowed_files or [],
             tool_client=tool_client,
+            enabled_tools=enabled_tools,
         )
 
         for stage in self.stages:

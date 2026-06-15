@@ -21,6 +21,7 @@
         <javalin.version>6.3.0</javalin.version>
         <jackson.version>2.17.2</jackson.version>
         <slf4j.version>2.0.13</slf4j.version>
+        <javaparser.version>3.26.2</javaparser.version>
         <junit.version>5.10.2</junit.version>
     </properties>
 
@@ -42,6 +43,12 @@
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
             <version>${slf4j.version}</version>
+        </dependency>
+        <!-- AST 解析:get_repo_map 抽取符号定义/引用(借鉴 aider repo map,栈换成 Java 原生) -->
+        <dependency>
+            <groupId>com.github.javaparser</groupId>
+            <artifactId>javaparser-core</artifactId>
+            <version>${javaparser.version}</version>
         </dependency>
 
         <!-- 测试 -->

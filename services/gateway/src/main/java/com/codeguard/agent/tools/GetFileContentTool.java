@@ -56,8 +56,10 @@ public final class GetFileContentTool implements AgentTool {
             return ToolResult.error(e.getMessage());
         }
 
-        if (!sandbox.isFileInScope(filePath)) {
-            return ToolResult.error("文件不在审查范围内: " + filePath);
+        // 护栏放宽(design.md D5):授权从"仅 diff 改动文件"改为"repo 根内 + 源码扩展名白名单",
+        // 使审查员能读 get_repo_map 指向的 diff 之外定义文件;非源码/配置/密钥类型仍拒。
+        if (!sandbox.isReadableSource(filePath)) {
+            return ToolResult.error("文件类型不可读(仅限源码文件): " + filePath);
         }
 
         if (!Files.isRegularFile(fullPath)) {

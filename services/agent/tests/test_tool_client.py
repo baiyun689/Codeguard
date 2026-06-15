@@ -34,6 +34,17 @@ def test_成功信封_映射为_result():
     assert resp.as_tool_output() == "文件内容"
 
 
+def test_get_repo_map_无入参_打到正确路径():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/tools/get_repo_map"
+        assert request.headers["X-Session-Id"] == "sess-1"
+        return httpx.Response(200, json={"success": True, "result": "# Repo map\nA.java:\n│ class A"})
+
+    resp = _mock_client(handler).get_repo_map()
+    assert resp.success is True
+    assert "Repo map" in resp.as_tool_output()
+
+
 def test_失败信封_映射为_error_并加前缀():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"success": False, "error": "文件不在审查范围内"})

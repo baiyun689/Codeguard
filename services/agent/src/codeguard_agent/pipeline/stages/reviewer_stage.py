@@ -155,7 +155,7 @@ class ReviewerStage(PipelineStage):
         # 按是否配置了工具客户端分流(design.md D1):有→ReAct,无→直连基准。
         engine: ReviewEngine
         if context.tool_client is not None:
-            engine = ToolAgentEngine(context.tool_client)
+            engine = ToolAgentEngine(context.tool_client, enabled_tools=context.enabled_tools)
             mode = "ReAct(有工具)"
         else:
             engine = DirectEngine()

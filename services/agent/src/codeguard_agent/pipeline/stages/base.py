@@ -40,6 +40,9 @@ class PipelineContext:
     repo_path: str | None = None
     allowed_files: list[str] = field(default_factory=list)
     tool_client: Any = None
+    # 工具白名单:暴露给 ReAct 审查员的工具名集合(由评测 profile 控制,确保"开哪些工具"是
+    # 唯一变量、对照可控)。None 表示暴露所有已实现工具(CLI 默认行为)。
+    enabled_tools: list[str] | None = None
     # 误报过滤第二段的验证模型;为 None 时回退到 llm。
     # 应尽量与审查器**异源**,避免"同一模型核查自己刚报的结论"的自我确认偏差(见 ADR-005)。
     fp_verify_llm: Any = None

@@ -70,6 +70,10 @@ class ToolClient:
     def get_file_content(self, file_path: str) -> ToolResponse:
         return self._post_tool("get_file_content", {"file_path": file_path})
 
+    def get_repo_map(self) -> ToolResponse:
+        """获取与本次改动相关的签名级代码地图(无入参,由会话的 diff 种子驱动)。"""
+        return self._post_tool("get_repo_map", {})
+
     def delete_session(self) -> None:
         """请求服务端释放本会话(复用同一连接)。"""
         self._client.delete(f"{self._base_url}/api/v1/tools/session/{self._session_id}")

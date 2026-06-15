@@ -385,4 +385,57 @@ try-with-resources 当资源泄漏)等语义型误报。
 
 **日期**:2026-06-14
 
-<!-- 后续在这里继续追加 ADR-012、ADR-013 …… -->
+## ADR-012 · 第二个工具 get_repo_map:借鉴 aider repo map(换 Java 栈 + diff-scoped)+ 放宽沙箱
+
+**背景**:`get_file_content` 落地后(ADR-009),审查员能读"被改文件本身",但审不出**跨文件**问题——被改方法调用了 diff 之外定义的函数、改动是否破坏上游调用方。根因有二:**(1)审查员不知道该读哪个文件**(只看到 diff 文本,无从得知 `sanitize()` 定义在哪);**(2)沙箱白名单=diff 改动文件**,即便知道也读不到 diff 外文件(ADR-011 衍生洞察已点名这是后续工具的实际优先级)。此前规划过两条补法——route①(调用方可控 `allowed_files`)、route②(完整调用图/RAG)——均因过重/边界不清被搁置未开 change。
+
+**决策**:
+
+1. **走第三条路线:借鉴 aider repo map 给审查员一份"diff 邻域代码地图"做导航**。aider 的 repo map 用 tree-sitter 抽全仓库符号 → 建依赖图 → PageRank 排重要性 → token 预算压成"签名级"摘要塞给 LLM。借**算法思路**,实现栈换成 Java 原生:**JavaParser 抽 def/ref tag → 自实现加权 personalized PageRank → 签名级渲染**。
+
+2. **作用域 diff-scoped,而非 aider 的全仓库**:用本次 diff 改动符号作 personalization 种子,只产出"diff 邻域"。审查只关心改动周围,全库地图既大又稀释相关性。
+
+3. **形态是工具(on-demand),而非 aider 的被动注入**:代码审查锚定在已知 diff、范围小且确定,且现有架构是 `/tools/{name}` 协议;做成工具按需付费、与协议一致。
+
+4. **实现栈 JavaParser 而非 tree-sitter**:MVP 仅审 Java,用不上 tree-sitter 多语言;且 JavaParser 是后续 `get_method_definition` 本就要引入的 AST 引擎,提前复用。ref 按**简单名**匹配(不上 SymbolSolver 全限定解析),省 classpath 配置,精确性由审查员后续 `get_file_content` 细读兜底。
+
+5. **PageRank 自实现幂迭代,不引图库**(JGraphT 等):守"先做减法",一个算法不值得引重依赖;幂迭代确定性强、易 pytest、易加边权启发式。
+
+6. **放宽 `FileAccessSandbox`:diff 白名单 → repo 根内 + 源码扩展名白名单**。有了导航能力后再限制只读 diff 文件就使工具失去意义。放宽仍受三重约束(repo 根内 + 源码类型白名单排除二进制/配置/密钥 + 大小上限)+ 路径穿越防御——放宽边界,不等于任意读。`allowedFiles`(diff 集合)保留作 repo map 种子,不再用于读授权。
+
+7. **职责边界仍守 ADR-009**:建图(AST+图+PageRank+渲染)是确定性重计算/地面真值 → Java;何时调、diff 种子怎么传、结果如何注入 → Python。Java 扫仓库建图是护栏层内部事实采集(只对外暴露签名,不外泄文件内容),与 `get_file_content` 的逐文件授权是两件事。
+
+8. **显式不做 `get_definition`**(按符号名直接返回单个定义体):它横跨 `get_repo_map`(定位)与 `get_file_content`(读取),边界糊、LLM 易在两个"读"工具间犹豫。"repo_map 定位 + file_content 读取"这对**无重叠**组合已覆盖需求(aider 和 open-code-review 也都没有单独的 get_definition)。待评测暴露具体痛点(如读整文件浪费 token)再加,且届时用"必填参数差异"(路径 vs 符号名)划清边界。
+
+**对比 aider `repomap.py`(task 2.5 复盘 —— 重写后逐点对照)**:
+
+- **rank 沿出边分摊到 `(文件,符号)`**:**完全照搬**。aider 末段 `ranked_definitions[(dst,ident)] += src_rank*weight/total_out_weight`,我实现一致——这是最易写歪的点(若只做文件级 PageRank,排出来是"哪个文件重要"而非"哪个定义该进地图")。亲手对照确认没踩坑。
+- **边权启发式**:**借数值、删 Python 特有项**。保留:种子符号 ×10、驼峰长名(≥8)×10、超高频(定义>5 处)×0.1、引用方在种子文件 ×50、`sqrt(引用次数)`。删掉:snake_case/kebab 与 `_` 前缀降权(Python 命名习惯,Java 用修饰符表私有而非命名,不适用)。
+- **token 预算**:**简化**。aider 用**二分查找**塞最多 tag(`get_ranked_tags_map_uncached`);我用**贪心线性累加**(按排名加到超预算即停)。取舍:地图已 diff-scoped 故小,贪心足够且更简单确定;若将来地图变大、要把预算填满再换二分。
+- **渲染**:aider 用 tree-sitter `TreeContext` 回读源码展示真实代码行;我把签名直接存进 DEF tag 渲染,**免去回读**,更简单。
+- **缓存**:aider 用 sqlite 按 mtime 缓存 tags;本期**不缓存**(每次现算),diff-scoped 限了规模;慢了再补(design.md Risks,留后续)。
+
+**效果(诚实记录)**:
+
+- **工程正确性已坐实**:Java 26 单测(+15:tag 抽取/PageRank 确定性/渲染预算/工具端到端/沙箱放行 diff 外源码+拒非源码)、Python 118 测(+8:repo_map 客户端/工具定义/工具白名单透传)全绿。mock 跑通确认 harness 加载新难例(31 条)与 `pipeline-repomap` profile 解析。
+- **量化增益待实跑**:`repomap_npe_crossfile_001`(跨文件 NPE:diff 只见调用、缺陷在另一文件)+ `pipeline-repomap` profile 已就位,但**真实 DeepSeek + 起 gateway 的 before/after 对照本环境跑不了**(无 key/服务),故不编数字——同 ADR-004/008/009/011"测不出就如实记"。这是阶段 3 继续前该补的一次实跑。
+- **顺带修了对照可控性**:发现 ReAct 引擎原本硬编码工具集,会让 `pipeline-file` 也暴露 repo_map、污染对照。补了**工具白名单透传**(profile.tools → `enabled_tools` → engine),使"开哪些工具"成为对照唯一变量。
+
+**放弃的备选**:
+
+- **tree-sitter 多语言**:MVP 仅 Java,JavaParser 足矣,放弃。
+- **引 JGraphT 跑 PageRank**:为单一算法引重依赖,违"先做减法",放弃(自实现幂迭代,出数值/收敛问题再换)。
+- **被动全量注入(aider 原形态)**:偏离现有工具协议、每审查员每次都付 token,放弃;留作"若评测显示该调没调频发"的优化项。
+- **route①(每次把要读文件加进 allowed_files)**:把"决定读哪"从 Java 护栏推回 Python/LLM,削弱护栏确定性,放弃。
+- **本期就做 `get_definition`**:与现有两工具重叠、边界糊,放弃(见决策 8)。
+- **SymbolSolver 全限定 ref 解析**:引 classpath 复杂度,放弃;按名匹配 + 细读兜底。
+
+**衍生待办**:
+
+- **真实 before/after 实跑**(最该先做):`pipeline-file` vs `pipeline-repomap` 在跨文件难例上量化增益,回填 HANDOFF 与本 ADR。
+- repo map 若在大仓库慢,补按 mtime 的 tags 缓存(对齐 aider)。
+- ref 抽取是否需扩到字段访问/注解、token 预算默认值与建图文件上限按真实仓库标定(design.md Open Questions)。
+
+**日期**:2026-06-15
+
+<!-- 后续在这里继续追加 ADR-013、ADR-014 …… -->

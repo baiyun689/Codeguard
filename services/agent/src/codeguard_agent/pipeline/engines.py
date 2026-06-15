@@ -78,10 +78,17 @@ class ToolAgentEngine(ReviewEngine):
     (见 spec「ReAct 审查结果的结构化与健壮性」)。
     """
 
-    def __init__(self, tool_client: Any, recursion_limit: int = 12) -> None:
+    def __init__(
+        self,
+        tool_client: Any,
+        recursion_limit: int = 12,
+        enabled_tools: list[str] | None = None,
+    ) -> None:
         self._tool_client = tool_client
         # langgraph 用 recursion_limit 约束图的总步数,间接限制工具调用轮数,防止失控。
         self._recursion_limit = recursion_limit
+        # 工具白名单:None=暴露所有已实现工具;否则只暴露列出的(profile 控制,对照可控)。
+        self._enabled_tools = enabled_tools
 
     def review(
         self,
@@ -96,9 +103,21 @@ class ToolAgentEngine(ReviewEngine):
         # LangChain 相关导入延迟到此:mock 模式 / 无工具路径不需要它们。
         from langchain.agents import create_agent
 
-        from codeguard_agent.tools.definitions import make_file_content_tool
+        from codeguard_agent.tools.definitions import (
+            make_file_content_tool,
+            make_repo_map_tool,
+        )
 
-        tools = [make_file_content_tool(self._tool_client)]
+        # 已实现工具的工厂表。顺序即推荐用法:先 get_repo_map 导航(该读哪),再 get_file_content 细读(读得到)。
+        available = {
+            "get_repo_map": lambda: make_repo_map_tool(self._tool_client),
+            "get_file_content": lambda: make_file_content_tool(self._tool_client),
+        }
+        # 按白名单挑工具:None=全开(CLI 默认);否则只开 profile 列出的(保持其声明顺序)。
+        names = list(available) if self._enabled_tools is None else self._enabled_tools
+        tools = [available[n]() for n in names if n in available]
+        if not tools:  # 防御:白名单解析为空时回退全开,避免构造无工具的 Agent。
+            tools = [factory() for factory in available.values()]
         agent = create_agent(
             llm,
             tools,

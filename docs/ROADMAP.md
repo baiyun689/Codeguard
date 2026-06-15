@@ -91,6 +91,7 @@ git diff → 一次 LLM 调用 → 返回结构化 issues → 打印
 - [x] 让 Agent 能自主决定是否读文件、读哪个文件(已端到端定性坐实:审查员自主调 `get_file_content` 读整文件推理)
 - [~] **【关键实验】** "无工具 vs 有工具"对照:harness(`--tools`)已就位;**定性已证有效**,量化待 repo-backed 评测用例(现合成数据集喂不了文件工具,ADR-009)
 - [~] **【关键实验·编排治理】** 同一多维度 fixture 上量化"前置软路由 + 两段式聚合 + prompt 赛道纪律"的效果:before=18 条/合并 0(规则去重因行号漂移失效);after 目标 ~7~9 且不丢任何一类真问题。before/after 数字以 repo-backed 实跑为准(见 openspec `improve-reviewer-orchestration`、HANDOFF.md)
+- [x] `get_repo_map`(借鉴 aider repo map:JavaParser 抽 tag + 自实现 diff-种子 PageRank + 签名级预算渲染),解决"该读哪个 diff 外文件";同时放宽沙箱到"repo 根内源码"使 `get_file_content` 能读 diff 外定义文件(ADR-012)
 - [ ] 逐个加重型工具(沿通用 `/tools/{name}` 协议 + 会话接缝叠加):
   - [ ] `get_method_definition`(Java + JavaParser 做 AST)
   - [ ] `get_call_graph`(自建代码调用图)

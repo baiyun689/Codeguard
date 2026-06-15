@@ -22,6 +22,12 @@ profiles:
     mode: pipeline
     tools: [get_file_content]
 
+  # 管线 + repo map 导航 + 文件细读:审查员可先 get_repo_map 定位 diff 之外的定义文件,再 get_file_content 读。
+  # 与 pipeline-file 相比多了"跨文件导航"能力,用于量化 repo-map 难例(跨文件、需先定位)的增益。
+  pipeline-repomap:
+    mode: pipeline
+    tools: [get_repo_map, get_file_content]
+
   # —— 扩展占位(零成本预留,框架无需改动)——
   # 后续逐个加重型工具时,在此追加 profile 即可:
   # pipeline-ast:    { mode: pipeline, tools: [get_file_content, get_method_definition] }
