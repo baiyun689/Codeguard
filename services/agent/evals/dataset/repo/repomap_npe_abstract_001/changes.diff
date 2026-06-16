@@ -1,0 +1,13 @@
+diff --git a/src/main/java/com/demo/InvoiceController.java b/src/main/java/com/demo/InvoiceController.java
+index 1111111..2222222 100644
+--- a/src/main/java/com/demo/InvoiceController.java
++++ b/src/main/java/com/demo/InvoiceController.java
+@@ -7,4 +7,8 @@ public class InvoiceController {
+     public InvoiceController(RenderEngine engine) {
+         this.engine = engine;
+     }
++
++    public String headerOf(String id) {
++        return engine.render(id).trim();
++    }
+ }

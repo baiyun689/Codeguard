@@ -1,0 +1,17 @@
+id: repomap_npe_delegate_001
+category: 空指针
+dimension: logic
+capability: [repo-map, file]
+description: >
+  labelOf 对 service.nameOf(id) 的返回值直接 .trim()。service 是 AccountService(类型名可猜),
+  但它只是把查询**委托**给接口 NameDirectory.resolve;真正返回 null 的实现 StaticRoster 在
+  com.demo.directory 包,文件名与委托链都对不上、猜不到。即便读了 AccountService 也只看到"转发给
+  NameDirectory",仍需 get_repo_map 把 resolve 的实现定位到 StaticRoster.java 才能确认 null。
+  这是"两跳委托、定义文件不可猜"的难例:读第一层不够,必须靠地图找到第二层的真实实现。
+expected:
+  - type_keywords: ["空指针", "npe", "null", "null pointer"]
+    file: AccountController.java
+    line: 12
+    tolerance: 3
+    severity: WARNING
+    note: resolve 的实现 StaticRoster 经 Map.get 返回 null,经 nameOf 透传后在 .trim() 触发 NPE

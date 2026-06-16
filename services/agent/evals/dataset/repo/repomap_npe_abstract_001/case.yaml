@@ -1,0 +1,16 @@
+id: repomap_npe_abstract_001
+category: 空指针
+dimension: logic
+capability: [repo-map, file]
+description: >
+  headerOf 对 engine.render(id) 的返回值直接 .trim()。engine 的静态类型是**抽象类** RenderEngine,
+  render 是抽象方法、看不出空安全性。真正的子类实现 CachedSnippetEngine 在 com.demo.engine 包、
+  文件名猜不到,render 命中缓存用 Map.get、未命中返回 null。必须 get_repo_map 把 render 的实现定位到
+  CachedSnippetEngine.java 再细读才能确认 NPE。这是"抽象基类 + 定义文件不可猜"的难例。
+expected:
+  - type_keywords: ["空指针", "npe", "null", "null pointer"]
+    file: InvoiceController.java
+    line: 12
+    tolerance: 3
+    severity: WARNING
+    note: render 的子类实现 CachedSnippetEngine 经 Map.get 未命中返回 null,未判空即 .trim()

@@ -1,0 +1,19 @@
+id: repomap_npe_iface_impl_001
+category: 空指针
+dimension: logic
+capability: [repo-map, file]
+description: >
+  codeOf 对 store.lookup(id) 的返回值直接 .trim()。store 的静态类型是**接口** OrderStore——
+  即便猜到去读 OrderStore.java,也只看到方法声明、看不出空安全性。真正的实现 LedgerBackedStore
+  在 com.demo.store 包里,**文件名与接口名/调用点都对不上**,用 Map.get 实现、找不到返回 null。
+  必须靠 get_repo_map 把 lookup 的实现定位到 LedgerBackedStore.java(光凭 diff 里的类型名 OrderStore
+  根本猜不到这个文件名),再 get_file_content 细读才能确认 NPE。
+  这是"定义文件名不可猜、必须靠地图导航"的难例,专门用来隔离 repo-map 相对 file-only 的增益
+  (对照 repomap_npe_crossfile_001:那条的定义文件名 OrderRepository 可从类型名直接猜到,隔离不出 repo-map)。
+expected:
+  - type_keywords: ["空指针", "npe", "null", "null pointer"]
+    file: OrderController.java
+    line: 12
+    tolerance: 3
+    severity: WARNING
+    note: lookup 的实现 LedgerBackedStore 经 Map.get 可能返回 null,未判空即 .trim(),存在跨文件 NPE

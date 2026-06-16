@@ -1,0 +1,13 @@
+diff --git a/src/main/java/com/demo/AccountController.java b/src/main/java/com/demo/AccountController.java
+index 1111111..2222222 100644
+--- a/src/main/java/com/demo/AccountController.java
++++ b/src/main/java/com/demo/AccountController.java
+@@ -7,4 +7,8 @@ public class AccountController {
+     public AccountController(AccountService service) {
+         this.service = service;
+     }
++
++    public String labelOf(String id) {
++        return service.nameOf(id).trim();
++    }
+ }

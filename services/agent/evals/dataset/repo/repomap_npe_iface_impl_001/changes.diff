@@ -1,0 +1,13 @@
+diff --git a/src/main/java/com/demo/OrderController.java b/src/main/java/com/demo/OrderController.java
+index 1111111..2222222 100644
+--- a/src/main/java/com/demo/OrderController.java
++++ b/src/main/java/com/demo/OrderController.java
+@@ -7,4 +7,8 @@ public class OrderController {
+     public OrderController(OrderStore store) {
+         this.store = store;
+     }
++
++    public String codeOf(String id) {
++        return store.lookup(id).trim();
++    }
+ }
