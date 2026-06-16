@@ -5,8 +5,7 @@
 """
 
 from codeguard_agent.llm.client import mock_review_result
-from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
-from codeguard_agent.pipeline.reviewer import review
+from codeguard_agent.models.schemas import Issue, Severity
 
 
 def test_issue_默认值():
@@ -24,14 +23,6 @@ def test_confidence_边界约束():
 
     with pytest.raises(ValidationError):
         Issue(severity=Severity.INFO, file="A.java", type="x", message="y", confidence=1.5)
-
-
-def test_空diff_不审查():
-    """空 diff 应直接返回'无需审查',不触发任何 LLM 调用。"""
-    result = review(llm=None, diff_text="   ")
-    assert isinstance(result, ReviewResult)
-    assert "无需审查" in result.summary
-    assert result.issues == []
 
 
 def test_mock_流程连通():

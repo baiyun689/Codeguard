@@ -7,13 +7,10 @@
 - 各审查员的 issues 全部合并进 context。**本阶段故意不去重**:先让"同一问题被多个
   审查员重复报"的噪音暴露出来,才看得到阶段3聚合去重、阶段4误报过滤的价值。
 
-阶段 3:审查员的"执行方式"抽成可插拔引擎(见 pipeline/engines.py):
-- 无工具(context.tool_client 为 None)→ DirectEngine(单次直连,= 阶段2 行为,对照基准)。
+审查员的"执行方式"抽成可插拔引擎(见 pipeline/engines.py):
+- 无工具(context.tool_client 为 None)→ DirectEngine(单次直连,无工具对照基准)。
 - 有工具(配置了工具服务)→ ToolAgentEngine(ReAct,可调 Java 工具获取上下文)。
-两条路径并存、按配置分流(design.md D1),baseline 不被替换。
-
-设计取舍:不复用 baseline 的 reviewer.review()(那是 --mode single 的冻结基准)。
-本阶段自带审查调用逻辑,与 baseline 各为其主:一个冻结、一个演进(ADR-002)。
+两条路径并存、按配置分流(design.md D1)。
 """
 
 from __future__ import annotations

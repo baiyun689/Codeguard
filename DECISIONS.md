@@ -27,6 +27,11 @@
 
 ## ADR-002 · 阶段 1 用单次直接 LLM 调用,而非一上来就做 Agent
 
+> **⚠️ 已废弃(2026-06-16)**:`--mode single` 的无 Agent 基线(`pipeline/reviewer.py` 的
+> `review()`)在完成"有工具 vs 无工具"对比、达成其历史使命后已移除。当前审查统一走多阶段
+> 管线(`PipelineOrchestrator`),管线内仍保留无工具直连引擎(`DirectEngine`)作为工具档的
+> 对照基准。本 ADR 记录的当时决策与对比结论(见 ADR-004 引用的 baseline 0.500 等)作为历史保留。
+
 **背景**:目标是做"以 Agent 为核心"的项目,但 Agent 复杂度高。
 
 **决策**:阶段 1 先做"无 Agent 基准版"——diff 进、一次 LLM 调用、结构化结果出。

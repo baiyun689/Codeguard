@@ -1,7 +1,7 @@
 # Codeguard 评测(eval)框架
 
 > 用「带标注的数据集 + 统计指标」量化审查质量,而不是用 `assert` 死磕不确定的 LLM 输出。
-> 这是阶段 1「无 Agent 基准版」的配套设施,跑出的指标就是 **baseline**(见 `DECISIONS.md` ADR-002)。
+> 跑出的指标用于在统一数据集上对照各 profile(无工具 / 文件工具 / repo-map)的审查质量。
 
 ## 为什么需要它
 
@@ -17,18 +17,18 @@ pip install -e . pyyaml          # pyyaml 用于读数据集
 # 1) 零成本验证评测链路是否打通(不调真实 LLM,指标无业务含义)
 CODEGUARD_PROVIDER=mock python -m evals.runner
 
-# 2) 调真实 LLM 跑 baseline,重复 3 次统计方差
+# 2) 调真实 LLM 跑评测,重复 3 次统计方差
 export CODEGUARD_API_KEY=sk-xxx
 python -m evals.runner --runs 3
 
 # 3) 额外开 LLM-as-judge(语义复核 + 描述/建议质量打分,更准、更贵)
 python -m evals.runner --runs 3 --judge
 
-# 4) 阶段3 工具开档(审查员走 ReAct,可调 Java 工具);需先起工具服务并配 URL
-#    CODEGUARD_TOOL_SERVER_URL=http://localhost:9090 python -m evals.runner --mode pipeline --tools
+# 4) 工具开档(审查员走 ReAct,可调 Java 工具);需先起工具服务并配 URL
+#    CODEGUARD_TOOL_SERVER_URL=http://localhost:9090 python -m evals.runner --tools
 ```
 
-报告默认写到 `evals/reports/baseline.md`,控制台也会打印速览。
+报告默认写到 `evals/reports/pipeline.md`,控制台也会打印速览。
 
 ## profile:把"被测系统"做成可插拔(统一标准下做对照)
 
@@ -37,7 +37,7 @@ python -m evals.runner --runs 3 --judge
 profile,数据集与指标零改动。**
 
 ```bash
-# 按 profile 跑(覆盖 --mode/--tools);不指定则用 --mode/--tools 合成 ad-hoc(等价旧命令)
+# 按 profile 跑(覆盖 --tools);不指定则用 --tools 合成 ad-hoc(管线 + 工具开/关)
 python -m evals.runner --profile pipeline-notools --runs 1
 CODEGUARD_TOOL_SERVER_URL=http://localhost:9090 \
   python -m evals.runner --profile pipeline-file --runs 1   # 工具开档,需先起工具服务
@@ -146,5 +146,6 @@ expected:
 
 ## 路线图衔接
 
-阶段 3 把审查器从「单次调用」改成「工具调用 Agent」后,**用同一条命令再跑一份报告**,
-和这份 baseline 并排对比 —— Recall 提升多少、误报降多少,就是 Agent 的价值证明。
+每加一个工具 / 换一种编排,只需新增一个 profile,**用同一条命令再跑一份报告**,
+和已有 profile(无工具 / 文件工具 / repo-map)并排对比 —— Recall 提升多少、误报降多少,
+就是该能力的价值证明。

@@ -1,10 +1,10 @@
 """被测目标 profile:把"用什么配置跑评测"显式化、可插拔。
 
-一个 profile = mode(single/pipeline) + 启用的工具集 + 可选模型覆盖。
+一个 profile = mode(pipeline) + 启用的工具集 + 可选模型覆盖。
 核心思想(design.md D3):**被测系统与评测标准解耦**——加一个工具、换一种编排,
 都只表现为新增/调整一个 profile,数据集与指标定义零改动。
 
-未指定 profile 时,用 --mode/--tools 合成一个 ad-hoc profile,等价于旧命令行为。
+未指定 profile 时,用 --tools 合成一个 ad-hoc profile(管线 + 工具开/关)。
 """
 
 from __future__ import annotations
@@ -22,13 +22,13 @@ class Profile:
     """一个被测目标的配置。"""
 
     name: str
-    mode: str = "single"            # single | pipeline
+    mode: str = "pipeline"          # 当前仅 pipeline(基线 single 已移除)
     tools: list[str] = field(default_factory=list)  # 启用的工具名,如 ["get_file_content"]
     model: str | None = None        # 可选模型覆盖;None 表示沿用全局 Settings 的模型
 
     @property
     def wants_tools(self) -> bool:
-        """该 profile 是否意图启用工具(仅 pipeline + 非空工具集才有意义)。"""
+        """该 profile 是否意图启用工具(pipeline + 非空工具集才有意义)。"""
         return self.mode == "pipeline" and bool(self.tools)
 
 
@@ -43,7 +43,7 @@ def load_profiles(path: Path | None = None) -> dict[str, Profile]:
         cfg = cfg or {}
         profiles[name] = Profile(
             name=name,
-            mode=cfg.get("mode", "single"),
+            mode=cfg.get("mode", "pipeline"),
             tools=list(cfg.get("tools") or []),
             model=cfg.get("model"),
         )
@@ -53,14 +53,14 @@ def load_profiles(path: Path | None = None) -> dict[str, Profile]:
 def resolve_profile(
     name: str | None,
     *,
-    mode: str = "single",
+    mode: str = "pipeline",
     tools: bool = False,
     path: Path | None = None,
 ) -> Profile:
     """解析被测目标。
 
     - 指定 name:从 profiles.yaml 取;找不到则报错并列出可选项。
-    - 未指定:用 --mode/--tools 合成一个 ad-hoc profile(等价旧行为,见 task 2.4)。
+    - 未指定:用 --tools 合成一个 ad-hoc profile(管线 + 工具开/关)。
     """
     if name:
         profiles = load_profiles(path)

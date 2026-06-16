@@ -1,17 +1,12 @@
 # 被测目标 profile 清单(评测的"被测系统"维度)。
 #
-# 一个 profile = mode(single/pipeline) + 启用工具集 + 可选模型覆盖。
+# 一个 profile = mode(pipeline) + 启用工具集 + 可选模型覆盖。
 # 加一个工具 / 换一种编排 = 在此加一行,数据集与指标零改动(见 design.md D3)。
 # 用法:python -m evals.runner --profile pipeline-file
-# 不指定 --profile 时,用 --mode/--tools 合成 ad-hoc profile,等价旧命令行为。
+# 不指定 --profile 时,用 --tools 合成 ad-hoc profile(管线 + 工具开/关)。
 
 profiles:
-  # 阶段 1 无 Agent 基准:单次直接调用。
-  baseline-single:
-    mode: single
-    tools: []
-
-  # 管线但不开工具:并行三审查员直连(= 阶段 2 行为)。
+  # 管线但不开工具:并行三审查员直连(无工具对照基准)。
   pipeline-notools:
     mode: pipeline
     tools: []

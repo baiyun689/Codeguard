@@ -20,8 +20,8 @@ def _write_profiles(tmp_path) -> Path:
     p = tmp_path / "profiles.yaml"
     p.write_text(textwrap.dedent("""
         profiles:
-          baseline-single:
-            mode: single
+          pipeline-notools:
+            mode: pipeline
             tools: []
           pipeline-file:
             mode: pipeline
@@ -36,7 +36,7 @@ def _write_profiles(tmp_path) -> Path:
 
 def test_load_profiles(tmp_path):
     profiles = load_profiles(_write_profiles(tmp_path))
-    assert set(profiles) == {"baseline-single", "pipeline-file", "custom-model"}
+    assert set(profiles) == {"pipeline-notools", "pipeline-file", "custom-model"}
     assert profiles["pipeline-file"].tools == ["get_file_content"]
     assert profiles["custom-model"].model == "some-model"
 
@@ -52,19 +52,18 @@ def test_resolve_unknown_profile_raises(tmp_path):
         resolve_profile("does-not-exist", path=_write_profiles(tmp_path))
 
 
-def test_resolve_adhoc_equivalent_to_old_flags():
-    # 不指定 --profile:用 --mode/--tools 合成,等价旧行为。
-    single = resolve_profile(None, mode="single", tools=False)
-    assert single.mode == "single" and single.tools == [] and not single.wants_tools
+def test_resolve_adhoc_from_tools_flag():
+    # 不指定 --profile:用 --tools 合成 ad-hoc(管线 + 工具开/关)。
+    notools = resolve_profile(None, tools=False)
+    assert notools.mode == "pipeline" and notools.tools == [] and not notools.wants_tools
 
-    pipe_tools = resolve_profile(None, mode="pipeline", tools=True)
+    pipe_tools = resolve_profile(None, tools=True)
     assert pipe_tools.mode == "pipeline"
     assert pipe_tools.tools == ["get_file_content"]
     assert pipe_tools.wants_tools is True
 
 
 def test_wants_tools_only_pipeline_with_tools():
-    assert Profile("x", mode="single", tools=["get_file_content"]).wants_tools is False
     assert Profile("x", mode="pipeline", tools=[]).wants_tools is False
     assert Profile("x", mode="pipeline", tools=["get_file_content"]).wants_tools is True
 
@@ -83,9 +82,9 @@ def test_tools_effective_degrades():
 
 
 def test_shipped_profiles_valid():
-    # 校验仓库里实际 profiles.yaml 的三个内置 profile。
+    # 校验仓库里实际 profiles.yaml 的内置 profile。
     profiles = load_profiles(_REAL_PROFILES)
-    assert {"baseline-single", "pipeline-notools", "pipeline-file"} <= set(profiles)
+    assert {"pipeline-notools", "pipeline-file", "pipeline-repomap"} <= set(profiles)
     assert profiles["pipeline-file"].tools == ["get_file_content"]
     assert profiles["pipeline-notools"].tools == []
-    assert profiles["baseline-single"].mode == "single"
+    assert profiles["pipeline-repomap"].mode == "pipeline"

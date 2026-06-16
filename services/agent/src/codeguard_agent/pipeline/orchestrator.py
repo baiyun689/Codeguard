@@ -2,14 +2,11 @@
 
 把若干 PipelineStage 串成一条管线,依次在共享 PipelineContext 上执行,最后产出 ReviewResult。
 
-⚠️ 这是 reviewer.review() 之外**并存**的新实现,不替换它(见 ADR-002)。
-    --mode single 走 reviewer.review()(冻结基准);--mode pipeline 走这里。
+这是审查的唯一编排路径(原 --mode single 的无 Agent 基线已移除,见 ADR-002 废弃说明)。
 
-进度:
-    阶段 1:默认管线只有单个审查 stage,与 baseline 等价(已验证)。
-    阶段 2:并行审查(security/logic/quality 三个领域审查员)。
-    阶段 3:并行审查 → 聚合去重。
-    本次:摘要(软路由)→ 并行审查 → 两段式聚合 → 误报过滤。← 当前
+演化:
+    并行审查(security/logic/quality 三个领域审查员)→ 聚合去重 →
+    摘要(软路由)→ 并行审查 → 两段式聚合 → 误报过滤。← 当前
 摘要阶段可由 enable_summary 开关控制;关闭时退回"无摘要、审查员吃整份 diff"的现状路径。
 """
 

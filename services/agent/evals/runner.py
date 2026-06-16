@@ -4,7 +4,7 @@
     # 零成本验证评测骨架是否打通(不调真实 LLM)
     CODEGUARD_PROVIDER=mock python -m evals.runner
 
-    # 调真实 LLM 跑 baseline,重复 3 次统计方差
+    # 调真实 LLM 跑 pipeline 评测,重复 3 次统计方差
     export CODEGUARD_API_KEY=sk-xxx
     python -m evals.runner --runs 3
 
@@ -15,9 +15,9 @@
     python -m evals.runner --runs 3 --judge
 
     # 指定报告输出路径
-    python -m evals.runner --runs 3 --report evals/reports/baseline.md
+    python -m evals.runner --runs 3 --report evals/reports/pipeline.md
 
-流程:加载数据集 → 对每条用例跑 review() → 用 matcher 判定 →
+流程:加载数据集 → 对每条用例跑管线 → 用 matcher 判定 →
       重复 N 次 → metrics 聚合 → report 渲染 Markdown。
 """
 
@@ -33,7 +33,6 @@ from codeguard_agent.config import Settings
 from codeguard_agent.git.diff_collector import parse_changed_files
 from codeguard_agent.llm.client import build_llm
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
-from codeguard_agent.pipeline.reviewer import review
 from codeguard_agent.tools.tool_client import create_tool_session, destroy_tool_session
 
 from evals.archive import (
@@ -85,14 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         "--profile",
         default="",
         help="被测目标 profile(见 evals/profiles.yaml,如 pipeline-file)。"
-        "指定后覆盖 --mode/--tools;不指定则用 --mode/--tools 合成 ad-hoc profile(等价旧行为)",
-    )
-    parser.add_argument(
-        "--mode",
-        choices=["single", "pipeline"],
-        default="single",
-        help="审查方式:single=单次安全审查(阶段1 baseline);pipeline=并行多领域审查(阶段2)。"
-        "默认 single。未指定 --profile 时生效",
+        "指定后覆盖 --tools;不指定则用 --tools 合成 ad-hoc profile(管线 + 工具开/关)",
     )
     parser.add_argument("--judge", action="store_true", help="开启 LLM 裁判做案例级语义配对(主判);规则尺仍并行作交叉校验")
     parser.add_argument(
@@ -109,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--report",
-        default="evals/reports/baseline.md",
+        default="evals/reports/pipeline.md",
         help="Markdown 报告输出路径(相对 services/agent)",
     )
     parser.add_argument("--dataset", default="", help="自定义数据集目录(默认 evals/dataset)")
@@ -117,10 +109,10 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = Settings.from_env()
 
-    # 解析被测目标 profile:指定 --profile 从 profiles.yaml 取;否则用 --mode/--tools 合成
-    # ad-hoc profile(等价旧行为)。profile 决定 mode、启用哪些工具、可选模型覆盖。
+    # 解析被测目标 profile:指定 --profile 从 profiles.yaml 取;否则用 --tools 合成
+    # ad-hoc profile(管线 + 工具开/关)。profile 决定启用哪些工具、可选模型覆盖。
     try:
-        profile = resolve_profile(args.profile or None, mode=args.mode, tools=args.tools)
+        profile = resolve_profile(args.profile or None, tools=args.tools)
     except KeyError as exc:
         logger.error("%s", exc)
         return 2
@@ -187,43 +179,35 @@ def main(argv: list[str] | None = None) -> int:
     if use_tools:
         logger.info("工具开档:%s。repo-backed 用例按各自 repo_path 建会话", profile.tools)
 
-    # 按 profile.mode 注入审查函数:single=baseline 单次调用 / pipeline=多阶段管线。
-    # review_fn 接收整条 case,以便 pipeline 工具会话用该用例自带的 repo_path。
-    if profile.mode == "pipeline":
-        orchestrator = PipelineOrchestrator(fp_llm_verify=settings.fp_llm_verify)
-        def review_fn(case):
-            diff = case.diff
-            repo_root = case.repo_path or fallback_repo
-            tool_client = None
-            if use_tools:
-                try:
-                    tool_client = create_tool_session(
-                        settings.tool_server_url, repo_root, parse_changed_files(diff)
-                    )
-                except Exception as exc:  # noqa: BLE001 工具服务不可用则降级无工具,不中断评测
-                    logger.warning("[%s] 创建工具会话失败,本条按无工具跑: %s", case.id, exc)
+    # 注入审查函数:统一走多阶段管线。review_fn 接收整条 case,
+    # 以便工具会话用该用例自带的 repo_path。
+    orchestrator = PipelineOrchestrator(fp_llm_verify=settings.fp_llm_verify)
+    def review_fn(case):
+        diff = case.diff
+        repo_root = case.repo_path or fallback_repo
+        tool_client = None
+        if use_tools:
             try:
-                return orchestrator.run(
-                    llm, diff,
-                    max_retries=settings.max_retries,
-                    structured_method=settings.structured_method,
-                    fp_verify_llm=fp_verify_llm,
-                    repo_path=repo_root if tool_client is not None else None,
-                    allowed_files=parse_changed_files(diff) if tool_client is not None else None,
-                    tool_client=tool_client,
-                    # profile.tools 即工具白名单:让"开哪些工具"成为对照的唯一变量。
-                    enabled_tools=profile.tools if tool_client is not None else None,
+                tool_client = create_tool_session(
+                    settings.tool_server_url, repo_root, parse_changed_files(diff)
                 )
-            finally:
-                if tool_client is not None:
-                    destroy_tool_session(tool_client)
-    else:
-        def review_fn(case):
-            return review(
-                llm, case.diff,
+            except Exception as exc:  # noqa: BLE001 工具服务不可用则降级无工具,不中断评测
+                logger.warning("[%s] 创建工具会话失败,本条按无工具跑: %s", case.id, exc)
+        try:
+            return orchestrator.run(
+                llm, diff,
                 max_retries=settings.max_retries,
                 structured_method=settings.structured_method,
+                fp_verify_llm=fp_verify_llm,
+                repo_path=repo_root if tool_client is not None else None,
+                allowed_files=parse_changed_files(diff) if tool_client is not None else None,
+                tool_client=tool_client,
+                # profile.tools 即工具白名单:让"开哪些工具"成为对照的唯一变量。
+                enabled_tools=profile.tools if tool_client is not None else None,
             )
+        finally:
+            if tool_client is not None:
+                destroy_tool_session(tool_client)
 
     all_runs: list[list[MatchOutcome]] = []
     for i in range(args.runs):
@@ -267,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 控制台速览
     print("\n" + "=" * 60)
-    print("Codeguard 评测结果(baseline)")
+    print("Codeguard 评测结果(pipeline)")
     print("=" * 60)
     print(f"用例: {metrics.num_cases}(漏洞 {metrics.num_vuln_cases} / 干净 {metrics.num_clean_cases})  跑测: {metrics.runs} 次")
     print(f"Precision: {metrics.precision:.3f} (±{metrics.precision_std:.3f})")

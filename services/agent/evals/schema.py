@@ -66,7 +66,7 @@ class EvalCase(BaseModel):
     )
     language: str = Field(default="java", description="代码语言")
     description: str = Field(default="", description="这条用例考的是什么")
-    diff: str = Field(description="unified diff 文本,喂给 reviewer.review() 的输入")
+    diff: str = Field(description="unified diff 文本,喂给审查管线的输入")
     expected: list[ExpectedIssue] = Field(
         default_factory=list, description="标准答案;clean 样本留空"
     )
