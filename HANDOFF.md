@@ -7,7 +7,7 @@
 openspec change:`add-repo-map-tool`。动机:`get_file_content` 只能读"被改文件本身",审不出跨文件问题;根因是审查员不知道"该读哪个 diff 外文件"(只见 diff 文本)+ 沙箱白名单=diff 文件(读不到 diff 外)。走第三条路线:借鉴 **aider repo map**(tree-sitter→PageRank→预算压缩)给一份"diff 邻域代码地图"做导航,栈换成 Java 原生。详见 ADR-012。
 
 落地:
-- **Java(`services/gateway/agent/repomap/`)**:`TagExtractor`(JavaParser 抽 def/ref)→ `RepoMapRanker`(建图 + 自实现加权 personalized PageRank,diff 改动文件为种子,rank 沿出边分摊到 `(文件,符号)`)→ `RepoMapRenderer`(签名级 + token 预算贪心裁剪)→ `RepoMapBuilder`(扫仓库串联)→ `GetRepoMapTool`(注册进会话,沿 `/tools/{name}` 协议)。
+- **Java(`services/gateway/agent/repomap/`)**:`TagExtractor`(接口,抽 def/ref;Java 实现 `JavaTagExtractor` 用 JavaParser,按扩展名经 `TagExtractorRegistry` 路由——多语言只需加实现+注册一行)→ `RepoMapRanker`(建图 + 自实现加权 personalized PageRank,diff 改动文件为种子,rank 沿出边分摊到 `(文件,符号)`)→ `RepoMapRenderer`(签名级 + token 预算贪心裁剪)→ `RepoMapBuilder`(扫仓库串联)→ `GetRepoMapTool`(注册进会话,沿 `/tools/{name}` 协议)。
 - **沙箱放宽(ADR-012 决策6)**:`FileAccessSandbox` 读授权从"仅 diff 改动文件"→"repo 根内 + 源码扩展名白名单"(保留穿越防御 + 大小上限 + 排除非源码/配置/密钥)。`get_file_content` 由此能读 repo map 指向的 diff 外定义文件。`allowedFiles` 保留作 repo map 种子。
 - **Python**:`tool_client.get_repo_map()` + `make_repo_map_tool`(动作触发式描述)挂入 ReAct 工具集(repo_map 在前,file_content 在后);三审查员 prompt 补"导航→细读"纪律(因缺 diff 外上下文致 confidence<0.7 时先 repo_map 定位再 file_content 细读,而非漏报/硬报)。
 - **顺带修对照可控性**:发现 ReAct 引擎原本硬编码工具集,会让 `pipeline-file` 也暴露 repo_map、污染对照。补了**工具白名单透传**(`profile.tools → enabled_tools → ToolAgentEngine`),使"开哪些工具"成为对照唯一变量。
@@ -118,7 +118,7 @@ conda run -n codeguard --no-capture-output python -m evals.runner --mode pipelin
    conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-file --runs 3
    conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-repomap --runs 3
    ```
-2. **逐个加重型工具**:`get_method_definition`(JavaParser AST,可复用本期 TagExtractor)→ `get_call_graph` → `semantic_search`(RAG),沿通用协议 + 会话接缝叠加;届时按需在会话层填"按 project 共享重资源"。`get_definition` 暂缓的边界理由见 ADR-012。
+2. **逐个加重型工具**:`get_method_definition`(JavaParser AST,可复用本期 `JavaTagExtractor`)→ `get_call_graph` → `semantic_search`(RAG),沿通用协议 + 会话接缝叠加;届时按需在会话层填"按 project 共享重资源"。`get_definition` 暂缓的边界理由见 ADR-012。
 3. 工具利用率/耗时纳入评测报告。
 4. repo map 若在大仓库慢,补按 mtime 的 tags 缓存(对齐 aider)。
 

@@ -28,9 +28,19 @@ public final class RepoMapBuilder {
     private static final Set<String> SKIP_DIRS = Set.of(
             "target", "build", "out", "node_modules", ".git", ".idea", ".gradle", "bin", "dist");
 
-    private final TagExtractor extractor = new TagExtractor();
+    private final TagExtractorRegistry extractors;
     private final RepoMapRanker ranker = new RepoMapRanker();
     private final RepoMapRenderer renderer = new RepoMapRenderer();
+
+    /** 默认装配:仅 Java(见 {@link TagExtractorRegistry#defaults()})。 */
+    public RepoMapBuilder() {
+        this(TagExtractorRegistry.defaults());
+    }
+
+    /** 自定义抽取器注册表(测试 / 未来多语言)。 */
+    public RepoMapBuilder(TagExtractorRegistry extractors) {
+        this.extractors = extractors;
+    }
 
     /**
      * @param repoRoot  仓库根
@@ -41,6 +51,8 @@ public final class RepoMapBuilder {
         List<Tag> all = new ArrayList<>();
         for (Path file : scanSourceFiles(repoRoot)) {
             String rel = repoRoot.relativize(file).toString().replace('\\', '/');
+            TagExtractor extractor = extractors.forFile(file.getFileName().toString());
+            if (extractor == null) continue; // 扩展名无对应抽取器(理论上已被扫描过滤)
             try {
                 if (Files.size(file) > MAX_FILE_BYTES) continue;
                 all.addAll(extractor.extract(rel, Files.readString(file, StandardCharsets.UTF_8)));
@@ -52,12 +64,12 @@ public final class RepoMapBuilder {
         return renderer.render(ranked);
     }
 
-    /** 扫描仓库内的 .java 文件(跳过构建/VCS 目录),按路径排序保证确定性,限上限。 */
+    /** 扫描仓库内受支持的源文件(扩展名由注册表决定,跳过构建/VCS 目录),按路径排序保证确定性,限上限。 */
     private List<Path> scanSourceFiles(Path repoRoot) {
         List<Path> files = new ArrayList<>();
         try (Stream<Path> walk = Files.walk(repoRoot)) {
             walk.filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().endsWith(".java"))
+                    .filter(p -> extractors.supports(p.getFileName().toString()))
                     .filter(p -> !isUnderSkippedDir(repoRoot, p))
                     .sorted()
                     .limit(MAX_FILES)

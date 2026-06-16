@@ -91,7 +91,7 @@ Codeguard/
         └── src/main/java/com/codeguard/
             ├── agent/core/       # AgentTool 接口 / ToolResult 信封 / AgentContext
             ├── agent/tools/      # ToolRegistry / FileAccessSandbox(护栏)/ GetFileContentTool / GetRepoMapTool
-            ├── agent/repomap/    # ★get_repo_map:TagExtractor(JavaParser)+ PageRank + RepoMapRanker + RepoMapRenderer + RepoMapBuilder
+            ├── agent/repomap/    # ★get_repo_map:TagExtractor 接口(JavaTagExtractor=JavaParser,TagExtractorRegistry 按扩展名路由)+ PageRank + RepoMapRanker + RepoMapRenderer + RepoMapBuilder
             └── toolserver/       # ToolServerApp + Controller(通用 /tools/{name} 分发)+ SessionManager + Main
 ```
 

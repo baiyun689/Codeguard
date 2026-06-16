@@ -11,11 +11,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * TagExtractor 工程正确性:抽出预期的 def/ref;语法错误文件被跳过(返回空、不抛)。
+ * JavaTagExtractor 工程正确性:抽出预期的 def/ref;语法错误文件被跳过(返回空、不抛)。
  */
-class TagExtractorTest {
+class JavaTagExtractorTest {
 
-    private final TagExtractor extractor = new TagExtractor();
+    private final TagExtractor extractor = new JavaTagExtractor();
 
     private Set<String> namesOf(List<Tag> tags, Tag.Kind kind) {
         return tags.stream().filter(t -> t.kind() == kind).map(Tag::name).collect(Collectors.toSet());
