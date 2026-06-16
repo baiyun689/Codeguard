@@ -89,7 +89,6 @@ def create_tool_session(
     timeout: float = 30.0,
 ) -> ToolClient:
     """在 Java 工具服务上创建会话,返回绑定该会话的 ToolClient。
-
     repo_path 应为绝对路径(Java 侧据此解析文件相对路径并做沙箱校验)。
     失败时抛 RuntimeError,由调用方决定是否回退到无工具直连。
     """
