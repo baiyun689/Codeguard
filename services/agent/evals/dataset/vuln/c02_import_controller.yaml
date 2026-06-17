@@ -1,0 +1,59 @@
+id: complex_import_002
+category: 复杂混合·数据导入
+dimension: security
+language: java
+description: 导入接口多缺陷(SSRF + 命令注入 + 资源泄漏 + 空 catch),并埋一个"看着像注入、实则只进本地日志"的诱饵
+capability: [diff-only]
+diff: |
+  diff --git a/src/main/java/com/demo/ImportController.java b/src/main/java/com/demo/ImportController.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/ImportController.java
+  +++ b/src/main/java/com/demo/ImportController.java
+  @@ -12,6 +12,21 @@ public class ImportController {
+       @PostMapping("/import")
+       public String importData(@RequestParam String url, @RequestParam String fmt) {
+  -        return service.load(url);
+  +        String label = "import:" + fmt;
+  +        log.debug(label);
+  +        try {
+  +            URL u = new URL(url);
+  +            InputStream is = u.openStream();
+  +            String raw = new String(is.readAllBytes());
+  +            Runtime.getRuntime().exec("converter --fmt " + fmt);
+  +            return process(raw, fmt);
+  +        } catch (Exception e) {
+  +        }
+  +        return "ok";
+       }
+   }
+expected:
+  - type_keywords: ["ssrf", "服务端请求", "内网", "url"]
+    file: ImportController.java
+    line: 18
+    tolerance: 2
+    severity: CRITICAL
+    note: url 用户可控直接 openStream,可请求内网/元数据服务(SSRF)
+  - type_keywords: ["资源泄漏", "未关闭", "leak", "close", "stream"]
+    file: ImportController.java
+    line: 18
+    tolerance: 2
+    severity: WARNING
+    note: InputStream is 未关闭,泄漏连接
+  - type_keywords: ["命令注入", "command", "exec", "注入"]
+    file: ImportController.java
+    line: 20
+    tolerance: 2
+    severity: CRITICAL
+    note: fmt 用户可控拼进 Runtime.exec,命令注入
+  - type_keywords: ["吞异常", "空catch", "swallow", "异常", "empty catch"]
+    file: ImportController.java
+    line: 22
+    tolerance: 2
+    severity: WARNING
+    note: catch 块为空,异常被吞、错误被掩盖
+distractors:
+  - type_keywords: ["注入", "injection", "拼接", "sql"]
+    file: ImportController.java
+    line: 14
+    tolerance: 1
+    note: fmt 仅拼进本地日志标签 label、未进入命令/SQL/响应,非注入点;真正的注入在 exec 那行

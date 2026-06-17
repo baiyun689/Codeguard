@@ -1,0 +1,55 @@
+id: complex_file_download_001
+category: 复杂混合·文件下载
+dimension: security
+language: java
+description: 下载接口多缺陷混合(路径穿越 + 资源泄漏 + 敏感日志),并埋一个"看着像魔法数字、实则具名常量"的诱饵
+capability: [diff-only]
+diff: |
+  diff --git a/src/main/java/com/demo/FileController.java b/src/main/java/com/demo/FileController.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/FileController.java
+  +++ b/src/main/java/com/demo/FileController.java
+  @@ -9,7 +9,17 @@ public class FileController {
+       private static final int BUFFER = 4096;
+
+       @GetMapping("/download")
+  -    public void download(@RequestParam String name, HttpServletResponse resp) {
+  -        resp.getWriter().write(service.meta(name));
+  +    public void download(@RequestParam String name, HttpServletResponse resp,
+  +                         HttpServletRequest req) throws IOException {
+  +        File target = new File("/var/data/files/" + name);
+  +        FileInputStream in = new FileInputStream(target);
+  +        byte[] buf = new byte[BUFFER];
+  +        int n;
+  +        while ((n = in.read(buf)) != -1) {
+  +            resp.getOutputStream().write(buf, 0, n);
+  +        }
+  +        String token = req.getHeader("Authorization");
+  +        log.info("served {} to token={}", name, token);
+       }
+   }
+expected:
+  - type_keywords: ["路径", "穿越", "traversal", "path"]
+    file: FileController.java
+    line: 14
+    tolerance: 2
+    severity: CRITICAL
+    note: name 用户可控直接拼进文件路径,可 ../ 穿越读任意文件
+  - type_keywords: ["资源泄漏", "未关闭", "leak", "close", "stream"]
+    file: FileController.java
+    line: 15
+    tolerance: 2
+    severity: WARNING
+    note: FileInputStream in 未在 try-with-resources/finally 关闭,异常路径泄漏句柄
+  - type_keywords: ["敏感", "泄漏", "日志", "凭证", "token", "sensitive"]
+    file: FileController.java
+    line: 22
+    tolerance: 2
+    severity: WARNING
+    note: Authorization 凭证写入日志,日志可被读取导致凭证泄漏
+distractors:
+  - type_keywords: ["魔法数字", "magic", "硬编码", "4096"]
+    file: FileController.java
+    line: 16
+    tolerance: 1
+    note: 4096 已抽成具名常量 BUFFER,new byte[BUFFER] 非散落魔法数字;报"魔法数字 4096"即被表象误导

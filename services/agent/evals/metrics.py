@@ -99,6 +99,43 @@ def aggregate(runs: list[list[MatchOutcome]]) -> AggregateMetrics:
     avg_msg = mean(s.message_quality for s in all_scores) if all_scores else None
     avg_sug = mean(s.suggestion_quality for s in all_scores) if all_scores else None
 
+    # ---- 行为诊断指标族(eval-complex-behavior)----
+    all_outcomes = [o for run in runs for o in run]
+    vuln_outcomes = [o for o in all_outcomes if not o.is_clean]
+
+    # 诱饵命中率:Σ中诱饵 / Σ诱饵总数;无诱饵用例 → None
+    distractor_total = sum(o.distractor_total for o in all_outcomes)
+    distractor_hits = sum(o.distractor_hits for o in all_outcomes)
+    distractor_hit_rate = _safe_div(distractor_hits, distractor_total) if distractor_total else None
+
+    # vuln 噪音/条 + 报告膨胀比(只看 vuln 用例)
+    vuln_noise_per_case = _safe_div(sum(o.false_positives for o in vuln_outcomes), len(vuln_outcomes))
+    inflations = [_safe_div(o.reported_total, o.expected_total) for o in vuln_outcomes if o.expected_total]
+    report_inflation = mean(inflations) if inflations else 0.0
+
+    # severity 分层 recall(主=CRITICAL,次=WARNING/INFO)
+    tp_p = sum(o.tp_primary for o in all_outcomes)
+    fn_p = sum(o.fn_primary for o in all_outcomes)
+    tp_s = sum(o.tp_secondary for o in all_outcomes)
+    fn_s = sum(o.fn_secondary for o in all_outcomes)
+    recall_primary = _safe_div(tp_p, tp_p + fn_p) if (tp_p + fn_p) else None
+    recall_secondary = _safe_div(tp_s, tp_s + fn_s) if (tp_s + fn_s) else None
+
+    # 级别准确率·复杂用例切片(标答 > 1)
+    cx = [o for o in all_outcomes if o.expected_total > 1]
+    cx_sev_hits = sum(o.severity_hits for o in cx)
+    cx_sev_checked = sum(o.severity_checked for o in cx)
+    severity_accuracy_complex = _safe_div(cx_sev_hits, cx_sev_checked) if cx_sev_checked else None
+
+    # 裁判↔规则一致率:两尺 TP/FP/FN 全等的 LLM 主判用例占 LLM 主判用例的比例
+    llm_judged = [o for o in all_outcomes if o.primary_judge == "llm"]
+    agreed = sum(
+        1 for o in llm_judged
+        if (o.true_positives, o.false_positives, o.false_negatives)
+        == (o.rule_true_positives, o.rule_false_positives, o.rule_false_negatives)
+    )
+    judge_rule_agreement = _safe_div(agreed, len(llm_judged)) if llm_judged else None
+
     first_run = runs[0]
     return AggregateMetrics(
         runs=len(runs),
@@ -115,4 +152,11 @@ def aggregate(runs: list[list[MatchOutcome]]) -> AggregateMetrics:
         precision_std=pstdev(precisions) if len(precisions) > 1 else 0.0,
         avg_judge_message_quality=avg_msg,
         avg_judge_suggestion_quality=avg_sug,
+        distractor_hit_rate=distractor_hit_rate,
+        vuln_noise_per_case=vuln_noise_per_case,
+        report_inflation=report_inflation,
+        recall_primary=recall_primary,
+        recall_secondary=recall_secondary,
+        severity_accuracy_complex=severity_accuracy_complex,
+        judge_rule_agreement=judge_rule_agreement,
     )

@@ -24,11 +24,18 @@ import logging
 import os
 from typing import Any
 
-from codeguard_agent.models.schemas import Issue
+from codeguard_agent.models.schemas import Issue, Severity
 
 from evals.schema import CaseJudgement, EvalCase, ExpectedIssue, MatchOutcome
 
 logger = logging.getLogger("codeguard.evals")
+
+
+def _severity_tier(severity: Severity | None) -> str | None:
+    """标准答案的严重级别落桶:主=CRITICAL,次=WARNING/INFO,未标级别=None(不计分层)。"""
+    if severity is None:
+        return None
+    return "primary" if severity == Severity.CRITICAL else "secondary"
 
 
 def _file_matches(reported_file: str, expected_file: str) -> bool:
@@ -206,12 +213,21 @@ def _build_outcome(
     )
     matched_reports: set[int] = set()
     for exp_idx, expected in enumerate(case.expected):
+        tier = _severity_tier(expected.severity)
         rep_idx = pairing.get(exp_idx, -1)
         if rep_idx < 0 or rep_idx >= len(reported) or rep_idx in matched_reports:
             outcome.false_negatives += 1
+            if tier == "primary":
+                outcome.fn_primary += 1
+            elif tier == "secondary":
+                outcome.fn_secondary += 1
             continue
         matched_reports.add(rep_idx)
         outcome.true_positives += 1
+        if tier == "primary":
+            outcome.tp_primary += 1
+        elif tier == "secondary":
+            outcome.tp_secondary += 1
         issue = reported[rep_idx]
         # 定位准确率:命中项里行号也对得上的(expected.line>0 才计)
         if expected.line > 0 and abs(issue.line - expected.line) <= expected.tolerance:
@@ -230,6 +246,16 @@ def _build_outcome(
                 "match": "✓" if hit else "✗",
             })
     outcome.false_positives = len(reported) - len(matched_reports)
+
+    # 误报归类:未被任何标答认领的报告里,落在某条诱饵上的算"中诱饵"(被骗),其余即"凭空乱报"。
+    # 复用 rule_match(file+行号+关键词);Distractor 与 ExpectedIssue 同构故可直接传入。
+    outcome.distractor_total = len(case.distractors)
+    if case.distractors:
+        for idx, issue in enumerate(reported):
+            if idx in matched_reports:  # TP 优先,已被标答认领的不算中诱饵
+                continue
+            if any(rule_match(issue, d) for d in case.distractors):
+                outcome.distractor_hits += 1
     return outcome
 
 

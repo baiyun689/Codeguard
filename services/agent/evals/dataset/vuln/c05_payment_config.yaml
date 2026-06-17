@@ -1,0 +1,52 @@
+id: complex_config_005
+category: 复杂混合·支付配置
+dimension: quality
+language: java
+description: 连接配置多缺陷(硬编码密码 + 空 catch + 失败后空引用),并埋一个"看着像魔法数字、实则具名局部变量初值"的诱饵
+capability: [diff-only]
+diff: |
+  diff --git a/src/main/java/com/demo/PaymentConfig.java b/src/main/java/com/demo/PaymentConfig.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/PaymentConfig.java
+  +++ b/src/main/java/com/demo/PaymentConfig.java
+  @@ -8,6 +8,18 @@ public class PaymentConfig {
+
+  +    public Connection connect() {
+  +        Connection c = null;
+  +        try {
+  +            c = DriverManager.getConnection(
+  +                "jdbc:mysql://prod-db:3306/pay", "root", "P@ssw0rd123");
+  +        } catch (SQLException e) {
+  +        }
+  +        int retries = 5;
+  +        for (int i = 0; i < retries; i++) {
+  +            ping(c);
+  +        }
+  +        return c;
+  +    }
+   }
+expected:
+  - type_keywords: ["硬编码", "密码", "密钥", "password", "secret", "凭证"]
+    file: PaymentConfig.java
+    line: 13
+    tolerance: 2
+    severity: CRITICAL
+    note: 数据库口令 P@ssw0rd123 硬编码进源码,泄漏即被拖库
+  - type_keywords: ["吞异常", "空catch", "swallow", "异常", "empty catch"]
+    file: PaymentConfig.java
+    line: 14
+    tolerance: 2
+    severity: WARNING
+    note: 连接失败异常被空 catch 吞掉,故障被掩盖
+  - type_keywords: ["空指针", "npe", "null", "解引用"]
+    file: PaymentConfig.java
+    line: 18
+    tolerance: 2
+    severity: WARNING
+    note: 连接失败被吞后 c 仍为 null,ping(c) 解引用风险
+distractors:
+  - type_keywords: ["魔法数字", "magic", "硬编码", "5"]
+    file: PaymentConfig.java
+    line: 16
+    tolerance: 1
+    note: retries 是具名局部变量,5 为其初值、含义清晰,非散落魔法数字

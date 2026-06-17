@@ -50,6 +50,23 @@ class ExpectedIssue(BaseModel):
     note: str = Field(default="", description="给人看的说明,如'用户输入直接拼进 SQL'")
 
 
+class Distractor(BaseModel):
+    """一个"诱饵":diff 里**看着像漏洞、实则无害**的点(已校验的拼接、用了安全 API 的反序列化……)。
+
+    与 `ExpectedIssue` 同构,以复用 matcher 的文件/行号/关键词匹配函数。语义相反:
+    审查器若报到这里,就是**被诱饵骗了**——计入误报,并归类为"中诱饵"(区别于"凭空乱报")。
+    专门用来量复杂脏代码下审查器的克制力(见 eval-complex-behavior spec)。
+    """
+
+    file: str = Field(description="诱饵所在文件(按 basename / 后缀匹配)")
+    line: int = Field(default=0, description="诱饵行号;0 表示不校验行号")
+    tolerance: int = Field(default=3, description="行号容差")
+    type_keywords: list[str] = Field(
+        description="审查器若误报此处大概率会用的关键词,命中其一 + 文件/行号对上即判为'中诱饵'"
+    )
+    note: str = Field(default="", description="为什么这是诱饵而非真问题(给人看,造数据时务必写清)")
+
+
 class EvalCase(BaseModel):
     """一条评测用例 = 一段 diff + 它的标准答案。
 
@@ -80,6 +97,11 @@ class EvalCase(BaseModel):
         description="能力标签:审准本用例至少需要哪类上下文(见 VALID_CAPABILITIES)。"
         "仅用于评测归类与切片,绝不改变审查链路行为。缺省为 ['diff-only']。",
     )
+    distractors: list[Distractor] = Field(
+        default_factory=list,
+        description="诱饵清单:看着像漏洞、实则无害的点。报告踩中即归类为'中诱饵'误报,"
+        "用来量复杂用例下的克制力。缺省为空(老用例向后兼容)。",
+    )
 
     @field_validator("capability", mode="before")
     @classmethod
@@ -108,6 +130,11 @@ class EvalCase(BaseModel):
     def is_repo_backed(self) -> bool:
         """是否为 repo-backed 用例(带真实可读的仓库快照)。"""
         return bool(self.repo_path)
+
+    @property
+    def is_complex(self) -> bool:
+        """是否为复杂用例(一份 diff 植入多条真问题)。用于复杂度切片与裁判可信契约。"""
+        return len(self.expected) > 1
 
 
 class JudgeMatch(BaseModel):
@@ -161,6 +188,18 @@ class MatchOutcome(BaseModel):
     )
     judge_scores: list[JudgeScore] = Field(default_factory=list, description="LLM 质量打分明细(旧路径,暂留)")
 
+    # ---- 过度上报诊断:把误报拆成"被诱饵骗"和"凭空乱报"----
+    distractor_total: int = Field(default=0, description="该用例埋的诱饵总数")
+    distractor_hits: int = Field(
+        default=0, description="误报里命中诱饵的数量(被骗);其余 FP 即'凭空乱报'= FP - distractor_hits"
+    )
+
+    # ---- severity 分层 TP/FN:量"抓大漏小"(主=CRITICAL,次=WARNING/INFO;None 不计分层)----
+    tp_primary: int = Field(default=0, description="命中的主项(CRITICAL)标准答案数")
+    fn_primary: int = Field(default=0, description="漏掉的主项标准答案数")
+    tp_secondary: int = Field(default=0, description="命中的次项(WARNING/INFO)标准答案数")
+    fn_secondary: int = Field(default=0, description="漏掉的次项标准答案数")
+
     # ---- 规则尺交叉校验(仅当本用例用了 LLM 裁判时才有对比意义)----
     primary_judge: str = Field(
         default="rule",
@@ -208,4 +247,27 @@ class AggregateMetrics(BaseModel):
     )
     avg_judge_suggestion_quality: float | None = Field(
         default=None, description="LLM-as-judge:命中项 suggestion 平均分(未启用为 None)"
+    )
+
+    # ---- 行为诊断指标族(eval-complex-behavior,全部加法;不适用时为 None → 报告渲染 "—")----
+    distractor_hit_rate: float | None = Field(
+        default=None, description="诱饵命中率 = Σ中诱饵 / Σ诱饵总数;无诱饵用例时 None"
+    )
+    vuln_noise_per_case: float = Field(
+        default=0.0, description="vuln 噪音/条 = vuln 用例 FP 总数 / vuln 用例数(脏代码上的噪音,区别于 clean 误报率)"
+    )
+    report_inflation: float = Field(
+        default=0.0, description="报告膨胀比 = vuln 用例上 报告数/标答数 的均值"
+    )
+    recall_primary: float | None = Field(
+        default=None, description="主项(CRITICAL)recall;无主项标答时 None"
+    )
+    recall_secondary: float | None = Field(
+        default=None, description="次项(WARNING/INFO)recall;无次项标答时 None"
+    )
+    severity_accuracy_complex: float | None = Field(
+        default=None, description="复杂用例(标答>1)子集上的级别准确率;无此类命中时 None"
+    )
+    judge_rule_agreement: float | None = Field(
+        default=None, description="裁判↔规则一致率 = 两尺判定全等的 LLM 主判用例数 / LLM 主判用例数;无 LLM 主判时 None"
     )

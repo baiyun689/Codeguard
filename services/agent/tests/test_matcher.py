@@ -147,3 +147,80 @@ def test_裁判失败回退规则尺():
     outcome = evaluate_case(case, reported, judge_llm=_Failing())
     assert outcome.primary_judge == "rule"
     assert outcome.true_positives == 1
+
+
+# ---- 诱饵归类 + severity 分层(eval-complex-behavior) ----
+
+from evals.schema import Distractor  # noqa: E402
+
+
+def test_诱饵归类_踩中诱饵记中诱饵其余记凭空乱报():
+    # 标答 1 条(命中),另有 2 条误报:一条踩诱饵、一条凭空乱报。
+    case = EvalCase(
+        id="cx", category="混合", diff="d",
+        expected=[_expected(file="A.java", line=10)],
+        distractors=[Distractor(type_keywords=["硬编码"], file="A.java", line=40, note="常量非密钥")],
+    )
+    reported = [
+        _issue(file="A.java", line=10),                       # TP
+        _issue(file="A.java", line=40, type="硬编码密钥"),     # 踩诱饵
+        _issue(file="A.java", line=99, type="无关乱报"),       # 凭空乱报
+    ]
+    outcome = _build_outcome(case, reported, {0: 0}, "rule")
+    assert outcome.true_positives == 1
+    assert outcome.false_positives == 2          # FP 总数不因归类改变
+    assert outcome.distractor_total == 1
+    assert outcome.distractor_hits == 1          # 只有踩诱饵那条
+    # 凭空乱报 = FP - 中诱饵
+    assert outcome.false_positives - outcome.distractor_hits == 1
+
+
+def test_诱饵归类_命中优先于诱饵():
+    # 报告同时匹配某标答与某诱饵(同位置同词)→ 计 TP,不计中诱饵。
+    case = EvalCase(
+        id="cx", category="混合", diff="d",
+        expected=[_expected(keywords=("硬编码",), file="A.java", line=40)],
+        distractors=[Distractor(type_keywords=["硬编码"], file="A.java", line=40, note="撞位置")],
+    )
+    reported = [_issue(file="A.java", line=40, type="硬编码")]
+    outcome = _build_outcome(case, reported, {0: 0}, "rule")
+    assert outcome.true_positives == 1
+    assert outcome.false_positives == 0
+    assert outcome.distractor_hits == 0          # 已被标答认领,不算被骗
+
+
+def test_诱饵归类_无诱饵时total与hits为零():
+    case = _case([_expected(line=10)])
+    reported = [_issue(line=10), _issue(line=99, type="乱报")]
+    outcome = _build_outcome(case, reported, {0: 0}, "rule")
+    assert outcome.distractor_total == 0
+    assert outcome.distractor_hits == 0
+    assert outcome.false_positives == 1
+
+
+def test_severity_分层_主次落桶():
+    case = EvalCase(
+        id="cx", category="混合", diff="d",
+        expected=[
+            _expected(keywords=("sql",), file="A.java", line=10, severity=Severity.CRITICAL),  # 主,命中
+            _expected(keywords=("npe",), file="A.java", line=20, severity=Severity.WARNING),    # 次,命中
+            _expected(keywords=("魔法",), file="A.java", line=30, severity=Severity.INFO),       # 次,漏
+            _expected(keywords=("注入",), file="A.java", line=50, severity=Severity.CRITICAL),  # 主,漏
+        ],
+    )
+    reported = [
+        _issue(file="A.java", line=10, type="sql注入"),
+        _issue(file="A.java", line=20, type="npe空指针"),
+    ]
+    outcome = _build_outcome(case, reported, {0: 0, 1: 1}, "rule")
+    assert (outcome.tp_primary, outcome.fn_primary) == (1, 1)
+    assert (outcome.tp_secondary, outcome.fn_secondary) == (1, 1)
+
+
+def test_severity_分层_未标级别不计分层():
+    case = _case([_expected(line=10, severity=None)])  # 无 severity
+    reported = [_issue(line=10)]
+    outcome = _build_outcome(case, reported, {0: 0}, "rule")
+    assert outcome.true_positives == 1
+    assert (outcome.tp_primary, outcome.tp_secondary) == (0, 0)
+    assert (outcome.fn_primary, outcome.fn_secondary) == (0, 0)

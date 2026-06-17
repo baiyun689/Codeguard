@@ -1,0 +1,53 @@
+id: complex_cache_004
+category: 复杂混合·会话缓存
+dimension: logic
+language: java
+description: 缓存逐出多缺陷(遍历中删除 ConcurrentModification + 魔法数字 + NPE),并埋一个"看着像线程不安全、实则单线程约定"的诱饵
+capability: [diff-only]
+diff: |
+  diff --git a/src/main/java/com/demo/SessionCache.java b/src/main/java/com/demo/SessionCache.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/SessionCache.java
+  +++ b/src/main/java/com/demo/SessionCache.java
+  @@ -20,7 +20,18 @@ public class SessionCache {
+       private final Map<String, Session> cache = new HashMap<>();
+       private static final long TTL = 1800;
+
+  +    public void evictExpired() {
+  +        for (Map.Entry<String, Session> e : cache.entrySet()) {
+  +            if (e.getValue().age() > 1800) {
+  +                cache.remove(e.getKey());
+  +            }
+  +        }
+  +    }
+  +
+  +    public Session get(String id) {
+  +        Session s = cache.get(id);
+  +        return s != null ? s : cache.get(id.toLowerCase());
+  +    }
+   }
+expected:
+  - type_keywords: ["魔法数字", "magic", "硬编码", "1800"]
+    file: SessionCache.java
+    line: 25
+    tolerance: 2
+    severity: INFO
+    note: 字面量 1800 应使用已有具名常量 TTL,而非重复硬编码
+  - type_keywords: ["并发修改", "concurrentmodification", "遍历", "迭代", "删除"]
+    file: SessionCache.java
+    line: 26
+    tolerance: 2
+    severity: CRITICAL
+    note: 遍历 entrySet 过程中 cache.remove 触发 ConcurrentModificationException(即便单线程)
+  - type_keywords: ["空指针", "npe", "null", "id"]
+    file: SessionCache.java
+    line: 33
+    tolerance: 2
+    severity: WARNING
+    note: id 为 null 时 id.toLowerCase() 抛 NPE
+distractors:
+  - type_keywords: ["线程安全", "并发", "concurrent", "hashmap", "synchronized"]
+    file: SessionCache.java
+    line: 20
+    tolerance: 1
+    note: 本类按约定仅由单线程调度器调用,HashMap 非线程安全在此不构成缺陷;报"应改 ConcurrentHashMap"即被表象误导(真正的并发缺陷是遍历中删除)

@@ -138,6 +138,10 @@ def render_report(
         f"| 误报率(每条干净 diff) | {metrics.false_positives_on_clean:.3f} | 干净代码上平均误报几个(越低越好) |",
         f"| 定位准确率 | {metrics.localization_accuracy:.3f} | 命中项里行号也对上的比例 |",
         f"| 级别准确率 | {metrics.severity_accuracy:.3f} | 命中项里 severity 也对上的比例 |",
+        f"| 诱饵命中率 | {_fmt(metrics.distractor_hit_rate)} | 过度上报里「被诱饵骗」的比例(越低=越克制) |",
+        f"| vuln 噪音/条 | {_fmt(metrics.vuln_noise_per_case)} | 脏代码上平均每条 diff 误报几个(区别于 clean 误报率) |",
+        f"| 报告膨胀比 | {_fmt(metrics.report_inflation)} | vuln 用例上 报告数/标答数 的均值(>1 偏过度上报) |",
+        f"| 级别准确率·复杂用例 | {_fmt(metrics.severity_accuracy_complex)} | 多问题场景下的级别判准率 |",
     ]
     if judge_line:
         lines.append(judge_line.rstrip())
@@ -165,13 +169,19 @@ def render_report(
             if (o.true_positives, o.false_positives, o.false_negatives)
             != (o.rule_true_positives, o.rule_false_positives, o.rule_false_negatives)
         ]
+        agreement = (
+            f"{metrics.judge_rule_agreement:.1%}"
+            if metrics.judge_rule_agreement is not None else "—"
+        )
         lines += [
             "",
             "## 规则尺 vs 裁判尺(最后一次跑测)",
             "",
+            f"**裁判↔规则一致率:{agreement}**(全部跑测累计)。这是评测尺自身的健康度——"
+            "一致率低说明规则尺关键词匹配偏差大、需靠裁判纠偏,此时复杂用例指标只有开 `--judge` 才可信。",
+            "",
             "主判为 LLM 裁判(语义配对),规则尺并行作确定性交叉校验。下表只列两尺判定不一致的用例;"
-            f"共 {len(diverged)} 条分歧。分歧多说明规则尺的关键词匹配偏差大(裁判在纠偏);"
-            "分歧为 0 则两尺一致,可放心用规则尺做廉价回归。",
+            f"共 {len(diverged)} 条分歧(本次跑测)。分歧为 0 则两尺一致,可放心用规则尺做廉价回归。",
             "",
             "| 用例 | 裁判 TP/FP/FN | 规则 TP/FP/FN |",
             "|---|---|---|",
@@ -206,6 +216,41 @@ def render_report(
                 f"| {case_id} | {d.get('type', '')} | "
                 f"{d.get('expected', '')} | {d.get('reported', '')} | {d.get('match', '')} |"
             )
+
+    # 过度上报诊断:逐复杂/带诱饵用例拆"被骗"和"凭空乱报",直接点名哪条用例骗到了 agent。
+    bait_rows = [o for o in runs[-1] if o.distractor_total > 0]
+    if bait_rows:
+        lines += [
+            "",
+            "## 过度上报诊断(最后一次跑测)",
+            "",
+            "对埋了诱饵的用例,把误报拆成「中诱饵(被似是而非的点骗了)」与「凭空乱报(既非真问题也非诱饵)」。"
+            "中诱饵高=克制力差、易被表象误导;凭空乱报高=无中生有。",
+            "",
+            "| 用例 | 诱饵数 | 中诱饵 | 凭空乱报 | FP 合计 |",
+            "|---|---|---|---|---|",
+        ]
+        for o in bait_rows:
+            spurious = o.false_positives - o.distractor_hits
+            lines.append(
+                f"| {o.case_id} | {o.distractor_total} | {o.distractor_hits} | "
+                f"{spurious} | {o.false_positives} |"
+            )
+
+    # 主/次项 recall 对照:一眼看出"抓大漏小"还是反过来。
+    if metrics.recall_primary is not None or metrics.recall_secondary is not None:
+        lines += [
+            "",
+            "## 主/次项 recall 对照",
+            "",
+            "按严重级别分层的检出率:主项=CRITICAL(必须修),次项=WARNING/INFO(建议/可选)。"
+            "主低次高=漏掉要紧问题(危险);主高次低=只盯大的、忽略次要(可接受)。",
+            "",
+            "| 档位 | Recall |",
+            "|---|---|",
+            f"| 主项(CRITICAL) | {_fmt(metrics.recall_primary)} |",
+            f"| 次项(WARNING/INFO) | {_fmt(metrics.recall_secondary)} |",
+        ]
 
     lines += [
         "",

@@ -1,0 +1,57 @@
+id: complex_discount_003
+category: 复杂混合·折扣计算
+dimension: logic
+language: java
+description: 折扣计算多缺陷(NPE + 整数除法精度 + 硬编码税率 + 数组越界),并埋一个"看着像魔法数字、实则具名常量"的诱饵
+capability: [diff-only]
+diff: |
+  diff --git a/src/main/java/com/demo/PriceService.java b/src/main/java/com/demo/PriceService.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/PriceService.java
+  +++ b/src/main/java/com/demo/PriceService.java
+  @@ -14,6 +14,12 @@ public class PriceService {
+       private Map<String, BigDecimal> priceTable;
+       private static final int SCALE = 2;
+
+  +    public BigDecimal applyDiscount(String sku, int percent) {
+  +        BigDecimal base = priceTable.get(sku);
+  +        BigDecimal rate = new BigDecimal(percent / 100);
+  +        BigDecimal price = base.multiply(rate);
+  +        BigDecimal tax = price.multiply(new BigDecimal("0.13"));
+  +        for (int i = 0; i <= cart.size(); i++) {
+  +            audit(cart.get(i));
+  +        }
+  +        return price.add(tax).setScale(SCALE, RoundingMode.HALF_UP);
+  +    }
+   }
+expected:
+  - type_keywords: ["空指针", "npe", "null", "解引用"]
+    file: PriceService.java
+    line: 18
+    tolerance: 3
+    severity: CRITICAL
+    note: priceTable.get(sku) 在 key 不存在时返回 null,base.multiply 抛 NPE
+  - type_keywords: ["整数除法", "精度", "division", "截断", "int"]
+    file: PriceService.java
+    line: 19
+    tolerance: 2
+    severity: WARNING
+    note: percent/100 为整数除法,percent<100 时恒为 0,折扣率被截断为 0
+  - type_keywords: ["魔法数字", "magic", "硬编码", "税率", "0.13"]
+    file: PriceService.java
+    line: 21
+    tolerance: 2
+    severity: WARNING
+    note: 税率 0.13 硬编码为字面量,应抽成配置/具名常量
+  - type_keywords: ["越界", "off-by-one", "indexoutof", "边界", "数组"]
+    file: PriceService.java
+    line: 22
+    tolerance: 2
+    severity: CRITICAL
+    note: i <= cart.size() 越界,最后一次 cart.get(i) 抛 IndexOutOfBounds
+distractors:
+  - type_keywords: ["魔法数字", "magic", "硬编码", "2"]
+    file: PriceService.java
+    line: 25
+    tolerance: 1
+    note: SCALE 是具名常量,setScale(SCALE, ...) 非魔法数字;真正硬编码的是税率 0.13
