@@ -1,0 +1,60 @@
+id: complex_report_006
+category: 复杂混合·报表导出
+dimension: quality
+language: java
+description: 导出多缺陷(路径穿越 + 资源泄漏 + 魔法数字 + 错误吞为 null),并埋一个"同样是路径拼接、实则只构造返回 URL"的诱饵
+capability: [diff-only]
+diff: |
+  diff --git a/src/main/java/com/demo/ReportService.java b/src/main/java/com/demo/ReportService.java
+  index 1111111..2222222 100644
+  --- a/src/main/java/com/demo/ReportService.java
+  +++ b/src/main/java/com/demo/ReportService.java
+  @@ -15,6 +15,19 @@ public class ReportService {
+
+  +    public String export(List<Row> rows, String path) {
+  +        StringBuilder sb = new StringBuilder();
+  +        FileWriter w;
+  +        try {
+  +            w = new FileWriter(path);
+  +            for (int i = 0; i < rows.size(); i++) {
+  +                sb.append(rows.get(i).render());
+  +                if (sb.length() > 1048576) flush(sb);
+  +            }
+  +            w.write(sb.toString());
+  +        } catch (IOException e) {
+  +            return null;
+  +        }
+  +        return "/downloads/" + path;
+  +    }
+   }
+expected:
+  - type_keywords: ["路径", "穿越", "traversal", "path"]
+    file: ReportService.java
+    line: 20
+    tolerance: 2
+    severity: CRITICAL
+    note: path 用户可控直接传入 FileWriter,可 ../ 穿越写任意文件
+  - type_keywords: ["资源泄漏", "未关闭", "leak", "close", "filewriter"]
+    file: ReportService.java
+    line: 20
+    tolerance: 2
+    severity: WARNING
+    note: FileWriter w 在任何路径都未 close,句柄泄漏
+  - type_keywords: ["魔法数字", "magic", "硬编码", "1048576"]
+    file: ReportService.java
+    line: 23
+    tolerance: 2
+    severity: INFO
+    note: 阈值 1048576 字面量散落,应抽成具名常量(如 MAX_BUFFER)
+  - type_keywords: ["返回null", "吞", "null", "错误处理", "异常"]
+    file: ReportService.java
+    line: 27
+    tolerance: 2
+    severity: WARNING
+    note: 写失败后 catch 里 return null,调用方无法区分"无数据"与"写失败"
+distractors:
+  - type_keywords: ["路径", "穿越", "traversal", "path", "拼接"]
+    file: ReportService.java
+    line: 29
+    tolerance: 1
+    note: 此处仅拼接返回给前端的下载 URL 字符串、不触达文件系统,非穿越点;真正的穿越在 FileWriter 那行
