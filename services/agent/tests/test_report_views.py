@@ -66,3 +66,64 @@ def test_trend_limit_caps_rows():
     trend_block = out.split("## profile 横向对照")[0]
     assert "T09-00-00" in trend_block
     assert "T00-00-00" not in trend_block
+
+
+# ---- render_report 新增段(eval-complex-behavior) ----
+
+from types import SimpleNamespace  # noqa: E402
+
+from evals.report import render_report  # noqa: E402
+from evals.schema import AggregateMetrics, MatchOutcome  # noqa: E402
+
+
+def _metrics(**kw) -> AggregateMetrics:
+    base = dict(
+        runs=1, num_cases=1, num_vuln_cases=1, num_clean_cases=0,
+        precision=0.5, recall=0.5, f1=0.5,
+        false_positives_on_clean=0.0, localization_accuracy=1.0, severity_accuracy=1.0,
+    )
+    base.update(kw)
+    return AggregateMetrics(**base)
+
+
+def _settings():
+    return SimpleNamespace(provider="mock", model="m")
+
+
+def test_报告_渲染行为诊断指标行():
+    m = _metrics(distractor_hit_rate=0.25, vuln_noise_per_case=1.5,
+                 report_inflation=2.0, severity_accuracy_complex=0.5)
+    out = render_report(m, _settings(), [[MatchOutcome(case_id="v", is_clean=False)]], [])
+    assert "诱饵命中率" in out
+    assert "vuln 噪音/条" in out
+    assert "报告膨胀比" in out
+    assert "级别准确率·复杂用例" in out
+
+
+def test_报告_None指标渲染占位符不报错():
+    m = _metrics()  # 新指标全 None / 默认
+    out = render_report(m, _settings(), [[MatchOutcome(case_id="v", is_clean=False)]], [])
+    assert "诱饵命中率 | —" in out          # None → "—"
+
+
+def test_报告_一致率百分比渲染():
+    m = _metrics(judge_rule_agreement=0.5)
+    run = [MatchOutcome(case_id="v", is_clean=False, primary_judge="llm",
+                        true_positives=1, rule_true_positives=0, rule_false_positives=1)]
+    out = render_report(m, _settings(), [run], [])
+    assert "裁判↔规则一致率:50.0%" in out
+
+
+def test_报告_过度上报诊断段():
+    run = [MatchOutcome(case_id="cx", is_clean=False, false_positives=2,
+                        distractor_total=1, distractor_hits=1)]
+    out = render_report(_metrics(distractor_hit_rate=1.0), _settings(), [run], [])
+    assert "## 过度上报诊断" in out
+    assert "cx" in out
+
+
+def test_报告_主次recall对照段():
+    m = _metrics(recall_primary=0.8, recall_secondary=0.4)
+    out = render_report(m, _settings(), [[MatchOutcome(case_id="v", is_clean=False)]], [])
+    assert "## 主/次项 recall 对照" in out
+    assert "0.800" in out and "0.400" in out

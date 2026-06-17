@@ -132,3 +132,62 @@ def test_repo_yaml_inside_snapshot_not_picked_as_case(tmp_path):
 
     cases = load_cases(tmp_path)
     assert sorted(c.id for c in cases) == ["rb1", "v1"]
+
+
+# --------- 复杂用例:Distractor 与向后兼容(eval-complex-behavior) ---------
+
+def test_distractors_缺省为空向后兼容():
+    # 老用例不写 distractors,加载后视为空,行为不变。
+    case = EvalCase(id="c1", category="clean", diff="x")
+    assert case.distractors == []
+    assert case.is_complex is False
+
+
+def test_复杂用例_多标答加诱饵正常构造():
+    case = EvalCase(
+        id="cx1",
+        category="混合",
+        diff="--- d ---",
+        expected=[
+            {"type_keywords": ["sql", "注入"], "file": "A.java", "line": 10, "severity": "CRITICAL"},
+            {"type_keywords": ["空指针", "npe"], "file": "A.java", "line": 20, "severity": "WARNING"},
+            {"type_keywords": ["魔法数字"], "file": "A.java", "line": 30, "severity": "INFO"},
+        ],
+        distractors=[
+            {"type_keywords": ["硬编码"], "file": "A.java", "line": 40,
+             "note": "这是 public static final 常量名,不是密钥"},
+        ],
+    )
+    assert case.is_complex is True
+    assert len(case.expected) == 3
+    assert len(case.distractors) == 1
+    assert case.distractors[0].line == 40
+    assert case.distractors[0].tolerance == 3  # 默认容差
+
+
+def test_distractor_经_yaml_加载(tmp_path):
+    _write(tmp_path / "vuln" / "cx.yaml", """
+        id: cx_load
+        category: 混合
+        diff: |
+          --- d ---
+        expected:
+          - type_keywords: ["sql"]
+            file: A.java
+            line: 10
+            severity: CRITICAL
+          - type_keywords: ["npe"]
+            file: A.java
+            line: 20
+            severity: WARNING
+        distractors:
+          - type_keywords: ["硬编码"]
+            file: A.java
+            line: 40
+            note: 常量非密钥
+    """)
+    cases = load_cases(tmp_path)
+    case = next(c for c in cases if c.id == "cx_load")
+    assert case.is_complex is True
+    assert len(case.distractors) == 1
+    assert case.distractors[0].type_keywords == ["硬编码"]
