@@ -522,4 +522,30 @@ try-with-resources 当资源泄漏)等语义型误报。
 
 **日期**:2026-06-18
 
-<!-- 后续在这里继续追加 ADR-015、ADR-016 …… -->
+## ADR-015 · 审查质量调优一轮:级别 rubric 校准 + 误报复核基线复现(并厘清 harden 搁置)
+
+`--runs 3 --judge` 把 baseline 从单跑(ADR-013)做实后,数据指向两条独立短板:级别系统性高判、过度上报。本轮各打一枪,均守"一次一个变量、可量化、留痕"。
+
+**决策 1 · 三审查员级别 rubric 校准**(已提交 `fix(prompts)`)
+
+ADR-013 实测级别准确率仅 0.486(`--runs 3`),12/23 判错且几乎全是 WARNING/INFO→CRITICAL 系统性高判(坐实 ADR-004)。归因发现两类:① 模型无视 rubric 往高判(资源泄漏、条件性 NPE);② **prompt 自身与数据集口径打架**——`quality.txt` 原把"空 catch 吞异常"写进 CRITICAL 定义,而数据集标 WARNING,模型照 prompt 执行反被扣分。
+
+- 改动:三审查员统一加"**就低不就高**"默认,CRITICAL 收窄到"卡合并"窄口径、WARNING 设默认档;明确把资源泄漏 / 条件性 NPE / 空 catch / 硬编码归 WARNING(其中空 catch 由 CRITICAL 降 WARNING,**prompt 向数据集口径对齐**)。
+- 口径裁定:CRITICAL 留给"必然崩溃 / 直接可利用、需卡合并"的窄集合;"空 catch 该几级"取数据集的 WARNING(可维护性问题不卡合并)。
+- 效果(`--runs 3 --judge`,**severity 不参与 TP/FP/FN 匹配,故 P/R 不受影响**,实测亦印证):级别准确率 **0.486 → 0.806**,Recall 不变。属隔离极干净的单变量改动。
+
+**决策 2 · 误报复核净增益经 qwen-max 复现(补 ADR-014)**
+
+ADR-014 的 Step-1 增益(plus 验证模型)换 **qwen3.7-max** 重跑 `pipeline-fpverify --runs 3 --judge`:P 0.720 / 误报率 0.375 / F1 0.757,与 plus 版(0.733 / 0.375 / 0.759)**几乎重合**。结论:**独立复核员的净增益不挑验证模型、稳健**(相对 notools:P +0.21、误报率腰斩、F1 +0.12,Recall −0.06)。"误报复核做成 profile"这一成果在新模型上钉实。
+
+**决策 3 · harden(复核 prompt 强化)搁置,不留假结论**
+
+曾试图强化 `fp_verify.txt`(举证制 + severity 敏感 + 缺上下文即保留)以救 ADR-014 的跨文件误删,但:① 关键的"缺上下文即保留"版反而把 clean 噪音放回(P 0.733→0.603);② "举证制"版那一跑遭遇 **qwen 免费额度耗尽全 403**,复核根本没运行(兜底"失败即保留"=未测),**不能据此判 prompt 优劣**;③ 更根本——按"diff-only 不评判跨文件用例"的方法论(见下),原版 prompt 在其正当地盘(diff-only + clean)**已是最优**,harden 的 premise moot。故 `fp_verify.txt` **回退原版**,harden change **搁置**,不写"负结果"ADR(它从未被有效测过)。
+
+**方法论留痕(本轮最有价值的一条)**:**需要读 diff 之外文件才能审准的用例(file/repo-map 能力标签),不应在 diff-only(notools)档评判 FP 复核**——该档下审查员与复核员同样只有 diff、都在"猜",调复核员的松紧只是在"keep 对的猜测"与"删错的噪音"间跷跷板(实测:严格版 repo-map 切片 0.583 / 宽松版 0.833,Precision 此消彼长)。打破跷跷板要让复核员"查"而非"猜"——即给它 diff 外上下文(工具档 + Step 3),那才是跨文件复核的正确战场。
+
+**放弃 / 推迟**:harden 的 prompt-only 强化(搁置);"把审查员获取的上下文喂给复核员"(Step 3,需工具档 + gateway,独立 change);引入 project-codeguard(CC-BY-4.0)安全写法判例(独立 change)。
+
+**日期**:2026-06-18
+
+<!-- 后续在这里继续追加 ADR-016、ADR-017 …… -->

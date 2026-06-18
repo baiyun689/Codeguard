@@ -1,6 +1,20 @@
-# 交接清单（2026-06-17）
+# 交接清单（2026-06-18）
 
 > 当前进度快照。下次接手从「下次从哪开始」一节读起即可。
+
+## 审查质量调优一轮：级别校准 + 误报复核 profile —— 已完成并提交 ✅（详见 ADR-014 / ADR-015）
+
+把 baseline 用 `--runs 3 --judge` 做实后,针对两条短板各打一枪,均守"一次一个变量、可量化":
+
+- **级别 rubric 校准**(已提交 `fix(prompts)`):三审查员 CRITICAL 收窄、WARNING 设默认档,空 catch 等向数据集口径对齐。级别准确率 **0.486 → 0.806**,P/R 不受影响(severity 不进匹配)。
+- **误报复核升为 profile**(已提交 `feat(evals)`,openspec change `fp-verify-profile` 已归档):`Profile.fp_verify` + `pipeline-fpverify` 档;runner 据 profile 驱动、不再认全局 env。**独立异源复核员净增益已在 qwen-plus 与 qwen-max 两次复现**(相对 notools:P 0.51→0.72、clean 误报率 0.71→0.375 腰斩、F1 +0.12,Recall −0.06)。原版 `fp_verify.txt` 即最优,未改。
+- **harden(复核 prompt 强化)搁置**:premise moot(见下方法论)+ 曾遇 qwen 403 未测成,不留假结论;`fp_verify.txt` 保持原版。openspec change `harden-fp-verify-prompt` 已作废归档。
+
+**方法论(本轮最值钱的一条,已进 ADR-015)**:**需读 diff 外文件才审得准的用例(file/repo-map 能力)不该在 diff-only(notools)档评判 FP 复核**——该档审查员与复核员都只有 diff、都在猜,调复核松紧只是 recall↔precision 跷跷板。要打破它须让复核员"查"而非"猜",即喂 diff 外上下文(=工具档 + Step 3)。
+
+**环境提醒**:`CODEGUARD_JUDGE_*` 现为 **qwen3.7-max**(免费额度会耗尽→全 403,届时复核与裁判都会回退/失效;跑前先探活)。
+
+---
 
 ## 评测升级：复杂行为诊断（复杂用例 + 诱饵 + 行为指标族）—— 工程已完成 ✅（实跑 baseline 待补）
 
@@ -142,7 +156,8 @@ conda run -n codeguard --no-capture-output python -m evals.runner --mode pipelin
 
 ## 👉 下次从哪开始
 
-1. **实跑 repo_map before/after**(最该先做):起 gateway(`java -jar target/codeguard-gateway.jar`)+ 配真实 DeepSeek + `CODEGUARD_TOOL_SERVER_URL`,在跨文件难例上跑 `--profile pipeline-file` vs `--profile pipeline-repomap`,如实记录增益或"测不出",回填本文件与 ADR-012。难例 `repomap_npe_crossfile_001` 与 profile 均已就位。
+0. **Step 3 · 把审查员获取的上下文喂给复核员(本轮结论指向的真杠杆,新)**:前提是工具档真跑起来(见下 1)。让 ReAct 审查员读到的文件/repo_map 结果经 PipelineContext 传入误报过滤阶段,复核员据此"查"而非"猜",修掉 ADR-014 跨文件误删并解锁"fp_verify + 工具档"组合。设计抉择见 ADR-015 方法论段(喂什么 / 喂多少 / token 预算)。需先把 1 跑通拿到工具档基线,再开此 change。
+1. **实跑 repo_map before/after**(Step 3 的前置):起 gateway(`java -jar target/codeguard-gateway.jar`)+ 配真实 DeepSeek + `CODEGUARD_TOOL_SERVER_URL`,在跨文件难例上跑 `--profile pipeline-file` vs `--profile pipeline-repomap`,如实记录增益或"测不出",回填本文件与 ADR-012。难例 `repomap_npe_crossfile_001` 与 profile 均已就位。
    ```powershell
    cd services/gateway; mvn package; java -jar target/codeguard-gateway.jar   # 起工具服务(9090)
    $env:CODEGUARD_TOOL_SERVER_URL="http://localhost:9090"
@@ -156,5 +171,5 @@ conda run -n codeguard --no-capture-output python -m evals.runner --mode pipelin
 
 ## 衍生待办(散落在各 ADR)
 
-- 级别准确率长期 ~0.6,模型系统性高判 severity(ADR-004 老账,待数据集扩量后复查)。
+- ~~级别准确率长期 ~0.6,模型系统性高判 severity~~ → 已由 ADR-015 级别 rubric 校准治到 0.806;ADR-004 老账可视为收敛,数据集扩量后再复查。
 - `.env.example` 已补 `CODEGUARD_TOOL_SERVER_URL`;`CODEGUARD_JUDGE_*` 仍未进示例,需要时补。
