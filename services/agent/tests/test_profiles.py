@@ -30,15 +30,43 @@ def _write_profiles(tmp_path) -> Path:
             mode: pipeline
             tools: [get_file_content]
             model: some-model
+          pipeline-fpverify:
+            mode: pipeline
+            tools: []
+            fp_verify: true
     """), encoding="utf-8")
     return p
 
 
 def test_load_profiles(tmp_path):
     profiles = load_profiles(_write_profiles(tmp_path))
-    assert set(profiles) == {"pipeline-notools", "pipeline-file", "custom-model"}
+    assert set(profiles) == {
+        "pipeline-notools", "pipeline-file", "custom-model", "pipeline-fpverify"
+    }
     assert profiles["pipeline-file"].tools == ["get_file_content"]
     assert profiles["custom-model"].model == "some-model"
+
+
+def test_load_profiles_fp_verify(tmp_path):
+    # 显式声明 fp_verify: true 被解析;未声明者默认 False(缺省=不开复核)。
+    profiles = load_profiles(_write_profiles(tmp_path))
+    assert profiles["pipeline-fpverify"].fp_verify is True
+    assert profiles["pipeline-notools"].fp_verify is False
+    assert profiles["pipeline-file"].fp_verify is False
+
+
+def test_fpverify_differs_from_notools_only_in_fp_verify(tmp_path):
+    # 对照纪律:pipeline-fpverify 与 pipeline-notools 仅在 fp_verify 上不同。
+    profiles = load_profiles(_write_profiles(tmp_path))
+    nt, fv = profiles["pipeline-notools"], profiles["pipeline-fpverify"]
+    assert (nt.mode, nt.tools, nt.model) == (fv.mode, fv.tools, fv.model)
+    assert nt.fp_verify != fv.fp_verify
+
+
+def test_adhoc_profile_fp_verify_off():
+    # ad-hoc 档不开复核。
+    assert resolve_profile(None, tools=False).fp_verify is False
+    assert resolve_profile(None, tools=True).fp_verify is False
 
 
 def test_resolve_named_profile(tmp_path):
@@ -84,7 +112,12 @@ def test_tools_effective_degrades():
 def test_shipped_profiles_valid():
     # 校验仓库里实际 profiles.yaml 的内置 profile。
     profiles = load_profiles(_REAL_PROFILES)
-    assert {"pipeline-notools", "pipeline-file", "pipeline-repomap"} <= set(profiles)
+    assert {
+        "pipeline-notools", "pipeline-file", "pipeline-repomap", "pipeline-fpverify"
+    } <= set(profiles)
     assert profiles["pipeline-file"].tools == ["get_file_content"]
     assert profiles["pipeline-notools"].tools == []
     assert profiles["pipeline-repomap"].mode == "pipeline"
+    # pipeline-fpverify:与 notools 同配,只多开了误报复核。
+    assert profiles["pipeline-fpverify"].fp_verify is True
+    assert profiles["pipeline-fpverify"].tools == []

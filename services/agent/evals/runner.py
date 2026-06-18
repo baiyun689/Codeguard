@@ -120,8 +120,8 @@ def main(argv: list[str] | None = None) -> int:
         settings.model = profile.model  # profile 显式覆盖模型
 
     logger.info(
-        "profile=%s mode=%s tools=%s provider=%s model=%s runs=%d judge=%s",
-        profile.name, profile.mode, profile.tools or "(无)",
+        "profile=%s mode=%s tools=%s fp_verify=%s provider=%s model=%s runs=%d judge=%s",
+        profile.name, profile.mode, profile.tools or "(无)", profile.fp_verify,
         settings.provider, settings.model, args.runs, args.judge,
     )
 
@@ -152,10 +152,11 @@ def main(argv: list[str] | None = None) -> int:
                 "  ⚠️ 与审查器同源,存在自我评判偏差(建议另配 CODEGUARD_JUDGE_*)" if same else "",
             )
 
-    # 误报过滤第二段的验证模型:开了 fp_llm_verify 才建,优先异源(复用独立模型配置,
+    # 误报过滤第二段的验证模型:由 profile.fp_verify 驱动(evals 的被测目标全由 profile 描述,
+    # 不再依赖全局 CODEGUARD_FP_LLM_VERIFY,见 design.md D1/D2)。优先异源(复用独立模型配置,
     # 避免审查器核查自己的结论 → 自我确认偏差,见 ADR-005)。temperature=0 锁确定性。
     fp_verify_llm = None
-    if settings.fp_llm_verify:
+    if profile.fp_verify:
         verify_settings = Settings.judge_from_env()
         fp_verify_llm = build_llm(verify_settings, temperature=0)
         same = (verify_settings.provider == settings.provider
@@ -181,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 注入审查函数:统一走多阶段管线。review_fn 接收整条 case,
     # 以便工具会话用该用例自带的 repo_path。
-    orchestrator = PipelineOrchestrator(fp_llm_verify=settings.fp_llm_verify)
+    orchestrator = PipelineOrchestrator(fp_llm_verify=profile.fp_verify)
     def review_fn(case):
         diff = case.diff
         repo_root = case.repo_path or fallback_repo
@@ -226,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         profile_mode=profile.mode,
         profile_tools=profile.tools,
         tools_enabled=use_tools,
+        fp_verify=profile.fp_verify,
         provider=settings.provider,
         model=settings.model or "(mock)",
         runs=args.runs,

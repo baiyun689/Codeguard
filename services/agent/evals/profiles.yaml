@@ -1,7 +1,7 @@
 # 被测目标 profile 清单(评测的"被测系统"维度)。
 #
-# 一个 profile = mode(pipeline) + 启用工具集 + 可选模型覆盖。
-# 加一个工具 / 换一种编排 = 在此加一行,数据集与指标零改动(见 design.md D3)。
+# 一个 profile = mode(pipeline) + 启用工具集 + 可选模型覆盖 + 是否开误报复核(fp_verify)。
+# 加一个工具 / 换一种编排 / 开关误报复核 = 在此加一行,数据集与指标零改动(见 design.md D3)。
 # 用法:python -m evals.runner --profile pipeline-file
 # 不指定 --profile 时,用 --tools 合成 ad-hoc profile(管线 + 工具开/关)。
 
@@ -10,6 +10,14 @@ profiles:
   pipeline-notools:
     mode: pipeline
     tools: []
+
+  # 管线 + 误报复核:在 pipeline-notools 基础上打开误报过滤第二段的独立异源 LLM 复核。
+  # 与 pipeline-notools 仅差 fp_verify 这一个变量,用于量化"独立复核员"对 Precision/误报率的净增益
+  # (复核只删不增,需同时盯 Recall 是否被误删拖低)。需配 CODEGUARD_JUDGE_* 异源模型。
+  pipeline-fpverify:
+    mode: pipeline
+    tools: []
+    fp_verify: true
 
   # 管线 + 文件工具:审查员走 ReAct,可调 get_file_content 读 diff 之外的文件。
   # 与 pipeline-notools 仅差"是否开工具"这一个变量,用于量化 file 能力的工具增益。

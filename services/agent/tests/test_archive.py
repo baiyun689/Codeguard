@@ -93,6 +93,7 @@ def test_archive_record_has_all_fields():
         "mode": "pipeline",
         "tools": ["get_file_content"],
         "tools_enabled": True,
+        "fp_verify": False,
     }
     assert rec["provider"] == "openai"
     assert rec["model"] == "deepseek-chat"

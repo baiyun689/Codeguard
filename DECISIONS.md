@@ -487,4 +487,39 @@ try-with-resources 当资源泄漏)等语义型误报。
 
 **日期**:2026-06-17
 
-<!-- 后续在这里继续追加 ADR-014、ADR-015 …… -->
+## ADR-014 · 误报复核升为 profile 受控变量,实测「独立复核员」净增益
+
+**背景**:复杂数据集 baseline(ADR-013)+ 级别 rubric 校准(级别准确率 0.49→0.81,不动 P/R)后,当前主短板是**过度上报**:`pipeline-notools --runs 3` 下 Precision ≈ 0.51、clean 误报率 ≈ 0.71,而 Recall 0.857 不构成瓶颈。压误报最 Recall-安全的杠杆是管线末端的"独立异源复核员"(误报过滤第二段 LLM 验证)——它只删不增。该机制代码层早已端到端接好(`CODEGUARD_FP_LLM_VERIFY` + `judge_from_env()` 异源 qwen + `fp_verify_llm` 优先 + None/失败保留防御),但默认关、且只受全局 env 控制、**不是 profile 变量**,两次同名 profile 开/关复核在归档里同名混淆,违反"一个变量=一个 profile"的对照纪律(ADR-009 D3),净增益无法干净量化。
+
+**决策**:
+
+1. **`fp_verify` 升为 `Profile` 字段**(`evals/profiles.py`)+ 新增 `pipeline-fpverify`(= `pipeline-notools` + `fp_verify: true`);runner 据 `profile.fp_verify` 驱动复核,evals 不再认全局 env(被测目标全由 profile 描述)。归档元数据记录本次 `fp_verify` 实际状态。
+2. **本档 prompt 不动**(`fp_verify.txt` 原样):本 change 只度量"打开现有复核员"本身的净增益,隔离单一变量;prompt 强化留作条件触发的 Step 2(另开 change)。
+
+**效果(诚实记录,`--runs 3 --judge`,DeepSeek 审查 + 异源 qwen 复核;同 prompt,仅差 fp_verify)**:
+
+| 指标 | notools(复核关) | fpverify(复核开) | Δ |
+|---|---|---|---|
+| Precision | 0.507 | **0.733** | +0.226 |
+| 误报率(clean) | 0.708 | **0.375** | 腰斩 |
+| F1 | 0.637 | **0.759** | +0.122 |
+| Recall | 0.857 | 0.786 | −0.071 |
+| 主项 recall(CRITICAL) | 0.900 | 0.833 | −0.067 |
+
+- **净增益明确**:Precision/误报率大幅改善,F1 +0.12,代价是 Recall 温和下降(主项仍 0.83)。差距远超 `--runs 3` 的 ±0.03~0.05 噪音,且两次只差 fp_verify 一个变量。
+- **复核确实生效(直接坐实,非推断)**:本次后台日志被 `tail` 截断,改由逐用例报告数下降验证——`clean_logged_exception` 2→0、`clean_bounded_loop` 1→0、`complex_import_002` 报告 4→3(FP 4→0),无别的机制能删 issue。
+- **关键副作用(能力切片照出)**:Recall 损失**集中在跨文件**——repo-map 0.833→**0.583**、file 0.857→0.762,而 diff-only 仅 0.857→0.794。根因:`fp_verify.txt` 复核员**只收到 diff**,对"证据在 diff 之外"的发现(如 `repomap_npe_*` 的跨文件 NPE)看不到依据 → 误删真问题。即复核员对跨文件发现 **context-blind**。
+
+**结论**:在 `pipeline-notools`(diff-only 为主)上独立复核员**净赚、值得默认开**;但**不能 naively 叠加到工具档(file/repomap)**——它会删掉正是工具帮发现的跨文件问题,除非先给复核员同等上下文。
+
+**Step 2(后续 change,条件触发)**:强化 `fp_verify.txt`——① 举证制(说不清攻击路径/安全写法判例即删,反之保留);② severity 敏感(INFO/WARNING 更敢删、CRITICAL 更谨慎);③ **给复核员跨文件上下文**或仅对"diff 内即可判定"的发现复核,修掉 context-blind 误删;可借 project-codeguard(CC-BY-4.0)的安全写法范例当"安全长啥样"的参照。
+
+**放弃的备选**:
+
+- **保留纯 env 开关、跑两次**:归档同名,净增益不可干净归因,违 D3,放弃。
+- **收紧审查员上报门槛(置信度阈值/默认不报)**:从源头砍但直接威胁 Recall,且模型自评置信度不准;作为另一根独立轴,不在本 change。
+- **确定性规则硬抑制固定安全写法**:过拟合那 8 条 clean、脆、天花板低,放弃单独用。
+
+**日期**:2026-06-18
+
+<!-- 后续在这里继续追加 ADR-015、ADR-016 …… -->
