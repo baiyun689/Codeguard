@@ -548,4 +548,26 @@ ADR-014 的 Step-1 增益(plus 验证模型)换 **qwen3.7-max** 重跑 `pipeline
 
 **日期**:2026-06-18
 
-<!-- 后续在这里继续追加 ADR-016、ADR-017 …… -->
+## ADR-016 · 工具档首次真跑:ReAct 撞递归上限致 recall 崩塌(Step 3 代码就绪、真值验证受阻)
+
+为验证 Step 3(把审查员经工具获取的 diff 外上下文喂给误报复核员,见 change `fp-verify-reviewer-context`),**首次真正起 Java gateway 跑工具档**(HANDOFF 一直欠的"工具增益量化"):`mvn package` 起 gateway(9090)→ `pipeline-repomap --runs 3 --judge`(工具开、复核关),DeepSeek 审查 + qwen3.7-max 裁判。
+
+**实跑结果(诚实记录,工具真被用:gateway 侧 704 次工具调用,`get_file_content` 526 + `get_repo_map` 178,qwen 0 个真 403)**:
+
+| | recall | precision | F1 | 误报率 |
+|---|---|---|---|---|
+| pipeline-notools(无工具) | 0.857 | 0.51 | 0.64 | 0.71 |
+| **pipeline-repomap(工具开)** | **0.476** | 0.580 | 0.523 | 0.167 |
+
+**开工具反而把 recall 砍半。根因坐实**:`Recursion limit of 12 reached without hitting a stop condition` —— ReAct 审查员(DeepSeek + langchain `create_agent`)不停调工具、12 步内收不了口就报错,**79 次审查员失败被跳过(189 个域调用里约 42%)**,那些域的发现全丢。这不是复核/Step 3 的问题,是**审查员侧 ReAct 不收敛**;复核只能删、救不了"根本没产出"。
+
+**结论**:
+- "工具增益"在当前实现下**为负**(ReAct 不稳),这是 HANDOFF 欠账的诚实答案——不是工具无用,是 ReAct 执行层没跑通。
+- **Step 3 的真值对照(`pipeline-repomap` vs `pipeline-repomap-fpverify`)被此前置问题挡住**:在 0.476 的崩塌 recall 上叠复核,只会被递归失败的噪音淹没,跑了也读不出"喂上下文"的净效果。故**未跑 after**,不烧无意义的 qwen(同 ADR-004/009 原则)。
+- **Step 3 代码已实现并单测通过**(151 passed,notools/直连档行为不变),只待 ReAct 跑通后再验。
+
+**下一步(留痕)**:先修 ReAct 健壮性——最可能的直接修法是把 `ToolAgentEngine` 的 `recursion_limit`(现 12)调高到 ~25(repo_map 1 次 + 多次 file 读轻松超 12 步);这属 `tool-calling-review` 健壮性,另开 change。修通后重跑 `pipeline-repomap` 拿到正常工具档基线,再跑 `pipeline-repomap-fpverify` 完成 Step 3 对照。
+
+**日期**:2026-06-18
+
+<!-- 后续在这里继续追加 ADR-017、ADR-018 …… -->

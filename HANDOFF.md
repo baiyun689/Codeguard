@@ -2,6 +2,19 @@
 
 > 当前进度快照。下次接手从「下次从哪开始」一节读起即可。
 
+## Step 3：把审查员上下文喂给复核员 —— 代码就绪 ✅，真值验证受阻 ⏸️（详见 ADR-016 / change `fp-verify-reviewer-context`)
+
+让 ReAct 审查员经工具读到的 diff 外上下文(文件/代码地图)传给误报复核员,使其"查"而非"猜",修 ADR-014 跨文件误删。
+
+- **已做(已提交)**:`engines.py` 引擎返回 `ReviewOutcome{result, gathered_context}`、`ToolAgentEngine` 从 `raw["messages"]` 抽 ToolMessage;`PipelineContext.gathered_context`;`reviewer_stage` 按 `(tool,args)` 去重汇总;`fp_filter` 渲染+字符预算注入 `{{context}}`;`fp_verify.txt` 加"据上下文实证判定"段;新 profile `pipeline-repomap-fpverify`。**151 passed、ruff 净、mypy 无新增错误;notools/直连档行为不变(gathered_context 恒空)**。change 未归档(验证未完)。
+- **卡住(ADR-016)**:首次真起 gateway 跑工具档,发现 **ReAct 撞 `recursion_limit=12`、79 次审查员失败被跳过(~42%)、recall 0.857→0.476**。这是审查员侧问题,挡住了 Step 3 的 before/after 对照(在崩塌 recall 上叠复核读不出净效果),故未跑 after、未烧无谓 qwen。
+
+**⚠️ 前置 bug(下次最该先修)**:`ToolAgentEngine.recursion_limit` 现 12 太低 → 工具档大面积失败。调高到 ~25(`engines.py`,已有 config 钩子),属 `tool-calling-review` 健壮性,建议另开小 change。修通后:重跑 `pipeline-repomap` 拿正常工具档基线 → 跑 `pipeline-repomap-fpverify` 完成 Step 3 对照(看跨文件难例 `repomap_npe_crossfile_001` 复核员是否不再误删 + clean/diff-only 误报不回潮)。
+
+**环境**:gateway `mvn package` 可正常构建/启动(9090,`/health` OK);`CODEGUARD_JUDGE_*`=qwen3.7-max(跑前探活防 403,免费额度会耗尽)。
+
+---
+
 ## 审查质量调优一轮：级别校准 + 误报复核 profile —— 已完成并提交 ✅（详见 ADR-014 / ADR-015）
 
 把 baseline 用 `--runs 3 --judge` 做实后,针对两条短板各打一枪,均守"一次一个变量、可量化":
@@ -156,7 +169,8 @@ conda run -n codeguard --no-capture-output python -m evals.runner --mode pipelin
 
 ## 👉 下次从哪开始
 
-0. **Step 3 · 把审查员获取的上下文喂给复核员(本轮结论指向的真杠杆,新)**:前提是工具档真跑起来(见下 1)。让 ReAct 审查员读到的文件/repo_map 结果经 PipelineContext 传入误报过滤阶段,复核员据此"查"而非"猜",修掉 ADR-014 跨文件误删并解锁"fp_verify + 工具档"组合。设计抉择见 ADR-015 方法论段(喂什么 / 喂多少 / token 预算)。需先把 1 跑通拿到工具档基线,再开此 change。
+0. **先修 ReAct 递归上限(前置 bug,ADR-016)**:`ToolAgentEngine.recursion_limit` 12→~25(`engines.py`)。当前工具档 ~42% 审查员撞上限失败、recall 崩到 0.476。修通后重跑 `pipeline-repomap --runs 3 --judge`(起 gateway + 探活 qwen)确认 recall 恢复正常,这是下面 Step 3 与工具增益量化的共同前提。
+0b. **完成 Step 3 验证**:`fp-verify-reviewer-context` 代码已就绪(Group 1–5 完,Group 6 待跑)。ReAct 修通后跑 `pipeline-repomap`(关复核)vs `pipeline-repomap-fpverify`(开复核+喂上下文)对照,看复核员在 `repomap_npe_crossfile_001` 等跨文件难例上是否不再误删真问题、clean/diff-only 误报不回潮;回填 ADR-016 并归档该 change。
 1. **实跑 repo_map before/after**(Step 3 的前置):起 gateway(`java -jar target/codeguard-gateway.jar`)+ 配真实 DeepSeek + `CODEGUARD_TOOL_SERVER_URL`,在跨文件难例上跑 `--profile pipeline-file` vs `--profile pipeline-repomap`,如实记录增益或"测不出",回填本文件与 ADR-012。难例 `repomap_npe_crossfile_001` 与 profile 均已就位。
    ```powershell
    cd services/gateway; mvn package; java -jar target/codeguard-gateway.jar   # 起工具服务(9090)
