@@ -23,7 +23,12 @@ from pathlib import Path
 from codeguard_agent.git.diff_collector import split_diff_by_file
 from codeguard_agent.llm.client import mock_review_result
 from codeguard_agent.models.schemas import ReviewResult
-from codeguard_agent.pipeline.engines import DirectEngine, ReviewEngine, ToolAgentEngine
+from codeguard_agent.pipeline.engines import (
+    DirectEngine,
+    GatheredContext,
+    ReviewEngine,
+    ToolAgentEngine,
+)
 from codeguard_agent.pipeline.stages.base import PipelineContext, PipelineStage
 
 logger = logging.getLogger("codeguard")
@@ -78,6 +83,19 @@ def _build_user_prompt(diff_text: str, summary: str = "") -> str:
     )
 
 
+def _dedup_context(items: list[GatheredContext]) -> list[GatheredContext]:
+    """按(工具,参数)去重,保留首次出现的顺序。同一文件被多审查员读只留一份。"""
+    seen: set[tuple[str, str]] = set()
+    out: list[GatheredContext] = []
+    for it in items:
+        key = (it.tool, it.args)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(it)
+    return out
+
+
 def _build_relevant_diff(file_diffs: dict[str, str], relevant_files: list[str]) -> str:
     """把 relevant_files 对应的 diff 片段拼起来;无可拼片段时返回空串。"""
     parts = [file_diffs[fp] for fp in relevant_files if fp in file_diffs]
@@ -113,6 +131,7 @@ def run_domain_reviewer(
 
     保留此函数作为"直连审查"的稳定入口(现委托给 DirectEngine,行为不变)。
     假定 llm 非 None、diff 非空——这两种边界由 ReviewerStage 统一处理。
+    解包 ReviewOutcome.result 保持原 ReviewResult 返回签名不变。
     """
     return DirectEngine().review(
         llm,
@@ -121,7 +140,7 @@ def run_domain_reviewer(
         reviewer_name=reviewer.name,
         max_retries=max_retries,
         structured_method=structured_method,
-    )
+    ).result
 
 
 class ReviewerStage(PipelineStage):
@@ -167,6 +186,7 @@ class ReviewerStage(PipelineStage):
 
         # 并行只发生在引擎调用内;结果回到主线程后再合并,无共享可变状态。
         summaries: list[str] = []
+        gathered: list[GatheredContext] = []
         with ThreadPoolExecutor(max_workers=len(self.reviewers)) as pool:
             future_to_reviewer = {
                 pool.submit(
@@ -188,13 +208,16 @@ class ReviewerStage(PipelineStage):
             for future in as_completed(future_to_reviewer):
                 reviewer = future_to_reviewer[future]
                 try:
-                    result = future.result()
+                    outcome = future.result()
                 except Exception as exc:  # noqa: BLE001 单个审查员失败不应拖垮整条管线
                     logger.warning("[%s] 审查员失败,跳过: %s", reviewer.name, exc)
                     continue
-                context.issues.extend(result.issues)
-                if result.summary:
-                    summaries.append(f"【{reviewer.name}】{result.summary}")
+                context.issues.extend(outcome.result.issues)
+                if outcome.result.summary:
+                    summaries.append(f"【{reviewer.name}】{outcome.result.summary}")
+                gathered.extend(outcome.gathered_context)
 
+        # 跨审查员汇总工具上下文,按(工具,参数)去重:同一文件被多审查员读只留一份。
+        context.gathered_context = _dedup_context(gathered)
         context.summary = "  ".join(summaries)
         return context

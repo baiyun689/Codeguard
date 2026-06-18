@@ -15,12 +15,37 @@ import json
 import logging
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any
 
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.schemas import ReviewResult
 
 logger = logging.getLogger("codeguard")
+
+
+@dataclass(frozen=True)
+class GatheredContext:
+    """审查员经工具获取的一段 diff 之外上下文(供下游误报复核实证判定)。
+
+    tool:工具名(如 get_file_content);args:入参摘要(用于去重与展示);content:工具返回内容。
+    只在管线上下文流转,绝不进 Issue(守 ADR-001)。
+    """
+
+    tool: str
+    args: str
+    content: str
+
+
+@dataclass
+class ReviewOutcome:
+    """单个领域审查员的产出信封:结构化结果 + 本次经工具获取的上下文。
+
+    gathered_context 仅 ToolAgentEngine 可能非空;DirectEngine(无工具)恒为空。
+    """
+
+    result: ReviewResult
+    gathered_context: list[GatheredContext] = field(default_factory=list)
 
 
 class ReviewEngine(ABC):
@@ -36,8 +61,11 @@ class ReviewEngine(ABC):
         reviewer_name: str,
         max_retries: int,
         structured_method: str,
-    ) -> ReviewResult:
-        """执行一次领域审查,返回结构化结果。假定 llm 非 None、diff 非空(由 stage 统一处理边界)。"""
+    ) -> ReviewOutcome:
+        """执行一次领域审查,返回产出信封(结构化结果 + 获取的上下文)。
+
+        假定 llm 非 None、diff 非空(由 stage 统一处理边界)。
+        """
 
 
 class DirectEngine(ReviewEngine):
@@ -52,7 +80,7 @@ class DirectEngine(ReviewEngine):
         reviewer_name: str,
         max_retries: int,
         structured_method: str,
-    ) -> ReviewResult:
+    ) -> ReviewOutcome:
         structured_llm = llm.with_structured_output(ReviewResult, method=structured_method)
         result = invoke_with_retry(
             structured_llm,
@@ -62,8 +90,9 @@ class DirectEngine(ReviewEngine):
         # 结构化输出可能返回 None(模型没正确发起工具调用),兜底为空(沿用既有 None 防御)。
         if result is None:
             logger.warning("[%s] 审查员未返回结构化结果,本次按空处理", reviewer_name)
-            return ReviewResult(summary="")
-        return result
+            return ReviewOutcome(ReviewResult(summary=""))
+        # 直连无工具:gathered_context 恒空。
+        return ReviewOutcome(result)
 
 
 class ToolAgentEngine(ReviewEngine):
@@ -99,7 +128,7 @@ class ToolAgentEngine(ReviewEngine):
         reviewer_name: str,
         max_retries: int,
         structured_method: str,
-    ) -> ReviewResult:
+    ) -> ReviewOutcome:
         # LangChain 相关导入延迟到此:mock 模式 / 无工具路径不需要它们。
         from langchain.agents import create_agent
 
@@ -128,7 +157,9 @@ class ToolAgentEngine(ReviewEngine):
             {"messages": [("human", user_prompt)]},
             config={"recursion_limit": self._recursion_limit},
         )
-        return self._extract_result(raw, reviewer_name)
+        result = self._extract_result(raw, reviewer_name)
+        gathered = _extract_gathered_context(raw)
+        return ReviewOutcome(result, gathered)
 
     def _extract_result(self, raw: Any, reviewer_name: str) -> ReviewResult:
         """从 create_agent 的返回状态里取结构化结果,层层兜底。"""
@@ -149,6 +180,50 @@ class ToolAgentEngine(ReviewEngine):
         # 3) 最终兜底:空结果 + 告警,不抛断。
         logger.warning("[%s] ReAct 未产出可用结构化结果,本次按空处理", reviewer_name)
         return ReviewResult(summary="")
+
+
+def _extract_gathered_context(raw: Any) -> list[GatheredContext]:
+    """从 create_agent 返回状态的消息流里抽取工具返回的上下文(ToolMessage)。
+
+    工具入参在调用它的 AIMessage.tool_calls 里,故先建 tool_call_id → (name, args) 映射,
+    再把每条 ToolMessage 配回去。对任何缺失/异常健壮:取不到一律返回已收集的部分(或空),
+    绝不抛断(工具上下文是"锦上添花",不该让审查失败)。
+    """
+    try:
+        if not isinstance(raw, dict):
+            return []
+        messages = raw.get("messages") or []
+        # tool_call_id → (工具名, 入参摘要)
+        call_meta: dict[str, tuple[str, str]] = {}
+        for msg in messages:
+            for call in getattr(msg, "tool_calls", None) or []:
+                cid = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+                name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
+                args = call.get("args") if isinstance(call, dict) else getattr(call, "args", {})
+                if cid:
+                    call_meta[cid] = (name or "", _summarize_args(args))
+        gathered: list[GatheredContext] = []
+        for msg in messages:
+            if getattr(msg, "type", "") != "tool":
+                continue
+            cid = getattr(msg, "tool_call_id", None)
+            name, args = call_meta.get(cid or "", (getattr(msg, "name", "") or "", ""))
+            content = getattr(msg, "content", "")
+            content = content if isinstance(content, str) else str(content)
+            if content.strip():
+                gathered.append(GatheredContext(tool=name, args=args, content=content))
+        return gathered
+    except Exception as exc:  # noqa: BLE001 上下文捕获失败不应影响审查
+        logger.warning("[engines] 抽取工具上下文失败,本次按空处理: %s", exc)
+        return []
+
+
+def _summarize_args(args: Any) -> str:
+    """把工具入参压成简短字符串(用于去重键与展示),失败回退 str()。"""
+    try:
+        return json.dumps(args, ensure_ascii=False, sort_keys=True)
+    except Exception:  # noqa: BLE001
+        return str(args)
 
 
 def _last_message_text(raw: Any) -> str:

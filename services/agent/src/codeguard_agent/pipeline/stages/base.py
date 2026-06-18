@@ -60,6 +60,10 @@ class PipelineContext:
     # --- 输出(stage 累积写入)---
     issues: list[Issue] = field(default_factory=list)
     summary: str = ""
+    # ReviewerStage 写入:审查员经工具获取的 diff 外上下文(跨审查员并集去重),
+    # 供误报过滤第二段复核做实证判定(查而非猜,见 fp-verify-reviewer-context)。
+    # 元素为 engines.GatheredContext;用 Any 避免 base 反向依赖 engines。无工具档恒为空。
+    gathered_context: list[Any] = field(default_factory=list)
     # 误报过滤阶段写入的统计(FilterStats);None 表示该阶段未运行。
     # 用 Any 避免 base 反向依赖 fp_filter(后者要 import 本模块的 PipelineStage)。
     filter_stats: Any = None

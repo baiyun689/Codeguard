@@ -8,12 +8,110 @@ ReAct(create_agent)的返回要稳健地落成结构化结果:优先用图内置
 from __future__ import annotations
 
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
-from codeguard_agent.pipeline.engines import _extract_json_object, _last_message_text
-from codeguard_agent.pipeline.engines import ToolAgentEngine
+from codeguard_agent.pipeline.engines import (
+    DirectEngine,
+    GatheredContext,
+    ReviewOutcome,
+    ToolAgentEngine,
+    _extract_gathered_context,
+    _extract_json_object,
+    _last_message_text,
+)
+from codeguard_agent.pipeline.stages.reviewer_stage import _dedup_context
 
 
 def _engine() -> ToolAgentEngine:
     return ToolAgentEngine(tool_client=None)
+
+
+class _AIMsg:
+    """伪 AIMessage:带 tool_calls。"""
+
+    type = "ai"
+
+    def __init__(self, tool_calls):
+        self.tool_calls = tool_calls
+        self.content = ""
+
+
+class _ToolMsg:
+    """伪 ToolMessage:type='tool' + tool_call_id + content。"""
+
+    type = "tool"
+
+    def __init__(self, tool_call_id, content, name=""):
+        self.tool_call_id = tool_call_id
+        self.content = content
+        self.name = name
+
+
+class _FakeStructured:
+    def __init__(self, result):
+        self._result = result
+
+    def invoke(self, _messages):
+        return self._result
+
+
+class _FakeLLM:
+    def __init__(self, result):
+        self._result = result
+
+    def with_structured_output(self, _schema, method=None):
+        return _FakeStructured(self._result)
+
+
+def test_direct_engine_返回空_gathered_context():
+    rr = ReviewResult(summary="x", issues=[])
+    outcome = DirectEngine().review(
+        _FakeLLM(rr), system_prompt="s", user_prompt="u",
+        reviewer_name="logic", max_retries=1, structured_method="function_calling",
+    )
+    assert isinstance(outcome, ReviewOutcome)
+    assert outcome.result is rr
+    assert outcome.gathered_context == []
+
+
+def test_direct_engine_none_结果兜底空信封():
+    outcome = DirectEngine().review(
+        _FakeLLM(None), system_prompt="s", user_prompt="u",
+        reviewer_name="logic", max_retries=1, structured_method="function_calling",
+    )
+    assert outcome.result.issues == []
+    assert outcome.gathered_context == []
+
+
+def test_抽取_toolmessage_为_gathered_context():
+    raw = {
+        "messages": [
+            _AIMsg([{"id": "c1", "name": "get_file_content", "args": {"path": "A.java"}}]),
+            _ToolMsg("c1", "class A { ... }"),
+        ]
+    }
+    got = _extract_gathered_context(raw)
+    assert len(got) == 1
+    assert got[0].tool == "get_file_content"
+    assert "A.java" in got[0].args
+    assert got[0].content == "class A { ... }"
+
+
+def test_抽取_跳过空内容与非工具消息():
+    raw = {"messages": [_AIMsg([]), _ToolMsg("c9", "   ")]}
+    assert _extract_gathered_context(raw) == []
+
+
+def test_抽取_异常或非dict_返回空_不抛():
+    assert _extract_gathered_context("not a dict") == []
+    assert _extract_gathered_context({"messages": None}) == []
+
+
+def test_dedup_context_按工具与参数去重():
+    a = GatheredContext("get_file_content", '{"path":"A.java"}', "AAA")
+    a2 = GatheredContext("get_file_content", '{"path":"A.java"}', "AAA-again")
+    b = GatheredContext("get_repo_map", "{}", "MAP")
+    out = _dedup_context([a, a2, b])
+    assert len(out) == 2
+    assert out[0] is a and out[1] is b  # 保留首次出现
 
 
 def test_优先用图内置的_structured_response():

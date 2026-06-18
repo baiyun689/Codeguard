@@ -14,10 +14,30 @@ from pathlib import Path
 from codeguard_agent.models.schemas import Issue, Severity
 from codeguard_agent.pipeline.fp_rules import FpRules, load_rules, match_exclusion
 from codeguard_agent.pipeline.stages.base import PipelineContext
+from codeguard_agent.pipeline.engines import GatheredContext
 from codeguard_agent.pipeline.stages.fp_filter import (
     FalsePositiveFilterStage,
     FpVerdict,
+    _render_context,
 )
+
+
+def test_render_context_空返回无():
+    assert _render_context([]) == "(无)"
+    assert _render_context(None or []) == "(无)"
+
+
+def test_render_context_含来源与内容():
+    items = [GatheredContext("get_file_content", '{"path":"A.java"}', "class A {}")]
+    out = _render_context(items)
+    assert "get_file_content" in out and "A.java" in out and "class A {}" in out
+
+
+def test_render_context_预算截断():
+    big = GatheredContext("get_file_content", "{}", "x" * 1000)
+    out = _render_context([big], budget=200)
+    assert len(out) <= 260  # 头部 + 截断后正文 + 标注,受预算约束
+    assert "已截断" in out
 
 _RULES_YAML = """
 message_patterns:

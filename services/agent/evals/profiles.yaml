@@ -31,6 +31,14 @@ profiles:
     mode: pipeline
     tools: [get_repo_map, get_file_content]
 
+  # 管线 + repo map 导航/细读 + 误报复核:在 pipeline-repomap 基础上打开误报复核。
+  # 与 pipeline-repomap 仅差 fp_verify 一个变量,用于量化"把审查员读到的 diff 外上下文
+  # 喂给复核员"后,复核是否不再误删跨文件真问题(见 fp-verify-reviewer-context)。需起 gateway + 异源模型。
+  pipeline-repomap-fpverify:
+    mode: pipeline
+    tools: [get_repo_map, get_file_content]
+    fp_verify: true
+
   # —— 扩展占位(零成本预留,框架无需改动)——
   # 后续逐个加重型工具时,在此追加 profile 即可:
   # pipeline-ast:    { mode: pipeline, tools: [get_file_content, get_method_definition] }

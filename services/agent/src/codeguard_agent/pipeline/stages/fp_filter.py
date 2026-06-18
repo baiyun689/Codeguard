@@ -51,6 +51,35 @@ def _load_verify_prompt() -> str:
     return _PROMPT_PATH.read_text(encoding="utf-8")
 
 
+# 注入复核 prompt 的工具上下文字符预算上限(去重已在 ReviewerStage 完成;此处再按预算贪心截断)。
+# diff 邻域下保守值够用;过大徒增 token/耗时。实跑可按效果微调(见 design.md D3)。
+_CONTEXT_CHAR_BUDGET = 6000
+
+
+def _render_context(items: list, budget: int = _CONTEXT_CHAR_BUDGET) -> str:
+    """把审查员获取的上下文渲染成给复核 prompt 的文本;空则返回"(无)"。
+
+    items 为 engines.GatheredContext 列表(已去重)。按预算贪心累加,超限截断并标注。
+    """
+    if not items:
+        return "(无)"
+    blocks: list[str] = []
+    used = 0
+    for it in items:
+        tool = getattr(it, "tool", "") or "tool"
+        args = getattr(it, "args", "") or ""
+        content = getattr(it, "content", "") or ""
+        header = f"# 来源:{tool}({args})\n"
+        remaining = budget - used - len(header)
+        if remaining <= 0:
+            blocks.append("…(上下文已达预算上限,后续省略)")
+            break
+        body = content if len(content) <= remaining else content[:remaining] + "…(已截断)"
+        blocks.append(header + body)
+        used += len(header) + len(body)
+    return "\n\n".join(blocks)
+
+
 class FalsePositiveFilterStage(PipelineStage):
     """两段式误报过滤。
 
@@ -109,11 +138,17 @@ class FalsePositiveFilterStage(PipelineStage):
         structured = verify_llm.with_structured_output(
             FpVerdict, method=context.structured_method
         )
+        # 审查员经工具获取的 diff 外上下文(case 级,对全部 issue 相同):渲染一次、复用。
+        # 无上下文(直连/notools 档)时为"(无)",复核 prompt 与本能力引入前等价。
+        context_text = _render_context(
+            getattr(context, "gathered_context", None) or []
+        )
         kept = []
         for issue in survivors:
             prompt = (
                 self._prompt_cache
                 .replace("{{diff}}", context.diff_text)
+                .replace("{{context}}", context_text)
                 .replace("{{type}}", issue.type or "")
                 .replace("{{file}}", f"{issue.file}:{issue.line}")
                 .replace("{{message}}", issue.message or "")
