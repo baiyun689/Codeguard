@@ -1,6 +1,8 @@
-# 交接清单（2026-06-18）
+# 交接清单（2026-06-20）
 
 > 当前进度快照。下次接手从「下次从哪开始」一节读起即可。
+>
+> **最近一轮(2026-06-20)做了什么**:把 `fp-verify-reviewer-context`(Step 3:给误报复核员喂审查员的 diff 外上下文)从"代码就绪、验证受阻"推到**完成并归档**。期间:① 证伪并订正 ADR-016(工具档崩塌真因不是 `recursion_limit`,而是评测 harness 把工具指向 cwd → ADR-017);② 跑完 Group 6 正式 before/after,证明 Step 3 有效(P/F1/clean 误报率均改善、跨文件真问题未误删);③ 补掉一个 production 健壮性缺口(审查员撞递归上限优雅降级 → ADR-018)。三次提交均已推送 master(`f64ae34` / `1c4c4a2` / `22bdeba`)。
 
 ## Step 3：把审查员上下文喂给复核员 —— 完成 ✅（详见 ADR-016→ADR-017 / change `fp-verify-reviewer-context` 已归档)
 
@@ -8,13 +10,13 @@
 
 让 ReAct 审查员经工具读到的 diff 外上下文(文件/代码地图)传给误报复核员,使其"查"而非"猜",修 ADR-014 跨文件误删。
 
-- **已做(已提交)**:`engines.py` 引擎返回 `ReviewOutcome{result, gathered_context}`、`ToolAgentEngine` 从 `raw["messages"]` 抽 ToolMessage;`PipelineContext.gathered_context`;`reviewer_stage` 按 `(tool,args)` 去重汇总;`fp_filter` 渲染+字符预算注入 `{{context}}`;`fp_verify.txt` 加"据上下文实证判定"段;新 profile `pipeline-repomap-fpverify`。**notools/直连档行为不变(gathered_context 恒空)**。change 未归档(Group 6 验证未完)。
+- **已做(已提交)**:`engines.py` 引擎返回 `ReviewOutcome{result, gathered_context}`、`ToolAgentEngine` 从 `raw["messages"]` 抽 ToolMessage;`PipelineContext.gathered_context`;`reviewer_stage` 按 `(tool,args)` 去重汇总;`fp_filter` 渲染+字符预算注入 `{{context}}`;`fp_verify.txt` 加"据上下文实证判定"段;新 profile `pipeline-repomap-fpverify`。**notools/直连档行为不变(gathered_context 恒空)**。change **已归档**(`openspec/changes/archive/2026-06-20-fp-verify-reviewer-context`,delta spec 已同步进主 specs)。
 - **前置 blocker 已解(ADR-017,2026-06-20)**:ADR-016 把工具档崩塌(recall 0.857→0.476)误判为"`recursion_limit=12` 太低"。**实际调到 25 仍崩**——真因是**评测 harness 把工具指向 cwd**(合成用例无快照时回退 `"."`=`services/agent`,扫到数据集自身夹具,审查员对无关文件无界乱逛撞顶)。修复 `case_repo_root`(仅真实 repo 根才建工具会话,绝不隐式回退 cwd)后,`--runs 1` 下 **recursion 失败 25→1、recall 0.429→0.893**。纯 evals 改动,未碰 `src/codeguard_agent/**`。
 - **残留已处理(ADR-018)**:repo-backed 难例审查员撞 `recursion_limit=12` 时,`ToolAgentEngine.review` 现降级为无工具直连复审(`DirectEngine`),不再被静默丢弃;该 production 健壮性缺口已补。
 
-**Group 6 现可进行**:`pipeline-repomap`(关复核)vs `pipeline-repomap-fpverify`(开复核+喂上下文),`--runs 3 --judge`,看跨文件难例 `repomap_npe_crossfile_001` 复核员是否不再误删 + clean/diff-only 误报不回潮 → 回填 ADR-017、归档 change。
+**Group 6 已完成**(2026-06-20,见上结果框 + ADR-017):`pipeline-repomap` vs `pipeline-repomap-fpverify` `--runs 3 --judge` 跑完、判定通过、ADR-017 已回填、change 已归档。
 
-**环境**:gateway `mvn package` 可正常构建/启动(9090,`/health` OK);`CODEGUARD_JUDGE_*`=qwen3.7-max(跑前探活防 403,免费额度会耗尽)。
+**环境**:gateway `mvn package` 可正常构建/启动(9090,`/health` OK;本轮已用毕关闭);`CODEGUARD_JUDGE_*`=qwen3.7-max(跑前探活防 403,免费额度会耗尽)。
 
 ---
 
@@ -157,7 +159,7 @@ Precision ≈ 0.40 / Recall ≈ 0.97 / clean 误报率 ≈ 0.67(3 跑);开异源
 cd services/gateway; mvn package          # 跑 11 个单测 + 出 fat jar
 java -jar target/codeguard-gateway.jar    # 默认端口 9090(CODEGUARD_TOOL_SERVER_PORT 可覆盖)
 
-# Python 单测(工程正确性,应 58 passed)
+# Python 单测(工程正确性,当前应 155 passed)
 cd services/agent; conda run -n codeguard --no-capture-output python -m pytest tests/ -q
 
 # 真实 ReAct 审查(先起工具服务,再设 URL)
@@ -172,20 +174,20 @@ conda run -n codeguard --no-capture-output python -m evals.runner --mode pipelin
 
 ## 👉 下次从哪开始
 
-0. ~~先修 ReAct 递归上限(ADR-016)~~ → **已证伪并订正(ADR-017)**:根因不是 `recursion_limit`,是评测 harness 把工具指向 cwd;已修 `case_repo_root`,工具档 recall 恢复(0.893)。**前置 blocker 解除。**
-0b. ~~完成 Step 3 / Group 6 验证~~ → **已完成(ADR-017)**:before/after `--runs 3 --judge` 跑完,P/F1/clean 误报率均改善、跨文件难例复核员未误删真问题;change `fp-verify-reviewer-context` 已归档。
-0c. ~~(可选)审查员工具调用预算~~ → **已做(ADR-018)**:`ToolAgentEngine.review` 撞 `GraphRecursionError` 时降级为无工具直连复审(`DirectEngine`),不再被静默丢弃;agent 构建抽成 `_run_agent` 可测接缝。后续可进一步"流式留存 + 撞顶强制收尾以保住已得上下文"。
-1. **实跑 repo_map before/after**(Step 3 的前置):起 gateway(`java -jar target/codeguard-gateway.jar`)+ 配真实 DeepSeek + `CODEGUARD_TOOL_SERVER_URL`,在跨文件难例上跑 `--profile pipeline-file` vs `--profile pipeline-repomap`,如实记录增益或"测不出",回填本文件与 ADR-012。难例 `repomap_npe_crossfile_001` 与 profile 均已就位。
+**本轮(2026-06-20)已收口**:~~修 ReAct 递归上限~~→订正为 harness 指向 cwd(ADR-017)、~~Step 3/Group 6 验证~~→完成并归档、~~审查员工具调用预算~~→撞顶优雅降级(ADR-018)。三项见上文与 ADR-016→018。下面是新的起点:
+
+1. **量化 repo_map / file 工具增益**(ADR-012 欠账,**现因 harness 已修而终于可跑**):起 gateway + 配真实 DeepSeek + `CODEGUARD_TOOL_SERVER_URL`,跑 `--profile pipeline-file` vs `--profile pipeline-repomap`(`--runs 3 --judge`),在跨文件难例切片上如实记录"工具开 vs 关"的增益(或"测不出"),回填本文件与 ADR-012。注意:这是与 Step 3(复核对照)**不同**的对照——它比的是"审查员有无工具",难例 `repomap_npe_crossfile_001` 与 profile 均已就位。
    ```powershell
    cd services/gateway; mvn package; java -jar target/codeguard-gateway.jar   # 起工具服务(9090)
    $env:CODEGUARD_TOOL_SERVER_URL="http://localhost:9090"
    cd ../agent
-   conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-file --runs 3
-   conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-repomap --runs 3
+   conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-file --runs 3 --judge
+   conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-repomap --runs 3 --judge
    ```
 2. **逐个加重型工具**:`get_method_definition`(JavaParser AST,可复用本期 `JavaTagExtractor`)→ `get_call_graph` → `semantic_search`(RAG),沿通用协议 + 会话接缝叠加;届时按需在会话层填"按 project 共享重资源"。`get_definition` 暂缓的边界理由见 ADR-012。
 3. 工具利用率/耗时纳入评测报告。
 4. repo map 若在大仓库慢,补按 mtime 的 tags 缓存(对齐 aider)。
+5. **(可选,承 ADR-018)** 撞顶降级现在退到 diff-only、丢已得上下文;若要保住,改"流式留存 last state + 撞顶强制无工具收尾"。优先级低(降级已够兜底)。
 
 ## 衍生待办(散落在各 ADR)
 
