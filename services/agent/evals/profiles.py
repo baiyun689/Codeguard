@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -85,3 +86,22 @@ def tools_effective(profile: Profile, *, has_llm: bool, tool_server_url: str) ->
     抽成纯函数便于单测,也让 runner 据它如实记录"工具实际启用状态"。
     """
     return profile.wants_tools and has_llm and bool(tool_server_url)
+
+
+def case_repo_root(case_repo_path: str | None, repo_base: str | None) -> str | None:
+    """该用例供工具读取的**真实** repo 根;没有则返回 None(=本条不建工具会话)。
+
+    - repo-backed 用例自带 `repo_path`(磁盘上的工程快照)→ 直接用它。
+    - 合成内联用例无 `repo_path`:**仅当**用户显式传了 `--repo-base`(断言这些 diff 对应某真实
+      工程)才用它;否则返回 None。
+
+    绝不隐式回退到 cwd:cwd 是 agent 自己的源码树(且恰好含 `evals/dataset/repo/**` 夹具),
+    对它建工具会话会让 `get_repo_map`/`get_file_content` 返回**真实但与本 diff 完全无关**的内容,
+    诱使 ReAct 审查员在无关文件间无界乱逛、永不收尾,直到撞 `recursion_limit` 失败——这正是
+    ADR-016 里 clean/complex 合成用例在工具档下 ~40% 审查员失败、recall 崩塌的根因。
+    """
+    if case_repo_path:
+        return case_repo_path
+    if repo_base:
+        return os.path.abspath(repo_base)
+    return None

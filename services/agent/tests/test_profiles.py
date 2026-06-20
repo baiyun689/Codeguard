@@ -11,7 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from evals.profiles import Profile, load_profiles, resolve_profile, tools_effective
+from evals.profiles import (
+    Profile,
+    case_repo_root,
+    load_profiles,
+    resolve_profile,
+    tools_effective,
+)
 
 _REAL_PROFILES = Path(__file__).resolve().parents[1] / "evals" / "profiles.yaml"
 
@@ -121,3 +127,21 @@ def test_shipped_profiles_valid():
     # pipeline-fpverify:与 notools 同配,只多开了误报复核。
     assert profiles["pipeline-fpverify"].fp_verify is True
     assert profiles["pipeline-fpverify"].tools == []
+
+
+def test_case_repo_root_repo_backed_用自带快照():
+    # repo-backed 用例有 repo_path,直接用它(忽略 repo_base)。
+    assert case_repo_root("/abs/snap", None) == "/abs/snap"
+    assert case_repo_root("/abs/snap", "/other/base") == "/abs/snap"
+
+
+def test_case_repo_root_合成用例无快照且无显式base_则None():
+    # 关键回归(ADR-016 根因):无 repo_path 且未给 --repo-base → None,绝不隐式回退 cwd。
+    assert case_repo_root(None, None) is None
+    assert case_repo_root("", None) is None
+
+
+def test_case_repo_root_合成用例可由显式base启用():
+    # 用户显式断言 diff 对应某真实工程时,才用 repo_base(转绝对路径)。
+    import os
+    assert case_repo_root(None, ".") == os.path.abspath(".")

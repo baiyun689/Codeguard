@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -45,7 +44,7 @@ from evals.archive import (
 from evals.dataset import load_cases
 from evals.matcher import evaluate_case
 from evals.metrics import aggregate, aggregate_by_capability
-from evals.profiles import resolve_profile, tools_effective
+from evals.profiles import case_repo_root, resolve_profile, tools_effective
 from evals.report import render_history_views, render_report
 from evals.schema import MatchOutcome
 
@@ -175,19 +174,20 @@ def main(argv: list[str] | None = None) -> int:
             "profile %s 想开工具但本次降级为无工具:需真实 LLM + CODEGUARD_TOOL_SERVER_URL",
             profile.name,
         )
-    # repo-backed 用例自带 repo_path;无 repo_path 的合成用例回退到 --repo-base(磁盘多半无文件)。
-    fallback_repo = os.path.abspath(args.repo_base or ".")
     if use_tools:
-        logger.info("工具开档:%s。repo-backed 用例按各自 repo_path 建会话", profile.tools)
+        logger.info("工具开档:%s。仅对有真实 repo 根的用例建会话(见 case_repo_root)", profile.tools)
 
     # 注入审查函数:统一走多阶段管线。review_fn 接收整条 case,
     # 以便工具会话用该用例自带的 repo_path。
     orchestrator = PipelineOrchestrator(fp_llm_verify=profile.fp_verify)
     def review_fn(case):
         diff = case.diff
-        repo_root = case.repo_path or fallback_repo
+        # 工具仅在该用例有**真实** repo 根时启用(repo-backed 快照,或用户显式 --repo-base)。
+        # 合成用例无快照时返回 None → 本条按无工具直连跑,避免工具扫到 cwd(agent 源码树/评测
+        # 夹具)返回无关内容、诱使审查员无界乱逛撞 recursion_limit(ADR-016 根因)。
+        repo_root = case_repo_root(case.repo_path, args.repo_base) if use_tools else None
         tool_client = None
-        if use_tools:
+        if repo_root:
             try:
                 tool_client = create_tool_session(
                     settings.tool_server_url, repo_root, parse_changed_files(diff)

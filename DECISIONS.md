@@ -570,4 +570,33 @@ ADR-014 的 Step-1 增益(plus 验证模型)换 **qwen3.7-max** 重跑 `pipeline
 
 **日期**:2026-06-18
 
-<!-- 后续在这里继续追加 ADR-017、ADR-018 …… -->
+> **订正(2026-06-20,见 ADR-017)**:本 ADR 把根因判为"`recursion_limit=12` 太低、调高到 ~25 即可"——**这是错的**。调到 25 后 recall 仍 0.429、失败率不变。真因是**评测 harness 把工具指向了 cwd**(详见 ADR-017),与 `recursion_limit` 无关。
+
+## ADR-017 · ADR-016 根因订正:评测 harness 把工具指向 cwd 致合成用例无界乱逛(非 recursion_limit)
+
+**起点**:按 ADR-016 的处方,把 `ToolAgentEngine.recursion_limit` 由 12 调到 25 后重跑 `pipeline-repomap --runs 1 --judge`。**没用**:仍 ~25 次审查员撞 `Recursion limit of 25 reached`、失败率仍 ~40%、recall 0.429(反比 0.476 更低)。证伪"上限太低"假设——把上限当旋钮拧是没找根因的瞎猜。
+
+**系统化定位(把失败按 case 归位)**:失败**全集中在 `clean_*` / `complex_*`(合成内联用例)**;7 条 repo-backed 用例(`repomap_*`/`file_*`)**零失败**。
+
+**根因(单审查员流式复现坐实)**:合成内联用例 diff 写在 YAML 里、**磁盘无对应 repo 快照**;但工具档下 runner 仍按 `repo_root = case.repo_path or os.path.abspath(args.repo_base or ".")` 回退建工具会话——`case.repo_path` 为空、又没传 `--repo-base` 时,**回退成 `"."` = cwd = `services/agent`**。而该目录恰好装着整个评测数据集(`evals/dataset/repo/**` 的 Java 夹具)。于是审查一个 `clean_*` 用例时:`get_repo_map` 扫到的全是**别的用例**的 Java 文件,目标文件(如 `ConfigLoader.java`)磁盘不存在 → "文件不存在";审查员被 prompt 要求"补够上下文再判",却只能拿到**真实但完全无关**的他人文件,永远不自信 → 在 `file_npe_contract`/`file_path_traversal`/`repomap_npe_delegate`… 之间一个个乱读直到撞顶失败。失败的审查员被 `except` 静默跳过、零产出,**同时压低 recall(真问题没人报)和 FP(乱报也没发出来)**——后者解释了为何崩塌档的 clean 误报率虚低。
+
+**修复(纯 evals,零碰 `src/codeguard_agent/**`)**:新增纯函数 `evals/profiles.py::case_repo_root(case_repo_path, repo_base)`——**只有用例自带真实快照(`repo_path`),或用户显式 `--repo-base` 断言有真实工程时**才返回 repo 根;否则返回 `None`,**绝不隐式回退 cwd**。`runner.py` 据此:`None` 的合成用例本条按**直连(无工具)**跑(它们本就是 diff-only 用例,无跨文件真值可查),repo-backed 用例照旧走工具。
+
+**验证(`--runs 1 --judge`,修复前后同环境)**:
+
+| | recursion 失败 | recall | precision | F1 |
+|---|---|---|---|---|
+| 修复前(@limit 25) | 25 | 0.429 | 0.462 | 0.444 |
+| **修复后** | **1** | **0.893** | 0.500 | 0.641 |
+
+合成 complex 用例现在产出真实 TP(complex_import 4 TP、complex_config 3 TP)而非全 FN 循环。clean 误报率回到 0.750——这是 diff-only 直连的**真实**过度上报短板**显形**(此前被循环失败掩盖),非本次回归,归 ADR-004 老账。
+
+**残留(production 健壮性缺口,独立、可选)**:修复后仍有 **1 例** `repomap_npe_abstract_001`/logic 撞 limit=12——这是**有真快照的 repo-backed 难例**(抽象类→多实现),审查员**合法地**需 >6 次工具调用而超步。说明真实仓库(含 CLI 生产路径)下,审查员**无工具调用预算**,绕的难例会撞 `recursion_limit` 被静默跳过。该 case 有其他审查员兜住、recall 未损。正解不是再拧大数字,而是给审查员加**优雅的工具调用预算**(到顶就以现有信息收尾出结论,而非死循环被丢)。另开 change,不并入本次。
+
+**教训**:① 没找根因就拧旋钮(`recursion_limit`)=瞎猜,被一次实跑证伪;② 多组件系统先按"失败归位"切分(哪类 case 失败)再深挖,比盯单条日志快得多;③ 工具的"仓库根"必须是显式真实路径,**隐式回退 cwd** 在"脚本目录恰好含数据"时会喂出以假乱真的无关上下文。
+
+**Step 3 现状**:前置 blocker(ADR-016 误判的那个)已解,`pipeline-repomap` 工具档基线恢复正常(recall 0.893)。Group 6 的正式 before/after(`pipeline-repomap` vs `pipeline-repomap-fpverify`,`--runs 3 --judge`)现可进行。
+
+**日期**:2026-06-20
+
+<!-- 后续在这里继续追加 ADR-018、ADR-019 …… -->
