@@ -10,7 +10,7 @@
 
 - **已做(已提交)**:`engines.py` 引擎返回 `ReviewOutcome{result, gathered_context}`、`ToolAgentEngine` 从 `raw["messages"]` 抽 ToolMessage;`PipelineContext.gathered_context`;`reviewer_stage` 按 `(tool,args)` 去重汇总;`fp_filter` 渲染+字符预算注入 `{{context}}`;`fp_verify.txt` 加"据上下文实证判定"段;新 profile `pipeline-repomap-fpverify`。**notools/直连档行为不变(gathered_context 恒空)**。change 未归档(Group 6 验证未完)。
 - **前置 blocker 已解(ADR-017,2026-06-20)**:ADR-016 把工具档崩塌(recall 0.857→0.476)误判为"`recursion_limit=12` 太低"。**实际调到 25 仍崩**——真因是**评测 harness 把工具指向 cwd**(合成用例无快照时回退 `"."`=`services/agent`,扫到数据集自身夹具,审查员对无关文件无界乱逛撞顶)。修复 `case_repo_root`(仅真实 repo 根才建工具会话,绝不隐式回退 cwd)后,`--runs 1` 下 **recursion 失败 25→1、recall 0.429→0.893**。纯 evals 改动,未碰 `src/codeguard_agent/**`。
-- **残留(可选,另开 change)**:1 例 repo-backed 难例审查员仍合法超 `recursion_limit=12` 被静默跳过 → production 路径审查员缺**工具调用预算**;正解是"到顶优雅收尾",非拧大数字。
+- **残留已处理(ADR-018)**:repo-backed 难例审查员撞 `recursion_limit=12` 时,`ToolAgentEngine.review` 现降级为无工具直连复审(`DirectEngine`),不再被静默丢弃;该 production 健壮性缺口已补。
 
 **Group 6 现可进行**:`pipeline-repomap`(关复核)vs `pipeline-repomap-fpverify`(开复核+喂上下文),`--runs 3 --judge`,看跨文件难例 `repomap_npe_crossfile_001` 复核员是否不再误删 + clean/diff-only 误报不回潮 → 回填 ADR-017、归档 change。
 
@@ -174,7 +174,7 @@ conda run -n codeguard --no-capture-output python -m evals.runner --mode pipelin
 
 0. ~~先修 ReAct 递归上限(ADR-016)~~ → **已证伪并订正(ADR-017)**:根因不是 `recursion_limit`,是评测 harness 把工具指向 cwd;已修 `case_repo_root`,工具档 recall 恢复(0.893)。**前置 blocker 解除。**
 0b. ~~完成 Step 3 / Group 6 验证~~ → **已完成(ADR-017)**:before/after `--runs 3 --judge` 跑完,P/F1/clean 误报率均改善、跨文件难例复核员未误删真问题;change `fp-verify-reviewer-context` 已归档。
-0c. **(可选)审查员工具调用预算**:repo-backed 难例仍有审查员合法超 `recursion_limit=12` 被静默跳过;给 ReAct 加"到顶优雅收尾"预算,保护 production 路径。另开 `tool-calling-review` 健壮性 change(不是拧大数字)。
+0c. ~~(可选)审查员工具调用预算~~ → **已做(ADR-018)**:`ToolAgentEngine.review` 撞 `GraphRecursionError` 时降级为无工具直连复审(`DirectEngine`),不再被静默丢弃;agent 构建抽成 `_run_agent` 可测接缝。后续可进一步"流式留存 + 撞顶强制收尾以保住已得上下文"。
 1. **实跑 repo_map before/after**(Step 3 的前置):起 gateway(`java -jar target/codeguard-gateway.jar`)+ 配真实 DeepSeek + `CODEGUARD_TOOL_SERVER_URL`,在跨文件难例上跑 `--profile pipeline-file` vs `--profile pipeline-repomap`,如实记录增益或"测不出",回填本文件与 ADR-012。难例 `repomap_npe_crossfile_001` 与 profile 均已就位。
    ```powershell
    cd services/gateway; mvn package; java -jar target/codeguard-gateway.jar   # 起工具服务(9090)

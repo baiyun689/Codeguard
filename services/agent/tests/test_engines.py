@@ -190,3 +190,48 @@ def test_工具白名单_repomap_档保持声明顺序():
 def test_工具白名单_空或未知_回退全开():
     assert _resolve_tool_names([]) == ["get_repo_map", "get_file_content"]
     assert _resolve_tool_names(["nope"]) == ["get_repo_map", "get_file_content"]
+
+
+class _FakeStructLLM:
+    def __init__(self, result):
+        self._result = result
+
+    def invoke(self, _messages):
+        return self._result
+
+
+class _FakeLLM:
+    """伪 LLM:只支持直连降级路径用到的 with_structured_output().invoke()。"""
+
+    def __init__(self, result):
+        self._result = result
+
+    def with_structured_output(self, _schema, method):  # noqa: ARG002
+        return _FakeStructLLM(self._result)
+
+
+class _RecursingEngine(ToolAgentEngine):
+    """让 ReAct 执行必撞递归上限,用于验证降级路径(不构造真实 agent/不调真实 LLM)。"""
+
+    def _run_agent(self, llm, system_prompt, user_prompt):  # noqa: ARG002
+        from langgraph.errors import GraphRecursionError
+
+        raise GraphRecursionError("Recursion limit of 12 reached without hitting a stop condition")
+
+
+def test_撞递归上限降级为无工具直连_不静默丢弃该域产出():
+    # ReAct 撞上限时,该域不应被静默丢弃;而是降级走无工具直连复审,至少产出一份结论。
+    eng = _RecursingEngine(tool_client=object())
+    salvaged = ReviewResult(summary="降级直连产出", issues=[])
+    out = eng.review(
+        _FakeLLM(salvaged),
+        system_prompt="s",
+        user_prompt="u",
+        reviewer_name="logic",
+        max_retries=1,
+        structured_method="function_calling",
+    )
+    assert isinstance(out, ReviewOutcome)
+    assert out.result.summary == "降级直连产出"
+    # 降级走的是 DirectEngine(无工具),故 gathered_context 恒空。
+    assert out.gathered_context == []

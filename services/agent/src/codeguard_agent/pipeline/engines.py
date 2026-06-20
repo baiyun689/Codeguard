@@ -129,6 +129,38 @@ class ToolAgentEngine(ReviewEngine):
         max_retries: int,
         structured_method: str,
     ) -> ReviewOutcome:
+        # GraphRecursionError 延迟导入(mock/无工具路径不需要 langgraph)。
+        from langgraph.errors import GraphRecursionError
+
+        try:
+            raw = self._run_agent(llm, system_prompt, user_prompt)
+        except GraphRecursionError:
+            # ReAct 在 recursion_limit 步内没收敛(绕的难例 / 工具反复绕)。不让该域被静默丢弃
+            # (那会直接丢失这一维度的发现、压低 recall),而是降级为无工具直连复审一次,至少
+            # 据 diff 产出一份结论(见 ADR-017"审查员无工具调用预算"残留)。直连无工具不会再循环。
+            logger.warning(
+                "[%s] ReAct 撞递归上限(%d 步未收敛),降级为无工具直连复审以保住该域产出",
+                reviewer_name,
+                self._recursion_limit,
+            )
+            return DirectEngine().review(
+                llm,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                reviewer_name=reviewer_name,
+                max_retries=max_retries,
+                structured_method=structured_method,
+            )
+        result = self._extract_result(raw, reviewer_name)
+        gathered = _extract_gathered_context(raw)
+        return ReviewOutcome(result, gathered)
+
+    def _run_agent(self, llm: Any, system_prompt: str, user_prompt: str) -> Any:
+        """构建 ReAct agent 并执行,返回原始状态。
+
+        抽成独立方法是为了让"撞递归上限降级"逻辑可被单测覆盖(测试覆写本方法抛
+        ``GraphRecursionError``,无需构造真实 agent / 调真实 LLM)。
+        """
         # LangChain 相关导入延迟到此:mock 模式 / 无工具路径不需要它们。
         from langchain.agents import create_agent
 
@@ -153,13 +185,10 @@ class ToolAgentEngine(ReviewEngine):
             system_prompt=system_prompt,
             response_format=ReviewResult,
         )
-        raw = agent.invoke(
+        return agent.invoke(
             {"messages": [("human", user_prompt)]},
             config={"recursion_limit": self._recursion_limit},
         )
-        result = self._extract_result(raw, reviewer_name)
-        gathered = _extract_gathered_context(raw)
-        return ReviewOutcome(result, gathered)
 
     def _extract_result(self, raw: Any, reviewer_name: str) -> ReviewResult:
         """从 create_agent 的返回状态里取结构化结果,层层兜底。"""

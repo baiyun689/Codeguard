@@ -616,4 +616,18 @@ ADR-014 的 Step-1 增益(plus 验证模型)换 **qwen3.7-max** 重跑 `pipeline
 
 **日期**:2026-06-20
 
-<!-- 后续在这里继续追加 ADR-018、ADR-019 …… -->
+## ADR-018 · 审查员撞递归上限时优雅降级(无工具直连复审),而非被静默丢弃
+
+**背景**:ADR-017 修掉评测 harness 根因后,工具档仍残留 ~1/跑 的 repo-backed 难例审查员撞 `recursion_limit=12`——这是**有真快照的合法难例**(如 `repomap_npe_abstract_001`,抽象类→多实现需多轮"导航→细读"),不是无界乱逛。问题在于:`ToolAgentEngine.review` 抛 `GraphRecursionError` 后,被 `ReviewerStage` 的 `except` **静默跳过**,该领域(security/logic/quality 之一)的发现**全丢**,直接压低 recall。这是 production 路径(CLI 审真实仓库)也会踩的健壮性缺口。
+
+**决策**:撞上限时**优雅降级**而非丢弃——`ToolAgentEngine.review` 捕获 `GraphRecursionError`,降级为**无工具直连复审一次**(`DirectEngine`,据 diff 产出结论)。直连无工具不会再循环,该域至少有产出。把 agent 构建+invoke 抽成 `_run_agent` 方法作可测接缝。
+
+**为何不拧大 `recursion_limit`**(承 ADR-017):拧大只是把"多久撞顶"往后推,治不了"撞顶=静默丢弃"这个根本动作;且无界乱逛(若再现)给多少都不够。降级才是对"撞顶"这一事件的正确兜底。`recursion_limit` 保持默认 12(仍是构造参数,需要时可调),撞顶由降级接住。
+
+**取舍(诚实记)**:降级走直连,**丢失该审查员已收集的 diff 外上下文**(gathered_context 该域为空)——撞顶的审查员其上下文本就不完整/已绕晕,退到 diff-only 结论是合理兜底,且严格优于"零产出"。更进一步的"流式留存 last state、撞顶时强制无工具收尾以保住已得上下文"留作后续(复杂度更高,暂不做)。
+
+**验证**:单测覆写 `_run_agent` 抛 `GraphRecursionError`,断言 `review` 返回直连降级产出(非抛断、gathered_context 空)。155 passed、ruff 净、mypy 无新增。真实复现该降级是概率性的(原残留 ~1/跑),单测已确证降级逻辑,未为触发它另起 gateway 烧额度。
+
+**日期**:2026-06-20
+
+<!-- 后续在这里继续追加 ADR-019、ADR-020 …… -->
