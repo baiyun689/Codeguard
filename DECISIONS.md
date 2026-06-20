@@ -595,7 +595,24 @@ ADR-014 的 Step-1 增益(plus 验证模型)换 **qwen3.7-max** 重跑 `pipeline
 
 **教训**:① 没找根因就拧旋钮(`recursion_limit`)=瞎猜,被一次实跑证伪;② 多组件系统先按"失败归位"切分(哪类 case 失败)再深挖,比盯单条日志快得多;③ 工具的"仓库根"必须是显式真实路径,**隐式回退 cwd** 在"脚本目录恰好含数据"时会喂出以假乱真的无关上下文。
 
-**Step 3 现状**:前置 blocker(ADR-016 误判的那个)已解,`pipeline-repomap` 工具档基线恢复正常(recall 0.893)。Group 6 的正式 before/after(`pipeline-repomap` vs `pipeline-repomap-fpverify`,`--runs 3 --judge`)现可进行。
+**Step 3 / Group 6 实测(2026-06-20,`--runs 3 --judge`,工具档基线已恢复;DeepSeek 审查 + qwen3.7-max 裁判,实际 0 个 403)**:把审查员经工具获取的 diff 外上下文喂给误报复核员后,before(`pipeline-repomap`,复核关)vs after(`pipeline-repomap-fpverify`,复核开+喂上下文):
+
+| | Precision | Recall | F1 | 误报率(clean) |
+|---|---|---|---|---|
+| before(复核关) | 0.531 (±0.022) | 0.929 (±0.029) | 0.675 | 0.833 |
+| **after(复核开+喂上下文)** | **0.640 (±0.018)** | 0.869 (±0.045) | **0.737** | **0.500** |
+
+**净效果**:Precision +0.109、F1 +0.062、clean 误报率 −0.333;Recall −0.060。
+
+**6.3 判定(按切片逐 case 核,3 跑累计 TP/FP/FN)——通过**:
+
+- **repomap+file 切片(Step 3 靶心,需工具真值)**:TP `20→20` **完全守住**、FP `16→9` 近腰斩。4 个最难的跨文件 NPE 用例 `repomap_npe_{crossfile,abstract,delegate,iface_impl}` 在 before/after **全是 3/0/0**——**复核员喂了上下文后没误删任何一个跨文件真问题**,正是 Step 3 要证的"查而非猜删"。`file_path_traversal` FP 5→1、`file_missing_authz` 11→8,TP 不丢。
+- **clean 切片**:FP `20→12`,凭空乱报被压,无 TP 可丢。
+- **complex 切片**:TP `58→53`、FN `5→10`——整体 Recall −0.06 几乎全在这。原因合理且与 ADR-015 方法论一致:complex 是合成 diff-only 用例,现走直连**无工具上下文**,复核员对密集多问题 diff 在"无上下文"下偏删(`complex_discount` −4、`complex_import` −2)。**即"有上下文则保真、无上下文则偏删",反过来印证了上下文注入的价值。**
+
+**结论**:Step 3(给复核员喂审查员获取的 diff 外上下文)**有效且达成设计目标**——在需要跨文件真值的切片上,复核员保住全部真问题、同时砍掉一半 FP;Precision/F1/clean 误报率三项明显改善,Recall 代价仅 0.06 且集中在"复核员本就拿不到上下文"的 diff-only complex 上(非 Step 3 适用域)。change `fp-verify-reviewer-context` 据此归档。
+
+**残留(同前)**:工具档 3 跑共 ~2–3 次 repo-backed 难例审查员撞 `recursion_limit=12` 被静默跳过(~1/跑),即上文"production 审查员无工具预算"缺口,另开 change。
 
 **日期**:2026-06-20
 

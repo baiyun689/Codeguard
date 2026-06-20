@@ -2,7 +2,9 @@
 
 > 当前进度快照。下次接手从「下次从哪开始」一节读起即可。
 
-## Step 3：把审查员上下文喂给复核员 —— 代码就绪 ✅，前置 blocker 已解 ✅，Group 6 对照待跑 ⏳（详见 ADR-016→ADR-017 / change `fp-verify-reviewer-context`)
+## Step 3：把审查员上下文喂给复核员 —— 完成 ✅（详见 ADR-016→ADR-017 / change `fp-verify-reviewer-context` 已归档)
+
+> **结果(ADR-017,`--runs 3 --judge`)**:before(复核关)vs after(复核开+喂上下文):Precision 0.531→**0.640**、F1 0.675→**0.737**、clean 误报率 0.833→**0.500**、Recall 0.929→0.869(−0.06)。**6.3 判定通过**:repomap+file 切片 TP 20→20 守住(4 个跨文件难例全 3/0/0,复核员没误删真问题)、FP 16→9;Recall 那 0.06 代价全在合成 diff-only 的 complex 切片(复核员本就无上下文,偏删)。Step 3 达成设计目标。
 
 让 ReAct 审查员经工具读到的 diff 外上下文(文件/代码地图)传给误报复核员,使其"查"而非"猜",修 ADR-014 跨文件误删。
 
@@ -171,7 +173,7 @@ conda run -n codeguard --no-capture-output python -m evals.runner --mode pipelin
 ## 👉 下次从哪开始
 
 0. ~~先修 ReAct 递归上限(ADR-016)~~ → **已证伪并订正(ADR-017)**:根因不是 `recursion_limit`,是评测 harness 把工具指向 cwd;已修 `case_repo_root`,工具档 recall 恢复(0.893)。**前置 blocker 解除。**
-0b. **完成 Step 3 / Group 6 验证**:`fp-verify-reviewer-context` 代码已就绪(Group 1–5 完,Group 6 待跑)。起 gateway + 探活 qwen 后跑 `pipeline-repomap`(关复核)vs `pipeline-repomap-fpverify`(开复核+喂上下文)`--runs 3 --judge` 对照,看复核员在 `repomap_npe_crossfile_001` 等跨文件难例上是否不再误删真问题、clean/diff-only 误报不回潮;回填 ADR-017 并归档该 change。
+0b. ~~完成 Step 3 / Group 6 验证~~ → **已完成(ADR-017)**:before/after `--runs 3 --judge` 跑完,P/F1/clean 误报率均改善、跨文件难例复核员未误删真问题;change `fp-verify-reviewer-context` 已归档。
 0c. **(可选)审查员工具调用预算**:repo-backed 难例仍有审查员合法超 `recursion_limit=12` 被静默跳过;给 ReAct 加"到顶优雅收尾"预算,保护 production 路径。另开 `tool-calling-review` 健壮性 change(不是拧大数字)。
 1. **实跑 repo_map before/after**(Step 3 的前置):起 gateway(`java -jar target/codeguard-gateway.jar`)+ 配真实 DeepSeek + `CODEGUARD_TOOL_SERVER_URL`,在跨文件难例上跑 `--profile pipeline-file` vs `--profile pipeline-repomap`,如实记录增益或"测不出",回填本文件与 ADR-012。难例 `repomap_npe_crossfile_001` 与 profile 均已就位。
    ```powershell
