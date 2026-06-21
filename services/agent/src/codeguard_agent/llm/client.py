@@ -16,6 +16,21 @@ from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
 logger = logging.getLogger("codeguard")
 
 
+def _disable_thinking_body(api_base_url: str) -> dict[str, Any]:
+    """按厂商返回"关闭 thinking"的请求体字段——格式厂商相关,塞错家会被无视(关不掉)或报错。
+
+    DeepSeek 与通义千问都借 `provider=openai` 这条路,但 base_url 不同、是两家:
+    - 通义千问 / dashscope:``{"enable_thinking": false}``
+    - DeepSeek(及默认):``{"thinking": {"type": "disabled"}}``
+
+    背景:千问推理模型在 thinking 模式下不支持 ``tool_choice=required``(会 400),
+    评测裁判走结构化输出必须先关 thinking;早先发的是 DeepSeek 格式,千问无视 → 关不掉 → 裁判全挂回退规则尺。
+    """
+    if "dashscope" in (api_base_url or "").lower():
+        return {"enable_thinking": False}
+    return {"thinking": {"type": "disabled"}}
+
+
 def build_llm(settings: Settings, temperature: float | None = None) -> Any:
     """根据配置创建一个 LangChain Chat 模型。
 
@@ -49,9 +64,10 @@ def build_llm(settings: Settings, temperature: float | None = None) -> Any:
         if temperature is not None:
             kwargs["temperature"] = temperature
         if settings.disable_thinking:
-            # DeepSeek 推理模型默认开启 thinking,会与 function_calling/结构化输出冲突。
-            # 通过 extra_body 透传给底层请求体显式关闭。(真正的 OpenAI 不认此字段,故仅按需启用)
-            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+            # 推理模型默认开启 thinking,会与 function_calling/结构化输出(裁判走 tool_choice=required)冲突。
+            # 通过 extra_body 显式关闭;字段格式厂商相关(DeepSeek vs 千问),按 base_url 选对。
+            # (真正的 OpenAI 不认此字段,故仅按需启用)
+            kwargs["extra_body"] = _disable_thinking_body(settings.api_base_url)
         return ChatOpenAI(**kwargs)
 
     if settings.provider == "claude":
