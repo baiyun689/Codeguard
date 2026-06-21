@@ -423,7 +423,7 @@ try-with-resources 当资源泄漏)等语义型误报。
 **效果(诚实记录)**:
 
 - **工程正确性已坐实**:Java 26 单测(+15:tag 抽取/PageRank 确定性/渲染预算/工具端到端/沙箱放行 diff 外源码+拒非源码)、Python 118 测(+8:repo_map 客户端/工具定义/工具白名单透传)全绿。mock 跑通确认 harness 加载新难例(31 条)与 `pipeline-repomap` profile 解析。
-- **量化增益待实跑**:`repomap_npe_crossfile_001`(跨文件 NPE:diff 只见调用、缺陷在另一文件)+ `pipeline-repomap` profile 已就位,但**真实 DeepSeek + 起 gateway 的 before/after 对照本环境跑不了**(无 key/服务),故不编数字——同 ADR-004/008/009/011"测不出就如实记"。这是阶段 3 继续前该补的一次实跑。
+- **量化增益已实跑(2026-06-21,见 ADR-019)**:三档 head-to-head(notools/file/repomap,de6e037,`--runs 3 --judge`,真实 DeepSeek+qwen 裁判)。结论:**工具开 vs 关有明确增益**(file/repo-map 切片 recall 0.762/0.667→1.000),但 **repo_map 导航叠加在 file 之上零增量**——现有 `repomap_npe_*` 难例审查员从 diff/import 就能猜到该读哪个文件,用不上 PageRank 导航。要量化 repo_map 独有增益,需补"diff 里猜不到目标文件"的强隔离难例(ADR-019 衍生待办①)。
 - **顺带修了对照可控性**:发现 ReAct 引擎原本硬编码工具集,会让 `pipeline-file` 也暴露 repo_map、污染对照。补了**工具白名单透传**(profile.tools → `enabled_tools` → engine),使"开哪些工具"成为对照唯一变量。
 
 **放弃的备选**:
@@ -630,4 +630,36 @@ ADR-014 的 Step-1 增益(plus 验证模型)换 **qwen3.7-max** 重跑 `pipeline
 
 **日期**:2026-06-20
 
-<!-- 后续在这里继续追加 ADR-019、ADR-020 …… -->
+## ADR-019 · 工具增益首次量化实跑:工具开 vs 关有明确增益,repo_map 导航叠加在 file 之上零增量(当前数据集)
+
+**背景**:ADR-012 落地 `get_repo_map` 后,"工具开 vs 关"的量化增益一直是欠账——先因合成数据集喂不动文件工具(ADR-009),后因评测 harness 把工具指向 cwd 致工具档崩塌(ADR-016→017)。ADR-017 修好 harness 后,这次终于能跑干净对照:同一 git(`de6e037`)、同会话、`--runs 3 --judge`、真实 DeepSeek 审查 + qwen 裁判,三档 head-to-head(`pipeline-notools` / `pipeline-file` / `pipeline-repomap`,唯一变量是工具集)。
+
+**实测结果(2026-06-21,de6e037,--runs 3 --judge)**:
+
+| profile | 工具 | P | R | F1 | clean 误报率 |
+|---|---|---|---|---|---|
+| pipeline-notools | 关 | 0.511 | 0.833 | 0.633 | 0.792 |
+| pipeline-file | get_file_content | 0.547 | 0.893 | 0.679 | 0.708 |
+| pipeline-repomap | +get_repo_map | 0.531 | 0.905 | 0.670 | 0.792 |
+
+按能力切片 recall(报告"最近一次",单跑;三档均 de6e037 同会话):
+
+| 切片 | notools | file | repomap |
+|---|---|---|---|
+| file | 0.762 | **1.000** | 1.000 |
+| repo-map | 0.667 | **1.000** | 1.000 |
+| diff-only | 0.857 | 0.857 | 0.873 |
+
+**两条结论(诚实记)**:
+
+1. **工具开 vs 关:有明确、now-可测的 recall 增益**。需读 diff 外文件的切片(file / repo-map)从 notools 的 0.762 / 0.667 拉到工具档的 1.000——notools 末跑漏了 3 个跨文件难例(`repomap_npe_abstract_001`、`repomap_npe_delegate_001` 漏报、`file_path_traversal_001` 漏报),工具档(file 与 repomap)8 个"需工具"难例全 TP。整体 Recall 0.833→0.893、F1 0.633→0.679,Precision/误报率不被工具拖坏(反而 file 档误报率 0.792→0.708 略降)。这证伪了 ADR-009/011 时期"测不出增益"的悬案——根因是当时数据集/harness,不是工具无用。
+
+2. **repo_map 导航叠加在 file 之上:当前数据集零增量**。`pipeline-file` 与 `pipeline-repomap` 在 file / repo-map 切片都是 1.000;整体 R 0.893→0.905、diff-only 0.857→0.873 均落在 ±0.06 方差内,不构成可信增益。**原因**:当前 4 个 `repomap_npe_*` 难例,审查员从 diff 文本/import 就能猜到"该读哪个文件",`get_file_content` 单独即可定位细读,用不上 `get_repo_map` 的"先导航定位"。这正应了 ADR-012 设计时的前提——repo_map 要显出价值,难例必须**从 diff 里猜不到该读哪个文件**(如符号定义散在猜不到的文件、需靠 PageRank 邻域图导航)。现有难例隔离度不够。
+
+**取舍/边界**:能力切片是单跑值(报告只记"最近一次"),方差未消;但方向被 per-case 明细佐证(notools 确实漏、工具档确实抓全),且与整体 3 跑均值一致。未据此改任何 `src/**` 代码——这是一次纯测量。
+
+**衍生待办**:① 要量化 repo_map 的**独有**增益,需补"diff 内猜不到目标文件"的强隔离跨文件难例(种子文件与缺陷文件无显式 import/调用线索,逼审查员走 PageRank 导航);现有 `repomap_npe_*` 对 file 工具太友好。② repo_map 的价值也可能在**大仓库**(候选文件多、猜不准)才显现,小快照难例区分度天然低。③ 工具利用率/耗时仍未纳入报告(HANDOFF 待办 3)。
+
+**日期**:2026-06-21
+
+<!-- 后续在这里继续追加 ADR-020、ADR-021 …… -->

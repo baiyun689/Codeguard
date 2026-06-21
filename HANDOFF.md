@@ -1,8 +1,10 @@
-# 交接清单（2026-06-20）
+# 交接清单（2026-06-21）
 
 > 当前进度快照。下次接手从「下次从哪开始」一节读起即可。
 >
-> **最近一轮(2026-06-20)做了什么**:把 `fp-verify-reviewer-context`(Step 3:给误报复核员喂审查员的 diff 外上下文)从"代码就绪、验证受阻"推到**完成并归档**。期间:① 证伪并订正 ADR-016(工具档崩塌真因不是 `recursion_limit`,而是评测 harness 把工具指向 cwd → ADR-017);② 跑完 Group 6 正式 before/after,证明 Step 3 有效(P/F1/clean 误报率均改善、跨文件真问题未误删);③ 补掉一个 production 健壮性缺口(审查员撞递归上限优雅降级 → ADR-018)。三次提交均已推送 master(`f64ae34` / `1c4c4a2` / `22bdeba`)。
+> **最近一轮(2026-06-21)做了什么**:把 HANDOFF 第 1 优先「量化 repo_map / file 工具增益」(ADR-012 欠账,因 ADR-017 修好 harness 后终于可跑)做实。三档 head-to-head(notools/file/repomap,同 git `de6e037`、同会话、`--runs 3 --judge`、真实 DeepSeek + qwen 裁判)。**结论(ADR-019)**:① **工具开 vs 关有明确增益**——需读 diff 外文件的切片 recall 从 0.762/0.667 拉到 1.000、整体 R 0.833→0.893、F1 0.633→0.679,且误报率不被工具拖坏;证伪了 ADR-009/011"测不出增益"的悬案(根因是当时数据集/harness,非工具无用)。② **repo_map 导航叠加在 file 之上零增量**——现有 `repomap_npe_*` 难例审查员从 diff/import 就能猜到该读哪个文件,`get_file_content` 单独够用,用不上 PageRank 导航;要量化 repo_map 独有增益须补"diff 里猜不到目标文件"的强隔离难例。纯测量,未碰 `src/**`。
+>
+> **上一轮(2026-06-20)做了什么**:把 `fp-verify-reviewer-context`(Step 3:给误报复核员喂审查员的 diff 外上下文)从"代码就绪、验证受阻"推到**完成并归档**。期间:① 证伪并订正 ADR-016(工具档崩塌真因不是 `recursion_limit`,而是评测 harness 把工具指向 cwd → ADR-017);② 跑完 Group 6 正式 before/after,证明 Step 3 有效(P/F1/clean 误报率均改善、跨文件真问题未误删);③ 补掉一个 production 健壮性缺口(审查员撞递归上限优雅降级 → ADR-018)。三次提交均已推送 master(`f64ae34` / `1c4c4a2` / `22bdeba`)。
 
 ## Step 3：把审查员上下文喂给复核员 —— 完成 ✅（详见 ADR-016→ADR-017 / change `fp-verify-reviewer-context` 已归档)
 
@@ -174,18 +176,21 @@ conda run -n codeguard --no-capture-output python -m evals.runner --mode pipelin
 
 ## 👉 下次从哪开始
 
-**本轮(2026-06-20)已收口**:~~修 ReAct 递归上限~~→订正为 harness 指向 cwd(ADR-017)、~~Step 3/Group 6 验证~~→完成并归档、~~审查员工具调用预算~~→撞顶优雅降级(ADR-018)。三项见上文与 ADR-016→018。下面是新的起点:
+**本轮(2026-06-21)已收口**:~~量化 repo_map / file 工具增益~~→三档 head-to-head 跑完、ADR-019 已落、ADR-012/HANDOFF 已回填(工具开 vs 关有明确增益;repo_map 叠加在 file 之上当前数据集零增量)。下面是新的起点:
 
-1. **量化 repo_map / file 工具增益**(ADR-012 欠账,**现因 harness 已修而终于可跑**):起 gateway + 配真实 DeepSeek + `CODEGUARD_TOOL_SERVER_URL`,跑 `--profile pipeline-file` vs `--profile pipeline-repomap`(`--runs 3 --judge`),在跨文件难例切片上如实记录"工具开 vs 关"的增益(或"测不出"),回填本文件与 ADR-012。注意:这是与 Step 3(复核对照)**不同**的对照——它比的是"审查员有无工具",难例 `repomap_npe_crossfile_001` 与 profile 均已就位。
-   ```powershell
-   cd services/gateway; mvn package; java -jar target/codeguard-gateway.jar   # 起工具服务(9090)
-   $env:CODEGUARD_TOOL_SERVER_URL="http://localhost:9090"
-   cd ../agent
-   conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-file --runs 3 --judge
-   conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-repomap --runs 3 --judge
-   ```
-2. **逐个加重型工具**:`get_method_definition`(JavaParser AST,可复用本期 `JavaTagExtractor`)→ `get_call_graph` → `semantic_search`(RAG),沿通用协议 + 会话接缝叠加;届时按需在会话层填"按 project 共享重资源"。`get_definition` 暂缓的边界理由见 ADR-012。
+1. **(承 ADR-019 衍生①,要继续做 repo_map 才需先做)补"diff 里猜不到目标文件"的强隔离跨文件难例**:现有 4 个 `repomap_npe_*` 对 `get_file_content` 太友好(从 diff/import 就能猜到读哪),致 repo_map 导航测不出独有增益。需构造**种子文件与缺陷定义文件之间无显式 import/调用线索**的用例,逼审查员走 PageRank 邻域导航;或引入候选文件多到"猜不准"的大快照。补完再重跑 `pipeline-file` vs `pipeline-repomap` 验证 repo_map 增益。**判断**:若短期不打算深挖 repo_map,可跳过本条,优先做第 2 条(加新工具的边际价值可能更高)。
+2. **逐个加重型工具**:`get_method_definition`(JavaParser AST,可复用本期 `JavaTagExtractor`)→ `get_call_graph` → `semantic_search`(RAG),沿通用协议 + 会话接缝叠加;届时按需在会话层填"按 project 共享重资源"。`get_definition` 暂缓的边界理由见 ADR-012。**注**:加新工具前,先按第 1 条把难例隔离度提上来,否则同样会"工具真被调用但增益测不出"。
 3. 工具利用率/耗时纳入评测报告。
+
+```powershell
+# 复现本轮三档对照:
+cd services/gateway; mvn package; java -jar target/codeguard-gateway.jar   # 起工具服务(9090)
+$env:CODEGUARD_TOOL_SERVER_URL="http://localhost:9090"
+cd ../agent
+conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-notools --runs 3 --judge
+conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-file    --runs 3 --judge
+conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-repomap --runs 3 --judge
+```
 4. repo map 若在大仓库慢,补按 mtime 的 tags 缓存(对齐 aider)。
 5. **(可选,承 ADR-018)** 撞顶降级现在退到 diff-only、丢已得上下文;若要保住,改"流式留存 last state + 撞顶强制无工具收尾"。优先级低(降级已够兜底)。
 
