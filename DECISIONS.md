@@ -658,8 +658,30 @@ ADR-014 的 Step-1 增益(plus 验证模型)换 **qwen3.7-max** 重跑 `pipeline
 
 **取舍/边界**:能力切片是单跑值(报告只记"最近一次"),方差未消;但方向被 per-case 明细佐证(notools 确实漏、工具档确实抓全),且与整体 3 跑均值一致。未据此改任何 `src/**` 代码——这是一次纯测量。
 
-**衍生待办**:① 要量化 repo_map 的**独有**增益,需补"diff 内猜不到目标文件"的强隔离跨文件难例(种子文件与缺陷文件无显式 import/调用线索,逼审查员走 PageRank 导航);现有 `repomap_npe_*` 对 file 工具太友好。② repo_map 的价值也可能在**大仓库**(候选文件多、猜不准)才显现,小快照难例区分度天然低。③ 工具利用率/耗时仍未纳入报告(HANDOFF 待办 3)。
+**衍生待办**:① ~~要量化 repo_map 的**独有**增益,需补"diff 内猜不到目标文件"的强隔离跨文件难例~~ → **已做并验证通过(ADR-020)**:`repomap_npe_isolated_001`(接口多实现 + 契约撒谎 + 诱饵填充)下 file 0/3、repomap 2/3,首次测出 repo_map 独有增益。② repo_map 的价值也可能在**大仓库**(候选文件多、猜不准)才显现,小快照难例区分度天然低。③ 工具利用率/耗时仍未纳入报告(HANDOFF 待办 3)。
 
 **日期**:2026-06-21
 
-<!-- 后续在这里继续追加 ADR-020、ADR-021 …… -->
+## ADR-020 · 强隔离跨文件难例:首次测出 repo_map 相对 file 工具的独有增益(file 0/3、repomap 2/3)
+
+**背景**:ADR-019 测出"工具开 vs 关有增益,但 repo_map 叠加在 file 之上零增量"——根因是现有 4 个 `repomap_npe_*` 难例对 `get_file_content` 太友好:快照只 3-4 文件(file 工具可"全读")、改动文件里直接写着字段类型(类型名≈文件名,顺着读即可),用不上 PageRank 导航。ADR-019 衍生待办①遂要求构造"diff 里猜不到目标文件"的强隔离难例,逼审查员走导航,才能量化 repo_map 的**独有**价值。
+
+**决策(用例设计,A1 路线)**:新增 `repomap_npe_isolated_001`(repo-backed,16 个 Java 文件),三重隔离 + 一重"契约撒谎":
+1. **接口多实现 + DI**:改动文件 `QuoteController` 持有的是**接口** `PriceCatalog`(非具体类),调 `catalog.lookup(sku).trim()`(通用名、hunk 无 import);接口有 3 实现,只有 `legacy.TariffLookupTable`(名不叫 `*Catalog`、藏 legacy 包)用 `Map.get` 找不到返回 null。
+2. **契约撒谎(最关键加固)**:`PriceCatalog.lookup` 的 javadoc 明确承诺"永不返回 null"。只读 diff/接口契约的审查员会**信任契约、判 .trim() 安全而不报**(正确地相信契约);唯有导航到具体实现 `TariffLookupTable` 才看见它**违反契约**。把缺陷从"不判空的 stock NPE 气味"升级为"某实现违反接口非空契约"这一必须细读实现才暴露的真实跨文件缺陷。
+3. **诱饵填充**:~10 个无关服务,其中 `ShippingCalculator` 也有同名 `lookup(String)`(按名匹配有歧义);文件多到 ReAct 12 步预算内无法"全读"。
+
+**实测结果(2026-06-21,git 9c7e2da,--runs 3 --judge,真实 DeepSeek + qwen 裁判,该用例逐跑)**:
+
+| profile | 工具 | 该用例 3 跑 | 命中率 |
+|---|---|---|---|
+| pipeline-file | get_file_content | FN / FN / FN | **0/3** |
+| pipeline-repomap | +get_repo_map | TP / TP / FN | **2/3** |
+
+**两类证据(不止指标)**:① 逐跑命中 0/3 vs 2/3——file 单独被契约+诱饵彻底挡住,repo_map 把它捞回来。② **网关日志机制级佐证**:repomap 档审查员先 `get_repo_map("") -> ok`,随即 `get_file_content(".../legacy/TariffLookupTable.java") -> ok` ×2——正是设计的"地图→定位→读对实现"导航路径,读到 bug 实现才发现 `Map.get` 返 null。这是 repo_map 价值的**首次正向实证**(此前 ADR-009/011/019 一路"工具被调但增益测不出")。repomap 整体 F1 0.703 亦**首次反超** file 0.646。
+
+**取舍/边界(诚实记)**:① repomap 那 1/3 漏是真噪音(某跑 ReAct 没去导航或撞预算降级),单用例 recall 仍二值高方差——这是按用户决策"先做 1 个验证、再扩量"的代价;既已验证设计能区分,下一步可加 2-3 个同构强隔离用例把信号做稳(HANDOFF 待办)。② `AppConfig` 装配桥未进 repo map(personalized PageRank 沿种子**出边**流,AppConfig 是指向种子的入边),故 repo_map 并不告诉审查员"哪个实现 live",而是列出全部 3 实现让其逐个细读——对"抓 NPE 风险"已足够,但若要 repo_map 直接定位 live 实现,需另想机制(留后续)。③ 纯新增 fixture + 接口契约文案,未碰 `src/**`、Java gateway 未改。
+
+**日期**:2026-06-21
+
+<!-- 后续在这里继续追加 ADR-021、ADR-022 …… -->

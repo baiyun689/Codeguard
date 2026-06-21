@@ -1,0 +1,13 @@
+diff --git a/src/main/java/com/demo/web/QuoteController.java b/src/main/java/com/demo/web/QuoteController.java
+index 1111111..2222222 100644
+--- a/src/main/java/com/demo/web/QuoteController.java
++++ b/src/main/java/com/demo/web/QuoteController.java
+@@ -9,4 +9,8 @@ public class QuoteController {
+     public QuoteController(PriceCatalog catalog) {
+         this.catalog = catalog;
+     }
++
++    public String tagOf(String sku) {
++        return catalog.lookup(sku).trim();
++    }
+ }

@@ -1,0 +1,28 @@
+id: repomap_npe_isolated_001
+category: 空指针
+dimension: logic
+capability: [repo-map, file]
+description: >
+  强隔离版跨文件 NPE。QuoteController.tagOf 对 catalog.lookup(sku) 的返回值直接 .trim()。
+  与现有 repomap_npe_* 不同,本例刻意把"该读哪个文件"藏深,且让契约撒谎:
+  (0) 接口 PriceCatalog 的 javadoc 明确承诺 lookup "永不返回 null" —— 只读 diff/接口契约的审查员
+      会信任契约、判定 .trim() 安全而不报(正确地相信契约);只有读到具体实现才发现契约被违反。
+  (1) catalog 的静态类型是接口 PriceCatalog,有 3 个实现(StandardCatalog/RegionalCatalog 遵守契约非空、
+      legacy.TariffLookupTable 用 Map.get 找不到返回 null、违反契约),光读 QuoteController/接口判不出哪个是 live;
+  (2) bug 实现名不叫 *Catalog、藏在 legacy 包,猜不到;唯一"哪个实现 live"的线索是 config.AppConfig
+      (既 new QuoteController 又 new TariffLookupTable)这座桥;
+  (3) 仓库塞了 ~10 个无关诱饵服务,其中 ShippingCalculator 也有同名 lookup(String),按名匹配有歧义;
+      文件多到 ReAct 预算内无法"全读"。
+  预期:get_file_content 单独(file 档)难在预算内定位到 TariffLookupTable;get_repo_map(repomap 档)
+  以 diff 种子经 PageRank + AppConfig 桥把 TariffLookupTable.lookup 顶到前排,据此细读才暴露 NPE。
+  用于量化 repo-map 导航相对 file 工具的"独有"增益(对照 repomap_npe_crossfile_001 是弱隔离版)。
+repo_path: repo
+expected:
+  - type_keywords: ["空指针", "npe", "null", "null pointer"]
+    file: QuoteController.java
+    line: 14
+    tolerance: 3
+    severity: WARNING
+    note: >
+      catalog 实际注入的 TariffLookupTable.lookup 经 Map.get 可能返回 null,QuoteController.tagOf
+      未判空即 .trim(),存在跨文件 NPE 风险。
