@@ -1,0 +1,27 @@
+id: repomap_npe_caller_001
+category: 空指针
+dimension: logic
+capability: [repo-map, file]
+description: >
+  caller 盲区版跨文件 NPE。diff 把 MemberDirectory.displayName 从"未命中返回占位串 UNKNOWN"
+  改成"未命中返回 cache.get(id)(可能 null)"。这个改动**就 callee 本身看是合理的**(返回 null
+  表示未找到是常见 API),光看 diff/只顺着被改方法往下读挑不出毛病。真正的缺陷在**上游已存在的
+  调用方** GreetingService.greet:它假设 displayName 永不为 null,直接 .toUpperCase() —— diff 之后
+  这里就会 NPE。
+  这类缺陷正落在 get_repo_map 的结构性盲区:地图只产出"改动指向的定义(callees)",而 GreetingService
+  是引用改动符号的**叶子调用方**(无人引用它),PageRank 得分为零、永不是边的 target,因此不进地图
+  (对照 ADR-020 里 AppConfig 消失)。审查员顺 diff 读 callee 永远碰不到这个受害 caller。
+  另设一个判了空的安全调用方 MemberReport 作对照,逼审查员逐个细读区分"哪个 caller 会被改坏";
+  并塞若干无关诱饵使 file 工具无法在 ReAct 预算内"全读"。
+  预期:仅靠 get_file_content(file 档)难定位到 GreetingService;需要地图列出"displayName 的直接调用方"
+  (本变更 repomap-include-callers 的能力)才导航得到。用于 eval-first 验证"改前抓不到 / 改后闭合"。
+repo_path: repo
+expected:
+  - type_keywords: ["空指针", "npe", "null", "null pointer"]
+    file: GreetingService.java
+    line: 20
+    tolerance: 3
+    severity: WARNING
+    note: >
+      diff 使 MemberDirectory.displayName 可能返回 null,上游已存在调用方 GreetingService.greet
+      未判空即 .toUpperCase(),存在被本次改动引入的跨文件 NPE 风险。

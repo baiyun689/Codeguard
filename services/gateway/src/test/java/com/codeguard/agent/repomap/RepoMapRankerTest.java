@@ -96,4 +96,68 @@ class RepoMapRankerTest {
         List<Tag> onlyDefs = List.of(Tag.def("A.java", "foo", 1, "void foo()"));
         assertEquals(List.of(), ranker.rank(onlyDefs, Set.of()));
     }
+
+    // --- findDirectCallers:补 rank 的调用方盲区(change repomap-include-callers) ---
+
+    /** 构造:种子 Changed.java 定义 doWork;叶子调用方 Caller.java 引用 doWork(无人引用 Caller);Unrelated.java 不相关。 */
+    private List<Tag> callerSampleTags() {
+        return List.of(
+                Tag.def("Changed.java", "Changed", 1, "class Changed"),
+                Tag.def("Changed.java", "doWork", 4, "void doWork()"),
+                Tag.ref("Caller.java", "doWork", 10),
+                Tag.def("Caller.java", "Caller", 1, "class Caller"),
+                Tag.def("Caller.java", "callIt", 5, "void callIt()"),
+                Tag.ref("Unrelated.java", "somethingElse", 3),
+                Tag.def("Unrelated.java", "Unrelated", 1, "class Unrelated"));
+    }
+
+    @Test
+    void leafCallerReturnedEvenWhenRankExcludesIt() {
+        Set<String> seed = Set.of("Changed.java");
+
+        // rank 看不到叶子调用方(盲区):Caller 无入边、又非边 target,不进排序结果。
+        List<Tag> ranked = ranker.rank(callerSampleTags(), seed);
+        assertFalse(ranked.stream().anyMatch(t -> t.relFile().equals("Caller.java")),
+                "rank 的结构性盲区:叶子调用方进不了邻域排序");
+
+        // findDirectCallers 把它捞回来:返回 Caller.java 的 DEF 签名,不含种子自身与无关文件。
+        List<Tag> callers = ranker.findDirectCallers(callerSampleTags(), seed);
+        assertTrue(callers.stream().anyMatch(t -> t.relFile().equals("Caller.java") && t.name().equals("callIt")),
+                "直接调用方 Caller 应被纳入");
+        assertFalse(callers.stream().anyMatch(t -> t.relFile().equals("Changed.java")),
+                "种子文件自身不算调用方");
+        assertFalse(callers.stream().anyMatch(t -> t.relFile().equals("Unrelated.java")),
+                "未引用种子定义符号的文件不算调用方");
+    }
+
+    @Test
+    void diffInternalReferencesNotCountedAsCallers() {
+        // Internal.java 也引用 doWork,但它在种子集合内(diff 多文件互引)→ 不算外部调用方。
+        List<Tag> tags = new java.util.ArrayList<>(callerSampleTags());
+        tags.add(Tag.ref("Internal.java", "doWork", 2));
+        tags.add(Tag.def("Internal.java", "Internal", 1, "class Internal"));
+
+        List<Tag> callers = ranker.findDirectCallers(tags, Set.of("Changed.java", "Internal.java"));
+        assertFalse(callers.stream().anyMatch(t -> t.relFile().equals("Internal.java")),
+                "种子集合内的互引不计为调用方");
+        assertTrue(callers.stream().anyMatch(t -> t.relFile().equals("Caller.java")),
+                "种子外的真实调用方仍被纳入");
+    }
+
+    @Test
+    void noCallersYieldsEmpty() {
+        // 没有任何文件引用种子定义的符号 → 空。
+        List<Tag> tags = List.of(
+                Tag.def("Changed.java", "doWork", 4, "void doWork()"),
+                Tag.def("Other.java", "Other", 1, "class Other"),
+                Tag.ref("Other.java", "unrelated", 2));
+        assertEquals(List.of(), ranker.findDirectCallers(tags, Set.of("Changed.java")));
+    }
+
+    @Test
+    void findDirectCallersIsDeterministic() {
+        Set<String> seed = Set.of("Changed.java");
+        assertEquals(ranker.findDirectCallers(callerSampleTags(), seed),
+                ranker.findDirectCallers(callerSampleTags(), seed));
+    }
 }

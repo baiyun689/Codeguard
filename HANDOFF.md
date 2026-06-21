@@ -2,6 +2,8 @@
 
 > 当前进度快照。下次接手从「下次从哪开始」一节读起即可。
 >
+> **最近一轮(2026-06-21,第三段)做了什么**:开 change `repomap-include-callers`,补 `get_repo_map` 的**调用方结构盲区**(ADR-020 实证:叶子调用方永不进地图)。实现成立(`findDirectCallers` + 渲染器独立预算 callers 段,Java 38 单测;probe 证地图从缺 caller 变为列出 caller)。但 **eval-first 给出诚实负结论(ADR-022)**:caller 难例 `repomap_npe_caller_001` 在**工作裁判**下 before(无 callers)/after(有 callers)**都 3/3**——审查员纯靠 diff 推理("改成可空→调用方 NPE")即被语义裁判给分,不靠 callers 段。**期间挖出并修了一个 harness bug(ADR-021)**:千问裁判 disable-thinking 发错厂商格式 + 带日期的 3.7-max 强制 thinking 拒 forced tool_choice,致整轮裁判回退规则尺、把"before 0/3"假象误导成真;换 `qwen3.7-max` alias + 按厂商分派格式后 0 失败。**决策:callers 段仍 ship**(满足 spec、补真实盲区、零回归、给"具体可定位"结论),诚实标注"审查员级增益未证出"。**裁判修复独立有价值**。
+>
 > **最近一轮(2026-06-21,下半场)做了什么**:承 ADR-019 衍生待办①,**构造强隔离跨文件难例 `repomap_npe_isolated_001` 并验证通过——首次测出 repo_map 相对 file 的独有增益(ADR-020)**。用例三重隔离 + 契约撒谎:改动文件持有的是接口 `PriceCatalog`(非具体类)、有 3 实现只 1 个(`legacy.TariffLookupTable`)返 null、接口 javadoc 谎称"永不返回 null"(只读契约的审查员会信任而不报)、~10 诱饵文件(含同名 `lookup`)。实测(`--runs 3 --judge`):file 档该用例 **0/3**、repomap 档 **2/3**;网关日志机制级佐证 repomap 审查员走了"`get_repo_map`→`get_file_content(TariffLookupTable.java)`"导航路径;repomap 整体 F1 0.703 首次反超 file 0.646。纯新增 fixture,未碰 `src/**`。
 >
 > **最近一轮(2026-06-21,上半场)做了什么**:把 HANDOFF 第 1 优先「量化 repo_map / file 工具增益」(ADR-012 欠账,因 ADR-017 修好 harness 后终于可跑)做实。三档 head-to-head(notools/file/repomap,同 git `de6e037`、同会话、`--runs 3 --judge`、真实 DeepSeek + qwen 裁判)。**结论(ADR-019)**:① **工具开 vs 关有明确增益**——需读 diff 外文件的切片 recall 从 0.762/0.667 拉到 1.000、整体 R 0.833→0.893、F1 0.633→0.679,且误报率不被工具拖坏;证伪了 ADR-009/011"测不出增益"的悬案(根因是当时数据集/harness,非工具无用)。② **repo_map 导航叠加在 file 之上零增量**——现有 `repomap_npe_*` 难例审查员从 diff/import 就能猜到该读哪个文件,`get_file_content` 单独够用,用不上 PageRank 导航;要量化 repo_map 独有增益须补"diff 里猜不到目标文件"的强隔离难例(→ 已由下半场 ADR-020 补上)。纯测量,未碰 `src/**`。
@@ -178,10 +180,11 @@ conda run -n codeguard --no-capture-output python -m evals.runner --mode pipelin
 
 ## 👉 下次从哪开始
 
-**本轮(2026-06-21)已收口**:~~量化 repo_map / file 工具增益~~→三档 head-to-head、ADR-019(上半场);~~补强隔离难例验证 repo_map 独有增益~~→`repomap_npe_isolated_001` 建成、file 0/3 vs repomap 2/3、ADR-020 已落(下半场)。下面是新的起点:
+**本轮(2026-06-21)已收口**:三段——~~量化 repo_map/file 增益~~(ADR-019)、~~强隔离难例证 repo_map 独有增益~~(ADR-020,file 0/3 vs repomap 2/3)、~~补 repo_map 调用方盲区~~(change `repomap-include-callers`:实现成立但 eval 未证出审查员级增益 ADR-022;顺带修裁判 harness ADR-021)。下面是新的起点:
 
-1. **(承 ADR-020,可选)把强隔离难例从 1 个扩到 2-3 个**:`repomap_npe_isolated_001` 已验证设计能区分 file vs repomap,但单用例 recall 二值高方差(repomap 那 1/3 漏即噪音)。要把"repo_map 独有增益"做成稳信号,加 2-3 个同构强隔离用例(换缺陷类别/换隔离手法:如深委托链、注解装配、字段经 setter 注入),让 repo-map 切片不被单次抛硬币左右。**判断**:若认为 1 个已够说明问题,可跳过,直接做第 2 条。
-2. **逐个加重型工具**:`get_method_definition`(JavaParser AST,可复用本期 `JavaTagExtractor`)→ `get_call_graph` → `semantic_search`(RAG),沿通用协议 + 会话接缝叠加;届时按需在会话层填"按 project 共享重资源"。`get_definition` 暂缓的边界理由见 ADR-012。**注**:`repomap_npe_isolated_001` 这套"接口多实现 + 契约撒谎 + 诱饵填充"的隔离配方已被验证能逼出工具增益,加新工具时可复用同款配方构造对应难例,避免重蹈"工具被调但增益测不出"。
+0. **⚠️ 跑判图前先探活裁判到"结构化调用层"**(承 ADR-021):千问带日期版会强制 thinking、拒 forced tool_choice → 裁判整轮回退规则尺并系统性误导结论。普通对话 HTTP 200 不够,要探到 `with_structured_output(function_calling).invoke`。裁判模型用不带日期的 `qwen3.7-max` alias。
+1. **(承 ADR-022,可选,难)** 若要证 callers 段**必要**,需"危险无法从 diff 推断、只有读具体 caller 才暴露"的难例(比 ADR-020 契约撒谎更窄)。当前"改成可空→调用方 NPE"类 caller bug 可被 diff 推理 catch,证不出 callers 段增益。优先级低——callers 段已按 spec-completeness ship。
+2. **逐个加重型工具**:`get_method_definition`(JavaParser AST,可复用本期 `JavaTagExtractor`)→ `get_call_graph` → `semantic_search`(RAG),沿通用协议 + 会话接缝叠加。`get_definition` 暂缓的边界理由见 ADR-012。**注**:`repomap_npe_isolated_001` 那套"接口多实现 + 契约撒谎 + 诱饵填充"配方已验证能逼出工具增益;但 ADR-022 的教训是——**先确认新能力不会被"diff 推理 + 语义裁判"绕过**(否则同样"加了测不出")。
 3. 工具利用率/耗时纳入评测报告。
 
 ```powershell

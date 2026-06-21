@@ -48,7 +48,8 @@ def make_repo_map_tool(client: ToolClient):
     def _get_repo_map() -> str:
         """获取与本次改动相关的代码地图(签名级)。
 
-        当你看到 diff 调用/引用了一个**定义不在 diff 内**的符号、需要定位它在哪个文件时调用。
+        当你看到 diff 调用/引用了一个**定义不在 diff 内**的符号、需要定位它在哪个文件时调用;
+        地图还会列出**改动符号的直接调用方**(谁引用了被改的符号),据此判断改动是否破坏上游调用方的假设。
         返回若干相关定义的签名与所在文件;需要看实现再用 get_file_content 读对应文件。
         """
         return client.get_repo_map().as_tool_output()
@@ -57,8 +58,10 @@ def make_repo_map_tool(client: ToolClient):
         func=_get_repo_map,
         name="get_repo_map",
         description=(
-            "获取与本次改动相关的代码地图(签名级:列出 diff 改动符号的定义文件与最相关的若干符号签名)。"
-            "当你看到 diff 调用/引用了一个定义不在 diff 内的符号、需要定位它在哪个文件时调用。"
+            "获取与本次改动相关的代码地图(签名级:列出 diff 改动符号的定义文件与最相关的若干符号签名,"
+            "并列出改动符号的直接调用方)。"
+            "当你看到 diff 调用/引用了一个定义不在 diff 内的符号、需要定位它在哪个文件,"
+            "或需要知道改动会波及哪些上游调用方时调用。"
             "无需入参。拿到地图后,用 get_file_content 读取目标文件确认实现。"
         ),
     )

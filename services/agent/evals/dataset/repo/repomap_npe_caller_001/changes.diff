@@ -1,0 +1,11 @@
+diff --git a/src/main/java/com/demo/directory/MemberDirectory.java b/src/main/java/com/demo/directory/MemberDirectory.java
+index 1111111..2222222 100644
+--- a/src/main/java/com/demo/directory/MemberDirectory.java
++++ b/src/main/java/com/demo/directory/MemberDirectory.java
+@@ -13,4 +13,4 @@ public class MemberDirectory {
+
+     public String displayName(String id) {
+-        return cache.getOrDefault(id, "UNKNOWN");
++        return cache.get(id);
+     }
+ }

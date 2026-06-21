@@ -684,4 +684,45 @@ ADR-014 的 Step-1 增益(plus 验证模型)换 **qwen3.7-max** 重跑 `pipeline
 
 **日期**:2026-06-21
 
-<!-- 后续在这里继续追加 ADR-021、ADR-022 …… -->
+## ADR-021 · 裁判 harness 修复:disable-thinking 请求体按厂商分派 + 千问强制 thinking 模型不兼容 forced tool_choice
+
+**背景**:实跑 caller 难例(ADR-022)时,qwen 裁判**整轮 44+ 次 400 失败**全部回退规则尺,而同 .env 同模型早些时候(ADR-019/020)还是 0 失败。规则尺位置严格,把"语义正确但报在改动行而非受害行"的结论误杀为 FN——一度让我把"caller 盲区"误判成真。根因有两层:
+
+1. **disable-thinking 请求体格式厂商相关,但代码只发 DeepSeek 格式**。`llm/client.py` 在 `disable_thinking` 时恒发 `{"thinking": {"type": "disabled"}}`(DeepSeek 专用);裁判是千问(dashscope),它认的是 `{"enable_thinking": false}`。`.env` 显式设了 `CODEGUARD_JUDGE_DISABLE_THINKING=true`,于是把 DeepSeek 格式塞给千问 → 千问无视 → thinking 关不掉。config.py 注释其实早警告过"那个 extra_body 是 DeepSeek 专用,塞给千问会出错"。
+2. **千问带日期的 `qwen3.7-max-2026-06-08` / `-2026-05-17` 现在强制 thinking**(实测:发 `enable_thinking:false` 直接 400 "restricted to True"),而 **thinking 模式不支持 `tool_choice=required`/object**——正是 `with_structured_output(method="function_calling")` 所需。早些时候那俩日期版还不强制,故 0 失败;千问中途改了行为。
+
+**决策**:
+
+1. **`build_llm` 按 `api_base_url` 分派 disable-thinking 格式**:`dashscope` → `{"enable_thinking": false}`,否则(DeepSeek 及默认)→ `{"thinking": {"type": "disabled"}}`。抽成 `_disable_thinking_body()` 纯函数 + 单测(3 例)。这样对**允许关 thinking 的千问模型**就能真正关掉、function_calling 结构化输出可用。
+2. **裁判模型改用不强制 thinking 的 `qwen3.7-max`(alias,无日期)**(用户操作):实测该 alias 接受 `enable_thinking:false` + function_calling,裁判端到端恢复、整轮 **0 失败**。带日期的强制 thinking 版不可用于走 forced tool_choice 的结构化裁判。
+
+**备选(留后续)**:若将来只能用强制 thinking 的裁判模型,改用 `method="json_mode"`(response_format=json_object,不发 tool_choice,thinking 模式下实测可跑通)——但需给裁判独立的 structured_method(现 `matcher.py` 读全局 `CODEGUARD_STRUCTURED_METHOD`,与 DeepSeek 审查员共用,不能全局切 json)。本轮用换 alias 解决,未动 matcher。
+
+**教训**:**裁判这层 harness 一旦悄悄退化(全回退规则尺),会系统性误导一切判图评测**。跑判图前应探活裁判(本轮已有此习惯,但"HTTP 200 探活"不够——要探到结构化调用层,因为 200 的普通对话不等于 forced tool_choice 可用)。
+
+**验证**:`_disable_thinking_body` 3 单测绿;裁判端到端结构化调用 OK;ADR-022 的 before/after 全程 0 裁判失败。
+
+**日期**:2026-06-21
+
+## ADR-022 · repo_map 纳入直接调用方:补结构盲区(实现成立),但本 eval 未证出审查员级增益(诚实记)
+
+**背景**:ADR-020 发现 `get_repo_map` 的结构盲区——只输出"被 diff 邻域指向的定义(callees)",无人引用的叶子调用方(装配/入口/上游服务)永不进地图(`AppConfig` 消失)。`repo-map-context` spec 第一条原已写"列出引用这些符号的其它位置"但实现未兑现。change `repomap-include-callers`:补"直接调用方纳入"。
+
+**决策(实现)**:`RepoMapRanker.findDirectCallers`(纯加法,不改 `rank()`:取种子文件定义的符号 → 引用它们的非种子文件 → 返回这些文件 DEF 签名)+ `RepoMapRenderer` 独立保留预算的 callers 段(上限 K + "(+N more)")+ `RepoMapBuilder` 串联。文件级精度(档 A),精确调用语句由 `get_file_content` 兜底。Java +7 单测(38)、Python 工具描述同步。
+
+**eval-first 结论(诚实记,这是本 ADR 最值钱的一条)**:为证价值,造了 caller 盲区难例 `repomap_npe_caller_001`(diff 把 `MemberDirectory.displayName` 从非空默认改成 `cache.get` 可空;上游叶子调用方 `GreetingService.greet` 不判空直接 `.toUpperCase()` → NPE;bug 在 caller)。
+
+| | caller 案 3 跑 | 审查员是否读 GreetingService |
+|---|---|---|
+| before(无 callers 段)+ **工作裁判** | **TP/TP/TP = 3/3** | **0 次**(纯靠 diff 推理) |
+| after(有 callers 段)+ 工作裁判 | TP/TP/TP = 3/3 | 读了(导航到) |
+
+**两档都 3/3,callers 段未带来可测增益**。机制成立(probe 证地图确实从"缺 GreetingService、只列伪相关 TaxRuleSet.put"变为列出 GreetingService+MemberReport;after 跑审查员真去读了),但**审查员不靠它也能抓到**——"改动让方法返回 null → 调用方 NPE"是可从 diff 推理的警告,语义裁判直接给分,无需定位具体 caller。**先前看到的"before 0/3"是 ADR-021 坏裁判的假象**,非 callers 缺位所致。
+
+**为何仍 ship(决策)**:① 满足 spec 既有要求 + 补 ADR-020 实证的真实结构盲区;② probe 验证机制、Java/Python 单测全绿、**全量 23 案无回归**(before-clean R 0.911 vs after R 0.878 在 ±0.04 噪音内,caller 案两档相同);③ **一个指标抓不到的好处**:有 callers 段时审查员能给"GreetingService:20 会 NPE"的**具体可定位**结论,而非泛泛"调用方可能 NPE"(裁判都算 TP,但前者对开发者有用得多)。诚实标注"审查员级增益未由本 eval 证出"。
+
+**残留/边界**:要证出 callers 段**必要**,需"危险无法从 diff 推断、只有读具体 caller 才暴露"的难例——比 ADR-020 的"契约撒谎"更窄更难,留后续(可选)。`AppConfig` 装配桥这类纯叶子 caller 现已能进 callers 段(原 ADR-020 残留待办②的一部分得到结构性解决)。
+
+**日期**:2026-06-21
+
+<!-- 后续在这里继续追加 ADR-023、ADR-024 …… -->

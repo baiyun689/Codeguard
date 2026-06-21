@@ -61,7 +61,8 @@ public final class RepoMapBuilder {
             }
         }
         List<Tag> ranked = ranker.rank(all, seedFiles);
-        return renderer.render(ranked);
+        List<Tag> callers = ranker.findDirectCallers(all, seedFiles);
+        return renderer.render(ranked, callers);
     }
 
     /** 扫描仓库内受支持的源文件(扩展名由注册表决定,跳过构建/VCS 目录),按路径排序保证确定性,限上限。 */

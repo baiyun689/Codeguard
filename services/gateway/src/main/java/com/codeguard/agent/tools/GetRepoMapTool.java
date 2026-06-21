@@ -30,8 +30,10 @@ public final class GetRepoMapTool implements AgentTool {
 
     @Override
     public String description() {
-        return "获取与本次改动相关的代码地图(签名级):列出 diff 改动符号的定义文件与全局最相关的若干符号签名。"
-                + "当你看到 diff 调用/引用了一个定义不在 diff 内的符号、需要定位它在哪个文件时调用。无需入参。";
+        return "获取与本次改动相关的代码地图(签名级):列出 diff 改动符号的定义文件与全局最相关的若干符号签名,"
+                + "并列出**改动符号的直接调用方**(谁引用了被改的符号,据此判断改动是否破坏上游调用方的假设)。"
+                + "当你看到 diff 调用/引用了一个定义不在 diff 内的符号、需要定位它在哪个文件,"
+                + "或需要知道改动会波及哪些上游调用方时调用。无需入参。";
     }
 
     @Override
@@ -41,7 +43,7 @@ public final class GetRepoMapTool implements AgentTool {
             return ToolResult.ok("(未在仓库中找到与本次改动相关的可定位定义。"
                     + "请基于 diff 审查;如已知某文件路径,可直接用 get_file_content 读取。)");
         }
-        return ToolResult.ok("# Repo map(与本次改动相关的代码定义,仅签名,实现以 ⋮... 省略)\n"
+        return ToolResult.ok("# Repo map(与本次改动相关的代码定义 + 直接调用方,仅签名,实现以 ⋮... 省略)\n"
                 + "# 需要看某定义的实现时,用 get_file_content 读取其所在文件。\n\n" + map);
     }
 }
