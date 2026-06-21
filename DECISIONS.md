@@ -725,4 +725,26 @@ ADR-014 的 Step-1 增益(plus 验证模型)换 **qwen3.7-max** 重跑 `pipeline
 
 **日期**:2026-06-21
 
-<!-- 后续在这里继续追加 ADR-023、ADR-024 …… -->
+## ADR-023 · 评测加"工具使用画像":让"工具到底有没有被用上"可观测(直击 ADR-022 的盲点)
+
+**背景**:ADR-022 的尴尬根因是**测不出工具有没有被用上**——caller 案 before/after 都 3/3,但当时无法从报告判断审查员是"真调 get_repo_map 导航、读了 callers 段"还是"纯靠 diff 推理蒙对"。判断只能靠人去翻日志。后续每加一个重工具(get_method_definition/get_call_graph)都会重蹈覆辙:加了、测不出、只能靠 spec-completeness 兜底 ship。**度量是加重工具前必须先铺的地基**(eval-first 闭环的缺口)。
+
+**决策**:复用管线已有的工具上下文捕获(`engines._extract_gathered_context` 抓 `tool/args/content`,经 ReviewerStage 跨审查员去重),不新造采集逻辑:
+- **侧信道**:`PipelineOrchestrator.run` 加可选 `trace_sink: list`——传入则把 `context.gathered_context` 追加进去。**刻意不进 `ReviewResult`**(产品输出不掺工具痕迹,守 ADR-001)。
+- **纯函数** `evals/tool_usage.py::summarize_tool_usage(trace) → ToolUsage`:汇出 `tool_calls / tools_used / repomap_called / repomap_caller_section_read / files_read`。`repomap_caller_section_read` 靠地图返回里是否含 `RepoMapRenderer.CALLER_HEADER` 的"直接调用方"标记判定——这正是 ADR-022 想答的那一问。
+- **挂载**:`run_once` 在算完 outcome 后,若 trace 非空则 `outcome.tool_usage = summarize_tool_usage(trace)`(空 trace→None,无工具档报告/归档不出现满是 `—` 的行)。`MatchOutcome` 加 `tool_usage` 字段、报告加「工具使用」表、`archive._outcome_dict` 持久化。
+- **边界**:`tool_calls` 是**去重后取得有效上下文**的调用条数(非原始次数:gathered_context 按(工具,参数)去重、且仅含有返回内容的调用)。够回答"用没用上",不追求精确调用计数。
+
+**收益**:报告里一眼可读"某用例判 TP 但 repo_map/callers 段全为 — = 工具没用上、纯靠 diff 推理蒙对"。下个重工具落地时,先用它确认"新能力没被 diff 推理 + 语义裁判绕过",再谈增益(承 ADR-022 教训)。
+
+**测试**:`tests/test_tool_usage.py` +6(callers 段判定、files_read 解析去重排序、脏入参回退、空 trace、结构化伪工具剔除)。全量 Python 159 过(5 个 test_tool_client 失败为本机 conda SSL 证书路径坏,`httpx.Client()` 单独构造即复现,与本改动无关)。
+
+**实跑验证 ADR-022(已做)**:起网关 + 探活裁判到结构化层(qwen3.7-max,function_calling 正常)后,实跑 `repomap_npe_caller_001`(after 态)。结果:**`repomap_called=✓`、`repomap_caller_section_read=✓`**,读取文件含 `GreetingService.java`(受害叶子调用方)+ `MemberReport.java`(安全对照 caller)+ `MemberDirectory.java`(改动文件)。→ **坐实 ADR-022:after 态审查员确实经 callers 段导航并读了 GreetingService**;而 before 态同样 3/3,说明"改成可空→调用方 NPE"这步 diff 推理也能 catch,故 callers 段被用上了、但本案不靠它也能蒙对。度量第一次把"工具有没有用上"从翻日志变成报告里一眼可读。
+
+**验证中发现并修掉的 bug**:`create_agent(response_format=ReviewResult)` 把"产出结构化结果"实现为一次同名工具调用,经 `_extract_gathered_context` 以 ToolMessage 混进 gathered_context。首跑画像里 `tools_used` 含 `ReviewResult`、`tool_calls` 由真实 4 虚高到 7(`repomap_caller_section_read` 不受影响,故结论不变)。修复:`summarize_tool_usage` 先按 `_STRUCTURED_SENTINELS={ReviewResult.__name__}` 剔除伪工具再统计;加 1 单测;重跑确认 `tools_used` 干净、`tool_calls=5`(1 地图 + 4 文件)。
+
+**SSL 旁注**:本机 conda 环境 `SSL_CERT_FILE` 指向不存在的 `…/envs/codeguard/ssl/cacert.pem`,`httpx.Client()` 一构造即 FileNotFoundError——会挡掉一切真实 eval。跑评测前需 `export SSL_CERT_FILE=$(python -c "import certifi;print(certifi.where())")`。已记入 HANDOFF 速查。
+
+**日期**:2026-06-21
+
+<!-- 后续在这里继续追加 ADR-024、ADR-025 …… -->

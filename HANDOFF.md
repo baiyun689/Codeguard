@@ -178,6 +178,8 @@ conda run -n codeguard --no-capture-output python -m evals.runner --mode pipelin
 
 > 裁判 / FP 验证用独立模型:`.env` 配 `CODEGUARD_JUDGE_*`(本机用通义千问 qwen,推理模型需 `CODEGUARD_JUDGE_DISABLE_THINKING=true`)。
 
+> ⚠️ **本机 SSL 坑**:conda 环境 `SSL_CERT_FILE` 指向不存在的 `…/envs/codeguard/ssl/cacert.pem`,任何真实 HTTP(工具会话 / LLM / 裁判)一构造 `httpx.Client()` 就 `FileNotFoundError`。跑**真实** eval 前先:`export SSL_CERT_FILE=$(python -c "import certifi;print(certifi.where())")`(纯单测不受影响,除 test_tool_client 那 5 条构造 httpx 的会挂)。
+
 ## 👉 下次从哪开始
 
 **本轮(2026-06-21)已收口**:三段——~~量化 repo_map/file 增益~~(ADR-019)、~~强隔离难例证 repo_map 独有增益~~(ADR-020,file 0/3 vs repomap 2/3)、~~补 repo_map 调用方盲区~~(change `repomap-include-callers`:实现成立但 eval 未证出审查员级增益 ADR-022;顺带修裁判 harness ADR-021)。下面是新的起点:
@@ -185,7 +187,7 @@ conda run -n codeguard --no-capture-output python -m evals.runner --mode pipelin
 0. **⚠️ 跑判图前先探活裁判到"结构化调用层"**(承 ADR-021):千问带日期版会强制 thinking、拒 forced tool_choice → 裁判整轮回退规则尺并系统性误导结论。普通对话 HTTP 200 不够,要探到 `with_structured_output(function_calling).invoke`。裁判模型用不带日期的 `qwen3.7-max` alias。
 1. **(承 ADR-022,可选,难)** 若要证 callers 段**必要**,需"危险无法从 diff 推断、只有读具体 caller 才暴露"的难例(比 ADR-020 契约撒谎更窄)。当前"改成可空→调用方 NPE"类 caller bug 可被 diff 推理 catch,证不出 callers 段增益。优先级低——callers 段已按 spec-completeness ship。
 2. **逐个加重型工具**:`get_method_definition`(JavaParser AST,可复用本期 `JavaTagExtractor`)→ `get_call_graph` → `semantic_search`(RAG),沿通用协议 + 会话接缝叠加。`get_definition` 暂缓的边界理由见 ADR-012。**注**:`repomap_npe_isolated_001` 那套"接口多实现 + 契约撒谎 + 诱饵填充"配方已验证能逼出工具增益;但 ADR-022 的教训是——**先确认新能力不会被"diff 推理 + 语义裁判"绕过**(否则同样"加了测不出")。
-3. 工具利用率/耗时纳入评测报告。
+3. ~~工具利用率纳入评测报告 + 回头核 ADR-022~~ —— **已完成 ✅**(ADR-023:`evals/tool_usage.py` + 报告「工具使用」表 + 归档持久化;侧信道 `orchestrator.run(trace_sink=…)` 不污染 ReviewResult)。**已实跑验证**:`repomap_npe_caller_001` after 态 `repomap_caller_section_read=✓`、读了 GreetingService → 坐实 ADR-022"after 经 callers 段导航",但不靠它 diff 也能蒙对。验证中顺手修掉"ReviewResult 伪工具混进画像"的 bug。**耗时纳入仍待办**(优先级低)。
 
 ```powershell
 # 复现本轮三档对照:

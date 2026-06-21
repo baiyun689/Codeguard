@@ -159,6 +159,30 @@ def render_report(
             f"{o.true_positives} | {o.false_positives} | {o.false_negatives} |"
         )
 
+    # 工具使用画像:回答"工具到底有没有被用上"(ADR-022 未答的问题)。仅工具档的用例有 tool_usage。
+    # 用来分辨"真调工具导航"与"纯靠 diff 推理蒙对",尤其 callers 段有没有被实际读到。
+    usage_rows = [o for o in runs[-1] if o.tool_usage is not None]
+    if usage_rows:
+        lines += [
+            "",
+            "## 工具使用(最后一次跑测)",
+            "",
+            "审查员实际发起的工具调用画像(去重后取得有效上下文的调用)。"
+            "若 repo_map / 读到 callers 段 全为 — 但该用例仍判 TP,即工具没用上、"
+            "纯靠 diff 推理蒙对(见 ADR-022)。",
+            "",
+            "| 用例 | 工具调用 | 用到的工具 | repo_map | 读到 callers 段 | 读取文件 |",
+            "|---|---|---|---|---|---|",
+        ]
+        for o in usage_rows:
+            u = o.tool_usage
+            lines.append(
+                f"| {o.case_id} | {u.tool_calls} | {', '.join(u.tools_used) or '—'} | "
+                f"{'✓' if u.repomap_called else '—'} | "
+                f"{'✓' if u.repomap_caller_section_read else '—'} | "
+                f"{', '.join(u.files_read) or '—'} |"
+            )
+
     # 规则尺 vs 裁判尺交叉校验:仅当本次确有用例走 LLM 主判时才有意义。
     # 主判(LLM)与规则尺判出的 TP/FP/FN 不一致的用例,正是"关键词撞词/漏配"被裁判纠正之处,
     # 也是核对裁判是否离谱、留存可复现凭证的地方。

@@ -169,6 +169,28 @@ class JudgeScore(BaseModel):
     comment: str = Field(default="", description="评审简评")
 
 
+class ToolUsage(BaseModel):
+    """一条用例一次审查里,审查员实际发起的工具调用画像(可观测性,不参与判分)。
+
+    源数据是管线汇总**去重后**的 gathered_context(按(工具,参数)去重、且仅含有返回内容的调用),
+    故 tool_calls 是"去重后取得有效上下文的调用条数",不是原始调用次数。
+
+    存在意义(ADR-022):before/after 都 3/3 时,要能分辨审查员是**真调工具导航**、
+    还是**纯靠 diff 推理蒙对**——尤其 callers 段到底有没有被读到。
+    """
+
+    tool_calls: int = Field(default=0, description="去重后取得有效上下文的工具调用条数")
+    tools_used: list[str] = Field(default_factory=list, description="用到的工具名(去重排序)")
+    repomap_called: bool = Field(default=False, description="是否调用过 get_repo_map")
+    repomap_caller_section_read: bool = Field(
+        default=False,
+        description="get_repo_map 返回里是否含'直接调用方(callers)'段(callers 段被实际读到)",
+    )
+    files_read: list[str] = Field(
+        default_factory=list, description="经 get_file_content 读取的文件路径(去重排序)"
+    )
+
+
 class MatchOutcome(BaseModel):
     """单条用例跑一次审查后的判定结果。"""
 
@@ -208,6 +230,12 @@ class MatchOutcome(BaseModel):
     rule_true_positives: int = Field(default=0, description="规则尺判出的 TP(交叉校验用)")
     rule_false_positives: int = Field(default=0, description="规则尺判出的 FP(交叉校验用)")
     rule_false_negatives: int = Field(default=0, description="规则尺判出的 FN(交叉校验用)")
+
+    # ---- 工具使用画像(可观测性,不参与判分)----
+    # 仅工具档且本条确有工具调用时非空;无工具/mock/未调工具为 None(报告/归档据此跳过)。
+    tool_usage: ToolUsage | None = Field(
+        default=None, description="审查员实际工具调用画像;无工具活动为 None"
+    )
 
 
 class CaseMetrics(BaseModel):

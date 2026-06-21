@@ -75,6 +75,7 @@ class PipelineOrchestrator:
         allowed_files: list[str] | None = None,
         tool_client=None,
         enabled_tools: list[str] | None = None,
+        trace_sink: list | None = None,
     ) -> ReviewResult:
         """跑完整条管线,返回结构化的 ReviewResult。
 
@@ -82,6 +83,9 @@ class PipelineOrchestrator:
         repo_path / allowed_files / tool_client:阶段 3 工具调用上下文;
             tool_client 非 None 时审查员走 ReAct(可调工具),否则走直连基准(见 design.md D1)。
         enabled_tools:暴露给审查员的工具白名单(评测 profile 控制);None=全开(CLI 默认)。
+        trace_sink:可选的工具调用侧信道——传入一个列表时,管线结束后把本次审查员获取的
+            工具上下文(gathered_context)追加进去,供评测做"工具使用画像"。这是**只读侧信道**,
+            刻意不进 ReviewResult(产品输出不掺工具痕迹,守 ADR-001)。
         """
         context = PipelineContext(
             diff_text=diff_text,
@@ -97,5 +101,9 @@ class PipelineOrchestrator:
 
         for stage in self.stages:
             context = stage.execute(context)
+
+        # 侧信道:把工具上下文交给评测层(不进 ReviewResult)。
+        if trace_sink is not None:
+            trace_sink.extend(context.gathered_context)
 
         return ReviewResult(summary=context.summary, issues=context.issues)

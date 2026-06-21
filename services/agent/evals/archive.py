@@ -56,7 +56,7 @@ def _metrics_dict(m: AggregateMetrics) -> dict:
 
 
 def _outcome_dict(o: MatchOutcome) -> dict:
-    return {
+    d = {
         "case_id": o.case_id,
         "is_clean": o.is_clean,
         "expected_total": o.expected_total,
@@ -65,6 +65,16 @@ def _outcome_dict(o: MatchOutcome) -> dict:
         "false_positives": o.false_positives,
         "false_negatives": o.false_negatives,
     }
+    # 工具使用画像随逐用例一并归档(仅工具档有);留存"工具有没有用上"的可复现凭证。
+    if o.tool_usage is not None:
+        d["tool_usage"] = {
+            "tool_calls": o.tool_usage.tool_calls,
+            "tools_used": o.tool_usage.tools_used,
+            "repomap_called": o.tool_usage.repomap_called,
+            "repomap_caller_section_read": o.tool_usage.repomap_caller_section_read,
+            "files_read": o.tool_usage.files_read,
+        }
+    return d
 
 
 def build_archive_record(
