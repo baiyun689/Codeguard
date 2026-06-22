@@ -12,7 +12,9 @@
 设计要点:
 - **supervisor 节点**:`enable_supervisor` 开且有真实 LLM 时,由一次结构化决策驱动动态派发 /
   补派 / 重派 / 终止;关时(或 mock)退化为"全派一轮即 finish"的**确定性调度**(保评测控变量)。
-- **审查员节点**:第一刀用普通函数,内部黑盒复用现有 `ToolAgentEngine`/`DirectEngine`(design D12)。
+- **审查员节点**:每个领域审查员是一张**编译子图**(prepare → review → collect),作为节点挂到
+  父图上(design D12 第二刀)。内部步骤在图层面显式可见、可组合;`create_agent` 的 ReAct 图仍
+  封装在 `review` 节点内(经 `ToolAgentEngine`),把它也内联为子子图留作后续可选深化。
 - **聚合 / 误报过滤**:原样包裹现有 stage 逻辑(design D7),不改其已验证行为。
 - **State**:`issues` 加法 fan-in;`gathered_context` 自定义去重 reducer;`final_issues` 承接
   聚合/过滤后的结果(避免与加法 reducer 冲突)。
@@ -29,9 +31,11 @@ from pydantic import BaseModel, Field
 
 from codeguard_agent.git.diff_collector import split_diff_by_file
 from codeguard_agent.llm.client import invoke_with_retry, mock_review_result
+from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.pipeline.engines import (
     DirectEngine,
     ReviewEngine,
+    ReviewOutcome,
     ToolAgentEngine,
 )
 from codeguard_agent.pipeline.stages.aggregation import AggregationStage
@@ -121,6 +125,37 @@ class ReviewState(TypedDict, total=False):
     final_issues: list
     summary: str
     filter_stats: Any
+
+
+class ReviewerState(TypedDict, total=False):
+    """审查员子图的状态(design D12 第二刀:审查员从普通函数升级为编译子图)。
+
+    与父图 `ReviewState` **同名的键**(下方"输入""产出"两组),在子图作为节点挂入父图时按名对接:
+    输入键由父图经 `Send` 注入,产出键经父图 reducer 完成 fan-in。
+    **私有工作键**(eff_diff/user_prompt/outcome)只存在于子图内部、不与父图同名,故既不外泄给父图,
+    也不会在三审查员并行时彼此写冲突(并行分支只能同写带 reducer 的共享键)。
+    """
+
+    # --- 父图注入的输入(只读)---
+    diff_text: str
+    llm: Any
+    tool_client: Any
+    enabled_tools: Any
+    max_retries: int
+    structured_method: str
+    diff_summary: str
+    file_groups: dict
+    focus_notes: dict
+    # --- 写回父图的产出(键名与 ReviewState 一致 → 经父图 reducer fan-in)---
+    issues: list
+    gathered_context: list
+    review_summaries: list
+    dispatched: set
+    supervisor_log: Annotated[list, operator.add]  # 子图内 review/collect 均可能追加,故带 reducer
+    # --- 子图私有工作键(不外泄,并行无冲突)---
+    eff_diff: str
+    user_prompt: str
+    outcome: Any
 
 
 # ---------------------------------------------------------------------------
@@ -303,23 +338,24 @@ def summary_node(state: ReviewState) -> dict:
     }
 
 
-def make_reviewer_node(reviewer: Reviewer):
-    """构造某领域审查员的节点函数(普通函数,内部黑盒复用现有引擎,design D12)。"""
+def build_reviewer_subgraph(reviewer: Reviewer):
+    """把单个领域审查员构造成一张编译子图(prepare → review → collect),供作节点挂入父图。
 
-    def _node(state: ReviewState) -> dict:
-        # mock 模式:仅让 security 返回一次 mock 结果,其余空——既保图端到端连通,
-        # 又不把单条 mock 三倍化(确定性模式下三审查员都会被派发)。
-        if state.get("llm") is None:
-            if reviewer.name == "security":
-                mock = mock_review_result()
-                return {
-                    "issues": list(mock.issues),
-                    "review_summaries": [mock.summary] if mock.summary else [],
-                    "dispatched": {reviewer.name},
-                }
-            return {"dispatched": {reviewer.name}}
+    取代原"普通函数节点"(design D12 第二刀):审查员的内部流水线由此在图层面显式可见、可组合——
+    后续要给某审查员加步骤(独立的工具采集节点 / 自我复核节点等),在本子图加节点即可,父图无感。
+    `create_agent` 的 ReAct 图仍封装在 `review` 节点内(经 `ToolAgentEngine`);把它也内联为真正的
+    子子图涉及 `MessagesState` ↔ `ReviewerState` 映射,留作后续可选深化。
 
-        engine = _make_engine(state)
+    三段职责单一:
+    - prepare:组装本审查员的聚焦 diff 与 user prompt(mock/无 LLM 时跳过);
+    - review :跑引擎得到一个 `ReviewOutcome`——mock 合成与异常隔离都在此收口为单一 outcome;
+    - collect:把 outcome 归一化为写回父图的产出键(issues/gathered_context/summaries/dispatched)。
+    """
+    from langgraph.graph import END, START, StateGraph
+
+    def _prepare(state: ReviewerState) -> dict:
+        if state.get("llm") is None:  # mock/无 LLM:无需构造 prompt,留给 review 合成
+            return {}
         file_groups = state.get("file_groups") or {}
         file_diffs = split_diff_by_file(state["diff_text"]) if file_groups else {}
         eff_diff = _effective_diff(state["diff_text"], file_diffs, file_groups.get(reviewer.name))
@@ -327,12 +363,21 @@ def make_reviewer_node(reviewer: Reviewer):
         focus = (state.get("focus_notes") or {}).get(reviewer.name, "")
         if focus:
             user += f"\n\n<复审聚焦>\n{focus}\n</复审聚焦>"
+        return {"eff_diff": eff_diff, "user_prompt": user}
 
+    def _review(state: ReviewerState) -> dict:
+        # mock 模式:仅让 security 合成一条 mock 结果,其余空——既保图端到端连通,
+        # 又不把单条 mock 三倍化(确定性模式下三审查员都会被派发)。
+        if state.get("llm") is None:
+            if reviewer.name == "security":
+                return {"outcome": ReviewOutcome(mock_review_result())}
+            return {"outcome": ReviewOutcome(ReviewResult(summary=""))}
+        engine = _make_engine(state)
         try:
             outcome = engine.review(
                 state["llm"],
                 system_prompt=_load_prompt(reviewer.prompt_file),
-                user_prompt=user,
+                user_prompt=state.get("user_prompt", ""),
                 reviewer_name=reviewer.name,
                 max_retries=state.get("max_retries", 3),
                 structured_method=state.get("structured_method", "function_calling"),
@@ -340,17 +385,67 @@ def make_reviewer_node(reviewer: Reviewer):
         except Exception as exc:  # noqa: BLE001 单审查员失败不拖垮全图(节点级错误隔离)
             logger.warning("[%s] 审查员节点失败,跳过: %s", reviewer.name, exc)
             return {
-                "dispatched": {reviewer.name},
+                "outcome": ReviewOutcome(ReviewResult(summary="")),
                 "supervisor_log": [f"[{reviewer.name}] 审查员失败,跳过: {exc}"],
             }
+        return {"outcome": outcome}
 
-        out: dict = {
-            "issues": list(outcome.result.issues),
-            "gathered_context": list(outcome.gathered_context),
-            "dispatched": {reviewer.name},
-        }
-        if outcome.result.summary:
-            out["review_summaries"] = [f"【{reviewer.name}】{outcome.result.summary}"]
+    def _collect(state: ReviewerState) -> dict:
+        outcome = state.get("outcome")
+        out: dict = {"dispatched": {reviewer.name}}
+        if outcome is None:
+            return out
+        out["issues"] = list(outcome.result.issues)
+        if outcome.gathered_context:
+            out["gathered_context"] = list(outcome.gathered_context)
+        summary = outcome.result.summary
+        if summary:
+            # 真实审查加【域】前缀便于聚合溯源;mock 保持原样(与改造前行为一致)。
+            out["review_summaries"] = (
+                [summary] if state.get("llm") is None else [f"【{reviewer.name}】{summary}"]
+            )
+        return out
+
+    sg = StateGraph(ReviewerState)
+    sg.add_node("prepare", _prepare)
+    sg.add_node("review", _review)
+    sg.add_node("collect", _collect)
+    sg.add_edge(START, "prepare")
+    sg.add_edge("prepare", "review")
+    sg.add_edge("review", "collect")
+    sg.add_edge("collect", END)
+    return sg.compile()
+
+
+def make_reviewer_node(reviewer: Reviewer):
+    """父图节点:调用审查员子图,并做父↔子 state 的**显式**映射(design D12 第二刀)。
+
+    采用"在节点内 invoke 子图"这一 LangGraph 子图范式,而非把子图直接挂作父图节点。原因正是
+    design 提示的"父子 state 映射"坑:三审查员并行 fan-out 时,若子图直接挂载,其 schema 里**只读**
+    的共享键(如 diff_text)会在子图结束时被回写父图 → 对无 reducer 的键并发写 → InvalidUpdateError。
+    显式投影输入、**只回传产出键**即可根除回写冲突,父↔子边界也一目了然。
+    """
+    subgraph = build_reviewer_subgraph(reviewer)
+
+    def _node(state: ReviewState) -> dict:
+        result = subgraph.invoke(
+            {
+                "diff_text": state.get("diff_text", ""),
+                "llm": state.get("llm"),
+                "tool_client": state.get("tool_client"),
+                "enabled_tools": state.get("enabled_tools"),
+                "max_retries": state.get("max_retries", 3),
+                "structured_method": state.get("structured_method", "function_calling"),
+                "diff_summary": state.get("diff_summary", ""),
+                "file_groups": state.get("file_groups") or {},
+                "focus_notes": state.get("focus_notes") or {},
+            }
+        )
+        # 只回传产出键给父图(经父图 reducer fan-in);子图私有/只读键一律不外泄。
+        out: dict = {"dispatched": result.get("dispatched") or {reviewer.name}}
+        for key in ("issues", "gathered_context", "review_summaries", "supervisor_log"):
+            if result.get(key):
+                out[key] = result[key]
         return out
 
     return _node
@@ -391,7 +486,7 @@ def build_review_graph(*, enable_summary: bool = True):
     g = StateGraph(ReviewState)
     g.add_node("supervisor", supervisor_node)
     for r in DEFAULT_REVIEWERS:
-        g.add_node(r.name, make_reviewer_node(r))
+        g.add_node(r.name, make_reviewer_node(r))  # 节点内调用审查员子图(design D12 第二刀)
     g.add_node("aggregation", aggregation_node)
     g.add_node("fp_filter", fp_filter_node)
 

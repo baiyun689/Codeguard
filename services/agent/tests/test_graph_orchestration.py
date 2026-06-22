@@ -116,29 +116,36 @@ def test_supervisor_smart_finish_when_already_dispatched(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# 3.2 审查员节点错误隔离 + mock
+# 3.2 审查员子图:内部结构 + 错误隔离 + mock(design D12 第二刀)
 # --------------------------------------------------------------------------- #
 
 
-def test_reviewer_node_error_isolation(monkeypatch):
+def test_reviewer_subgraph_exposes_internal_nodes():
+    # 子图化的招牌收益:审查员内部流水线在图层面显式可见。
+    sub = G.build_reviewer_subgraph(G.DEFAULT_REVIEWERS[0])
+    node_names = set(sub.get_graph().nodes)
+    assert {"prepare", "review", "collect"} <= node_names
+
+
+def test_reviewer_subgraph_error_isolation(monkeypatch):
     class _Boom:
         def review(self, *a, **k):
             raise RuntimeError("engine down")
 
     monkeypatch.setattr(G, "_make_engine", lambda state: _Boom())
-    node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[0])
-    out = node({"diff_text": "d", "llm": object(), "file_groups": {}})
+    sub = G.build_reviewer_subgraph(G.DEFAULT_REVIEWERS[0])
+    out = sub.invoke({"diff_text": "d", "llm": object(), "file_groups": {}})
     # 不抛断;贡献空 issues、记录告警、标记已派发。
     assert out.get("issues", []) == []
     assert out["dispatched"] == {G.DEFAULT_REVIEWERS[0].name}
     assert any("失败" in s for s in out.get("supervisor_log", []))
 
 
-def test_reviewer_node_mock_only_security_returns_issues():
-    sec = G.make_reviewer_node(G.Reviewer("security", "security.txt"))
-    other = G.make_reviewer_node(G.Reviewer("logic", "logic.txt"))
-    sec_out = sec({"llm": None})
-    other_out = other({"llm": None})
+def test_reviewer_subgraph_mock_only_security_returns_issues():
+    sec = G.build_reviewer_subgraph(G.Reviewer("security", "security.txt"))
+    other = G.build_reviewer_subgraph(G.Reviewer("logic", "logic.txt"))
+    sec_out = sec.invoke({"llm": None})
+    other_out = other.invoke({"llm": None})
     assert len(sec_out["issues"]) >= 1
     assert other_out.get("issues", []) == []
     assert other_out["dispatched"] == {"logic"}

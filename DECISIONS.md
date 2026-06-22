@@ -770,4 +770,24 @@ ADR-014 的 Step-1 增益(plus 验证模型)换 **qwen3.7-max** 重跑 `pipeline
 
 **日期**:2026-06-22
 
-<!-- 后续在这里继续追加 ADR-025、ADR-026 …… -->
+---
+
+## ADR-025 · 审查员升级为 LangGraph 编译子图(D12 第二刀):节点内 invoke + 显式父↔子映射
+
+**背景**:ADR-024 的 D12 第一刀把审查员做成"普通函数节点,内部黑盒调引擎",并把"升级为子图换内部步骤可见性"列为可选第二刀。本次落地第二刀,目标仍是 ADR-024 的总基调——**可读性 / 学 LangGraph 嵌套 / 可扩展为先,增益非目标**。
+
+**决策**:
+- **审查员=编译子图**:每个领域审查员构造成 `StateGraph(ReviewerState)`,内部三节点 `prepare → review → collect`(职责单一:聚焦 diff/prompt 组装 → 跑引擎得单一 `ReviewOutcome` → 归一化为产出键)。`build_reviewer_subgraph()` 产出 `compile()` 后的子图。审查员内部流水线由此在图层面显式可见(`sub.get_graph().nodes`),后续给某审查员加步骤(独立工具采集 / 自我复核节点)即在子图加节点,父图无感。
+- **挂载方式=节点内 invoke(而非直接挂子图)**:`make_reviewer_node` 是薄包装节点,在内部 `subgraph.invoke(显式投影的输入)`,只回传产出键。**这是被一个真实坑逼出来的正确范式**(见下),也正面处理了 ADR-024 预警的"父子 state 映射"。
+- **ReviewerState 独立 schema**:私有工作键(`eff_diff/user_prompt/outcome`)不与父图 `ReviewState` 同名 → 不外泄、并行无冲突;产出键(issues/gathered_context/...)同名 → 经父图 reducer fan-in。
+- **不动 create_agent 边界**:`ToolAgentEngine` 内的 ReAct 图(`create_agent`)仍封在 `review` 节点里。把它也内联为真正的子子图涉及 `MessagesState ↔ ReviewerState` 映射,risk 高、收益边际,**显式留作后续可选深化**(诚实记:本刀只做到"审查员级"子图,ReAct 每一步仍不可见)。
+
+**踩到的真坑(关键学习点)**:第一版把编译子图**直接挂作父图节点**(`g.add_node(name, build_reviewer_subgraph(r))`),三审查员并行 fan-out 时报 `InvalidUpdateError: At key 'diff_text': Can receive only one value per step`。根因:子图直接挂载时,其 schema 里**只读**的共享键(diff_text)会在子图结束时被**回写**父图;三路并行 → 对无 reducer 的 LastValue 键并发写 → 冲突。**根治**:改用"节点内 invoke 子图"范式,显式投影输入 + 只回传产出键,杜绝只读键回写。——这正是 LangGraph 两种子图范式(共享 schema 直接挂 vs 异构 schema 节点内调)里,**异构 + 并行 fan-out 必须选后者**的活教材。
+
+**不变量保持**:节点级错误隔离(review 内 try/except → 空 outcome + 告警)、mock 不三倍化(仅 security 合成)、gathered_context 侧信道、门面签名——全部原样保留。
+
+**测试**:`test_graph_orchestration.py` 改 2 + 增 1(子图暴露 prepare/review/collect 内部节点)。全量 Python **182 过**(181→182),ruff 干净。`pipeline-repomap-fpverify` 真机评测未重跑——本刀只改审查员节点的内部封装方式,父图拓扑 / 引擎调用 / 产出契约不变,且全套含真实编译图 fan-in/supervisor 循环的集成测试通过,故按"工程正确性已坐实"收口(同 ADR-024 收口口径)。
+
+**日期**:2026-06-22
+
+<!-- 后续在这里继续追加 ADR-026、ADR-027 …… -->
