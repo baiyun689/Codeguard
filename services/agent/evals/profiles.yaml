@@ -39,6 +39,14 @@ profiles:
     tools: [get_repo_map, get_file_content]
     fp_verify: true
 
+  # 管线 + supervisor 智能调度观测档:在 pipeline-repomap 基础上打开 supervisor 动态调度。
+  # 与受控对照档仅差 enable_supervisor 一个变量,用于单独画像/评测"动态派发 + 补派/重派"行为。
+  # 路由非确定 → 数字更吵;刻意与受控档隔离,不污染工具增益对照(见 design D9)。
+  pipeline-supervisor:
+    mode: pipeline
+    tools: [get_repo_map, get_file_content]
+    enable_supervisor: true
+
   # —— 扩展占位(零成本预留,框架无需改动)——
   # 后续逐个加重型工具时,在此追加 profile 即可:
   # pipeline-ast:    { mode: pipeline, tools: [get_file_content, get_method_definition] }

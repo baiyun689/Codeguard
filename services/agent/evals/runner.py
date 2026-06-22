@@ -184,7 +184,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # 注入审查函数:统一走多阶段管线。review_fn 接收整条 case,
     # 以便工具会话用该用例自带的 repo_path。
-    orchestrator = PipelineOrchestrator(fp_llm_verify=profile.fp_verify)
+    # enable_supervisor 由 profile 控制(默认关):受控对照档保持确定性全派、不引入路由
+    # 非确定性;仅 pipeline-supervisor 观测档置开(见 design D9)。
+    orchestrator = PipelineOrchestrator(
+        fp_llm_verify=profile.fp_verify,
+        enable_supervisor=profile.enable_supervisor,
+    )
     def review_fn(case):
         diff = case.diff
         # 工具仅在该用例有**真实** repo 根时启用(repo-backed 快照,或用户显式 --repo-base)。

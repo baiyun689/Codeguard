@@ -27,6 +27,10 @@ class Profile:
     tools: list[str] = field(default_factory=list)  # 启用的工具名,如 ["get_file_content"]
     model: str | None = None        # 可选模型覆盖;None 表示沿用全局 Settings 的模型
     fp_verify: bool = False         # 是否启用误报过滤第二段的独立 LLM 复核(对照的独立变量)
+    # supervisor 智能调度开关。默认 **关**:受控对照档(notools/file/repomap)保持确定性全派,
+    # 不引入额外非确定性 LLM 决策、保住"工具是唯一变量"的纯净度(见 design D9)。
+    # 仅 pipeline-supervisor 观测档显式置开,单独画像调度行为。
+    enable_supervisor: bool = False
 
     @property
     def wants_tools(self) -> bool:
@@ -49,6 +53,7 @@ def load_profiles(path: Path | None = None) -> dict[str, Profile]:
             tools=list(cfg.get("tools") or []),
             model=cfg.get("model"),
             fp_verify=bool(cfg.get("fp_verify", False)),
+            enable_supervisor=bool(cfg.get("enable_supervisor", False)),
         )
     return profiles
 

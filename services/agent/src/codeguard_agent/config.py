@@ -43,13 +43,20 @@ class Settings:
     max_retries: int        # LLM 调用最大重试次数
     structured_method: str  # 结构化输出方式:function_calling | json_schema | json_mode
     disable_thinking: bool  # 是否禁用思考模式(DeepSeek 等推理模型需要)
-    fp_llm_verify: bool = False  # 误报过滤是否启用第二段 LLM 验证(默认关,零成本)
+    # 误报过滤第二段 LLM 复核:CLI/产品路径默认**开**(精确率最强杠杆:P↑、误报率腰斩)。
+    # 评测受控档由 profile 单独控制(fp_verify 是对照的独立变量,默认关),互不影响。
+    fp_llm_verify: bool = True
     # 阶段 3:Java 工具服务地址。非空 → pipeline 审查员走 ReAct(可调工具);
     # 空 → 走无工具直连基准(见 design.md D1)。不在代码里硬编码地址。
     tool_server_url: str = ""
     # 前置摘要/分派阶段开关:默认开(质量优先)。关闭时管线退回"无摘要、各审查员吃整份 diff"
     # 的现状路径,便于控成本与做对照(见 design.md D6)。
     enable_summary: bool = True
+    # 阶段 4:supervisor 智能调度开关。CLI/产品路径默认**开**(展示多 agent 调度,见 design D9);
+    # 评测受控档由 runner 显式关闭以保控变量纯净度。关闭时退回确定性全量派发。
+    enable_supervisor: bool = True
+    # supervisor 派发-复审循环的迭代上限(护栏,见 design D10)。
+    max_review_rounds: int = 3
 
     @property
     def needs_api_key(self) -> bool:
@@ -77,14 +84,19 @@ class Settings:
         disable_thinking = os.environ.get(
             "CODEGUARD_DISABLE_THINKING", "false"
         ).strip().lower() in ("1", "true", "yes", "on")
-        # 误报过滤第二段 LLM 验证开关:默认关(零成本即可用,见 ADR-003 的零配置原则)。
+        # 误报过滤第二段 LLM 复核:CLI/产品路径默认**开**(精确率最强杠杆)。设为 0/false/no/off 关。
         fp_llm_verify = os.environ.get(
-            "CODEGUARD_FP_LLM_VERIFY", "false"
-        ).strip().lower() in ("1", "true", "yes", "on")
+            "CODEGUARD_FP_LLM_VERIFY", "true"
+        ).strip().lower() not in ("0", "false", "no", "off")
         # 摘要阶段开关:默认开。设为 0/false/no/off 时关闭,退回无摘要的现状路径。
         enable_summary = os.environ.get(
             "CODEGUARD_ENABLE_SUMMARY", "true"
         ).strip().lower() not in ("0", "false", "no", "off")
+        # supervisor 智能调度开关:CLI 默认开(D9)。设为 0/false/no/off 时退回确定性全派。
+        enable_supervisor = os.environ.get(
+            "CODEGUARD_ENABLE_SUPERVISOR", "true"
+        ).strip().lower() not in ("0", "false", "no", "off")
+        max_review_rounds = int(os.environ.get("CODEGUARD_MAX_REVIEW_ROUNDS", "3"))
         return cls(
             provider=provider,
             model=model,
@@ -96,6 +108,8 @@ class Settings:
             fp_llm_verify=fp_llm_verify,
             tool_server_url=os.environ.get("CODEGUARD_TOOL_SERVER_URL", "").strip(),
             enable_summary=enable_summary,
+            enable_supervisor=enable_supervisor,
+            max_review_rounds=max_review_rounds,
         )
 
     @classmethod

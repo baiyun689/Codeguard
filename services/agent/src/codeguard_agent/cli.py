@@ -105,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
             result = PipelineOrchestrator(
                 fp_llm_verify=settings.fp_llm_verify,
                 enable_summary=settings.enable_summary,
+                enable_supervisor=settings.enable_supervisor,
+                max_review_rounds=settings.max_review_rounds,
             ).run(
                 llm,
                 diff_text,

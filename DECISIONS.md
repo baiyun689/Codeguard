@@ -747,4 +747,27 @@ ADR-014 的 Step-1 增益(plus 验证模型)换 **qwen3.7-max** 重跑 `pipeline
 
 **日期**:2026-06-21
 
-<!-- 后续在这里继续追加 ADR-024、ADR-025 …… -->
+## ADR-024 · 编排迁移到 LangGraph supervisor 状态图(阶段 4):可读性/可扩展为先,增益非目标
+
+**背景**:原编排是 `for stage in stages: ctx = stage.execute(ctx)` 的线性循环,真正的多 agent 并行被埋在 `ReviewerStage` 内部的 `ThreadPoolExecutor`,编排层看不见 fan-out;`SummaryStage` 自称"软路由"却从不调度(三审查员永远全跑)。这是规划阶段刻意留下的 Phase 4 占位。本次升级为 LangGraph `StateGraph` + supervisor 调度。**明确取舍:不追求评测增益(甚至预期评测更吵),目标是流程拓扑可读、多 agent 调度做成真决策、为后续扩展铺地道接缝、并掌握 LangGraph。** change:`langgraph-supervisor-orchestration`。
+
+**决策**(详见 change 的 design.md D1–D12):
+- **手搓 supervisor**(D1),不用 `langgraph-supervisor` 包——后者面向对话式 handoff,与"扇出领域审查员→收结构化发现→再决策"结构不合;手搓零新增重依赖、控制力/可读性最高。
+- **State + reducer**(D2):`issues` 用 `operator.add` 自动 fan-in;`gathered_context` 用**自定义去重 reducer**(按 `(tool,args)`,不能用 add 否则丢去重);**`final_issues` 单独承接聚合/过滤后的结果**,避免与加法 reducer 的"替换 vs 累加"冲突。
+- **图拓扑 + Send**(D3):`START→[summary]→supervisor──(条件/Send)→[security|logic|quality]→supervisor(循环)→aggregation→fp_filter→END`。supervisor 输出 `SupervisorDecision{action,reviewers,focus_notes,reason}`,用 `Send` 动态扇出子集,审查员回边到 supervisor 形成补派/重派循环。
+- **双重护栏**(D4,直面 ADR-016/018):`iteration` 计数达 `MAX_REVIEW_ROUNDS`(=3,D10)强制 finish + 图 `recursion_limit`(=50)兜底。
+- **分路径默认**(D9):`enable_supervisor` CLI/产品默认**开**(展示调度);评测受控档(notools/file/repomap)经 profile 强制**关**=确定性全派,保控变量纯净;另设 `pipeline-supervisor` 观测档置开。mock(llm None)一律走确定性,supervisor 不发真实调用。
+- **门面不变**(D7):`PipelineOrchestrator.run(...)` 签名与 `ReviewResult` 输出原样保留,`cli.py`/`evals/runner.py` 仅各加传一个开关参数;`gathered_context` 仍只经 `trace_sink` 流出、不进 `ReviewResult`(守 ADR-001)。
+- **节点级错误隔离**(D8):审查员节点自捕异常返回空发现 + 告警(LangGraph 默认异常上抛,必须显式兜);fp 复核沿用"失败/None 一律保留 issue"。
+- **审查员节点第一刀用普通函数**(D12):内部黑盒复用现有 `ToolAgentEngine`/`DirectEngine`("图中有图":审查员内部本就是 `create_agent` 的子图);子图化作后续可选精炼。
+- **旧线性管线下线**(D11):确定性图证绿后删除 `build_default_pipeline` 与 `for` 循环驱动;stage **逻辑**被节点复用故不删。
+
+**实现要点 / 踩到的真坑**:LangGraph 的 reducer 对"下游节点要替换被 reduce 的键"无能为力——聚合/过滤若返回 `{"issues": ...}` 会被 `operator.add` 当成追加(翻倍)。解法是引入无 reducer 的 `final_issues` 承接。mock 三审查员都被派发会把单条 mock 三倍化——让仅 `security` 在 mock 下返回一次 mock 结果、其余空,既保端到端连通又不三倍化。
+
+**测试**:`tests/test_graph_orchestration.py` +17(reducer 去重、supervisor 确定性/智能/护栏/兜底、节点错误隔离、mock 单条、门面侧信道不进 ReviewResult、真实编译图 fan-in、supervisor 派发→finish 循环)。全量 Python **181 过**(164→181),ruff 干净。门面回归:原 164 测全绿,确认 `ReviewResult` 与改造前同构。
+
+**未做(诚实记)**:task 6.3「确定性模式跑一次真实评测确认指标与改造前一致」**未跑**——需起 gateway + 真实 DeepSeek/qwen,本轮按"工程正确性已坐实 + 门面回归全绿"收口,留待下次真实环境复跑(同 ADR-004/008 不编数字原则)。
+
+**日期**:2026-06-22
+
+<!-- 后续在这里继续追加 ADR-025、ADR-026 …… -->

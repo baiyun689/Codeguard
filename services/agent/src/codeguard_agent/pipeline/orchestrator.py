@@ -1,13 +1,10 @@
-"""管线编排器。
+"""审查编排器门面。
 
-把若干 PipelineStage 串成一条管线,依次在共享 PipelineContext 上执行,最后产出 ReviewResult。
+`run()` 内部构建并执行一张 LangGraph 状态图(supervisor 驱动,见 graph.py),对外保持稳定签名:
+摘要 → supervisor 调度 → 并行领域审查员 → 两段式聚合 → 误报过滤 → 结构化 ReviewResult。
 
-这是审查的唯一编排路径(原 --mode single 的无 Agent 基线已移除,见 ADR-002 废弃说明)。
-
-演化:
-    并行审查(security/logic/quality 三个领域审查员)→ 聚合去重 →
-    摘要(软路由)→ 并行审查 → 两段式聚合 → 误报过滤。← 当前
-摘要阶段可由 enable_summary 开关控制;关闭时退回"无摘要、审查员吃整份 diff"的现状路径。
+阶段 4(change langgraph-supervisor-orchestration)起,原线性 stage 循环被状态图取代;各 stage 的
+逻辑(SummaryStage/ReviewerStage/AggregationStage/FalsePositiveFilterStage)被 graph.py 的节点复用。
 """
 
 from __future__ import annotations
@@ -15,54 +12,43 @@ from __future__ import annotations
 import logging
 
 from codeguard_agent.models.schemas import ReviewResult
-from codeguard_agent.pipeline.stages.aggregation import AggregationStage
-from codeguard_agent.pipeline.stages.base import PipelineContext, PipelineStage
-from codeguard_agent.pipeline.stages.fp_filter import FalsePositiveFilterStage
-from codeguard_agent.pipeline.stages.reviewer_stage import ReviewerStage
-from codeguard_agent.pipeline.stages.summary import SummaryStage
+from codeguard_agent.pipeline.graph import (
+    DEFAULT_MAX_ROUNDS,
+    DEFAULT_RECURSION_LIMIT,
+    ReviewState,
+    build_review_graph,
+)
 
 logger = logging.getLogger("codeguard")
 
 
-def build_default_pipeline(
-    fp_llm_verify: bool = False,
-    enable_summary: bool = True,
-) -> list[PipelineStage]:
-    """构造默认管线:[摘要] → 并行审查 → 聚合去重(两段式)→ 误报过滤。
-
-    fp_llm_verify:误报过滤是否启用第二段 LLM 验证(默认关)。
-    enable_summary:是否启用前置摘要/分派阶段(默认开);关闭时跳过该阶段,
-        审查员吃整份 diff,行为与摘要引入前一致(见 design.md D6)。
-    """
-    stages: list[PipelineStage] = []
-    if enable_summary:
-        stages.append(SummaryStage())
-    stages.extend(
-        [
-            ReviewerStage(),
-            AggregationStage(),
-            FalsePositiveFilterStage(enable_llm_verification=fp_llm_verify),
-        ]
-    )
-    return stages
-
-
 class PipelineOrchestrator:
-    """串行执行各 stage 的编排器。
+    """审查编排器(内部为 LangGraph 状态图,门面不变)。
+
+    `run()` 内部建图 + invoke(见 graph.py);构造参数控制拓扑与调度策略。
 
     参数:
-        stages: 可选的自定义 stage 列表;不传则用 build_default_pipeline()。
+        fp_llm_verify:误报过滤是否启用第二段 LLM 复核(默认关)。
+        enable_summary:是否启用前置摘要/分派节点(默认开)。
+        enable_supervisor:是否启用 supervisor 智能调度(默认关=确定性全派,保评测控变量;
+            CLI/产品路径由调用方显式置开,见 design D9)。
+        max_review_rounds:supervisor 派发-复审循环的迭代上限(护栏,见 design D10)。
+        recursion_limit:图总步数硬上限(兜底护栏)。
     """
 
     def __init__(
         self,
-        stages: list[PipelineStage] | None = None,
         fp_llm_verify: bool = False,
         enable_summary: bool = True,
+        enable_supervisor: bool = False,
+        max_review_rounds: int = DEFAULT_MAX_ROUNDS,
+        recursion_limit: int = DEFAULT_RECURSION_LIMIT,
     ) -> None:
-        self.stages = stages or build_default_pipeline(
-            fp_llm_verify=fp_llm_verify, enable_summary=enable_summary
-        )
+        self._fp_llm_verify = fp_llm_verify
+        self._enable_summary = enable_summary
+        self._enable_supervisor = enable_supervisor
+        self._max_review_rounds = max_review_rounds
+        self._recursion_limit = recursion_limit
 
     def run(
         self,
@@ -87,23 +73,41 @@ class PipelineOrchestrator:
             工具上下文(gathered_context)追加进去,供评测做"工具使用画像"。这是**只读侧信道**,
             刻意不进 ReviewResult(产品输出不掺工具痕迹,守 ADR-001)。
         """
-        context = PipelineContext(
-            diff_text=diff_text,
-            llm=llm,
-            max_retries=max_retries,
-            structured_method=structured_method,
-            fp_verify_llm=fp_verify_llm,
-            repo_path=repo_path,
-            allowed_files=allowed_files or [],
-            tool_client=tool_client,
-            enabled_tools=enabled_tools,
+        # 空 diff 直接短路(图无需启动)。
+        if not diff_text.strip():
+            return ReviewResult(summary="没有检测到代码变更,无需审查。")
+
+        graph = build_review_graph(enable_summary=self._enable_summary)
+        initial: ReviewState = {
+            # 静态输入
+            "diff_text": diff_text,
+            "llm": llm,
+            "fp_verify_llm": fp_verify_llm,
+            "tool_client": tool_client,
+            "enabled_tools": enabled_tools,
+            "max_retries": max_retries,
+            "structured_method": structured_method,
+            "enable_supervisor": self._enable_supervisor,
+            "max_review_rounds": self._max_review_rounds,
+            "fp_llm_verify": self._fp_llm_verify,
+            # fan-in / 控制 初值
+            "issues": [],
+            "gathered_context": [],
+            "review_summaries": [],
+            "dispatched": set(),
+            "iteration": 0,
+            "final_issues": [],
+            "supervisor_log": [],
+        }
+        final_state = graph.invoke(
+            initial, config={"recursion_limit": self._recursion_limit}
         )
 
-        for stage in self.stages:
-            context = stage.execute(context)
-
-        # 侧信道:把工具上下文交给评测层(不进 ReviewResult)。
+        # 侧信道:把工具上下文交给评测层(不进 ReviewResult,守 ADR-001)。
         if trace_sink is not None:
-            trace_sink.extend(context.gathered_context)
+            trace_sink.extend(final_state.get("gathered_context") or [])
 
-        return ReviewResult(summary=context.summary, issues=context.issues)
+        return ReviewResult(
+            summary=final_state.get("summary", ""),
+            issues=list(final_state.get("final_issues") or []),
+        )
