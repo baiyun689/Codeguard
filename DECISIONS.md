@@ -838,4 +838,39 @@ ADR-014 的 Step-1 增益(plus 验证模型)换 **qwen3.7-max** 重跑 `pipeline
 
 **日期**:2026-06-27
 
-<!-- 后续在这里继续追加 ADR-028、ADR-029 …… -->
+---
+
+## ADR-028 · LangGraph 1.x interrupt 行为变更 + state 序列化安全 + 集成教训
+
+**背景**:HITL（ADR-027）实装后在真实环境（DeepSeek + Java 工具服务 + checkpoint）实跑验证，审出 6 个问题但最终报告显示"未发现问题"。排查发现两个独立根因叠加导致 HITL 中断链路完全断裂。
+
+**根因 1 — LangGraph 1.2.4 `interrupt()` + `invoke()` 不抛异常**:
+
+LangGraph 0.x 中 `interrupt()` 抛出 `GraphInterrupt`，调用方 `except` 捕获后进入对话。1.2.4 中行为变更：`invoke()` 在 `interrupt()` 触发后**不抛异常**，而是在返回的 state 中写入 `__interrupt__` 键，图正常返回。CLI 的 `except GraphInterrupt` 永不到达 → 拿到的 state 停在中断点（`issues=6, final_issues=[]`）→ "未发现问题"。
+
+修复：在 `PipelineOrchestrator.run()` 中 `graph.invoke()` 返回后检测 `__interrupt__` 键，手动 `raise GraphInterrupt(...)` 让 CLI 正常捕获。
+
+**根因 2 — state 含不可 msgpack 序列化对象**:
+
+`ToolClient`（含 `httpx.Client`）、`ChatOpenAI` 等对象被放入 `ReviewState`/`ReviewerState` TypedDict。checkpoint 开启时 LangGraph 对 state 做 msgpack 序列化 → `TypeError: Type is not msgpack serializable: ToolClient`。此前 checkpoint PR 时未被发现，因为当时子图未传 checkpointer（本次才补上）。
+
+修复：将 `llm`/`tool_client`/`fp_verify_llm` 从两个 TypedDict 中移除，改为通过 `build_review_graph()` → 节点工厂函数 → 闭包传递。全部节点函数改为工厂模式（`_supervisor_node(llm)`、`_summary_node(llm, tool_client)` 等）。
+
+**附随改进**:
+
+1. **ReAct 递归上限可配置**（`CODEGUARD_REACT_RECURSION_LIMIT`，默认 24，原 12）：实测 12 步太紧，工具往返耗 2 步只能做 ~5 次调用，diff 文件稍多就撞墙。24 步可做 ~8-10 次工具调用 + 思考。
+2. **结构化结果兜底增强**：`_extract_result` 从"只扫最后一条消息"→"扫描全部消息"、新增 `dict`→`ReviewResult` 转换（部分模型返回 dict 非 Pydantic 实例）、告警带诊断信息。
+3. **HITL 安全守卫**：`enable_hitl=True` 但 `checkpointer=None` 时自动告警降级，防止 resume 死循环。
+4. **`enable_hitl` 参数贯通**：`ToolAgentEngine.review()` 加 `enable_hitl` 参数——HITL 开时不吞 `GraphRecursionError`，让它传播到上层 interrupt handler（修 ADR-027 死代码）。
+
+**工程正确性**:195 单测全绿。真实实跑（springboot-review-demo, 4 类植入缺陷）：全部命中——SQL 注入 x2（findById + findByEmailDomain）、路径遍历（readConfig）、NPE（getEmailList 未判空）、资源泄漏（writeAuditLog）、硬编码密钥（EXPORT_SECRET），共 6 条。
+
+**集成教训（本 session 最值钱的一条）**:
+
+1. **新版本库关键 API 先用最小脚本验证实际行为**——凭 LangGraph 0.x 文档印象写 `except GraphInterrupt`，但 1.2.4 行为已变。
+2. **异常处理分支必须可测**——`except GraphInterrupt` 从未被集成测试触发过，是死代码。
+3. **排查从数据流最底层开始**——问题表象是"审查结果为空"，直觉反应是模型/prompt 不行，绕了一圈才发现是异常传播断了。第一问应该永远是"数据流到了哪一步"。
+
+**日期**:2026-06-27
+
+<!-- 后续在这里继续追加 ADR-029、ADR-030 …… -->

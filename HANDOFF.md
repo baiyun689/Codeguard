@@ -2,9 +2,11 @@
 
 > 当前进度快照。下次接手从「下次从哪开始」一节读起即可。
 >
-> **最近一轮(2026-06-27)做了什么**:**引入 Human-in-the-loop(change `langgraph-human-in-the-loop`,ADR-027)**。两个固定 interrupt 点:supervisor 判 finish 后暂停让人确认/追加派发,审查员撞 recursion_limit 时暂停让人选择收尾/重跑/跳过。CLI 默认交互式(`input()` 终端对话,支持 `list`/`retry`/`focus` 等命令),加 `--non-interactive` 开关给 CI。依赖 checkpoint(需配置 `CODEGUARD_CHECKPOINT_BACKEND`)。开关 `CODEGUARD_ENABLE_HITL` 默认关,向后兼容零破坏。**全量 Python 195 过(190→195,+5 HITL 测试),ruff + mypy 干净。**
+> **最近一轮(2026-06-27 下半场)做了什么**:**HITL+checkpoint 真实环境实跑验证与四个 bug 修复(ADR-028)**。springboot-review-demo 植入 4 类缺陷（SQL 注入/NPE/资源泄漏/路径遍历），真实 DeepSeek + Java 工具服务跑通，**全部命中共 6 条**。期间发现并修复四个阻塞 bug:① LangGraph 1.2.4 `interrupt()` + `invoke()` 不抛异常（改为检测 `__interrupt__` 键手动抛）→ HITL 中断链路修复；② `ToolClient`/`ChatOpenAI` 不可 msgpack 序列化 → 移出 state 改闭包传递；③ ReAct 递归上限 12 步太紧 → 默认 24 且可配置；④ 结构化结果兜底增强（扫全部消息、dict→Pydantic 转换）。附带 HITL 安全守卫（无 checkpoint 时自动降级）、子图 checkpointer 贯通。**全量 Python 195 过，ruff 干净。**
 >
-> **上一轮(2026-06-22,收尾)做了什么**:**D12 第二刀——审查员从"普通函数节点"升级为 LangGraph 编译子图(ADR-025)**。每个审查员=`StateGraph(ReviewerState)` 内部三节点 `prepare→review→collect`,经薄包装节点 `make_reviewer_node` 在内部 `subgraph.invoke(显式投影输入)`、只回传产出键。**关键坑(已根治)**:第一版把编译子图直接挂作父图节点,三审查员并行 fan-out 时只读共享键 `diff_text` 被回写 → `InvalidUpdateError`;改用"节点内 invoke 子图 + 显式父↔子映射"范式根除(LangGraph 异构 schema + 并行必须选此范式)。create_agent 的 ReAct 图仍封在 review 节点内,内联为子子图留作后续。不变量(错误隔离/mock 不三倍化/侧信道/门面)全保。**182 过(181→182,+1 子图内部节点可见性测),ruff 干净。** 评测未重跑(只改审查员节点内部封装,父图拓扑/引擎/产出契约不变,含真实编译图 fan-in 的集成测试通过)。
+> **上一轮(2026-06-27 上半场)做了什么**:**引入 Human-in-the-loop(change `langgraph-human-in-the-loop`,ADR-027)**。两个固定 interrupt 点:supervisor 判 finish 后暂停让人确认/追加派发,审查员撞 recursion_limit 时暂停让人选择收尾/重跑/跳过。CLI 默认交互式(`input()` 终端对话,支持 `list`/`retry`/`focus` 等命令),加 `--non-interactive` 开关给 CI。依赖 checkpoint(需配置 `CODEGUARD_CHECKPOINT_BACKEND`)。开关 `CODEGUARD_ENABLE_HITL` 默认关,向后兼容零破坏。**全量 Python 195 过(190→195,+5 HITL 测试),ruff + mypy 干净。**
+>
+> **(2026-06-22,收尾)做了什么**:**D12 第二刀——审查员从"普通函数节点"升级为 LangGraph 编译子图(ADR-025)**。每个审查员=`StateGraph(ReviewerState)` 内部三节点 `prepare→review→collect`,经薄包装节点 `make_reviewer_node` 在内部 `subgraph.invoke(显式投影输入)`、只回传产出键。**关键坑(已根治)**:第一版把编译子图直接挂作父图节点,三审查员并行 fan-out 时只读共享键 `diff_text` 被回写 → `InvalidUpdateError`;改用"节点内 invoke 子图 + 显式父↔子映射"范式根除(LangGraph 异构 schema + 并行必须选此范式)。create_agent 的 ReAct 图仍封在 review 节点内,内联为子子图留作后续。不变量(错误隔离/mock 不三倍化/侧信道/门面)全保。**182 过(181→182,+1 子图内部节点可见性测),ruff 干净。** 评测未重跑(只改审查员节点内部封装,父图拓扑/引擎/产出契约不变,含真实编译图 fan-in 的集成测试通过)。
 >
 > **本轮(2026-06-22,主体)做了什么**:**阶段 4 落地——编排迁移到 LangGraph supervisor 状态图(change `langgraph-supervisor-orchestration`,B+档3 一步到位)**。动机明确是**可读性 + 学 LangGraph + 好扩展,不追增益**(甚至预期评测更吵)。新增 `pipeline/graph.py`:`ReviewState`(issues 加法 fan-in、gathered_context 自定义去重 reducer、final_issues 承接聚合/过滤结果避开 reducer 冲突)+ supervisor 节点(`enable_supervisor` 开=LLM 决策动态派发/补派/重派/finish;关或 mock=确定性全派)+ `Send` 动态扇出 + 双重护栏(iteration≤3 + recursion_limit=50)+ 审查员/聚合/误报过滤节点复用现有 stage 逻辑。**门面 `PipelineOrchestrator.run()` 签名不变**,cli/runner 仅各加传一个开关;`gathered_context` 仍只走 trace_sink 不进 ReviewResult(守 ADR-001)。**分路径默认(ADR-024/D9)**:CLI 默认开、评测受控档(notools/file/repomap)经 profile 强制关=确定性保控变量、另设 `pipeline-supervisor` 观测档。删掉旧线性 `build_default_pipeline`(D11,stage 逻辑被节点复用故留)。**全量 Python 181 过(164→181,+17 针对性测:reducer/supervisor 各分支/节点错误隔离/门面侧信道/真实编译图 fan-in 与 supervisor 循环),ruff 干净,原 164 测全绿坐实门面同构**。详见 ADR-024。**未跑 task 6.3**(确定性模式真实评测复确认指标),需起 gateway + 真实模型,留待下次真实环境;工程正确性已坐实。
 >
@@ -188,24 +190,38 @@ conda run -n codeguard --no-capture-output python -m evals.runner --mode pipelin
 
 ## 👉 下次从哪开始
 
-**本轮(2026-06-21)已收口**:三段——~~量化 repo_map/file 增益~~(ADR-019)、~~强隔离难例证 repo_map 独有增益~~(ADR-020,file 0/3 vs repomap 2/3)、~~补 repo_map 调用方盲区~~(change `repomap-include-callers`:实现成立但 eval 未证出审查员级增益 ADR-022;顺带修裁判 harness ADR-021)。下面是新的起点:
+**本轮(2026-06-27)已收口**:HITL 真实环境实跑验证通过 + 四个阻塞 bug 修复。下面是新的起点:
 
-0. **⚠️ 跑判图前先探活裁判到"结构化调用层"**(承 ADR-021):千问带日期版会强制 thinking、拒 forced tool_choice → 裁判整轮回退规则尺并系统性误导结论。普通对话 HTTP 200 不够,要探到 `with_structured_output(function_calling).invoke`。裁判模型用不带日期的 `qwen3.7-max` alias。
-1. **(承 ADR-022,可选,难)** 若要证 callers 段**必要**,需"危险无法从 diff 推断、只有读具体 caller 才暴露"的难例(比 ADR-020 契约撒谎更窄)。当前"改成可空→调用方 NPE"类 caller bug 可被 diff 推理 catch,证不出 callers 段增益。优先级低——callers 段已按 spec-completeness ship。
-2. **逐个加重型工具**:`get_method_definition`(JavaParser AST,可复用本期 `JavaTagExtractor`)→ `get_call_graph` → `semantic_search`(RAG),沿通用协议 + 会话接缝叠加。`get_definition` 暂缓的边界理由见 ADR-012。**注**:`repomap_npe_isolated_001` 那套"接口多实现 + 契约撒谎 + 诱饵填充"配方已验证能逼出工具增益;但 ADR-022 的教训是——**先确认新能力不会被"diff 推理 + 语义裁判"绕过**(否则同样"加了测不出")。
-3. ~~工具利用率纳入评测报告 + 回头核 ADR-022~~ —— **已完成 ✅**(ADR-023:`evals/tool_usage.py` + 报告「工具使用」表 + 归档持久化;侧信道 `orchestrator.run(trace_sink=…)` 不污染 ReviewResult)。**已实跑验证**:`repomap_npe_caller_001` after 态 `repomap_caller_section_read=✓`、读了 GreetingService → 坐实 ADR-022"after 经 callers 段导航",但不靠它 diff 也能蒙对。验证中顺手修掉"ReviewResult 伪工具混进画像"的 bug。**耗时纳入仍待办**(优先级低)。
+0. **⚠️ HITL 使用注意**(承 ADR-028):交互式模式需直接 `python -m codeguard_agent review`（`conda run` 不转发 stdin 导致 `input()` 立即 EOF 返回 `continue`）。CI 场景用 `--non-interactive`。跑前确保:Java 工具服务已启动、`.env` 配好 `CODEGUARD_CHECKPOINT_BACKEND=memory` + `CODEGUARD_ENABLE_HITL=true`。
+
+1. **`list` 命令补全**(承 ADR-027 局限):`_hitl_supervisor_finish_dialog` 的 `list` 当前只打印 payload 概要。需传入当前 issues 列表或从 state 读取，渲染完整发现列表供人决策。工作量小（一个函数 + 渲染）。
+
+2. **quality 审查员结构化偶发落空**（承 ADR-028 附随改进 2）:`_extract_result` 已增强诊断日志，下次触及时根据 `structured_response type` + `last_msg[:300]` 定位是模型产出格式问题还是解析问题。如高频出现需评估 DeepSeek `response_format` 兼容性或换用 `json_mode`。
+
+3. **⚠️ 跑判图前先探活裁判到"结构化调用层"**(承 ADR-021):千问带日期版会强制 thinking、拒 forced tool_choice → 裁判整轮回退规则尺并系统性误导结论。普通对话 HTTP 200 不够,要探到 `with_structured_output(function_calling).invoke`。裁判模型用不带日期的 `qwen3.7-max` alias。
+
+4. **逐个加重型工具**:`get_method_definition`(JavaParser AST,可复用 `JavaTagExtractor`)→ `get_call_graph` → `semantic_search`(RAG),沿通用协议 + 会话接缝叠加。`get_definition` 暂缓的边界理由见 ADR-012。
+
+5. **(可选)** 撞顶降级现在退到 diff-only、丢已得上下文;若要保住,改"流式留存 last state + 撞顶强制无工具收尾"。优先级低(降级已够兜底)。
+
+6. **(可选)** repo map 若在大仓库慢,补按 mtime 的 tags 缓存(对齐 aider)。
 
 ```powershell
-# 复现本轮三档对照:
-cd services/gateway; mvn package; java -jar target/codeguard-gateway.jar   # 起工具服务(9090)
-$env:CODEGUARD_TOOL_SERVER_URL="http://localhost:9090"
+# HITL 交互式审查:
+cd services/gateway; java -jar target/codeguard-gateway.jar   # 终端1:起工具服务(9090)
+conda activate codeguard
 cd ../agent
+python -m codeguard_agent review --repo <目标仓库>           # 终端2:交互式审查
+
+# CI 非交互式:
+conda run -n codeguard --no-capture-output python -m codeguard_agent review --repo <目标仓库> --non-interactive
+
+# 评测三档对照:
+$env:CODEGUARD_TOOL_SERVER_URL="http://localhost:9090"
 conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-notools --runs 3 --judge
 conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-file    --runs 3 --judge
 conda run -n codeguard --no-capture-output python -m evals.runner --profile pipeline-repomap --runs 3 --judge
 ```
-4. repo map 若在大仓库慢,补按 mtime 的 tags 缓存(对齐 aider)。
-5. **(可选,承 ADR-018)** 撞顶降级现在退到 diff-only、丢已得上下文;若要保住,改"流式留存 last state + 撞顶强制无工具收尾"。优先级低(降级已够兜底)。
 
 ## 衍生待办(散落在各 ADR)
 
