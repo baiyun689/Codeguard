@@ -814,4 +814,28 @@ ADR-014 的 Step-1 增益(plus 验证模型)换 **qwen3.7-max** 重跑 `pipeline
 
 **日期**:2026-06-27
 
-<!-- 后续在这里继续追加 ADR-027、ADR-028 …… -->
+---
+
+## ADR-027 · Human-in-the-loop:两个固定 interrupt 点 + 交互式 CLI + 开关控制
+
+**背景**:checkpoint（ADR-026）已让图执行状态可持久化恢复，但 supervisor 判 finish 和审查员撞 recursion_limit 这两个不可逆决策仍是全自动的。前者可能漏审（LLM 自判"够了"但实际不够），后者自动降级丢上下文（ADR-018）。在 checkpoint 基础上加 `interrupt()` 主动暂停，让人把关这两个关键决策。change: `langgraph-human-in-the-loop`。
+
+**决策**:
+
+1. **触发点写死，开关控制**（D1）：两个 interrupt 点是写死的——supervisor 判 finish 后 + 审查员撞 `GraphRecursionError` 时。由 `enable_human_in_the_loop` 开关统一控制，默认关（向后兼容）。不让 LLM 决定"该不该问人"——确定性行为、零额外开销。
+
+2. **依赖 checkpoint**（D2）：`interrupt()` 需要 checkpointer。`enable_human_in_the_loop=True` 且 `checkpointer` 非 None 时才调 `interrupt()`；否则跳过。
+
+3. **交互式 CLI 默认 + `--non-interactive` 开关**（D3）：默认终端对话循环（`input()` + 命令解析）。supervisor finish 时支持 `list`/`retry`/`focus`/`help`/回车；撞限时支持 `retry`/`skip`/回车。`--non-interactive` 模式下打印状态 + 退出码 2。
+
+4. **resume 协议**（D4）：resume action 统一为 `continue`/`retry`/`skip` 三种。supervisor finish 的 `retry` 可带 `reviewers` 和 `focus_notes`。
+
+5. **修 ADR-018**：撞限时的 `continue` action 以已收集上下文调 `DirectEngine` 收尾，不再丢弃已读到的文件上下文。
+
+**工程正确性**:195 单测全绿（190→195,+5 HITL 测试:对话框命令解析、HITL 关闭时无 interrupt、确定性模式不触发、默认 false 配置）。ruff + mypy 干净。
+
+**局限**:交互式 `input()` 在 stdin 重定向时立即返回 EOF（CI 场景需 `--non-interactive`）。`list` 命令当前打印 payload 概要，完整 issues 渲染留待后续。
+
+**日期**:2026-06-27
+
+<!-- 后续在这里继续追加 ADR-028、ADR-029 …… -->

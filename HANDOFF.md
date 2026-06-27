@@ -2,7 +2,7 @@
 
 > 当前进度快照。下次接手从「下次从哪开始」一节读起即可。
 >
-> **最近一轮(2026-06-27)做了什么**:**LangGraph checkpoint 持久化与中断恢复(change `langgraph-checkpoint-interrupt`,ADR-026)**。`build_review_graph(checkpointer=None)` 加可选 checkpointer 参数,支持 MemorySaver(内存)/SqliteSaver(文件,需单独安装 `langgraph-checkpoint-sqlite`)两档;`PipelineOrchestrator` 按 `CODEGUARD_CHECKPOINT_BACKEND` 环境变量创建对应 checkpointer;`run(thread_id=...)` 透传到 `graph.invoke(config)`;CLI `--thread-id` 参数。**功能**:API 故障/进程重启后,同一 thread_id 重跑从最后一个 checkpoint 恢复继续执行,不丢已收集的 `gathered_context`。默认不启用(向后兼容,零破坏)。**全量 Python 190 过(182→190,+8 checkpoint 测试:MemorySaver 中断恢复/同 thread_id 不重复审查/不同 thread_id 独立/工厂函数优雅降级),ruff + mypy 干净。** Human-in-the-loop(interrupt 主动暂停)另开 change,本次只做 checkpoint 基础层。
+> **最近一轮(2026-06-27)做了什么**:**引入 Human-in-the-loop(change `langgraph-human-in-the-loop`,ADR-027)**。两个固定 interrupt 点:supervisor 判 finish 后暂停让人确认/追加派发,审查员撞 recursion_limit 时暂停让人选择收尾/重跑/跳过。CLI 默认交互式(`input()` 终端对话,支持 `list`/`retry`/`focus` 等命令),加 `--non-interactive` 开关给 CI。依赖 checkpoint(需配置 `CODEGUARD_CHECKPOINT_BACKEND`)。开关 `CODEGUARD_ENABLE_HITL` 默认关,向后兼容零破坏。**全量 Python 195 过(190→195,+5 HITL 测试),ruff + mypy 干净。**
 >
 > **上一轮(2026-06-22,收尾)做了什么**:**D12 第二刀——审查员从"普通函数节点"升级为 LangGraph 编译子图(ADR-025)**。每个审查员=`StateGraph(ReviewerState)` 内部三节点 `prepare→review→collect`,经薄包装节点 `make_reviewer_node` 在内部 `subgraph.invoke(显式投影输入)`、只回传产出键。**关键坑(已根治)**:第一版把编译子图直接挂作父图节点,三审查员并行 fan-out 时只读共享键 `diff_text` 被回写 → `InvalidUpdateError`;改用"节点内 invoke 子图 + 显式父↔子映射"范式根除(LangGraph 异构 schema + 并行必须选此范式)。create_agent 的 ReAct 图仍封在 review 节点内,内联为子子图留作后续。不变量(错误隔离/mock 不三倍化/侧信道/门面)全保。**182 过(181→182,+1 子图内部节点可见性测),ruff 干净。** 评测未重跑(只改审查员节点内部封装,父图拓扑/引擎/产出契约不变,含真实编译图 fan-in 的集成测试通过)。
 >
