@@ -475,11 +475,14 @@ def fp_filter_node(state: ReviewState) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def build_review_graph(*, enable_summary: bool = True):
+def build_review_graph(*, enable_summary: bool = True, checkpointer=None):
     """编译审查状态图。
 
     enable_summary 决定拓扑入口(是否经摘要节点);supervisor 智能/迭代上限/fp 复核等
     运行期行为由初始 State 字段控制(见 PipelineOrchestrator.run),故不进 build 参数。
+
+    checkpointer: 可选 LangGraph checkpointer(MemorySaver/SqliteSaver 等)。传入后
+        图在每步执行后自动持久化 State,支持中断恢复;不传则无状态(当前行为,向后兼容)。
     """
     from langgraph.graph import END, START, StateGraph
 
@@ -506,4 +509,4 @@ def build_review_graph(*, enable_summary: bool = True):
         g.add_edge(r.name, "supervisor")
     g.add_edge("aggregation", "fp_filter")
     g.add_edge("fp_filter", END)
-    return g.compile()
+    return g.compile(checkpointer=checkpointer)

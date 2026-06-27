@@ -790,4 +790,28 @@ ADR-014 的 Step-1 增益(plus 验证模型)换 **qwen3.7-max** 重跑 `pipeline
 
 **日期**:2026-06-22
 
-<!-- 后续在这里继续追加 ADR-026、ADR-027 …… -->
+---
+
+## ADR-026 · LangGraph checkpoint 持久化与中断恢复:两档后端、默认不启用、Human-in-the-loop 另开
+
+**背景**:当前审查图是 `graph.invoke(initial_state)` 一次性执行,API 中途失败则从头重跑、已审完的领域和已收集的工具上下文全部白做。LangGraph 内置的 checkpoint 能力让图在每一步自动持久化 State,故障后用同一 `thread_id` 从断点恢复——这是"图已经画好、就差一个参数"的自然下一步。Human-in-the-loop（主动 `interrupt()` 暂停等人决策）依赖 checkpoint,但属于独立能力,另开 change。change: `langgraph-checkpoint-interrupt`。
+
+**决策**:
+
+1. **checkpointer 在 `PipelineOrchestrator` 层创建注入图**(D1):`build_review_graph(checkpointer=None)` 接收可选 checkpointer 参数;`PipelineOrchestrator.__init__` 按 `CODEGUARD_CHECKPOINT_BACKEND` 环境变量创建对应实例。支持的 checkpointer 后端:MemorySaver(内存,`langgraph` 自带)、SqliteSaver(文件,需单独安装 `langgraph-checkpoint-sqlite`)。
+
+2. **默认不启用**(D2):`CODEGUARD_CHECKPOINT_BACKEND` 默认为空（不启用）,向后兼容、零性能开销。需显式配置才激活。
+
+3. **thread_id 透传**(D3):`PipelineOrchestrator.run(thread_id=None)` → 当 thread_id 非 None 且 checkpointer 存在时构造 `config = {"configurable": {"thread_id": thread_id}}` → `graph.invoke(initial_state, config)`。相同 thread_id 重跑从最后 checkpoint 恢复;不传时等价当前一次性执行。CLI 加 `--thread-id` 参数。
+
+4. **SqliteSaver 文件路径可配置**(D4):`CODEGUARD_CHECKPOINT_DB` 默认 `"codeguard_checkpoints.db"`。
+
+5. **不做 Human-in-the-loop**(D5):本次不改审查员撞 `recursion_limit` 的降级行为(ADR-018 保持不变)、不在 supervisor finish 前暂停等待人工确认。interrupt 机制留给下一个 change ——等 checkpoint 跑稳后再决定哪些点值得暂停。
+
+**工程正确性**: 190 单测全绿(182→190,+8:MemorySaver 中断恢复一致 / 同 thread_id 不重复审查 / 不同 thread_id 独立 / 工厂函数优雅降级(含 SqliteSaver 未安装时的降级) / 不传 checkpointer 全链路行为不变)。ruff + mypy 干净。
+
+**局限**:SqliteSaver 需要单独安装 `langgraph-checkpoint-sqlite` 包(当前 conda 环境未装),工厂函数在未安装时优雅降级为 None。checkpoint 文件随审查次数增长,暂无自动清理策略。
+
+**日期**:2026-06-27
+
+<!-- 后续在这里继续追加 ADR-027、ADR-028 …… -->

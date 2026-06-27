@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 
 from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.pipeline.graph import (
@@ -20,6 +21,38 @@ from codeguard_agent.pipeline.graph import (
 )
 
 logger = logging.getLogger("codeguard")
+
+
+def _create_checkpointer(backend: str, db_path: str):
+    """按配置创建 LangGraph checkpointer。
+
+    backend 取值:
+        "memory" — 内存(MemorySaver),进程内有效,零依赖
+        "sqlite" — 本地 SQLite 文件(SqliteSaver),需安装 langgraph-checkpoint-sqlite 包
+        "" 或其他 — 不启用 checkpoint,返回 None
+    """
+    if not backend:
+        return None
+    if backend == "memory":
+        from langgraph.checkpoint.memory import MemorySaver
+
+        logger.info("checkpoint 后端:memory(内存)")
+        return MemorySaver()
+    if backend == "sqlite":
+        try:
+            from langgraph.checkpoint.sqlite import (  # type: ignore[import-not-found]
+                SqliteSaver,
+            )
+        except ImportError:
+            logger.warning(
+                "checkpoint 后端设为 sqlite 但 langgraph-checkpoint-sqlite 未安装;"
+                "降级为不启用 checkpoint。安装: pip install langgraph-checkpoint-sqlite"
+            )
+            return None
+        logger.info("checkpoint 后端:sqlite(%s)", db_path)
+        return SqliteSaver.from_conn_string(db_path)
+    logger.warning("未知的 checkpoint 后端 '%s',不启用 checkpoint", backend)
+    return None
 
 
 class PipelineOrchestrator:
@@ -34,6 +67,8 @@ class PipelineOrchestrator:
             CLI/产品路径由调用方显式置开,见 design D9)。
         max_review_rounds:supervisor 派发-复审循环的迭代上限(护栏,见 design D10)。
         recursion_limit:图总步数硬上限(兜底护栏)。
+        checkpoint_backend:checkpoint 后端("memory"/"sqlite"/""),默认空=不启用。
+        checkpoint_db:SqliteSaver 数据库文件路径(仅 checkpoint_backend="sqlite" 生效)。
     """
 
     def __init__(
@@ -43,12 +78,15 @@ class PipelineOrchestrator:
         enable_supervisor: bool = False,
         max_review_rounds: int = DEFAULT_MAX_ROUNDS,
         recursion_limit: int = DEFAULT_RECURSION_LIMIT,
+        checkpoint_backend: str = "",
+        checkpoint_db: str = "codeguard_checkpoints.db",
     ) -> None:
         self._fp_llm_verify = fp_llm_verify
         self._enable_summary = enable_summary
         self._enable_supervisor = enable_supervisor
         self._max_review_rounds = max_review_rounds
         self._recursion_limit = recursion_limit
+        self._checkpointer = _create_checkpointer(checkpoint_backend, checkpoint_db)
 
     def run(
         self,
@@ -62,6 +100,7 @@ class PipelineOrchestrator:
         tool_client=None,
         enabled_tools: list[str] | None = None,
         trace_sink: list | None = None,
+        thread_id: str | None = None,
     ) -> ReviewResult:
         """跑完整条管线,返回结构化的 ReviewResult。
 
@@ -72,12 +111,16 @@ class PipelineOrchestrator:
         trace_sink:可选的工具调用侧信道——传入一个列表时,管线结束后把本次审查员获取的
             工具上下文(gathered_context)追加进去,供评测做"工具使用画像"。这是**只读侧信道**,
             刻意不进 ReviewResult(产品输出不掺工具痕迹,守 ADR-001)。
+        thread_id:可选的检查点线程标识。非空且 checkpointer 已配置时,用相同 thread_id
+            重复调用可从上次中断点恢复继续执行;为 None 则一次性执行(当前行为,向后兼容)。
         """
         # 空 diff 直接短路(图无需启动)。
         if not diff_text.strip():
             return ReviewResult(summary="没有检测到代码变更,无需审查。")
 
-        graph = build_review_graph(enable_summary=self._enable_summary)
+        graph = build_review_graph(
+            enable_summary=self._enable_summary, checkpointer=self._checkpointer
+        )
         initial: ReviewState = {
             # 静态输入
             "diff_text": diff_text,
@@ -99,9 +142,14 @@ class PipelineOrchestrator:
             "final_issues": [],
             "supervisor_log": [],
         }
-        final_state = graph.invoke(
-            initial, config={"recursion_limit": self._recursion_limit}
-        )
+        invoke_config: dict = {"recursion_limit": self._recursion_limit}
+        if self._checkpointer is not None:
+            # LangGraph 在配置了 checkpointer 时强制要求 thread_id(或 checkpoint_ns/checkpoint_id)。
+            # 调用方没传时自动生成 UUID,保证图正常执行且仍享受中途故障恢复能力(只是外部无法
+            # 主动 resume——需要主动 resume 的场景由调用方显式传 thread_id 覆盖)。
+            effective_thread_id = thread_id or str(uuid.uuid4())
+            invoke_config["configurable"] = {"thread_id": effective_thread_id}
+        final_state = graph.invoke(initial, config=invoke_config)
 
         # 侧信道:把工具上下文交给评测层(不进 ReviewResult,守 ADR-001)。
         if trace_sink is not None:

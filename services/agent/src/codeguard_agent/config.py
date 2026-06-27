@@ -57,6 +57,11 @@ class Settings:
     enable_supervisor: bool = True
     # supervisor 派发-复审循环的迭代上限(护栏,见 design D10)。
     max_review_rounds: int = 3
+    # checkpoint 后端: "sqlite" | "memory" | 空=不启用(默认空,向后兼容)。
+    # 启用后 LangGraph 图的每步 State 自动持久化;API 故障后可用相同 thread_id 从断点恢复。
+    checkpoint_backend: str = ""
+    # SqliteSaver 数据库文件路径(仅 checkpoint_backend="sqlite" 时生效)
+    checkpoint_db: str = "codeguard_checkpoints.db"
 
     @property
     def needs_api_key(self) -> bool:
@@ -97,6 +102,8 @@ class Settings:
             "CODEGUARD_ENABLE_SUPERVISOR", "true"
         ).strip().lower() not in ("0", "false", "no", "off")
         max_review_rounds = int(os.environ.get("CODEGUARD_MAX_REVIEW_ROUNDS", "3"))
+        checkpoint_backend = os.environ.get("CODEGUARD_CHECKPOINT_BACKEND", "").strip().lower()
+        checkpoint_db = os.environ.get("CODEGUARD_CHECKPOINT_DB", "codeguard_checkpoints.db").strip()
         return cls(
             provider=provider,
             model=model,
@@ -110,6 +117,8 @@ class Settings:
             enable_summary=enable_summary,
             enable_supervisor=enable_supervisor,
             max_review_rounds=max_review_rounds,
+            checkpoint_backend=checkpoint_backend,
+            checkpoint_db=checkpoint_db,
         )
 
     @classmethod

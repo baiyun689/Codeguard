@@ -63,6 +63,12 @@ def main(argv: list[str] | None = None) -> int:
     review_parser = subparsers.add_parser("review", help="审查代码变更")
     review_parser.add_argument("--repo", default=".", help="git 仓库路径(默认当前目录)")
     review_parser.add_argument("--base", default="HEAD", help="diff 对比基准(默认 HEAD)")
+    review_parser.add_argument(
+        "--thread-id",
+        default=None,
+        help="检查点线程标识(需配 CODEGUARD_CHECKPOINT_BACKEND)。"
+             "相同 thread_id 重复调用可从上次中断点恢复继续执行。",
+    )
 
     args = parser.parse_args(argv)
 
@@ -107,6 +113,8 @@ def main(argv: list[str] | None = None) -> int:
                 enable_summary=settings.enable_summary,
                 enable_supervisor=settings.enable_supervisor,
                 max_review_rounds=settings.max_review_rounds,
+                checkpoint_backend=settings.checkpoint_backend,
+                checkpoint_db=settings.checkpoint_db,
             ).run(
                 llm,
                 diff_text,
@@ -116,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo_path=repo_abspath,
                 allowed_files=allowed_files,
                 tool_client=tool_client,
+                thread_id=args.thread_id,
             )
         finally:
             if tool_client is not None:

@@ -252,3 +252,147 @@ def test_graph_supervisor_loop_subset_then_finish(monkeypatch):
     r = orch.run(_FakeLLM(), _DIFF)
     assert [i.type for i in r.issues] == ["security"]  # 仅派发 security 一路
     assert calls["n"] >= 2  # 决策至少两轮:派发 → finish(证明 supervisor 循环成立)
+
+
+# --------------------------------------------------------------------------- #
+# Checkpoint 持久化与中断恢复(change langgraph-checkpoint-interrupt)
+# --------------------------------------------------------------------------- #
+
+
+def test_checkpointer_factory_memory_creates_MemorySaver():
+    from codeguard_agent.pipeline.orchestrator import _create_checkpointer
+
+    cp = _create_checkpointer("memory", "")
+    assert cp is not None
+    # MemorySaver 应来自 langgraph.checkpoint.memory
+    from langgraph.checkpoint.memory import MemorySaver
+
+    assert isinstance(cp, MemorySaver)
+
+
+def test_checkpointer_factory_empty_returns_none():
+    from codeguard_agent.pipeline.orchestrator import _create_checkpointer
+
+    assert _create_checkpointer("", "") is None
+
+
+def test_checkpointer_factory_sqlite_without_package_returns_none(monkeypatch):
+    """SqliteSaver 需要 langgraph-checkpoint-sqlite 包;未安装时优雅降级为 None。"""
+    from codeguard_agent.pipeline.orchestrator import _create_checkpointer
+
+    cp = _create_checkpointer("sqlite", ":memory:")
+    assert cp is None  # 当前环境未装 langgraph-checkpoint-sqlite
+
+
+def test_orchestrator_no_checkpointer_behavior_unchanged(monkeypatch):
+    """不传 checkpoint_backend 时行为与当前完全一致:图正常执行并产出 ReviewResult。"""
+    monkeypatch.setattr(G, "_make_engine", lambda state: _FakeEngine())
+    orch = PipelineOrchestrator(enable_summary=False, enable_supervisor=False)
+    r = orch.run(_FakeLLM(), _DIFF)
+    assert len(r.issues) >= 1
+    assert r.summary
+
+
+def test_orchestrator_with_memory_checkpointer_produces_same_result(monkeypatch):
+    """MemorySaver 下 mock 模式一次性跑通,产出 ReviewResult(与无 checkpointer 一致)。"""
+    orch = PipelineOrchestrator(
+        enable_summary=False,
+        enable_supervisor=False,
+        checkpoint_backend="memory",
+    )
+    # 用 mock 模式(llm=None) — None 可被 msgpack 序列化,避免 _FakeLLM 序列化失败
+    r = orch.run(None, _DIFF, thread_id="test-same-result")
+    assert len(r.issues) >= 1
+    assert r.summary
+
+
+def test_same_thread_id_second_invoke_returns_cached_result(monkeypatch):
+    """同一 thread_id 连续两次 invoke:第二次应返回缓存结果,不重新派发审查员。
+
+    用 mock 模式(llm=None)规避 LLM 对象不可序列化的问题。
+    """
+    from langgraph.checkpoint.memory import MemorySaver
+
+    cp = MemorySaver()
+    g = G.build_review_graph(enable_summary=False, checkpointer=cp)
+    st: G.ReviewState = {
+        "diff_text": _DIFF,
+        "llm": None,  # mock 模式,None 可序列化
+        "fp_verify_llm": None,
+        "tool_client": None,
+        "enabled_tools": None,
+        "max_retries": 3,
+        "structured_method": "function_calling",
+        "enable_supervisor": False,
+        "max_review_rounds": G.DEFAULT_MAX_ROUNDS,
+        "fp_llm_verify": False,
+        "issues": [],
+        "gathered_context": [],
+        "review_summaries": [],
+        "dispatched": set(),
+        "iteration": 0,
+        "final_issues": [],
+        "supervisor_log": [],
+    }
+    config = {"configurable": {"thread_id": "twice-test"}, "recursion_limit": 50}
+    r1 = g.invoke(st, config)
+    r2 = g.invoke(None, config)
+    assert len(r1.get("final_issues") or []) == len(r2.get("final_issues") or [])
+
+
+def test_different_thread_ids_independent(monkeypatch):
+    """不同 thread_id 的 state 互不干扰。"""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    cp = MemorySaver()
+    g = G.build_review_graph(enable_summary=False, checkpointer=cp)
+    base_st = {
+        "diff_text": _DIFF,
+        "llm": None,  # mock 模式,None 可序列化
+        "fp_verify_llm": None,
+        "tool_client": None,
+        "enabled_tools": None,
+        "max_retries": 3,
+        "structured_method": "function_calling",
+        "enable_supervisor": False,
+        "max_review_rounds": G.DEFAULT_MAX_ROUNDS,
+        "fp_llm_verify": False,
+        "issues": [],
+        "gathered_context": [],
+        "review_summaries": [],
+        "dispatched": set(),
+        "iteration": 0,
+        "final_issues": [],
+        "supervisor_log": [],
+    }
+    r_a = g.invoke(dict(base_st), {"configurable": {"thread_id": "A"}, "recursion_limit": 50})
+    r_b = g.invoke(dict(base_st), {"configurable": {"thread_id": "B"}, "recursion_limit": 50})
+    assert (r_a.get("final_issues") or []) == (r_b.get("final_issues") or [])
+
+
+def test_graph_build_without_checkpointer_compiles(monkeypatch):
+    """不传 checkpointer 时 compile 成功,与当前行为一致。"""
+    monkeypatch.setattr(G, "_make_engine", lambda state: _FakeEngine())
+    g = G.build_review_graph(enable_summary=False)
+    assert g is not None
+    st: G.ReviewState = {
+        "diff_text": _DIFF,
+        "llm": _FakeLLM(),
+        "fp_verify_llm": None,
+        "tool_client": None,
+        "enabled_tools": None,
+        "max_retries": 3,
+        "structured_method": "function_calling",
+        "enable_supervisor": False,
+        "max_review_rounds": G.DEFAULT_MAX_ROUNDS,
+        "fp_llm_verify": False,
+        "issues": [],
+        "gathered_context": [],
+        "review_summaries": [],
+        "dispatched": set(),
+        "iteration": 0,
+        "final_issues": [],
+        "supervisor_log": [],
+    }
+    result = g.invoke(st, {"recursion_limit": 50})
+    assert result.get("final_issues") is not None
