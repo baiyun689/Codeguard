@@ -62,6 +62,12 @@ class Settings:
     checkpoint_backend: str = ""
     # SqliteSaver 数据库文件路径(仅 checkpoint_backend="sqlite" 时生效)
     checkpoint_db: str = "codeguard_checkpoints.db"
+    # human-in-the-loop 开关:默认关(向后兼容)。开启后在 supervisor 判 finish 和审查员撞
+    # 递归上限时暂停等待人工决策(需配合 CODEGUARD_CHECKPOINT_BACKEND 使用)。
+    enable_human_in_the_loop: bool = False
+    # ReAct Agent 的递归步数上限(单审查员)。默认 24:每个工具往返耗 2 步,24 步可做 ~8-10 次
+    # 工具调用 + 思考,覆盖典型审查场景;diff 文件多或上下文复杂时可按需调大。
+    react_recursion_limit: int = 24
 
     @property
     def needs_api_key(self) -> bool:
@@ -104,6 +110,10 @@ class Settings:
         max_review_rounds = int(os.environ.get("CODEGUARD_MAX_REVIEW_ROUNDS", "3"))
         checkpoint_backend = os.environ.get("CODEGUARD_CHECKPOINT_BACKEND", "").strip().lower()
         checkpoint_db = os.environ.get("CODEGUARD_CHECKPOINT_DB", "codeguard_checkpoints.db").strip()
+        enable_hitl = os.environ.get(
+            "CODEGUARD_ENABLE_HITL", "false"
+        ).strip().lower() in ("1", "true", "yes", "on")
+        react_recursion_limit = int(os.environ.get("CODEGUARD_REACT_RECURSION_LIMIT", "24"))
         return cls(
             provider=provider,
             model=model,
@@ -119,6 +129,8 @@ class Settings:
             max_review_rounds=max_review_rounds,
             checkpoint_backend=checkpoint_backend,
             checkpoint_db=checkpoint_db,
+            enable_human_in_the_loop=enable_hitl,
+            react_recursion_limit=react_recursion_limit,
         )
 
     @classmethod

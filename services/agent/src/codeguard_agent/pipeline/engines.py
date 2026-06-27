@@ -61,6 +61,7 @@ class ReviewEngine(ABC):
         reviewer_name: str,
         max_retries: int,
         structured_method: str,
+        enable_hitl: bool = False,
     ) -> ReviewOutcome:
         """执行一次领域审查,返回产出信封(结构化结果 + 获取的上下文)。
 
@@ -80,6 +81,7 @@ class DirectEngine(ReviewEngine):
         reviewer_name: str,
         max_retries: int,
         structured_method: str,
+        enable_hitl: bool = False,
     ) -> ReviewOutcome:
         structured_llm = llm.with_structured_output(ReviewResult, method=structured_method)
         result = invoke_with_retry(
@@ -128,6 +130,7 @@ class ToolAgentEngine(ReviewEngine):
         reviewer_name: str,
         max_retries: int,
         structured_method: str,
+        enable_hitl: bool = False,
     ) -> ReviewOutcome:
         # GraphRecursionError 延迟导入(mock/无工具路径不需要 langgraph)。
         from langgraph.errors import GraphRecursionError
@@ -135,6 +138,11 @@ class ToolAgentEngine(ReviewEngine):
         try:
             raw = self._run_agent(llm, system_prompt, user_prompt)
         except GraphRecursionError:
+            # HITL 开启时不吞异常,让它传播到上层 _review 节点的 interrupt handler,
+            # 由人决定 continue/retry/skip(修 ADR-018 死代码问题:此前 ToolAgentEngine
+            # 内部捕获了异常,上层 HITL handler 永远收不到)。
+            if enable_hitl:
+                raise
             # ReAct 在 recursion_limit 步内没收敛(绕的难例 / 工具反复绕)。不让该域被静默丢弃
             # (那会直接丢失这一维度的发现、压低 recall),而是降级为无工具直连复审一次,至少
             # 据 diff 产出一份结论(见 ADR-017"审查员无工具调用预算"残留)。直连无工具不会再循环。
@@ -196,18 +204,32 @@ class ToolAgentEngine(ReviewEngine):
         structured = raw.get("structured_response") if isinstance(raw, dict) else None
         if isinstance(structured, ReviewResult):
             return structured
-
-        # 2) 兜底:从最后一条消息的文本里抠 JSON(防止个别模型没走结构化通道)。
-        text = _last_message_text(raw)
-        snippet = _extract_json_object(text)
-        if snippet:
+        # 部分模型返回 dict 而非 Pydantic 实例(Pydantic v1/v2 兼容差异),尝试转换。
+        if isinstance(structured, dict):
             try:
-                return ReviewResult.model_validate_json(snippet)
+                return ReviewResult.model_validate(structured)
             except Exception:  # noqa: BLE001
                 pass
 
-        # 3) 最终兜底:空结果 + 告警,不抛断。
-        logger.warning("[%s] ReAct 未产出可用结构化结果,本次按空处理", reviewer_name)
+        # 2) 兜底:扫描全部消息的文本抠 JSON(不止最后一条,防止模型在中间消息吐了结果)。
+        msgs = raw.get("messages") if isinstance(raw, dict) else []
+        for msg in reversed(msgs):  # 从后往前扫,优先用最后一条
+            text = getattr(msg, "content", "") if hasattr(msg, "content") else str(msg)
+            snippet = _extract_json_object(text)
+            if snippet:
+                try:
+                    return ReviewResult.model_validate_json(snippet)
+                except Exception:  # noqa: BLE001
+                    continue
+
+        # 3) 最终兜底:空结果 + 告警(含诊断信息,便于定位模型产出格式)。
+        last_text = (_last_message_text(raw) or "")[:300]
+        sr_type = type(structured).__name__ if structured is not None else "None"
+        logger.warning(
+            "[%s] ReAct 未产出可用结构化结果,本次按空处理 "
+            "(structured_response type=%s, last_msg[:300]=%s)",
+            reviewer_name, sr_type, last_text,
+        )
         return ReviewResult(summary="")
 
 
