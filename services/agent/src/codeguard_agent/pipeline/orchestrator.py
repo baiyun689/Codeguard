@@ -10,7 +10,10 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 import uuid
+
+from langgraph.types import Command
 
 from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.pipeline.graph import (
@@ -69,6 +72,7 @@ class PipelineOrchestrator:
         recursion_limit:图总步数硬上限(兜底护栏)。
         checkpoint_backend:checkpoint 后端("memory"/"sqlite"/""),默认空=不启用。
         checkpoint_db:SqliteSaver 数据库文件路径(仅 checkpoint_backend="sqlite" 生效)。
+        enable_human_in_the_loop:是否在关键决策点暂停等待人工确认(默认关,向后兼容)。
     """
 
     def __init__(
@@ -80,6 +84,8 @@ class PipelineOrchestrator:
         recursion_limit: int = DEFAULT_RECURSION_LIMIT,
         checkpoint_backend: str = "",
         checkpoint_db: str = "codeguard_checkpoints.db",
+        enable_human_in_the_loop: bool = False,
+        react_recursion_limit: int = 24,
     ) -> None:
         self._fp_llm_verify = fp_llm_verify
         self._enable_summary = enable_summary
@@ -87,6 +93,16 @@ class PipelineOrchestrator:
         self._max_review_rounds = max_review_rounds
         self._recursion_limit = recursion_limit
         self._checkpointer = _create_checkpointer(checkpoint_backend, checkpoint_db)
+        self._hitl_enabled = enable_human_in_the_loop
+        # 安全守卫:HITL 依赖 checkpointer 做状态持久化与 resume;无 checkpointer 时
+        # interrupt 虽能触发但 resume 无法恢复,会反复重头执行并再次命中 interrupt 形成死循环。
+        if self._hitl_enabled and self._checkpointer is None:
+            logger.warning(
+                "HITL 已开启但 checkpoint 未配置(CODEGUARD_CHECKPOINT_BACKEND 为空),"
+                "自动关闭 HITL。需设置 CODEGUARD_CHECKPOINT_BACKEND=memory 或 sqlite。"
+            )
+            self._hitl_enabled = False
+        self._react_recursion_limit = react_recursion_limit
 
     def run(
         self,
@@ -101,6 +117,7 @@ class PipelineOrchestrator:
         enabled_tools: list[str] | None = None,
         trace_sink: list | None = None,
         thread_id: str | None = None,
+        resume: dict[str, Any] | None = None,
     ) -> ReviewResult:
         """跑完整条管线,返回结构化的 ReviewResult。
 
@@ -113,24 +130,29 @@ class PipelineOrchestrator:
             刻意不进 ReviewResult(产品输出不掺工具痕迹,守 ADR-001)。
         thread_id:可选的检查点线程标识。非空且 checkpointer 已配置时,用相同 thread_id
             重复调用可从上次中断点恢复继续执行;为 None 则一次性执行(当前行为,向后兼容)。
+        resume:可选的 HITL resume 指令。传入时表示恢复调用,以 Command(resume=resume)
+            从上次 interrupt 点继续执行。
         """
         # 空 diff 直接短路(图无需启动)。
         if not diff_text.strip():
             return ReviewResult(summary="没有检测到代码变更,无需审查。")
 
         graph = build_review_graph(
-            enable_summary=self._enable_summary, checkpointer=self._checkpointer
+            enable_summary=self._enable_summary,
+            checkpointer=self._checkpointer,
+            llm=llm,
+            fp_verify_llm=fp_verify_llm,
+            tool_client=tool_client,
         )
         initial: ReviewState = {
-            # 静态输入
+            # 静态输入(llm/fp_verify_llm/tool_client 不可序列化,由闭包传入,不进 state)
             "diff_text": diff_text,
-            "llm": llm,
-            "fp_verify_llm": fp_verify_llm,
-            "tool_client": tool_client,
             "enabled_tools": enabled_tools,
             "max_retries": max_retries,
             "structured_method": structured_method,
             "enable_supervisor": self._enable_supervisor,
+            "enable_hitl": self._hitl_enabled,
+            "react_recursion_limit": self._react_recursion_limit,
             "max_review_rounds": self._max_review_rounds,
             "fp_llm_verify": self._fp_llm_verify,
             # fan-in / 控制 初值
@@ -149,7 +171,17 @@ class PipelineOrchestrator:
             # 主动 resume——需要主动 resume 的场景由调用方显式传 thread_id 覆盖)。
             effective_thread_id = thread_id or str(uuid.uuid4())
             invoke_config["configurable"] = {"thread_id": effective_thread_id}
-        final_state = graph.invoke(initial, config=invoke_config)
+        if resume is not None:
+            final_state = graph.invoke(Command(resume=resume), config=invoke_config)
+        else:
+            final_state = graph.invoke(initial, config=invoke_config)
+
+        # LangGraph 1.x:interrupt() 不抛 GraphInterrupt,而是在返回的 state 中放 __interrupt__ 键。
+        # 此处手动检测并向上抛,让 CLI 层能进入交互式对话。(见 ADR-027 HITL)
+        interrupt_data = final_state.get("__interrupt__")
+        if interrupt_data and self._hitl_enabled:
+            from langgraph.errors import GraphInterrupt
+            raise GraphInterrupt(interrupt_data[0].value)
 
         # 侧信道:把工具上下文交给评测层(不进 ReviewResult,守 ADR-001)。
         if trace_sink is not None:

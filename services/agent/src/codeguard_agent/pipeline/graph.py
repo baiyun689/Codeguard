@@ -92,13 +92,14 @@ class ReviewState(TypedDict, total=False):
 
     # --- 静态输入 ---
     diff_text: str
-    llm: Any
-    fp_verify_llm: Any
-    tool_client: Any
+    # 注意:llm / fp_verify_llm / tool_client 不在 state 中(不可 msgpack 序列化),
+    # 而是通过 build_review_graph 的闭包传入各节点。enabled_tools 是 list[str] 可序列化故保留。
     enabled_tools: Any
     max_retries: int
     structured_method: str
     enable_supervisor: bool
+    enable_hitl: bool
+    react_recursion_limit: int
     max_review_rounds: int
     fp_llm_verify: bool
 
@@ -138,14 +139,15 @@ class ReviewerState(TypedDict, total=False):
 
     # --- 父图注入的输入(只读)---
     diff_text: str
-    llm: Any
-    tool_client: Any
+    # llm / tool_client 不可 msgpack 序列化,由 build_reviewer_subgraph 闭包传入。
     enabled_tools: Any
     max_retries: int
     structured_method: str
     diff_summary: str
     file_groups: dict
     focus_notes: dict
+    enable_hitl: bool
+    react_recursion_limit: int
     # --- 写回父图的产出(键名与 ReviewState 一致 → 经父图 reducer fan-in)---
     issues: list
     gathered_context: list
@@ -211,9 +213,8 @@ def _render_supervisor_user(state: ReviewState) -> str:
     return "\n".join(lines)
 
 
-def _decide_dispatch(state: ReviewState) -> SupervisorDecision:
+def _decide_dispatch(state: ReviewState, llm) -> SupervisorDecision:
     """调结构化 LLM 产出调度决策;任何失败/无效一律回退"全派"(保不漏审)。"""
-    llm = state["llm"]
     structured = llm.with_structured_output(
         SupervisorDecision, method=state.get("structured_method", "function_calling")
     )
@@ -232,61 +233,85 @@ def _decide_dispatch(state: ReviewState) -> SupervisorDecision:
     return decision
 
 
-def supervisor_node(state: ReviewState) -> dict:
-    """调度节点:决定本轮派发哪些审查员,或结束审查相位进入聚合。
+def _supervisor_node(llm):
+    """返回 supervisor 节点函数(闭包捕获 llm,避免进 state 被 msgpack 序列化)。"""
+    def _node(state: ReviewState) -> dict:
+        iteration = state.get("iteration", 0) + 1
+        dispatched = state.get("dispatched") or set()
+        max_rounds = state.get("max_review_rounds", DEFAULT_MAX_ROUNDS)
+        deterministic = (not state.get("enable_supervisor")) or llm is None
 
-    确定性模式(supervisor 关 / mock):首轮全派、之后 finish——等价于改造前的全量并行。
-    """
-    iteration = state.get("iteration", 0) + 1
-    dispatched = state.get("dispatched") or set()
-    max_rounds = state.get("max_review_rounds", DEFAULT_MAX_ROUNDS)
-    deterministic = (not state.get("enable_supervisor")) or state.get("llm") is None
-
-    # 护栏:迭代达上限强制收尾(直面 ADR-016/018)。
-    if iteration > max_rounds:
-        return {
-            "iteration": iteration,
-            "route": "finish",
-            "supervisor_log": [f"[supervisor] 轮次达上限 {max_rounds},强制进入聚合"],
-        }
-
-    # 确定性调度:首轮派未派过的全部,之后 finish。
-    if deterministic:
-        pending = [n for n in _ALL_REVIEWER_NAMES if n not in dispatched]
-        if pending:
+        # 护栏:迭代达上限强制收尾(直面 ADR-016/018)。
+        if iteration > max_rounds:
             return {
                 "iteration": iteration,
-                "route": "dispatch",
-                "dispatch": pending,
-                "supervisor_log": [f"[supervisor] 确定性调度,派发 {pending}"],
+                "route": "finish",
+                "supervisor_log": [f"[supervisor] 轮次达上限 {max_rounds},强制进入聚合"],
             }
-        return {
-            "iteration": iteration,
-            "route": "finish",
-            "supervisor_log": ["[supervisor] 三审查员已完成,进入聚合"],
-        }
 
-    # 智能调度:LLM 决策。
-    decision = _decide_dispatch(state)
-    log = [f"[supervisor] 第{iteration}轮:{decision.action} {decision.reviewers} — {decision.reason}"]
-    valid = [n for n in decision.reviewers if n in _ALL_REVIEWER_NAMES]
-    if decision.action == "finish" or not valid:
-        # 兜底:还没任何审查产出就 finish 等于空审查,强制全派一轮(spec:非空派发 + 不漏审)。
-        if not dispatched:
+        # 确定性调度:首轮派未派过的全部,之后 finish。
+        if deterministic:
+            pending = [n for n in _ALL_REVIEWER_NAMES if n not in dispatched]
+            if pending:
+                return {
+                    "iteration": iteration,
+                    "route": "dispatch",
+                    "dispatch": pending,
+                    "supervisor_log": [f"[supervisor] 确定性调度,派发 {pending}"],
+                }
             return {
                 "iteration": iteration,
-                "route": "dispatch",
-                "dispatch": list(_ALL_REVIEWER_NAMES),
-                "supervisor_log": log + ["[supervisor] 兜底:尚无审查产出,派发全部审查员"],
+                "route": "finish",
+                "supervisor_log": ["[supervisor] 三审查员已完成,进入聚合"],
             }
-        return {"iteration": iteration, "route": "finish", "supervisor_log": log}
-    return {
-        "iteration": iteration,
-        "route": "dispatch",
-        "dispatch": valid,
-        "focus_notes": decision.focus_notes or {},
-        "supervisor_log": log,
-    }
+
+        # 智能调度:LLM 决策。
+        decision = _decide_dispatch(state, llm)
+        log = [f"[supervisor] 第{iteration}轮:{decision.action} {decision.reviewers} — {decision.reason}"]
+        valid = [n for n in decision.reviewers if n in _ALL_REVIEWER_NAMES]
+        if decision.action == "finish" or not valid:
+            if not dispatched:
+                return {
+                    "iteration": iteration,
+                    "route": "dispatch",
+                    "dispatch": list(_ALL_REVIEWER_NAMES),
+                    "supervisor_log": log + ["[supervisor] 兜底:尚无审查产出,派发全部审查员"],
+                }
+            # HITL:判 finish 后暂停等待人工确认或补充派发(需 checkpoint)。
+            hitl = state.get("enable_hitl")
+            if hitl:
+                from langgraph.types import interrupt
+
+                resume = interrupt({
+                    "type": "supervisor_finish",
+                    "issues_count": len(state.get("issues") or []),
+                    "dispatched": list(dispatched),
+                    "reason": decision.reason,
+                })
+                # resume 是 Command.resume 的值:{"action": "continue"} 或 {"action": "retry", "reviewers": [...], ...}
+                action = (resume or {}).get("action", "continue")
+                if action == "retry" and (resume or {}).get("reviewers"):
+                    retry_reviewers = [n for n in resume["reviewers"] if n in _ALL_REVIEWER_NAMES]
+                    if retry_reviewers:
+                        return {
+                            "iteration": iteration,
+                            "route": "dispatch",
+                            "dispatch": retry_reviewers,
+                            "focus_notes": (resume or {}).get("focus_notes") or {},
+                            "supervisor_log": log + [
+                                f"[supervisor] HITL 追加派发 {retry_reviewers}"
+                            ],
+                        }
+                # continue 或其他 → fall through 到 finish
+            return {"iteration": iteration, "route": "finish", "supervisor_log": log}
+        return {
+            "iteration": iteration,
+            "route": "dispatch",
+            "dispatch": valid,
+            "focus_notes": decision.focus_notes or {},
+            "supervisor_log": log,
+        }
+    return _node
 
 
 def _route_after_supervisor(state: ReviewState):
@@ -303,22 +328,26 @@ def _route_after_supervisor(state: ReviewState):
 # ---------------------------------------------------------------------------
 
 
-def _make_engine(state: ReviewState) -> ReviewEngine:
+def _make_engine(state: ReviewState | ReviewerState, tool_client=None) -> ReviewEngine:
     """按是否配置工具客户端选引擎(沿用 design D1 分流)。"""
-    if state.get("tool_client") is not None:
-        return ToolAgentEngine(state["tool_client"], enabled_tools=state.get("enabled_tools"))
+    if tool_client is not None:
+        return ToolAgentEngine(
+            tool_client,
+            recursion_limit=state.get("react_recursion_limit", 24),
+            enabled_tools=state.get("enabled_tools"),
+        )
     return DirectEngine()
 
 
-def _state_to_context(state: ReviewState) -> PipelineContext:
+def _state_to_context(state: ReviewState, llm=None, fp_verify_llm=None, tool_client=None) -> PipelineContext:
     """从 State 构造一个临时 PipelineContext,供复用现有 stage 逻辑(不含 issues,调用方自行设)。"""
     return PipelineContext(
         diff_text=state.get("diff_text", ""),
-        llm=state.get("llm"),
+        llm=llm,
         max_retries=state.get("max_retries", 3),
         structured_method=state.get("structured_method", "function_calling"),
-        fp_verify_llm=state.get("fp_verify_llm"),
-        tool_client=state.get("tool_client"),
+        fp_verify_llm=fp_verify_llm,
+        tool_client=tool_client,
         enabled_tools=state.get("enabled_tools"),
         diff_summary=state.get("diff_summary", ""),
         file_groups=state.get("file_groups") or {},
@@ -326,19 +355,21 @@ def _state_to_context(state: ReviewState) -> PipelineContext:
     )
 
 
-def summary_node(state: ReviewState) -> dict:
-    """复用 SummaryStage:产出 diff_summary + file_groups。mock/llm None 时 SummaryStage 自身 no-op。"""
-    ctx = _state_to_context(state)
-    SummaryStage().execute(ctx)
-    return {
-        "diff_summary": ctx.diff_summary,
-        "file_groups": ctx.file_groups,
-        "change_types": ctx.change_types,
-        "risk_level": ctx.risk_level,
-    }
+def _summary_node(llm, tool_client):
+    """返回 summary 节点函数(闭包捕获 llm/tool_client,避免进 state 被 msgpack 序列化)。"""
+    def _node(state: ReviewState) -> dict:
+        ctx = _state_to_context(state, llm=llm, tool_client=tool_client)
+        SummaryStage().execute(ctx)
+        return {
+            "diff_summary": ctx.diff_summary,
+            "file_groups": ctx.file_groups,
+            "change_types": ctx.change_types,
+            "risk_level": ctx.risk_level,
+        }
+    return _node
 
 
-def build_reviewer_subgraph(reviewer: Reviewer):
+def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, tool_client=None):
     """把单个领域审查员构造成一张编译子图(prepare → review → collect),供作节点挂入父图。
 
     取代原"普通函数节点"(design D12 第二刀):审查员的内部流水线由此在图层面显式可见、可组合——
@@ -353,8 +384,20 @@ def build_reviewer_subgraph(reviewer: Reviewer):
     """
     from langgraph.graph import END, START, StateGraph
 
+    def _direct_fallback(state: ReviewerState) -> ReviewOutcome:
+        """降级:以已收集上下文调 DirectEngine 收尾(不丢上下文,修 ADR-018)。"""
+        from codeguard_agent.pipeline.engines import DirectEngine
+        return DirectEngine().review(
+            llm,
+            system_prompt=_load_prompt(reviewer.prompt_file),
+            user_prompt=state.get("user_prompt", ""),
+            reviewer_name=reviewer.name,
+            max_retries=state.get("max_retries", 3),
+            structured_method=state.get("structured_method", "function_calling"),
+        )
+
     def _prepare(state: ReviewerState) -> dict:
-        if state.get("llm") is None:  # mock/无 LLM:无需构造 prompt,留给 review 合成
+        if llm is None:  # mock/无 LLM:无需构造 prompt,留给 review 合成
             return {}
         file_groups = state.get("file_groups") or {}
         file_diffs = split_diff_by_file(state["diff_text"]) if file_groups else {}
@@ -368,21 +411,56 @@ def build_reviewer_subgraph(reviewer: Reviewer):
     def _review(state: ReviewerState) -> dict:
         # mock 模式:仅让 security 合成一条 mock 结果,其余空——既保图端到端连通,
         # 又不把单条 mock 三倍化(确定性模式下三审查员都会被派发)。
-        if state.get("llm") is None:
+        if llm is None:
             if reviewer.name == "security":
                 return {"outcome": ReviewOutcome(mock_review_result())}
             return {"outcome": ReviewOutcome(ReviewResult(summary=""))}
-        engine = _make_engine(state)
+        engine = _make_engine(state, tool_client=tool_client)
         try:
             outcome = engine.review(
-                state["llm"],
+                llm,
                 system_prompt=_load_prompt(reviewer.prompt_file),
                 user_prompt=state.get("user_prompt", ""),
                 reviewer_name=reviewer.name,
                 max_retries=state.get("max_retries", 3),
                 structured_method=state.get("structured_method", "function_calling"),
+                enable_hitl=state.get("enable_hitl", False),
             )
         except Exception as exc:  # noqa: BLE001 单审查员失败不拖垮全图(节点级错误隔离)
+            # 撞递归上限且 HITL 开启 → 暂停等人决策,不自动降级(修 ADR-018 丢上下文问题)。
+            hitl = state.get("enable_hitl", False)
+            from langgraph.errors import GraphRecursionError
+            if isinstance(exc, GraphRecursionError) and hitl:
+                from langgraph.types import interrupt
+                resume = interrupt({
+                    "type": "reviewer_hit_limit",
+                    "reviewer": reviewer.name,
+                    "gathered_count": len(state.get("gathered_context") or []),
+                })
+                action = (resume or {}).get("action", "continue")
+                if action == "skip":
+                    return {
+                        "outcome": ReviewOutcome(ReviewResult(summary="")),
+                        "supervisor_log": [f"[{reviewer.name}] HITL skip,跳过"],
+                    }
+                if action == "retry":
+                    try:
+                        outcome = engine.review(
+                            llm,
+                            system_prompt=_load_prompt(reviewer.prompt_file),
+                            user_prompt=state.get("user_prompt", ""),
+                            reviewer_name=reviewer.name,
+                            max_retries=state.get("max_retries", 3),
+                            structured_method=state.get("structured_method", "function_calling"),
+                            enable_hitl=False,  # retry 不再次中断,失败直接降级
+                        )
+                    except Exception as retry_exc:  # noqa: BLE001
+                        logger.warning("[%s] retry 也失败,降级: %s", reviewer.name, retry_exc)
+                        outcome = _direct_fallback(state)
+                    return {"outcome": outcome}
+                # continue(默认):以已收集上下文调 DirectEngine 收尾
+                outcome = _direct_fallback(state)
+                return {"outcome": outcome}
             logger.warning("[%s] 审查员节点失败,跳过: %s", reviewer.name, exc)
             return {
                 "outcome": ReviewOutcome(ReviewResult(summary="")),
@@ -402,7 +480,7 @@ def build_reviewer_subgraph(reviewer: Reviewer):
         if summary:
             # 真实审查加【域】前缀便于聚合溯源;mock 保持原样(与改造前行为一致)。
             out["review_summaries"] = (
-                [summary] if state.get("llm") is None else [f"【{reviewer.name}】{summary}"]
+                [summary] if llm is None else [f"【{reviewer.name}】{summary}"]
             )
         return out
 
@@ -414,31 +492,33 @@ def build_reviewer_subgraph(reviewer: Reviewer):
     sg.add_edge("prepare", "review")
     sg.add_edge("review", "collect")
     sg.add_edge("collect", END)
-    return sg.compile()
+    return sg.compile(checkpointer=checkpointer)
 
 
-def make_reviewer_node(reviewer: Reviewer):
+def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_client=None):
     """父图节点:调用审查员子图,并做父↔子 state 的**显式**映射(design D12 第二刀)。
 
     采用"在节点内 invoke 子图"这一 LangGraph 子图范式,而非把子图直接挂作父图节点。原因正是
     design 提示的"父子 state 映射"坑:三审查员并行 fan-out 时,若子图直接挂载,其 schema 里**只读**
     的共享键(如 diff_text)会在子图结束时被回写父图 → 对无 reducer 的键并发写 → InvalidUpdateError。
     显式投影输入、**只回传产出键**即可根除回写冲突,父↔子边界也一目了然。
+
+    llm / tool_client 不可 msgpack 序列化,由闭包传入子图,不经过 state。
     """
-    subgraph = build_reviewer_subgraph(reviewer)
+    subgraph = build_reviewer_subgraph(reviewer, checkpointer=checkpointer, llm=llm, tool_client=tool_client)
 
     def _node(state: ReviewState) -> dict:
         result = subgraph.invoke(
             {
                 "diff_text": state.get("diff_text", ""),
-                "llm": state.get("llm"),
-                "tool_client": state.get("tool_client"),
                 "enabled_tools": state.get("enabled_tools"),
                 "max_retries": state.get("max_retries", 3),
                 "structured_method": state.get("structured_method", "function_calling"),
                 "diff_summary": state.get("diff_summary", ""),
                 "file_groups": state.get("file_groups") or {},
                 "focus_notes": state.get("focus_notes") or {},
+                "enable_hitl": state.get("enable_hitl", False),
+                "react_recursion_limit": state.get("react_recursion_limit", 24),
             }
         )
         # 只回传产出键给父图(经父图 reducer fan-in);子图私有/只读键一律不外泄。
@@ -451,23 +531,27 @@ def make_reviewer_node(reviewer: Reviewer):
     return _node
 
 
-def aggregation_node(state: ReviewState) -> dict:
-    """复用 AggregationStage:对 fan-in 的 raw issues 做两段式去重/综合,写入 final_issues。"""
-    ctx = _state_to_context(state)
-    ctx.issues = list(state.get("issues") or [])
-    AggregationStage().execute(ctx)
-    summaries = state.get("review_summaries") or []
-    return {"final_issues": ctx.issues, "summary": "  ".join(summaries)}
+def _aggregation_node(llm):
+    """返回 aggregation 节点函数(闭包捕获 llm,避免进 state 被 msgpack 序列化)。"""
+    def _node(state: ReviewState) -> dict:
+        ctx = _state_to_context(state, llm=llm)
+        ctx.issues = list(state.get("issues") or [])
+        AggregationStage().execute(ctx)
+        summaries = state.get("review_summaries") or []
+        return {"final_issues": ctx.issues, "summary": "  ".join(summaries)}
+    return _node
 
 
-def fp_filter_node(state: ReviewState) -> dict:
-    """复用 FalsePositiveFilterStage:对 final_issues 做规则 + (可选)LLM 复核过滤。"""
-    ctx = _state_to_context(state)
-    ctx.issues = list(state.get("final_issues") or [])
-    FalsePositiveFilterStage(
-        enable_llm_verification=state.get("fp_llm_verify", False)
-    ).execute(ctx)
-    return {"final_issues": ctx.issues, "filter_stats": ctx.filter_stats}
+def _fp_filter_node(llm, fp_verify_llm):
+    """返回 fp_filter 节点函数(闭包捕获 llm/fp_verify_llm,避免进 state 被 msgpack 序列化)。"""
+    def _node(state: ReviewState) -> dict:
+        ctx = _state_to_context(state, llm=llm, fp_verify_llm=fp_verify_llm)
+        ctx.issues = list(state.get("final_issues") or [])
+        FalsePositiveFilterStage(
+            enable_llm_verification=state.get("fp_llm_verify", False)
+        ).execute(ctx)
+        return {"final_issues": ctx.issues, "filter_stats": ctx.filter_stats}
+    return _node
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +559,7 @@ def fp_filter_node(state: ReviewState) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def build_review_graph(*, enable_summary: bool = True, checkpointer=None):
+def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=None, fp_verify_llm=None, tool_client=None):
     """编译审查状态图。
 
     enable_summary 决定拓扑入口(是否经摘要节点);supervisor 智能/迭代上限/fp 复核等
@@ -483,18 +567,20 @@ def build_review_graph(*, enable_summary: bool = True, checkpointer=None):
 
     checkpointer: 可选 LangGraph checkpointer(MemorySaver/SqliteSaver 等)。传入后
         图在每步执行后自动持久化 State,支持中断恢复;不传则无状态(当前行为,向后兼容)。
+    llm / fp_verify_llm / tool_client: 不可 msgpack 序列化的对象,通过闭包传入各节点
+        而非放入 state,避免 checkpoint 序列化报错。
     """
     from langgraph.graph import END, START, StateGraph
 
     g = StateGraph(ReviewState)
-    g.add_node("supervisor", supervisor_node)
+    g.add_node("supervisor", _supervisor_node(llm))
     for r in DEFAULT_REVIEWERS:
-        g.add_node(r.name, make_reviewer_node(r))  # 节点内调用审查员子图(design D12 第二刀)
-    g.add_node("aggregation", aggregation_node)
-    g.add_node("fp_filter", fp_filter_node)
+        g.add_node(r.name, make_reviewer_node(r, checkpointer=checkpointer, llm=llm, tool_client=tool_client))
+    g.add_node("aggregation", _aggregation_node(llm))
+    g.add_node("fp_filter", _fp_filter_node(llm, fp_verify_llm))
 
     if enable_summary:
-        g.add_node("summary", summary_node)
+        g.add_node("summary", _summary_node(llm, tool_client))
         g.add_edge(START, "summary")
         g.add_edge("summary", "supervisor")
     else:
