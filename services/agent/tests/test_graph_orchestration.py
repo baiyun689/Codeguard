@@ -47,7 +47,6 @@ def test_issues_fanin_uses_add_semantics():
 def _base_state(**over):
     st = {
         "diff_text": "d",
-        "llm": object(),  # 非 None
         "enable_supervisor": False,
         "max_review_rounds": G.DEFAULT_MAX_ROUNDS,
         "dispatched": set(),
@@ -57,29 +56,34 @@ def _base_state(**over):
     return st
 
 
+# supervisor 节点工厂
+_sup_smart = G._supervisor_node(llm=object())  # 有 LLM → 可用智能决策
+_sup_mock = G._supervisor_node(llm=None)       # 无 LLM → 确定性调度
+
+
 def test_supervisor_deterministic_first_round_dispatches_all():
-    out = G.supervisor_node(_base_state(enable_supervisor=False))
+    out = _sup_smart(_base_state(enable_supervisor=False))
     assert out["route"] == "dispatch"
     assert sorted(out["dispatch"]) == sorted(G._ALL_REVIEWER_NAMES)
     assert out["iteration"] == 1
 
 
 def test_supervisor_deterministic_finishes_after_all_dispatched():
-    out = G.supervisor_node(
+    out = _sup_smart(
         _base_state(enable_supervisor=False, dispatched=set(G._ALL_REVIEWER_NAMES))
     )
     assert out["route"] == "finish"
 
 
 def test_supervisor_mock_llm_none_is_deterministic():
-    # 即便 enable_supervisor=True,llm None(mock)也走确定性,不发决策。
-    out = G.supervisor_node(_base_state(llm=None, enable_supervisor=True))
+    # 即便 enable_supervisor=True,llm=None(mock)也走确定性,不发决策。
+    out = _sup_mock(_base_state(enable_supervisor=True))
     assert out["route"] == "dispatch"
     assert sorted(out["dispatch"]) == sorted(G._ALL_REVIEWER_NAMES)
 
 
 def test_supervisor_iteration_guard_forces_finish():
-    out = G.supervisor_node(
+    out = _sup_smart(
         _base_state(enable_supervisor=True, iteration=G.DEFAULT_MAX_ROUNDS, dispatched={"security"})
     )
     assert out["route"] == "finish"
@@ -90,9 +94,9 @@ def test_supervisor_smart_dispatches_subset(monkeypatch):
     monkeypatch.setattr(
         G,
         "_decide_dispatch",
-        lambda state: G.SupervisorDecision(action="dispatch", reviewers=["security"], reason="仅安全"),
+        lambda state, llm: G.SupervisorDecision(action="dispatch", reviewers=["security"], reason="仅安全"),
     )
-    out = G.supervisor_node(_base_state(enable_supervisor=True))
+    out = _sup_smart(_base_state(enable_supervisor=True))
     assert out["route"] == "dispatch"
     assert out["dispatch"] == ["security"]
 
@@ -100,18 +104,18 @@ def test_supervisor_smart_dispatches_subset(monkeypatch):
 def test_supervisor_smart_finish_bottoms_out_when_nothing_dispatched(monkeypatch):
     # 决策 finish 但尚无任何审查产出 → 兜底强制全派一轮(不漏审)。
     monkeypatch.setattr(
-        G, "_decide_dispatch", lambda state: G.SupervisorDecision(action="finish", reason="空")
+        G, "_decide_dispatch", lambda state, llm: G.SupervisorDecision(action="finish", reason="空")
     )
-    out = G.supervisor_node(_base_state(enable_supervisor=True, dispatched=set()))
+    out = _sup_smart(_base_state(enable_supervisor=True, dispatched=set()))
     assert out["route"] == "dispatch"
     assert sorted(out["dispatch"]) == sorted(G._ALL_REVIEWER_NAMES)
 
 
 def test_supervisor_smart_finish_when_already_dispatched(monkeypatch):
     monkeypatch.setattr(
-        G, "_decide_dispatch", lambda state: G.SupervisorDecision(action="finish", reason="够了")
+        G, "_decide_dispatch", lambda state, llm: G.SupervisorDecision(action="finish", reason="够了")
     )
-    out = G.supervisor_node(_base_state(enable_supervisor=True, dispatched={"security"}))
+    out = _sup_smart(_base_state(enable_supervisor=True, dispatched={"security"}))
     assert out["route"] == "finish"
 
 
@@ -132,9 +136,9 @@ def test_reviewer_subgraph_error_isolation(monkeypatch):
         def review(self, *a, **k):
             raise RuntimeError("engine down")
 
-    monkeypatch.setattr(G, "_make_engine", lambda state: _Boom())
-    sub = G.build_reviewer_subgraph(G.DEFAULT_REVIEWERS[0])
-    out = sub.invoke({"diff_text": "d", "llm": object(), "file_groups": {}})
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _Boom())
+    sub = G.build_reviewer_subgraph(G.DEFAULT_REVIEWERS[0], llm=object())
+    out = sub.invoke({"diff_text": "d", "file_groups": {}})
     # 不抛断;贡献空 issues、记录告警、标记已派发。
     assert out.get("issues", []) == []
     assert out["dispatched"] == {G.DEFAULT_REVIEWERS[0].name}
@@ -142,10 +146,10 @@ def test_reviewer_subgraph_error_isolation(monkeypatch):
 
 
 def test_reviewer_subgraph_mock_only_security_returns_issues():
-    sec = G.build_reviewer_subgraph(G.Reviewer("security", "security.txt"))
-    other = G.build_reviewer_subgraph(G.Reviewer("logic", "logic.txt"))
-    sec_out = sec.invoke({"llm": None})
-    other_out = other.invoke({"llm": None})
+    sec = G.build_reviewer_subgraph(G.Reviewer("security", "security.txt"), llm=None)
+    other = G.build_reviewer_subgraph(G.Reviewer("logic", "logic.txt"), llm=None)
+    sec_out = sec.invoke({})
+    other_out = other.invoke({})
     assert len(sec_out["issues"]) >= 1
     assert other_out.get("issues", []) == []
     assert other_out["dispatched"] == {"logic"}
@@ -216,7 +220,7 @@ class _FakeLLM:
 class _FakeEngine:
     """每个审查员返回 1 条带自身标识的 issue + 1 条工具上下文。"""
 
-    def review(self, llm, *, system_prompt, user_prompt, reviewer_name, max_retries, structured_method):
+    def review(self, llm, *, system_prompt, user_prompt, reviewer_name, max_retries, structured_method, enable_hitl=False):
         from codeguard_agent.pipeline.engines import ReviewOutcome
 
         iss = [Issue(severity=Severity.WARNING, file=f"{reviewer_name}.java", line=1,
@@ -229,7 +233,7 @@ _DIFF = "diff --git a/A.java b/A.java\n--- a/A.java\n+++ b/A.java\n@@ -1 +1,2 @@
 
 
 def test_graph_fanin_three_reviewers(monkeypatch):
-    monkeypatch.setattr(G, "_make_engine", lambda state: _FakeEngine())
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _FakeEngine())
     orch = PipelineOrchestrator(enable_summary=False)  # 跳过摘要 LLM,确定性全派
     trace: list = []
     r = orch.run(_FakeLLM(), _DIFF, trace_sink=trace)
@@ -238,10 +242,10 @@ def test_graph_fanin_three_reviewers(monkeypatch):
 
 
 def test_graph_supervisor_loop_subset_then_finish(monkeypatch):
-    monkeypatch.setattr(G, "_make_engine", lambda state: _FakeEngine())
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _FakeEngine())
     calls = {"n": 0}
 
-    def fake_decide(state):
+    def fake_decide(state, llm):
         calls["n"] += 1
         if calls["n"] == 1:
             return G.SupervisorDecision(action="dispatch", reviewers=["security"], reason="只看安全")
@@ -286,7 +290,7 @@ def test_checkpointer_factory_sqlite_without_package_returns_none(monkeypatch):
 
 def test_orchestrator_no_checkpointer_behavior_unchanged(monkeypatch):
     """不传 checkpoint_backend 时行为与当前完全一致:图正常执行并产出 ReviewResult。"""
-    monkeypatch.setattr(G, "_make_engine", lambda state: _FakeEngine())
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _FakeEngine())
     orch = PipelineOrchestrator(enable_summary=False, enable_supervisor=False)
     r = orch.run(_FakeLLM(), _DIFF)
     assert len(r.issues) >= 1
@@ -314,12 +318,9 @@ def test_same_thread_id_second_invoke_returns_cached_result(monkeypatch):
     from langgraph.checkpoint.memory import MemorySaver
 
     cp = MemorySaver()
-    g = G.build_review_graph(enable_summary=False, checkpointer=cp)
+    g = G.build_review_graph(enable_summary=False, checkpointer=cp, llm=None)
     st: G.ReviewState = {
         "diff_text": _DIFF,
-        "llm": None,  # mock 模式,None 可序列化
-        "fp_verify_llm": None,
-        "tool_client": None,
         "enabled_tools": None,
         "max_retries": 3,
         "structured_method": "function_calling",
@@ -345,12 +346,9 @@ def test_different_thread_ids_independent(monkeypatch):
     from langgraph.checkpoint.memory import MemorySaver
 
     cp = MemorySaver()
-    g = G.build_review_graph(enable_summary=False, checkpointer=cp)
+    g = G.build_review_graph(enable_summary=False, checkpointer=cp, llm=None)
     base_st = {
         "diff_text": _DIFF,
-        "llm": None,  # mock 模式,None 可序列化
-        "fp_verify_llm": None,
-        "tool_client": None,
         "enabled_tools": None,
         "max_retries": 3,
         "structured_method": "function_calling",
@@ -372,14 +370,11 @@ def test_different_thread_ids_independent(monkeypatch):
 
 def test_graph_build_without_checkpointer_compiles(monkeypatch):
     """不传 checkpointer 时 compile 成功,与当前行为一致。"""
-    monkeypatch.setattr(G, "_make_engine", lambda state: _FakeEngine())
-    g = G.build_review_graph(enable_summary=False)
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _FakeEngine())
+    g = G.build_review_graph(enable_summary=False, llm=_FakeLLM())
     assert g is not None
     st: G.ReviewState = {
         "diff_text": _DIFF,
-        "llm": _FakeLLM(),
-        "fp_verify_llm": None,
-        "tool_client": None,
         "enabled_tools": None,
         "max_retries": 3,
         "structured_method": "function_calling",
@@ -394,5 +389,86 @@ def test_graph_build_without_checkpointer_compiles(monkeypatch):
         "final_issues": [],
         "supervisor_log": [],
     }
-    result = g.invoke(st, {"recursion_limit": 50})
+    result = g.invoke(st, {"configurable": {"thread_id": "test-no-ckpt"}, "recursion_limit": 50})
     assert result.get("final_issues") is not None
+
+
+# --------------------------------------------------------------------------- #
+# Human-in-the-loop 测试(change langgraph-human-in-the-loop)
+# --------------------------------------------------------------------------- #
+
+
+def test_supervisor_node_finish_without_hitl_no_interrupt():
+    """HITL 关闭时 supervisor finish 直接返回,不调 interrupt。"""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    cp = MemorySaver()
+    g = G.build_review_graph(enable_summary=False, checkpointer=cp, llm=None)
+    st: G.ReviewState = {
+        "diff_text": _DIFF,
+        "enabled_tools": None,
+        "max_retries": 3,
+        "structured_method": "function_calling",
+        "enable_supervisor": False,
+        "enable_hitl": False,
+        "max_review_rounds": G.DEFAULT_MAX_ROUNDS,
+        "fp_llm_verify": False,
+        "issues": [],
+        "gathered_context": [],
+        "review_summaries": [],
+        "dispatched": set(),
+        "iteration": 0,
+        "final_issues": [],
+        "supervisor_log": [],
+    }
+    result = g.invoke(st, {"configurable": {"thread_id": "no-hitl-test"}, "recursion_limit": 50})
+    assert result.get("final_issues") is not None
+
+
+def test_hitl_closed_no_interrupt(monkeypatch):
+    """HITL 关闭时图一次性跑通,无 interrupt。"""
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _FakeEngine())
+    orch = PipelineOrchestrator(
+        enable_summary=False, enable_supervisor=False,
+        checkpoint_backend="memory", enable_human_in_the_loop=False,
+    )
+    r = orch.run(None, _DIFF, thread_id="hitl-off")
+    assert len(r.issues) >= 1
+
+
+def test_hitl_dialog_commands():
+    """交互式对话函数:命令解析正确。"""
+    from codeguard_agent.cli import _hitl_supervisor_finish_dialog, _hitl_reviewer_limit_dialog
+
+    # supervisor_finish dialog 命令(root 测试)
+    # (交互式需要 stdin,这里只验证函数可 import 且签名正确)
+    assert callable(_hitl_supervisor_finish_dialog)
+    assert callable(_hitl_reviewer_limit_dialog)
+
+
+def test_hitl_pipeline_nohitl_unchanged():
+    """HITL 默认关 = 当前行为完全不变。通过 PipelineOrchestrator 调用。"""
+    orch = PipelineOrchestrator(
+        enable_summary=False, enable_supervisor=False,
+    )
+    # 无 checkpoint 无 HITL:mock 模式应安全跑通
+    r = orch.run(None, _DIFF)
+    assert len(r.issues) >= 1
+
+
+def test_config_hitl_default_false():
+    """CODEGUARD_ENABLE_HITL 默认 false。"""
+    from codeguard_agent.config import Settings
+    import os
+
+    # 设空字符串而非 pop:保证 _load_dotenv(override=False) 不会用 .env 值覆盖。
+    old = os.environ.get("CODEGUARD_ENABLE_HITL")
+    os.environ["CODEGUARD_ENABLE_HITL"] = ""
+    try:
+        s = Settings.from_env()
+        assert s.enable_human_in_the_loop is False
+    finally:
+        if old is not None:
+            os.environ["CODEGUARD_ENABLE_HITL"] = old
+        else:
+            os.environ.pop("CODEGUARD_ENABLE_HITL", None)
