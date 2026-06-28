@@ -873,4 +873,47 @@ LangGraph 0.x 中 `interrupt()` 抛出 `GraphInterrupt`，调用方 `except` 捕
 
 **日期**:2026-06-27
 
-<!-- 后续在这里继续追加 ADR-029、ADR-030 …… -->
+## ADR-029 · Supervisor 调度准确性诊断——首轮派发应改确定性规则
+
+**背景**:用纯逻辑错误的 demo 项目（`springboot-review-demo`，SQL 注入/路径遍历/硬编码密钥已修）测试 Codeguard 调度员是否能根据 diff 内容准确派发审查员。预期只派 `logic`，实际每次都全派 `security/logic/quality`。
+
+**诊断过程**（2026-06-28，三轮测试）:
+
+1. **第一次运行**:改动未 commit，`git diff HEAD` 含删除的旧代码行（SQL 注入等），LLM 审查员看到 diff 中的 `-` 行并报告了它们。→ 修复：commit 后再做纯逻辑改动。
+
+2. **第二次运行**:Supervisor 兜底策略"全派三个"导致 security 审查员被派出，花 13+ 次工具调用找不到安全问题，撞 recursion limit（24 步），进入 HITL 中断。→ 临时修复：将兜底策略改为摘要推断（`_guess_domains_from_summary`）+ 提高 recursion limit 到 48。
+
+3. **第三次运行**:Summary 阶段已正确识别 `{security: 0, logic: 1, quality: 1}`，但 Supervisor 仍派发 security。根因拆解：
+   - `_render_supervisor_user` **没传** `file_focus` 结构化数据给 Supervisor LLM，只传了文本摘要
+   - `supervisor-system.txt` 写"不确定时宁可多派"——生产策略（recall > precision）
+   - **两个 LLM 串行猜测无信息增量**:Summary LLM 猜一轮 → Supervisor LLM 再猜一轮，第二轮没有新增信息
+
+**临时改动**（已生效，治标）:
+
+| 改动 | 位置 | 效果 |
+|------|------|------|
+| `_render_supervisor_user` 新增 `变更文件领域分布` 行 | `graph.py` | Supervisor 看到 `{security:0, logic:1, quality:1}` |
+| prompt 收紧：文件数为 0 禁止派发 | `supervisor-system.txt` | 禁止"顺手多派一个" |
+| 兜底策略改为摘要关键词推断 | `graph.py` 三处 fallback | 不再无脑全派 |
+| recursion limit 24 → 48 | `config.py` | 审查员有更多工具调用额度 |
+| 文件类型白名单放宽 | `FileAccessSandbox.java` | 新增 xml/properties/yml 等 |
+
+**根因分析——Supervisor 职责混乱**:
+
+Supervisor 当前承担三种不同性质的职责：
+
+| 职责 | 性质 | 应该怎么做 |
+|------|------|-----------|
+| ① 首轮派谁 | 基于 LLM 预测，与 Summary LLM 串行猜测 | **确定性规则**：`file_focus` 里哪些领域有文件就派哪些 |
+| ② 补派/重派 | 基于审查产出做决策，有信息增量 | 保留 LLM 决策 |
+| ③ 终止判断 | 必要的护栏 | 保留，可叠加确定性兜底 |
+
+**决策**:首轮派发不应经过 LLM——Summary 阶段已产出结构化的 `file_focus`，直接用确定性规则派发即可。Supervisor 的价值在 ②③。
+
+**下一步讨论**:将 Supervisor 拆为 `router`（确定性首派）+ `supervisor`（补派/终止），消除两个 LLM 串行猜测的无信息增量问题。
+
+**日期**:2026-06-28
+
+---
+
+<!-- 后续在这里继续追加 ADR-030、ADR-031 …… -->
