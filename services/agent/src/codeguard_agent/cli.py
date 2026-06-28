@@ -58,7 +58,24 @@ def _hitl_supervisor_finish_dialog(payload: dict[str, Any]) -> dict[str, Any]:
         verb = parts[0].lower()
 
         if verb == "list":
-            print("  (list 功能需传入 issues,此处打印 payload 概要)")
+            issues = payload.get("issues") or []
+            if not issues:
+                print("  (暂无发现)")
+            else:
+                print(f"\n  ── 当前发现 ({len(issues)} 条) ──\n")
+                for idx, iss in enumerate(issues, 1):
+                    sev = iss.get("severity", "")
+                    icon = _SEVERITY_ICON.get(Severity(sev), "•") if sev else "•"
+                    fname = iss.get("file", "?")
+                    line = iss.get("line", 0)
+                    loc = f"{fname}:{line}" if line else fname
+                    msg = (iss.get("message") or "")[:120]
+                    print(f"  {icon} [{idx}] {iss.get('type', '?')}  {loc}")
+                    print(f"      {msg}")
+                    sug = iss.get("suggestion")
+                    if sug:
+                        print(f"      建议: {str(sug)[:100]}")
+                print()
             continue
         elif verb == "retry" and len(parts) >= 2:
             reviewers = [n for n in parts[1:] if n in ("security", "logic", "quality")]
