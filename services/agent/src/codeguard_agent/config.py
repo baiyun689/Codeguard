@@ -67,7 +67,7 @@ class Settings:
     enable_human_in_the_loop: bool = False
     # ReAct Agent 的递归步数上限(单审查员)。默认 24:每个工具往返耗 2 步,24 步可做 ~8-10 次
     # 工具调用 + 思考,覆盖典型审查场景;diff 文件多或上下文复杂时可按需调大。
-    react_recursion_limit: int = 24
+    react_recursion_limit: int = 48
 
     @property
     def needs_api_key(self) -> bool:

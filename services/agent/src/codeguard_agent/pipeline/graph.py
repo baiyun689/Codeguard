@@ -59,6 +59,23 @@ DEFAULT_RECURSION_LIMIT = 50
 
 _ALL_REVIEWER_NAMES = [r.name for r in DEFAULT_REVIEWERS]
 
+# 摘要 → 领域关键词(用于兜底时缩小派发范围,避免无脑全派)。
+_DOMAIN_KW: dict[str, list[str]] = {
+    "security": ["安全", "security", "注入", "鉴权", "穿越", "密钥", "加密", "认证", "越权", "xss", "csrf"],
+    "logic":    ["逻辑", "logic",    "空指针", "边界", "并发", "递归", "除零", "null", "npe", "死锁", "竞态", "比较"],
+    "quality":  ["质量", "quality",  "可读", "命名", "重复", "魔法", "复杂度", "泄漏", "资源", "异常"],
+}
+
+
+def _guess_domains_from_summary(summary: str) -> list[str]:
+    """从变更摘要文本中猜测涉及的审查领域。未提到任何领域时返回全部(保 recall 兜底)。"""
+    if not summary:
+        return list(_ALL_REVIEWER_NAMES)
+    s = summary.lower()
+    domains = [name for name in _ALL_REVIEWER_NAMES
+               if any(kw.lower() in s for kw in _DOMAIN_KW.get(name, []))]
+    return domains or list(_ALL_REVIEWER_NAMES)
+
 
 # ---------------------------------------------------------------------------
 # State 与 reducer(纯数据层)
@@ -198,8 +215,11 @@ def _render_supervisor_user(state: ReviewState) -> str:
     by_reviewer: dict[str, int] = {}
     for name in dispatched:
         by_reviewer[name] = by_reviewer.get(name, 0)
+    file_groups = state.get("file_groups") or {}
+    fg_summary = {k: len(v) for k, v in file_groups.items()} if file_groups else {}
     lines = [
         f"本次变更摘要:{state.get('diff_summary') or '(无摘要)'}",
+        f"变更文件领域分布(各审查员相关文件数):{fg_summary or '(无)'}",
         f"已派发过的审查员:{dispatched or '(无,这是首轮)'}",
         f"当前已收集发现数:{len(issues)}",
     ]
@@ -214,7 +234,7 @@ def _render_supervisor_user(state: ReviewState) -> str:
 
 
 def _decide_dispatch(state: ReviewState, llm) -> SupervisorDecision:
-    """调结构化 LLM 产出调度决策;任何失败/无效一律回退"全派"(保不漏审)。"""
+    """调结构化 LLM 产出调度决策;任何失败/无效一律回退摘要推断派发。"""
     structured = llm.with_structured_output(
         SupervisorDecision, method=state.get("structured_method", "function_calling")
     )
@@ -225,11 +245,13 @@ def _decide_dispatch(state: ReviewState, llm) -> SupervisorDecision:
             max_retries=state.get("max_retries", 3),
         )
     except Exception as exc:  # noqa: BLE001 决策失败不该中断审查
-        logger.warning("[supervisor] 决策调用失败,回退确定性全派: %s", exc)
-        return SupervisorDecision(action="dispatch", reviewers=list(_ALL_REVIEWER_NAMES), reason="决策失败回退全派")
+        domains = _guess_domains_from_summary(state.get("diff_summary") or "")
+        logger.warning("[supervisor] 决策调用失败,回退摘要推断派发: %s -> %s", exc, domains)
+        return SupervisorDecision(action="dispatch", reviewers=domains, reason=f"决策失败,摘要推断派发 {domains}")
     if decision is None or not isinstance(decision, SupervisorDecision):
-        logger.warning("[supervisor] 决策无效,回退确定性全派")
-        return SupervisorDecision(action="dispatch", reviewers=list(_ALL_REVIEWER_NAMES), reason="决策无效回退全派")
+        domains = _guess_domains_from_summary(state.get("diff_summary") or "")
+        logger.warning("[supervisor] 决策无效,回退摘要推断派发 -> %s", domains)
+        return SupervisorDecision(action="dispatch", reviewers=domains, reason=f"决策无效,摘要推断派发 {domains}")
     return decision
 
 
@@ -271,20 +293,23 @@ def _supervisor_node(llm):
         valid = [n for n in decision.reviewers if n in _ALL_REVIEWER_NAMES]
         if decision.action == "finish" or not valid:
             if not dispatched:
+                domains = _guess_domains_from_summary(state.get("diff_summary") or "")
                 return {
                     "iteration": iteration,
                     "route": "dispatch",
-                    "dispatch": list(_ALL_REVIEWER_NAMES),
-                    "supervisor_log": log + ["[supervisor] 兜底:尚无审查产出,派发全部审查员"],
+                    "dispatch": domains,
+                    "supervisor_log": log + [f"[supervisor] 兜底:尚无审查产出,摘要推断派发 {domains}"],
                 }
             # HITL:判 finish 后暂停等待人工确认或补充派发(需 checkpoint)。
             hitl = state.get("enable_hitl")
             if hitl:
                 from langgraph.types import interrupt
 
+                current_issues = state.get("issues") or []
                 resume = interrupt({
                     "type": "supervisor_finish",
-                    "issues_count": len(state.get("issues") or []),
+                    "issues_count": len(current_issues),
+                    "issues": [i.model_dump() for i in current_issues],
                     "dispatched": list(dispatched),
                     "reason": decision.reason,
                 })
