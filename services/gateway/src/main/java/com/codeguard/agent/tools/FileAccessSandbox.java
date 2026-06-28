@@ -23,11 +23,12 @@ import java.util.Set;
  */
 public final class FileAccessSandbox {
 
-    /** 可读源码扩展名白名单(小写,不含点)。只放"代码",排除配置/密钥/二进制。 */
+    /** 可读文件扩展名白名单(小写,不含点)。涵盖源码及常见构建/配置文件。 */
     private static final Set<String> SOURCE_EXTENSIONS = Set.of(
             "java", "kt", "kts", "scala", "groovy",
             "js", "jsx", "ts", "tsx", "py", "go", "rb", "rs",
-            "c", "h", "cpp", "hpp", "cc", "cs");
+            "c", "h", "cpp", "hpp", "cc", "cs",
+            "xml", "yml", "yaml", "properties", "toml", "json", "gradle", "mf");
 
     private final Path repoRoot;
     private final Set<String> allowedFiles;
