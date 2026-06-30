@@ -916,4 +916,28 @@ Supervisor 当前承担三种不同性质的职责：
 
 ---
 
-<!-- 后续在这里继续追加 ADR-030、ADR-031 …… -->
+## ADR-030 · DeepSeek API 对齐 + 韧性改进:修默认值/错误分类/文档/推理深度配置
+
+**背景**:通读 DeepSeek API 官方文档（2026-06-30 版）后对照 Codeguard 当前调用方式，发现若干不一致与可改进点。文档关键更新：① `deepseek-chat`/`deepseek-reasoner` 2026-07-24 下线，新模型名 `deepseek-v4-pro`/`deepseek-v4-flash`；② 新增 `reasoning_effort` 参数（`high`/`max`）；③ 明确 thinking mode 下 `temperature`/`top_p` 等静默无视；④ tool call 场景下 `reasoning_content` 必须传回否则 400（关 thinking 不受影响）。
+
+**决策**:
+
+1. **修 `react_recursion_limit` 默认值不一致（P0 bug）**:`Settings.from_env()` 里环境变量默认 `"24"`，但 dataclass 声明 `48`、ADR-029 记录"已调至 48"。根因是 ADR-029 改 dataclass 时漏改 `from_env()` 的 `os.environ.get(..., "24")` → 实际生效的一直是 24。统一为 48。
+
+2. **细化 `invoke_with_retry` 错误分类（P1 韧性）**:新增 `_is_non_retryable()` 判据——从异常链取 HTTP 状态码，4xx（除 429）不重试（避免余额不足 402 / 密钥错 401 白白烧重试），429 和 5xx/网络错误照常指数退避。不硬 import `openai`/`anthropic` 错误类型（守 mock 兼容 + 延迟导入习惯）。
+
+3. **修 `.env.example` 两处错/缺**:① DeepSeek base URL 示例错误写成 `https://api.deepseek.com/v1`（多了 `/v1`），文档与 `.env` 实际均为不带后缀；② 模型名加下线预警与新旧对应说明。同时补上缺失的 `CODEGUARD_REACT_RECURSION_LIMIT` 和 `CODEGUARD_REASONING_EFFORT` 文档。
+
+4. **新增 `reasoning_effort` 可配（P3 优化）**:加 `Settings.reasoning_effort` 字段 + `CODEGUARD_REASONING_EFFORT` 环境变量，默认空（不设=模型默认 `high`），可选 `"max"`。通过 `extra_body` 透传，非 DeepSeek 端点静默无视。`build_llm` 里将 `disable_thinking` 与 `reasoning_effort` 的 `extra_body` 合并构造，避免后者覆盖前者。
+
+**放弃的备选**:
+- **Strict mode（beta）**:要求所有 object `additionalProperties: false` + 全属性 required，与当前 `Issue` schema（`suggestion`/`confidence` 可选）冲突。schema 改动牵连面太大（prompt/CLI/evals），且普通 function_calling 当前已可用，留后续。
+- **对 429 做更长退避 / jitter**:当前指数退避（1s/2s/4s）对 DeepSeek 默认 500 并发上限已够用；真正需要时再上 jitter + 更激进退避（阶段 5）。
+
+**效果**:195 单测全绿，ruff 净。`react_recursion_limit` 实际默认 24→48，审查员工具调用预算翻倍，减少合法难例误撞递归上限的概率。
+
+**日期**:2026-06-30
+
+---
+
+<!-- 后续在这里继续追加 ADR-031、ADR-032 …… -->

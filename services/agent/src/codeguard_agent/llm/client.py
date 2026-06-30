@@ -16,6 +16,38 @@ from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
 logger = logging.getLogger("codeguard")
 
 
+def _is_non_retryable(exc: Exception) -> bool:
+    """判断异常是否来自不可重试的客户端错误(400/401/402/422 等不重试;429/5xx/网络错误可重试)。
+
+    尝试从异常链里取 HTTP 状态码——不直接 import openai/anthropic 的错误类型，
+    避免 mock 模式 / 未装 SDK 时报导入错误。
+    """
+    status: int | None = None
+    for attr in ("status_code", "http_status", "status"):
+        s = getattr(exc, attr, None)
+        if isinstance(s, int):
+            status = s
+            break
+    # 沿 __cause__ 链深入一层(openai 库的 APIStatusError 常有 status_code)
+    if status is None:
+        cause = getattr(exc, "__cause__", None)
+        if cause is not None:
+            for attr in ("status_code", "http_status", "status"):
+                s = getattr(cause, attr, None)
+                if isinstance(s, int):
+                    status = s
+                    break
+    if status is None:
+        return False  # 无法判定 → 重试(宁可多试、不丢数据)
+    # 429(Rate Limit) → 可重试;其余 4xx → 客户端错误,不重试
+    if status == 429:
+        return False
+    if 400 <= status < 500:
+        return True
+    return False
+
+
+
 def _disable_thinking_body(api_base_url: str) -> dict[str, Any]:
     """按厂商返回"关闭 thinking"的请求体字段——格式厂商相关,塞错家会被无视(关不掉)或报错。
 
@@ -63,11 +95,19 @@ def build_llm(settings: Settings, temperature: float | None = None) -> Any:
             kwargs["base_url"] = settings.api_base_url
         if temperature is not None:
             kwargs["temperature"] = temperature
+        # extra_body:合并 thinking 开关、推理深度等厂商扩展参数。
+        extra: dict[str, Any] = {}
         if settings.disable_thinking:
             # 推理模型默认开启 thinking,会与 function_calling/结构化输出(裁判走 tool_choice=required)冲突。
             # 通过 extra_body 显式关闭;字段格式厂商相关(DeepSeek vs 千问),按 base_url 选对。
             # (真正的 OpenAI 不认此字段,故仅按需启用)
-            kwargs["extra_body"] = _disable_thinking_body(settings.api_base_url)
+            extra.update(_disable_thinking_body(settings.api_base_url))
+        if settings.reasoning_effort:
+            # DeepSeek v4 推理深度:"high"(默认) | "max"。非 DeepSeek 端点静默无视。
+            # 注:thinking mode 下 temperature/top_p 等均被静默无视;reasoning_effort 是独立轴。
+            extra["reasoning_effort"] = settings.reasoning_effort
+        if extra:
+            kwargs["extra_body"] = extra
         return ChatOpenAI(**kwargs)
 
     if settings.provider == "claude":
@@ -86,15 +126,23 @@ def build_llm(settings: Settings, temperature: float | None = None) -> Any:
 def invoke_with_retry(llm: Any, messages: list[tuple[str, str]], max_retries: int = 3) -> Any:
     """带指数退避重试的 LLM 调用。
 
-    LLM API 偶发超时/限流很常见,简单重试能显著提升稳定性。
-    这里用最朴素的指数退避(1s, 2s, 4s...),阶段 5 再升级成熔断/限流的完整韧性体系。
+    客户端错误(400/401/402/422)不重试——立刻抛断，避免余额不足/密钥错误白白消耗。
+    429(限流)和 5xx/网络错误用指数退避重试(1s, 2s, 4s...)。
+
+    阶段 5 再升级成熔断/限流的完整韧性体系。
     """
     last_error: Exception | None = None
     for attempt in range(max_retries):
         try:
             return llm.invoke(messages)
-        except Exception as exc:  # noqa: BLE001 阶段1先粗粒度兜底,后续再细分异常类型
+        except Exception as exc:  # noqa: BLE001
             last_error = exc
+            if _is_non_retryable(exc):
+                logger.error(
+                    "LLM 调用失败(客户端错误,不重试): status=%s, %s",
+                    getattr(exc, "status_code", "?"), exc,
+                )
+                raise
             wait = 2**attempt
             logger.warning("LLM 调用失败(第 %d 次),%ds 后重试: %s", attempt + 1, wait, exc)
             time.sleep(wait)

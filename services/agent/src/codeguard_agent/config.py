@@ -65,9 +65,14 @@ class Settings:
     # human-in-the-loop 开关:默认关(向后兼容)。开启后在 supervisor 判 finish 和审查员撞
     # 递归上限时暂停等待人工决策(需配合 CODEGUARD_CHECKPOINT_BACKEND 使用)。
     enable_human_in_the_loop: bool = False
-    # ReAct Agent 的递归步数上限(单审查员)。默认 24:每个工具往返耗 2 步,24 步可做 ~8-10 次
-    # 工具调用 + 思考,覆盖典型审查场景;diff 文件多或上下文复杂时可按需调大。
+    # ReAct Agent 的递归步数上限(单审查员)。默认 48:每个工具往返耗 2 步,48 步可做 ~16-20 次
+    # 工具调用 + 思考;实测 24 太紧(含 repo_map + 多次 file 读的难例会撞墙),调大到 48 步后
+    # 通过降级兜底确保安全(见 ADR-016→018→028)。
     react_recursion_limit: int = 48
+    # DeepSeek 推理深度(仅 DeepSeek v4 系列生效):"high"(默认) | "max"。
+    # "max" 给模型更多思考预算,对复杂代码审查任务可能有更好的推理质量(走 extra_body 透传)。
+    # 留空不设;非 DeepSeek 端点静默无视。注意:"max" 会消耗更多 token(含不可见的 reasoning_tokens)。
+    reasoning_effort: str = ""
 
     @property
     def needs_api_key(self) -> bool:
@@ -113,7 +118,11 @@ class Settings:
         enable_hitl = os.environ.get(
             "CODEGUARD_ENABLE_HITL", "false"
         ).strip().lower() in ("1", "true", "yes", "on")
-        react_recursion_limit = int(os.environ.get("CODEGUARD_REACT_RECURSION_LIMIT", "24"))
+        react_recursion_limit = int(os.environ.get("CODEGUARD_REACT_RECURSION_LIMIT", "48"))
+        reasoning_effort = os.environ.get("CODEGUARD_REASONING_EFFORT", "").strip().lower()
+        # 只接受 high/max,其余当未设(空字符串→不传参,用模型默认 high)。
+        if reasoning_effort not in ("high", "max"):
+            reasoning_effort = ""
         return cls(
             provider=provider,
             model=model,
@@ -131,6 +140,7 @@ class Settings:
             checkpoint_db=checkpoint_db,
             enable_human_in_the_loop=enable_hitl,
             react_recursion_limit=react_recursion_limit,
+            reasoning_effort=reasoning_effort,
         )
 
     @classmethod
