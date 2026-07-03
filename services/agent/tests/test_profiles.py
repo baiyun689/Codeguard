@@ -119,11 +119,11 @@ def test_shipped_profiles_valid():
     # 校验仓库里实际 profiles.yaml 的内置 profile。
     profiles = load_profiles(_REAL_PROFILES)
     assert {
-        "pipeline-notools", "pipeline-file", "pipeline-repomap", "pipeline-fpverify"
+        "pipeline-notools", "pipeline-file", "pipeline-callers", "pipeline-fpverify"
     } <= set(profiles)
     assert profiles["pipeline-file"].tools == ["get_file_content"]
     assert profiles["pipeline-notools"].tools == []
-    assert profiles["pipeline-repomap"].mode == "pipeline"
+    assert profiles["pipeline-callers"].mode == "pipeline"
     # pipeline-fpverify:与 notools 同配,只多开了误报复核。
     assert profiles["pipeline-fpverify"].fp_verify is True
     assert profiles["pipeline-fpverify"].tools == []

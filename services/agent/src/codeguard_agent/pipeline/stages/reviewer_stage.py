@@ -43,17 +43,21 @@ _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
 
 @dataclass(frozen=True)
 class Reviewer:
-    """一个领域审查员:名字 + 它的 system prompt 文件名。"""
+    """一个领域审查员:名字 + 它的 system prompt 文件名 + 专属工具清单。
+
+    tool_allowlist:该审查员可用的工具名称列表。None=使用全局默认;[]=无工具(直连)。
+    """
 
     name: str
     prompt_file: str
+    tool_allowlist: list[str] | None = None
 
 
-# 阶段 2 默认的三个并行领域审查员
+# 阶段 2 默认的三个并行领域审查员(spec asymmetric-agent-tools:每人一个专属工具)
 DEFAULT_REVIEWERS: tuple[Reviewer, ...] = (
-    Reviewer("security", "security.txt"),
-    Reviewer("logic", "logic.txt"),
-    Reviewer("quality", "quality.txt"),
+    Reviewer("security", "security.txt", tool_allowlist=["get_file_content", "find_sensitive_apis"]),
+    Reviewer("logic", "logic.txt", tool_allowlist=["get_file_content", "find_callers"]),
+    Reviewer("quality", "quality.txt", tool_allowlist=["get_file_content", "get_code_metrics"]),
 )
 
 

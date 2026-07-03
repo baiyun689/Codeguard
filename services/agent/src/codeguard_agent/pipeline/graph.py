@@ -533,10 +533,17 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
     subgraph = build_reviewer_subgraph(reviewer, checkpointer=checkpointer, llm=llm, tool_client=tool_client)
 
     def _node(state: ReviewState) -> dict:
+        # 工具清单:评测 profile 的全局 enabled_tools 优先(保对照可控);
+        # CLI 默认(None)时回退到 reviewer 的专属 tool_allowlist(不对称分配)。
+        effective_tools = (
+            state.get("enabled_tools")
+            if state.get("enabled_tools") is not None
+            else reviewer.tool_allowlist
+        )
         result = subgraph.invoke(
             {
                 "diff_text": state.get("diff_text", ""),
-                "enabled_tools": state.get("enabled_tools"),
+                "enabled_tools": effective_tools,
                 "max_retries": state.get("max_retries", 3),
                 "structured_method": state.get("structured_method", "function_calling"),
                 "diff_summary": state.get("diff_summary", ""),

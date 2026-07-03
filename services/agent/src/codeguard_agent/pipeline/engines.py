@@ -173,13 +173,17 @@ class ToolAgentEngine(ReviewEngine):
         from langchain.agents import create_agent
 
         from codeguard_agent.tools.definitions import (
+            make_callers_tool,
             make_file_content_tool,
-            make_repo_map_tool,
+            make_metrics_tool,
+            make_sensitive_apis_tool,
         )
 
-        # 已实现工具的工厂表。顺序即推荐用法:先 get_repo_map 导航(该读哪),再 get_file_content 细读(读得到)。
+        # 已实现工具的工厂表。顺序即推荐用法:先专属工具发现问题,再 get_file_content 细读确认。
         available = {
-            "get_repo_map": lambda: make_repo_map_tool(self._tool_client),
+            "find_sensitive_apis": lambda: make_sensitive_apis_tool(self._tool_client),
+            "find_callers": lambda: make_callers_tool(self._tool_client),
+            "get_code_metrics": lambda: make_metrics_tool(self._tool_client),
             "get_file_content": lambda: make_file_content_tool(self._tool_client),
         }
         # 按白名单挑工具:None=全开(CLI 默认);否则只开 profile 列出的(保持其声明顺序)。

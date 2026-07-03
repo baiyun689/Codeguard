@@ -1,6 +1,7 @@
 """工具使用画像 summarize_tool_usage 的单测(纯函数,不碰网络/管线)。
 
-重点验证 ADR-022 关心的判别力:能否如实区分"读到 callers 段"与"只看了普通地图/没调工具"。
+重点验证 ADR-022 关心的判别力:能否如实区分"读到 callers 信息"与"只看了普通内容/没调工具"。
+find_callers 取代了原 get_repo_map 的调用方追踪能力。
 """
 
 from __future__ import annotations
@@ -28,24 +29,22 @@ def test_empty_trace_is_all_blank():
     assert u.files_read == []
 
 
-def test_repomap_caller_section_detected():
-    # 地图返回里含"直接调用方"表头 → callers 段被读到。
+def test_find_callers_detected_as_caller_info():
     trace = [
         _FakeCtx(
-            tool="get_repo_map",
-            args="{}",
-            content="# 代码地图\nfoo()\n# 直接调用方(callers of changed code)\nBar.call()",
+            tool="find_callers",
+            args='{"query": "src/Foo.java#bar"}',
+            content="# find_callers 查询结果\n| 1 | Payment.java:234 | `price = calc()` |",
         )
     ]
     u = summarize_tool_usage(trace)
     assert u.repomap_called is True
     assert u.repomap_caller_section_read is True
-    assert u.tools_used == ["get_repo_map"]
+    assert "find_callers" in u.tools_used
 
 
-def test_repomap_without_caller_section():
-    # 调了 get_repo_map 但返回里没有 callers 段 → 标志为 False(不能误记成读到了)。
-    trace = [_FakeCtx(tool="get_repo_map", args="{}", content="# 代码地图\nfoo()")]
+def test_find_callers_empty_result_still_called():
+    trace = [_FakeCtx(tool="find_callers", args='{"query": "src/X.java#y"}', content="未找到直接调用方")]
     u = summarize_tool_usage(trace)
     assert u.repomap_called is True
     assert u.repomap_caller_section_read is False
@@ -64,21 +63,18 @@ def test_files_read_parsed_and_deduped_sorted():
 
 
 def test_malformed_args_falls_back_to_raw_string():
-    # 入参不是合法 JSON 时回退原串,不抛断。
     trace = [_FakeCtx(tool="get_file_content", args="not-json", content="x")]
     u = summarize_tool_usage(trace)
     assert u.files_read == ["not-json"]
 
 
 def test_structured_response_sentinel_excluded():
-    # create_agent 的结构化输出伪工具(ReviewResult)不是真工具,必须从画像剔除,
-    # 否则虚高 tool_calls、污染 tools_used(实测 caller 案踩到的坑)。
     trace = [
-        _FakeCtx(tool="get_repo_map", args="{}", content="# 直接调用方(callers)\nBar.call()"),
+        _FakeCtx(tool="find_callers", args='{"query": "a#b"}', content="# find_callers\n| 1 | X.java:1 | `...` |"),
         _FakeCtx(tool="ReviewResult", args='{"issues": []}', content="结构化结果,非工具上下文"),
         _FakeCtx(tool="ReviewResult", args='{"issues": [1]}', content="另一审查员的结构化结果"),
     ]
     u = summarize_tool_usage(trace)
-    assert u.tools_used == ["get_repo_map"]  # ReviewResult 不计入
+    assert "find_callers" in u.tools_used
     assert u.tool_calls == 1  # 只数真工具
     assert u.repomap_caller_section_read is True

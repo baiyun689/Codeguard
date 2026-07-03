@@ -940,4 +940,168 @@ Supervisor 当前承担三种不同性质的职责：
 
 ---
 
-<!-- 后续在这里继续追加 ADR-031、ADR-032 …… -->
+## ADR-031 · 架构重构：三审查员合一 + 上下文预计算 + SelfChecker 取缔聚合/误报过滤
+
+**背景**:当前架构以 `security` / `logic` / `quality` 三个并行审查员为核心，通过专属工具（`find_sensitive_apis` / `find_callers` / `get_code_metrics`）和输出边界约束（"不归你管就别报"）来制造区分度。但实践下来发现三个深层问题：
+
+1. **分类轴选错了**:安全/逻辑/质量是按"问题长什么样"（issue taxonomy）来分类，不是按"如何发现"（review methodology）来分类。三个审查员拿到同一份 diff、用同一套 LLM 推理能力、走几乎相同的思考过程——只是输出时各戴一个 filter mask。这不叫三个审查员，这叫一个审查员带三个输出过滤器。
+
+2. **专属工具边际价值低**:`find_sensitive_apis`（危险 API 清单匹配）、`get_code_metrics`（CC/LOC 计算）、`find_callers`（调用方查表）三个都是确定性计算——不需要 LLM 推理。把它们做成工具让 Agent 调，既浪费 token（Agent 需要多轮 ReAct 去调用），又无法真正产生区分度（查表得出的结论不是"独到见解"）。
+
+3. **审查员交集天然大**:同一个人写的一段 SQL 拼接，安全审查员看到的是注入漏洞，逻辑审查员看到的是数据流错误，质量审查员看到的是可维护性问题——三个审查员报同一个问题的不同侧面。prompt 里大段"这不归你管"的排除项本质上是在对抗 LLM 的自然倾向，维护成本高且效果有限。
+
+经过与 aider 架构对比（repo map 自动注入而非工具调用）、Diffguard 架构参考（ASTEnricher 预计算注入 + CodeRAG 检索）、以及用户提出的 6 Agent 设计方案讨论后，做出以下决策。
+
+**决策**:
+
+### 1. 三审查员合并为单一 CodeReviewer
+
+三个 `security`/`logic`/`quality` 审查员合并为一个 `CodeReviewer` Agent。不再按"输出什么类型的问题"分配 Agent，而是让同一 Agent 从多条思考路径审视代码：
+
+- **数据流追踪**:输入从哪来、经过哪些变换、到达哪些汇聚点
+- **契约/不变式校验**:方法的输入前置条件是否满足、输出后置条件是否保持
+- **模式匹配**:对照常见 bug 模式目录（CWE、已知反模式）逐项匹配
+
+不同路径可能发现同一个问题（如 SQL 拼接被数据流和模式匹配同时命中），重复交给 SelfChecker 去重——不再靠"边界约束"来避免重复。
+
+### 2. ContextProvider：确定性预处理节点（非 Agent，0 token）
+
+新增 `ContextProvider` 节点作为图的第一个节点，内部包含 5 个子模块。所有子模块都是确定性计算，不消耗 LLM token：
+
+| 子模块 | 来源 | 职责 |
+|--------|------|------|
+| **WarehouseParser** | 现有 `JavaTagExtractor` | JavaParser AST 解析 + 全项目符号提取（类/方法/字段/调用边） |
+| **CodeGraph** | 现有 `RepoMapBuilder` + PageRank | HashMap 结构索引（`classNameToPath`、`classMethods`、`interfaceImpls`、`reverseCallers`）+ 基于调用关系的 PageRank 排序 + token 预算截断 |
+| **CodeRetriever** | 新（TF-IDF） | CamelCase 分词 + TF-IDF + L2 归一化，召回跨模块语义相关代码 |
+| **StaticScanInvoker** | 新（轻量 AST visitor） | 不依赖 PMD/SpotBugs 等外部工具，仅用 JavaParser AST visitor 做确定性事实标注：空指针风险模式（返回值/Map.get() 后无判空）、资源未关闭（Stream/Connection 不在 try-with-resources）、SQL 拼接（execute* 参数含 `+`）、硬编码（password/key/token 字面量赋值） |
+| **CoverageCalculator** | 新（确定性） | 计算依赖链完整度 = 已覆盖的依赖 / 应覆盖的依赖，产出 `state.coverage` 供 Supervisor 判断 |
+
+ContextProvider 写三个 state 字段：`state.context`（结构索引 + 语义检索结果）、`state.static_facts`（静态事实标注）、`state.coverage`（覆盖完整度）。
+
+**StaticScanInvoker 不作为独立 Agent 的原因**:它的输入（AST、文件内容）就是 ContextProvider 已持有的数据，拆成两个节点只是把同一份数据传两遍。共享输入 + 共享生命周期 + 都是确定性计算 → 天然属于同一节点的不同子步骤。
+
+**WarehouseParser / CodeRetriever 不作为独立 Agent 的原因**:它们做的事（AST 解析、建索引、TF-IDF 检索、查表）全是确定性计算，不需要 LLM 的"思考-行动"循环。做成 Agent 白白消耗 token，零增量价值。
+
+**子模块并行执行**:WarehouseParser 先行产出 AST → CodeGraph / CodeRetriever / StaticScanInvoker 三路并行（输入均为 AST，彼此独立）→ CoverageCalculator 汇总。节点内用 `ThreadPoolExecutor` 并行。
+
+### 3. Supervisor 角色转型：从派发器到 State 协调者
+
+三个审查员合并后，"选谁去审"的派发职能消失。Supervisor 转型为**信息充分性守门人 + State 唯一协调者**。
+
+规则与 LLM 的分工：
+
+| 判断 | 方式 | 说明 |
+|------|------|------|
+| 上下文覆盖率是否达标 | **规则** | 读 `state.coverage`，低于阈值自动触发补全，不调 LLM |
+| 给审查员写聚焦指令 | **LLM** | 输入 diff + context 摘要 → 输出 `state.focus_notes`："重点关注 X 文件的 Y 方法，关注 Z 风险" |
+| 审查结果是否充分 | **规则优先，LLM 兜底** | 规则先判：findings 为空但 diff 有实质变更？关键文件无 finding 覆盖？规则兜不住再调 LLM |
+| 是否需要重审 | **LLM** | 判断 findings 质量是否足够，需要时带聚焦指令重派 CodeReviewer |
+| 迭代终止 | **规则** | `iteration > max_rounds` 直接路由到 SelfChecker |
+| 决策轨迹 | **规则** | 每步 action + reason + 规则/LLM 标记写入 `state.supervisor_log` |
+
+**规则保证不翻车，LLM 保证不僵化。两者叠加而非互相替代。**
+
+### 4. SelfChecker：取缔 aggregation + fp_filter，增加幻觉检测
+
+SelfChecker 合并当前 aggregation 和 fp_filter 两个阶段的所有能力，并新增两项确定性校验：
+
+| 步骤 | 方式 | 说明 |
+|------|------|------|
+| 引用真实性校验 | **规则（新增）** | 每个 finding 提到的类/方法是否存在于 `state.context` 的 HashMap 索引？不存在 → 幻觉，剔除或降置信度 |
+| 静态事实冲突 | **规则（新增）** | finding 说"第 N 行未判空"，查 `state.static_facts` 发现第 N-1 行有判空 → 冲突，剔除 |
+| 规则去重 | **规则（已有）** | 文件+行号+type 指纹精确去重 |
+| 语义合并 | **LLM（已有）** | 不同措辞但指向同一底层问题 → 归组合并 |
+| 规则硬过滤 | **规则（已有）** | YAML 规则剔除已知误报模式 |
+| 逐条复核 | **LLM（已有）** | 对存活的 finding 逐条问"这是真问题吗" |
+
+前四步（引用校验 / 事实冲突 / 规则去重 / 规则硬过滤）无依赖关系，`ThreadPoolExecutor` 并行执行。
+
+### 5. 三个专属工具降级为上下文注入
+
+`find_sensitive_apis` / `find_callers` / `get_code_metrics` 不再作为 Agent 工具暴露，而是降级为 ContextProvider 的产出：
+
+- `find_sensitive_apis`（危险 API 清单匹配）→ StaticScanInvoker 的 SQL 拼接 / 硬编码标注
+- `find_callers`（调用方追踪）→ CodeGraph 的 `reverseCallers` HashMap 查表
+- `get_code_metrics`（CC/LOC/嵌套深度）→ 可选的静态事实标注（CC > 10 标记为高复杂度）
+
+**理由**:这三个都是确定性计算，不需要 Agent 在 ReAct 循环中多轮调用。预计算后自动注入上下文，Agent 直接看到结果，节省 token 且不损失信息。
+
+**Java 侧保留 `repomap/` 包和三个工具实现不删**——它们作为 ContextProvider 子模块的基础设施被复用，只是不再通过 `POST /api/v1/tools/{name}` 暴露给 Agent。
+
+### 6. 最终图拓扑
+
+```
+START
+  │
+  ▼
+┌─────────────────────────────────────────┐
+│  ContextProvider（确定性节点，0 token）    │
+│  WarehouseParser → 三路并行               │
+│  (CodeGraph | CodeRetriever | StaticScan)│
+│  → CoverageCalculator                    │
+│  写：context / static_facts / coverage    │
+└─────────────────────────────────────────┘
+  │
+  ▼
+┌─────────────────────────────────────────┐
+│  Supervisor（混合：规则 + LLM）            │
+│  规则：coverage / 终止 / 轨迹              │
+│  LLM：聚焦指令 / 充分性 / 重审             │
+│  读：context / coverage / findings        │
+│  写：focus_notes / route / supervisor_log │
+└─────────────────────────────────────────┘
+  │
+  ▼
+┌─────────────────────────────────────────┐
+│  CodeReviewer（LLM Agent，ReAct）          │
+│  输入：diff + context + static_facts      │
+│        + focus_notes                     │
+│  工具：get_file_content                   │
+│  写：findings                             │
+└─────────────────────────────────────────┘
+  │
+  ▼
+┌─────────────────────────────────────────┐
+│  SelfChecker（混合：确定校验 + LLM 综合）   │
+│  规则并行：引用校验 / 事实冲突 / 去重 / 过滤 │
+│  LLM：语义合并 / 逐条复核                  │
+│  读：findings / context / static_facts    │
+│  写：final_issues / summary               │
+└─────────────────────────────────────────┘
+  │
+  ▼
+ END
+```
+
+**4 个图节点，5 个子模块（在 ContextProvider 内），6 个设计能力全覆盖。**
+
+### 7. 并行策略
+
+节点间因依赖链串行。并行下沉到节点内：
+
+- **ContextProvider**:WarehouseParser 先行 → CodeGraph / CodeRetriever / StaticScanInvoker 三路并行（ThreadPoolExecutor）
+- **SelfChecker**:引用校验 / 事实冲突 / 规则去重 / 规则硬过滤 四路并行（ThreadPoolExecutor）
+
+预估 LLM 调用从 5-6 次降到 2-3 次，即使少了三审查员并行，总时延反而更短（LLM 调用耗时远大于确定性计算）。
+
+**理由（综合）**:
+
+1. **区分度来自方法论而非输出 mask**:让同一 LLM 从三条思考路径审视代码，比三个 LLM 各戴一个输出过滤器更自然。LLM 的推理能力用在"如何发现"上，而非"该不该报告"上。
+2. **确定性计算不该消耗 token**:AST 解析、建索引、TF-IDF、静态标注——这些不需要 LLM。ContextProvider 一次性预计算、两个 Agent 节点（CodeReviewer + SelfChecker）复用同一份产出，效率远高于三个 Agent 各自在 ReAct 中调工具。
+3. **幻觉检测是当前管线的盲区**:LLM 可能引用不存在的类/方法、可能无视已有的判空检查。HashMap 查表 + 静态事实对比是确定性校验，零 token、可单测、不可被 LLM 自我复核替代。
+4. **Supervisor 不消失，只是转型**:即使只有一个审查员，仍需要一个协调者来判"信息够不够"、"要不要重审"、"该聚焦哪里"。规则做护栏、LLM 做判断的混合模式保证稳定 + 灵活。
+5. **用户 6 Agent 设计全量保留，不砍能力**:只是执行方式区分——需要 LLM 推理的做 Agent，纯确定性计算的做 ContextProvider 子模块。
+
+**放弃的备选**:
+
+- **保留三审查员 + 加强工具**:在现有架构上微调 prompt + 增加工具。放弃原因：根因是分类轴选错了（issue type vs. review methodology），微调治标不治本。三个专属工具的确定性本质也决定了它们无法提供真正的区分度。
+- **引入 PMD/SpotBugs 等外部静态工具**:作为独立 Agent 或独立节点。放弃原因：默认规则集误报率 30-50%，引入的噪音可能大于信号。先用轻量 AST visitor 做高精度标注，重工具留到 Phase 4+ 作为可选增强。
+- **把所有 6 个都做成 Agent**:WarehouseParser / CodeRetriever / StaticScanInvoker 做成独立的 LLM Agent。放弃原因：纯确定性计算不需要"思考-行动"循环，做成 Agent 只会增加 token 消耗和延迟，零增量价值。
+- **砍掉 Supervisor**:退化为固定路由节点（coverage < 阈值 → 补全 → reviewer → SelfChecker）。放弃原因：聚焦指令生成（LLM）和审查充分性判断（LLM 兜底）能实质性提升 CodeReviewer 的输出质量，值得保留。
+- **ContextProvider 拆成多个独立图节点**:每个子模块一个节点。放弃原因：子模块共享输入（AST + 文件内容）和生命周期，拆开只是传相同数据多遍。LangGraph 的节点边界是同步屏障，拆分还会阻止子模块间的并行执行机会。
+
+**日期**:2026-07-03
+
+---
+
+<!-- 后续在这里继续追加 ADR-032、ADR-033 …… -->

@@ -25,26 +25,26 @@ profiles:
     mode: pipeline
     tools: [get_file_content]
 
-  # 管线 + repo map 导航 + 文件细读:审查员可先 get_repo_map 定位 diff 之外的定义文件,再 get_file_content 读。
-  # 与 pipeline-file 相比多了"跨文件导航"能力,用于量化 repo-map 难例(跨文件、需先定位)的增益。
-  pipeline-repomap:
+  # 管线 + 调用方追踪 + 文件细读:审查员可先用 find_callers 查调用方,再用 get_file_content 细读。
+  # 与 pipeline-file 相比多了"跨文件调用方追踪"能力,用于量化调用方感知(跨文件、影响面)的增益。
+  pipeline-callers:
     mode: pipeline
-    tools: [get_repo_map, get_file_content]
+    tools: [find_callers, get_file_content]
 
-  # 管线 + repo map 导航/细读 + 误报复核:在 pipeline-repomap 基础上打开误报复核。
-  # 与 pipeline-repomap 仅差 fp_verify 一个变量,用于量化"把审查员读到的 diff 外上下文
+  # 管线 + 调用方追踪/细读 + 误报复核:在 pipeline-callers 基础上打开误报复核。
+  # 与 pipeline-callers 仅差 fp_verify 一个变量,用于量化"把审查员读到的 diff 外上下文
   # 喂给复核员"后,复核是否不再误删跨文件真问题(见 fp-verify-reviewer-context)。需起 gateway + 异源模型。
-  pipeline-repomap-fpverify:
+  pipeline-callers-fpverify:
     mode: pipeline
-    tools: [get_repo_map, get_file_content]
+    tools: [find_callers, get_file_content]
     fp_verify: true
 
-  # 管线 + supervisor 智能调度观测档:在 pipeline-repomap 基础上打开 supervisor 动态调度。
+  # 管线 + supervisor 智能调度观测档:在 pipeline-callers 基础上打开 supervisor 动态调度。
   # 与受控对照档仅差 enable_supervisor 一个变量,用于单独画像/评测"动态派发 + 补派/重派"行为。
   # 路由非确定 → 数字更吵;刻意与受控档隔离,不污染工具增益对照(见 design D9)。
   pipeline-supervisor:
     mode: pipeline
-    tools: [get_repo_map, get_file_content]
+    tools: [find_callers, get_file_content]
     enable_supervisor: true
 
   # —— 扩展占位(零成本预留,框架无需改动)——

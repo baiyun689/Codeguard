@@ -2,10 +2,11 @@ package com.codeguard.toolserver;
 
 import com.codeguard.agent.core.AgentContext;
 import com.codeguard.agent.core.AgentTool;
-import com.codeguard.agent.repomap.RepoMapBuilder;
 import com.codeguard.agent.tools.FileAccessSandbox;
+import com.codeguard.agent.tools.FindCallersTool;
+import com.codeguard.agent.tools.FindSensitiveApisTool;
+import com.codeguard.agent.tools.GetCodeMetricsTool;
 import com.codeguard.agent.tools.GetFileContentTool;
-import com.codeguard.agent.tools.GetRepoMapTool;
 import com.codeguard.agent.tools.ToolRegistry;
 
 import java.nio.file.Path;
@@ -52,8 +53,11 @@ public final class ToolSessionManager {
             this.registry = new ToolRegistry();
             // 加工具 = 在这里 register 一个实现即可,无需改协议(扩展接缝 design.md D2)。
             this.registry.register(new GetFileContentTool(sandbox));
-            // get_repo_map:无状态,从 context 拿 repoRoot + diff 种子现算地图。
-            this.registry.register(new GetRepoMapTool(new RepoMapBuilder()));
+            // 专属工具:每人一个,不可替代(spec asymmetric-agent-tools)
+            this.registry.register(new FindSensitiveApisTool(sandbox));
+            this.registry.register(new FindCallersTool(sandbox));
+            this.registry.register(new GetCodeMetricsTool(sandbox));
+            // get_repo_map 已断开调用—— Java 实现(GetRepoMapTool / repomap/)保留不删备参考
         }
 
         public String getId() {

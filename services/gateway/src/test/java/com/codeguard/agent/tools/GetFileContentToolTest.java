@@ -67,12 +67,13 @@ class GetFileContentToolTest {
 
     @Test
     void rejectsNonSourceFile(@TempDir Path repo) throws IOException {
-        // 非源码类型(配置/密钥/文本)即便在仓库内也拒读,守住放宽后的边界。
-        Path f = repo.resolve("application.properties");
-        Files.writeString(f, "db.password=secret");
+        // 非源码类型(.env / .conf 等配置/密钥文件)即便在仓库内也拒读,守住放宽后的边界。
+        // 注意:.properties 已在 b589f95 被加入源码白名单,改用 .env 验证。
+        Path f = repo.resolve(".env");
+        Files.writeString(f, "DB_PASSWORD=secret");
 
-        Set<String> allowed = Set.of("application.properties");
-        ToolResult r = toolFor(repo, allowed).execute("application.properties", ctx(repo, allowed));
+        Set<String> allowed = Set.of(".env");
+        ToolResult r = toolFor(repo, allowed).execute(".env", ctx(repo, allowed));
 
         assertFalse(r.isSuccess());
         assertTrue(r.getError().contains("源码"));

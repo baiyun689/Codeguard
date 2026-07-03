@@ -70,9 +70,17 @@ class ToolClient:
     def get_file_content(self, file_path: str) -> ToolResponse:
         return self._post_tool("get_file_content", {"file_path": file_path})
 
-    def get_repo_map(self) -> ToolResponse:
-        """获取与本次改动相关的签名级代码地图(无入参,由会话的 diff 种子驱动)。"""
-        return self._post_tool("get_repo_map", {})
+    def find_sensitive_apis(self) -> ToolResponse:
+        """扫描 diff 文件中的危险 API 调用(安全审查员专属,无入参)。"""
+        return self._post_tool("find_sensitive_apis", {})
+
+    def find_callers(self, query: str) -> ToolResponse:
+        """查询指定方法的直接调用方(逻辑审查员专属)。"""
+        return self._post_tool("find_callers", {"query": query})
+
+    def get_code_metrics(self, file_path: str) -> ToolResponse:
+        """计算指定文件的代码度量(质量审查员专属)。"""
+        return self._post_tool("get_code_metrics", {"file_path": file_path})
 
     def delete_session(self) -> None:
         """请求服务端释放本会话(复用同一连接)。"""

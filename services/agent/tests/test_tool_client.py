@@ -34,15 +34,34 @@ def test_成功信封_映射为_result():
     assert resp.as_tool_output() == "文件内容"
 
 
-def test_get_repo_map_无入参_打到正确路径():
+def test_find_sensitive_apis_无入参_打到正确路径():
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v1/tools/get_repo_map"
+        assert request.url.path == "/api/v1/tools/find_sensitive_apis"
         assert request.headers["X-Session-Id"] == "sess-1"
-        return httpx.Response(200, json={"success": True, "result": "# Repo map\nA.java:\n│ class A"})
+        return httpx.Response(200, json={"success": True, "result": "# 敏感 API 扫描\n未发现"})
 
-    resp = _mock_client(handler).get_repo_map()
+    resp = _mock_client(handler).find_sensitive_apis()
     assert resp.success is True
-    assert "Repo map" in resp.as_tool_output()
+    assert "敏感 API" in resp.as_tool_output()
+
+
+def test_find_callers_传参查询():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/tools/find_callers"
+        return httpx.Response(200, json={"success": True, "result": "# find_callers\n未找到"})
+
+    resp = _mock_client(handler).find_callers("src/Foo.java#bar")
+    assert resp.success is True
+
+
+def test_get_code_metrics_传文件路径():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/tools/get_code_metrics"
+        return httpx.Response(200, json={"success": True, "result": "# 代码度量\nCC=3"})
+
+    resp = _mock_client(handler).get_code_metrics("src/Foo.java")
+    assert resp.success is True
+    assert "代码度量" in resp.as_tool_output()
 
 
 def test_失败信封_映射为_error_并加前缀():

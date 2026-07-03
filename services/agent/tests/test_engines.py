@@ -108,7 +108,7 @@ def test_抽取_异常或非dict_返回空_不抛():
 def test_dedup_context_按工具与参数去重():
     a = GatheredContext("get_file_content", '{"path":"A.java"}', "AAA")
     a2 = GatheredContext("get_file_content", '{"path":"A.java"}', "AAA-again")
-    b = GatheredContext("get_repo_map", "{}", "MAP")
+    b = GatheredContext("find_sensitive_apis", "{}", "APIS")
     out = _dedup_context([a, a2, b])
     assert len(out) == 2
     assert out[0] is a and out[1] is b  # 保留首次出现
@@ -164,7 +164,7 @@ def test_extract_json_object_无_json_返回_none():
 
 def _resolve_tool_names(enabled):
     """复刻 ToolAgentEngine.review 里的工具白名单解析逻辑(不构造真实 agent)。"""
-    available = ["get_repo_map", "get_file_content"]
+    available = ["find_sensitive_apis", "find_callers", "get_code_metrics", "get_file_content"]
     names = list(available) if enabled is None else enabled
     tools = [n for n in names if n in available]
     if not tools:
@@ -173,23 +173,23 @@ def _resolve_tool_names(enabled):
 
 
 def test_工具白名单_none_则全开():
-    assert _resolve_tool_names(None) == ["get_repo_map", "get_file_content"]
+    assert _resolve_tool_names(None) == ["find_sensitive_apis", "find_callers", "get_code_metrics", "get_file_content"]
 
 
 def test_工具白名单_只开_file():
     assert _resolve_tool_names(["get_file_content"]) == ["get_file_content"]
 
 
-def test_工具白名单_repomap_档保持声明顺序():
-    assert _resolve_tool_names(["get_repo_map", "get_file_content"]) == [
-        "get_repo_map",
+def test_工具白名单_find_callers_档保持声明顺序():
+    assert _resolve_tool_names(["find_callers", "get_file_content"]) == [
+        "find_callers",
         "get_file_content",
     ]
 
 
 def test_工具白名单_空或未知_回退全开():
-    assert _resolve_tool_names([]) == ["get_repo_map", "get_file_content"]
-    assert _resolve_tool_names(["nope"]) == ["get_repo_map", "get_file_content"]
+    assert _resolve_tool_names([]) == ["find_sensitive_apis", "find_callers", "get_code_metrics", "get_file_content"]
+    assert _resolve_tool_names(["nope"]) == ["find_sensitive_apis", "find_callers", "get_code_metrics", "get_file_content"]
 
 
 class _FakeStructLLM:
