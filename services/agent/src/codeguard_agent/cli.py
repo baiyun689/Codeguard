@@ -209,10 +209,15 @@ def main(argv: list[str] | None = None) -> int:
 
         llm = build_llm(settings)
         logger.info("审查方式:ADR-032 ReviewCouncil(摘要 → 上下文 → 多 Agent Council → SelfChecker)")
-        # 误报过滤第二段验证模型(开了才建,优先异源,见 ADR-005)。
+        # 裁决模型(优先异源+低温,供 council_judge 去重与终审使用;误报验证也复用)。
+        # 只要配置了 CODEGUARD_JUDGE_* 就创建,不再仅依赖 fp_llm_verify 开关。
         fp_verify_llm = None
-        if settings.fp_llm_verify:
-            fp_verify_llm = build_llm(Settings.judge_from_env(), temperature=0)
+        try:
+            judge_settings = Settings.judge_from_env()
+            fp_verify_llm = build_llm(judge_settings, temperature=0)
+            logger.info("裁决模型:%s/%s", judge_settings.provider, judge_settings.model)
+        except Exception as exc:
+            logger.debug("无法创建裁决模型,回退到主 LLM: %s", exc)
 
         # 配置了工具服务且为真实 LLM 时,为本次审查建工具会话,审查员走 ReAct;
         # 否则 tool_client 为 None,走无工具直连(见 design.md D1)。mock 模式不建会话。

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -31,10 +32,47 @@ AGENT_DISPLAY_NAME_MAP: dict[str, str] = {
     "maintainability": "MaintainabilityAgent",
 }
 
-MAX_CANDIDATES_PER_AGENT = 5
+MAX_CANDIDATES_PER_AGENT = 10
 MAX_EVIDENCE_REQUESTS_PER_CANDIDATE = 2
 MAX_TOTAL_EVIDENCE_REQUESTS = 20
-DEFAULT_MAX_EVIDENCE_ROUNDS = 1
+DEFAULT_MAX_EVIDENCE_ROUNDS = 2
+
+
+# ── CouncilJudge 裁决模型 ──
+
+
+@dataclass
+class Verdict:
+    """规则层产出的裁决结果。规则命中时返回此对象，返回 None 表示不命中。"""
+
+    candidate_id: str
+    action: Literal["keep", "drop", "downgrade", "merge", "needs_more_evidence"]
+    reason_code: str
+    reason: str = ""
+    suggested_target_id: str = ""  # merge 时指向被合并方
+    severity_override: Severity | None = None  # downgrade 时建议新级别
+    suggested_tools: list[str] = field(default_factory=list)  # needs_more_evidence 时建议补证工具
+
+
+class JudgeDecision(BaseModel):
+    """LLM 终审的结构化输出：对单条候选的裁决。"""
+
+    candidate_id: str
+    action: Literal["keep", "drop", "downgrade", "merge", "needs_more_evidence"]
+    reason: str = ""
+    merge_target_id: str = ""  # merge 时指向被合并方
+    adjusted_severity: Severity | None = None  # downgrade 时建议新级别
+    suggested_tools: list[str] = Field(default_factory=list)  # needs_more_evidence 时建议工具
+
+
+class JudgeDecisions(BaseModel):
+    """包装模型：LLM 输出的裁决列表。
+
+    用于 with_structured_output()——DeepSeek 等兼容端点不支持
+    list[T] 泛型作为 response_format，必须用具名模型包装。
+    """
+
+    decisions: list[JudgeDecision] = Field(default_factory=list)
 
 
 class ContextFact(BaseModel):
@@ -78,19 +116,6 @@ class ContextBundle(BaseModel):
 
 
 EvidenceStatus = Literal["sufficient", "partial", "missing"]
-EvidenceKind = Literal[
-    "related_snippet",
-    "caller_path",
-    "sensitive_sink",
-    "metric_context",
-    "open_question",
-    # 旧 kind 兼容,避免归档/trace 或旧测试读取时报错。
-    "caller_chain",
-    "callee_impl",
-    "sensitive_api",
-    "metric",
-    "guard_condition",
-]
 EvidenceNoteStatus = Literal["supported", "not_found", "unsupported", "mixed"]
 ChallengeVerdict = Literal["keep", "downgrade", "merge", "drop", "needs_more_evidence"]
 
@@ -99,7 +124,6 @@ class EvidenceRequest(BaseModel):
     """候选 issue 对证据的结构化请求。"""
 
     candidate_id: str
-    kind: EvidenceKind = "related_snippet"
     target: str = ""
     question: str = ""
     reason: str = ""
@@ -149,14 +173,24 @@ class CandidateIssue(BaseModel):
         needs_evidence = issue.confidence < 0.75 or issue.line <= 0
         requests = []
         if needs_evidence:
+            # 按 source_agent 分派默认证据工具:
+            #   threat_model → 查敏感 API + 读文件
+            #   behavior → 查调用方 + 读文件
+            #   maintainability → 查代码度量 + 读文件
+            # 低置信度或无行号时额外追加 get_file_content。
+            agent_tools: dict[str, list[str]] = {
+                "threat_model": ["find_sensitive_apis", "get_file_content"],
+                "behavior": ["find_callers", "get_file_content"],
+                "maintainability": ["get_code_metrics", "get_file_content"],
+            }
+            preferred = list(agent_tools.get(resolved_agent, ["get_file_content"]))
             requests.append(
                 EvidenceRequest(
                     candidate_id=cid,
-                    kind="related_snippet",
                     target=issue.file,
                     question=f"确认 {issue.file} 中候选问题的相关代码片段是否支持该主张",
                     reason="候选定位不完整或置信度偏低,需要补充代码事实",
-                    preferred_tools=["get_file_content"],
+                    preferred_tools=preferred,
                     reason_code="low_confidence_or_unlocated",
                 )
             )

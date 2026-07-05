@@ -1,7 +1,7 @@
 """审查编排器门面。
 
 ADR-032 默认路径内部执行 ReviewCouncil 图:
-summary? → context_provider → review_council → self_checker → END。
+summary? → context_provider → review_council → council_judge → END。
 对外仍返回稳定的 `ReviewResult`。
 """
 
@@ -175,8 +175,10 @@ class PipelineOrchestrator:
             "evidence_requests": [],
             "evidence_notes": [],
             "challenges": [],
+            "council_verdicts": [],
             "council_trace": [],
             "evidence_round": 0,
+            "judge_pass": 0,
             "truncated_candidates": 0,
             "truncated_evidence_requests": 0,
             "final_issues": [],
