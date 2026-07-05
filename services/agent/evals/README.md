@@ -1,7 +1,7 @@
 # Codeguard 评测(eval)框架
 
 > 用「带标注的数据集 + 统计指标」量化审查质量,而不是用 `assert` 死磕不确定的 LLM 输出。
-> 跑出的指标用于在统一数据集上对照各 profile(无工具 / 文件工具 / repo-map)的审查质量。
+> 跑出的指标用于在统一数据集上对照各 profile(ADR-032 smoke / 无工具 / 文件工具 / 调用方工具)的审查质量。
 
 ## 为什么需要它
 
@@ -33,12 +33,13 @@ python -m evals.runner --runs 3 --judge
 ## profile:把"被测系统"做成可插拔(统一标准下做对照)
 
 评测的**统一标准 = 固定数据集 + 固定指标**;"用什么配置跑"由 **profile** 描述,见
-`evals/profiles.yaml`(`mode` + 启用工具集 + 可选模型)。**加一个工具 / 换一种编排 = 加一行
+`evals/profiles.yaml`(`mode` + `orchestration` + 启用工具集 + 可选模型)。**加一个工具 / 换一种编排 = 加一行
 profile,数据集与指标零改动。**
 
 ```bash
 # 按 profile 跑(覆盖 --tools);不指定则用 --tools 合成 ad-hoc(管线 + 工具开/关)
 python -m evals.runner --profile pipeline-notools --runs 1
+python -m evals.runner --profile adr-032-smoke --runs 1
 CODEGUARD_TOOL_SERVER_URL=http://localhost:9090 \
   python -m evals.runner --profile pipeline-file --runs 1   # 工具开档,需先起工具服务
 ```
@@ -50,6 +51,10 @@ CODEGUARD_TOOL_SERVER_URL=http://localhost:9090 \
 - **profile 横向对照**:各 profile 最近一次的同组指标并排(老的"工具开 vs 关"只是其特例)。
 - **按能力切片**:在"需要某能力"的用例子集上各 profile 的 Recall——同一能力行内一比即该能力的
   工具/编排增益,比笼统的"工具开 vs 关"精确。
+
+ADR-032 默认路径还会在报告中追加 **ReviewCouncil 过程统计**:候选数、证据轮次、Challenge 数量、
+SelfChecker 移除来源与 trace 事件数。这些中间态只用于诊断和展示,不参与判分,也不进入产品
+`ReviewResult`。
 
 > 工具增益要测得出,前提是用例**真的需要该能力**(diff-only 看着没问题、读了文件/上下文才暴露)。
 > 若一条用例从 diff 本身就能猜中,开/关工具指标会一样——那是用例不够"难",不是工具没用。

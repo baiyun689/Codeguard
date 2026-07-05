@@ -183,6 +183,51 @@ def render_report(
                 f"{', '.join(u.files_read) or '—'} |"
             )
 
+    council_rows = [o for o in runs[-1] if o.council_trace is not None]
+    if council_rows:
+        lines += [
+            "",
+            "## ReviewCouncil 过程统计(最后一次跑测)",
+            "",
+            "ADR-032 中间态只用于 trace/eval,不进入最终 ReviewResult。",
+            "",
+            "| 用例 | 候选 | 角色候选分布 | 证据请求 | 证据轮次 | Challenge | SelfChecker 移除 | 截断 | Trace 事件 |",
+            "|---|---|---|---|---|---|---|---|---|",
+        ]
+        for o in council_rows:
+            c = o.council_trace
+            agent_order = ["threat_model", "behavior", "maintainability"]
+            seen = set(agent_order)
+            agent_parts = [
+                f"{name}={c.candidate_count_by_agent.get(name, 0)}" for name in agent_order
+            ]
+            agent_parts.extend(
+                f"{name}={count}"
+                for name, count in sorted(c.candidate_count_by_agent.items())
+                if name not in seen
+            )
+            agent_detail = ", ".join(agent_parts) if agent_parts else "—"
+            removed = (
+                c.removed_by_challenge
+                + c.removed_by_aggregation
+                + c.removed_by_fp_rules
+                + c.removed_by_fp_llm
+            )
+            detail = (
+                f"challenge={c.removed_by_challenge}, "
+                f"aggregation={c.removed_by_aggregation}, "
+                f"fp_rules={c.removed_by_fp_rules}, fp_llm={c.removed_by_fp_llm}"
+            )
+            truncated = (
+                f"candidates={c.truncated_candidates}, "
+                f"evidence_requests={c.truncated_evidence_requests}"
+            )
+            lines.append(
+                f"| {o.case_id} | {c.candidate_count} | {agent_detail} | "
+                f"{c.evidence_request_count} | {c.evidence_rounds} | {c.challenge_count} | "
+                f"{removed} ({detail}) | {truncated} | {c.trace_events} |"
+            )
+
     # 规则尺 vs 裁判尺交叉校验:仅当本次确有用例走 LLM 主判时才有意义。
     # 主判(LLM)与规则尺判出的 TP/FP/FN 不一致的用例,正是"关键词撞词/漏配"被裁判纠正之处,
     # 也是核对裁判是否离谱、留存可复现凭证的地方。

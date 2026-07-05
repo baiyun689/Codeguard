@@ -191,6 +191,23 @@ class ToolUsage(BaseModel):
     )
 
 
+class CouncilTraceStats(BaseModel):
+    """ADR-032 ReviewCouncil 过程统计(可观测性,不参与判分)。"""
+
+    candidate_count: int = 0
+    candidate_count_by_agent: dict[str, int] = Field(default_factory=dict)
+    evidence_request_count: int = 0
+    truncated_candidates: int = 0
+    truncated_evidence_requests: int = 0
+    evidence_rounds: int = 0
+    challenge_count: int = 0
+    removed_by_challenge: int = 0
+    removed_by_aggregation: int = 0
+    removed_by_fp_rules: int = 0
+    removed_by_fp_llm: int = 0
+    trace_events: int = 0
+
+
 class MatchOutcome(BaseModel):
     """单条用例跑一次审查后的判定结果。"""
 
@@ -235,6 +252,9 @@ class MatchOutcome(BaseModel):
     # 仅工具档且本条确有工具调用时非空;无工具/mock/未调工具为 None(报告/归档据此跳过)。
     tool_usage: ToolUsage | None = Field(
         default=None, description="审查员实际工具调用画像;无工具活动为 None"
+    )
+    council_trace: CouncilTraceStats | None = Field(
+        default=None, description="ADR-032 ReviewCouncil 过程统计;无元数据时为 None"
     )
 
 

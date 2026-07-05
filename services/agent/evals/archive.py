@@ -74,6 +74,8 @@ def _outcome_dict(o: MatchOutcome) -> dict:
             "repomap_caller_section_read": o.tool_usage.repomap_caller_section_read,
             "files_read": o.tool_usage.files_read,
         }
+    if o.council_trace is not None:
+        d["council_trace"] = o.council_trace.model_dump()
     return d
 
 
@@ -82,6 +84,7 @@ def build_archive_record(
     profile_name: str,
     profile_mode: str,
     profile_tools: list[str],
+    profile_orchestration: str = "adr-032",
     tools_enabled: bool,
     fp_verify: bool = False,
     provider: str,
@@ -100,6 +103,7 @@ def build_archive_record(
         "profile": {
             "name": profile_name,
             "mode": profile_mode,
+            "orchestration": profile_orchestration,
             "tools": profile_tools,
             "tools_enabled": tools_enabled,
             "fp_verify": fp_verify,

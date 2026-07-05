@@ -91,6 +91,7 @@ def test_archive_record_has_all_fields():
     assert rec["profile"] == {
         "name": "pipeline-file",
         "mode": "pipeline",
+        "orchestration": "adr-032",
         "tools": ["get_file_content"],
         "tools_enabled": True,
         "fp_verify": False,

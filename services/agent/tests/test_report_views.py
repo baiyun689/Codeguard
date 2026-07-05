@@ -127,3 +127,33 @@ def test_报告_主次recall对照段():
     out = render_report(m, _settings(), [[MatchOutcome(case_id="v", is_clean=False)]], [])
     assert "## 主/次项 recall 对照" in out
     assert "0.800" in out and "0.400" in out
+
+
+def test_报告_ReviewCouncil统计展示角色分布和截断():
+    run = [
+        MatchOutcome(
+            case_id="v",
+            is_clean=False,
+            council_trace={
+                "candidate_count": 3,
+                "candidate_count_by_agent": {
+                    "threat_model": 1,
+                    "behavior": 1,
+                    "maintainability": 1,
+                },
+                "evidence_request_count": 2,
+                "truncated_candidates": 1,
+                "truncated_evidence_requests": 4,
+                "evidence_rounds": 1,
+                "challenge_count": 3,
+                "trace_events": 9,
+            },
+        )
+    ]
+
+    out = render_report(_metrics(), _settings(), [run], [])
+
+    assert "角色候选分布" in out
+    assert "threat_model=1, behavior=1, maintainability=1" in out
+    assert "证据请求" in out
+    assert "截断" in out

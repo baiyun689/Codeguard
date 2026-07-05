@@ -46,7 +46,7 @@ from evals.matcher import evaluate_case
 from evals.metrics import aggregate, aggregate_by_capability
 from evals.profiles import case_repo_root, resolve_profile, tools_effective
 from evals.report import render_history_views, render_report
-from evals.schema import MatchOutcome
+from evals.schema import CouncilTraceStats, MatchOutcome
 from evals.tool_usage import summarize_tool_usage
 
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s", stream=sys.stderr)
@@ -56,18 +56,24 @@ logger = logging.getLogger("codeguard.evals")
 def run_once(cases, review_fn, judge_llm) -> list[MatchOutcome]:
     """跑一遍全数据集,返回每条用例的判定结果。
 
-    review_fn: 接收一条 EvalCase、返回 (ReviewResult, 工具上下文 trace) 二元组的可调用对象。
+    review_fn: 接收一条 EvalCase、返回 (ReviewResult, 工具上下文 trace, 元数据) 三元组的可调用对象。
         由 main() 按 profile 注入(single=baseline 单次调用 / pipeline=多阶段管线,
         工具会话按用例自带的 repo_path 建立)。trace 为本次审查员获取的工具上下文列表
         (无工具档为空),据此算工具使用画像。
     """
     outcomes: list[MatchOutcome] = []
     for case in cases:
-        result, trace = review_fn(case)
+        result, trace, metadata = review_fn(case)
         outcome = evaluate_case(case, result.issues, judge_llm=judge_llm)
         # 工具使用画像:有工具活动才挂(空 trace → None,避免无工具档报告/归档出现满是 '—' 的行)。
         if trace:
             outcome.tool_usage = summarize_tool_usage(trace)
+        council_meta = (metadata or {}).get("council")
+        if council_meta:
+            outcome.council_trace = CouncilTraceStats(
+                **council_meta,
+                trace_events=int((metadata or {}).get("council_trace_events", 0)),
+            )
         logger.info(
             "[%s] TP=%d FP=%d FN=%d (报告 %d / 标答 %d)",
             case.id,
@@ -124,8 +130,8 @@ def main(argv: list[str] | None = None) -> int:
         settings.model = profile.model  # profile 显式覆盖模型
 
     logger.info(
-        "profile=%s mode=%s tools=%s fp_verify=%s provider=%s model=%s runs=%d judge=%s",
-        profile.name, profile.mode, profile.tools or "(无)", profile.fp_verify,
+        "profile=%s mode=%s orchestration=%s tools=%s fp_verify=%s provider=%s model=%s runs=%d judge=%s",
+        profile.name, profile.mode, profile.orchestration, profile.tools or "(无)", profile.fp_verify,
         settings.provider, settings.model, args.runs, args.judge,
     )
 
@@ -189,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     orchestrator = PipelineOrchestrator(
         fp_llm_verify=profile.fp_verify,
         enable_supervisor=profile.enable_supervisor,
+        orchestration_profile=profile.orchestration,
     )
     def review_fn(case):
         diff = case.diff
@@ -205,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as exc:  # noqa: BLE001 工具服务不可用则降级无工具,不中断评测
                 logger.warning("[%s] 创建工具会话失败,本条按无工具跑: %s", case.id, exc)
         trace: list = []  # 工具调用侧信道:管线把 gathered_context 追加进来供算画像。
+        metadata: dict = {}
         try:
             result = orchestrator.run(
                 llm, diff,
@@ -217,8 +225,9 @@ def main(argv: list[str] | None = None) -> int:
                 # profile.tools 即工具白名单:让"开哪些工具"成为对照的唯一变量。
                 enabled_tools=profile.tools if tool_client is not None else None,
                 trace_sink=trace,
+                metadata_sink=metadata,
             )
-            return result, trace
+            return result, trace, metadata
         finally:
             if tool_client is not None:
                 destroy_tool_session(tool_client)
@@ -239,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
         profile_name=profile.name,
         profile_mode=profile.mode,
         profile_tools=profile.tools,
+        profile_orchestration=profile.orchestration,
         tools_enabled=use_tools,
         fp_verify=profile.fp_verify,
         provider=settings.provider,

@@ -9,6 +9,14 @@ profiles:
   # 管线但不开工具:并行三审查员直连(无工具对照基准)。
   pipeline-notools:
     mode: pipeline
+    orchestration: adr-032
+    tools: []
+
+  # ADR-032 smoke:默认 ReviewCouncil 编排的零工具轻量冒烟档。
+  # 用于确认 summary? → context_provider → review_council → self_checker 可执行。
+  adr-032-smoke:
+    mode: pipeline
+    orchestration: adr-032
     tools: []
 
   # 管线 + 误报复核:在 pipeline-notools 基础上打开误报过滤第二段的独立异源 LLM 复核。
@@ -16,6 +24,7 @@ profiles:
   # (复核只删不增,需同时盯 Recall 是否被误删拖低)。需配 CODEGUARD_JUDGE_* 异源模型。
   pipeline-fpverify:
     mode: pipeline
+    orchestration: adr-032
     tools: []
     fp_verify: true
 
@@ -23,12 +32,14 @@ profiles:
   # 与 pipeline-notools 仅差"是否开工具"这一个变量,用于量化 file 能力的工具增益。
   pipeline-file:
     mode: pipeline
+    orchestration: adr-032
     tools: [get_file_content]
 
   # 管线 + 调用方追踪 + 文件细读:审查员可先用 find_callers 查调用方,再用 get_file_content 细读。
   # 与 pipeline-file 相比多了"跨文件调用方追踪"能力,用于量化调用方感知(跨文件、影响面)的增益。
   pipeline-callers:
     mode: pipeline
+    orchestration: adr-032
     tools: [find_callers, get_file_content]
 
   # 管线 + 调用方追踪/细读 + 误报复核:在 pipeline-callers 基础上打开误报复核。
@@ -36,16 +47,9 @@ profiles:
   # 喂给复核员"后,复核是否不再误删跨文件真问题(见 fp-verify-reviewer-context)。需起 gateway + 异源模型。
   pipeline-callers-fpverify:
     mode: pipeline
+    orchestration: adr-032
     tools: [find_callers, get_file_content]
     fp_verify: true
-
-  # 管线 + supervisor 智能调度观测档:在 pipeline-callers 基础上打开 supervisor 动态调度。
-  # 与受控对照档仅差 enable_supervisor 一个变量,用于单独画像/评测"动态派发 + 补派/重派"行为。
-  # 路由非确定 → 数字更吵;刻意与受控档隔离,不污染工具增益对照(见 design D9)。
-  pipeline-supervisor:
-    mode: pipeline
-    tools: [find_callers, get_file_content]
-    enable_supervisor: true
 
   # —— 扩展占位(零成本预留,框架无需改动)——
   # 后续逐个加重型工具时,在此追加 profile 即可:
