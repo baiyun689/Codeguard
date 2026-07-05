@@ -1692,4 +1692,64 @@ NPE claim: "...findById...getUserDisplayName..."
 
 ---
 
-<!-- 后续在这里继续追加 ADR-034、ADR-035 …… -->
+## ADR-034 · 智能举证与证据驱动裁决:evidence_agent LLM 分析 + council_judge 规则精简
+
+**背景**:ADR-032 实现了 evidence_agent → council_judge 的举证-裁决流水线，但 evidence_agent 是纯确定性 HTTP 转发节点（调工具 → raw output[:200] → EvidenceNote.supports），EvidenceNote.contradicts 从未被写入（死字段），council_judge 的规则层和 LLM 终审拿到的是未经分析的原始工具输出片段。整个证据管道在架构上存在但在语义上是空的。
+
+**决策**:
+
+### 1. evidence_agent 升级为智能举证
+
+evidence_agent 从"确定性 HTTP 转发"改为"调工具 + LLM 证据分析"两阶段：
+
+- **阶段 1**：调 Java 工具获取原始事实（不变，去重调用）
+- **阶段 2**：对每条工具输出调轻量 LLM（`EvidenceJudgment` Pydantic 结构化输出）分析证据含义，产出 SUPPORTS / CONTRADICTS / INSUFFICIENT 判定 + 推理依据
+
+LLM 分析 prompt（`prompts/evidence-analysis.txt`）约 30 行，包含判定标准和纪律。LLM 不可用时自动回退 raw output[:200] 模式（保持向后兼容）。
+
+evidence_agent 复用 `fp_verify_llm`（异源千问 temperature=0），与 council_judge 的语义综合和终审共用。每个 EvidenceRequest 增加一次轻量 LLM 调用，实际多数审查只有 0-3 个低置信候选需要补证。
+
+### 2. EvidenceNote 模型更新
+
+- 新增 `reasoning: str` 字段承载 LLM 证据分析的整体推理
+- `status` 根据 supports/contradicts 分布自动计算：有 supports 无 contradicts → "supported"；有 contradicts 无 supports → "contradicted"；两者都有 → "mixed"；都没有 → "insufficient"
+- `EvidenceNoteStatus` Literal 新增 "contradicted" 和 "insufficient"，保留旧值 "not_found" 和 "unsupported" 向后兼容
+
+### 3. council_judge 规则从 6 条精简为 4 条
+
+| 删除的规则 | 原因 |
+|-----------|------|
+| `_rule_quality_no_metrics` | LLM 证据分析比"调没调 get_code_metrics"更准 |
+| `_rule_guard_detected` | evidence_agent 的 LLM 显式判断"是否有保护逻辑"，不再需要关键词匹配 |
+| `_rule_critical_partial` | 并入 `_rule_no_evidence`（CRITICAL + 全部 insufficient → downgrade） |
+
+| 新增/重写的规则 | 判据 |
+|----------------|------|
+| `_rule_contradicted`（重写） | 检查 `EvidenceNote.status`（"contradicted" 或 "mixed"）替代死字段 `n.contradicts` |
+| `_rule_no_evidence`（重写） | 检查全部 "insufficient" 替代 "not_found"；CRITICAL + 全 insufficient → downgrade |
+| `_rule_strong_support`（新增） | confidence ≥ 0.9 + 全 "supported" + 零 contradicts → fast-track keep（跳过 LLM 终审） |
+
+### 4. council_judge LLM 终审 prompt 证据驱动化
+
+终审 prompt 从 raw output 片段改为结构化证据摘要：
+
+```
+✅ 支持: [find_callers] 确认 getEmail() 调用方未判空
+❌ 反驳: (无)
+⚠️  不足: (无)
+```
+
+prompt 中加入证据驱动判定原则：有支持无反证 → keep；有反证 → drop 或 downgrade；全部 insufficient → 保守决策；共享证据链 → merge。
+
+### 效果
+
+- **contradicts 字段激活**：evidence_agent LLM 分析显式输出 CONTRADICTS 判定，`_rule_contradicted` 现在可真正触发
+- **裁决质量提升**：council_judge 基于已分析的证据质量做决策，而非从 raw output 里猜含义
+- **面试可讲**："举证 Agent 分析证据含义 → 裁决 Agent 基于证据质量判 keep/drop/downgrade/merge，形成可追溯的决策链"
+- **成本可控**：实际多数审查只有 0-3 个低置信候选需要补证，每次证据分析 prompt 很短（~500-1000 tokens）
+
+**日期**:2026-07-05
+
+---
+
+<!-- 后续在这里继续追加 ADR-035、ADR-036 …… -->

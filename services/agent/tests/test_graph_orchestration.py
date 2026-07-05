@@ -188,12 +188,12 @@ def test_council_judge_rule_contradicted_drop():
 
 
 def test_council_judge_rule_no_evidence_drop():
-    """全部 not_found + 低置信度 → drop。"""
+    """全部 insufficient + 低置信度 → drop。"""
     c = G.CandidateIssue(
         id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
         severity_proposal=Severity.WARNING, claim="m", confidence=0.3,
     )
-    notes = [EvidenceNote(candidate_id="c1", status="not_found", unknowns=["x"])]
+    notes = [EvidenceNote(candidate_id="c1", status="insufficient", unknowns=["x"])]
     node = G._council_judge_node(llm=None)
     out = node({
         "candidate_issues": [c], "evidence_notes": notes,
@@ -202,45 +202,13 @@ def test_council_judge_rule_no_evidence_drop():
     assert len(out["final_issues"]) == 0
 
 
-def test_council_judge_rule_quality_no_metrics_drop():
-    """quality 类 + 无度量证据 + missing → drop。"""
-    c = G.CandidateIssue(
-        id="c1", source_agent="maintainability", category="quality", file="A.java",
-        line=1, type="t", severity_proposal=Severity.WARNING, claim="m",
-        evidence_status="missing",
-    )
-    node = G._council_judge_node(llm=None)
-    out = node({
-        "candidate_issues": [c], "evidence_notes": [],
-        "evidence_requests": [], "review_summaries": [],
-    })
-    assert len(out["final_issues"]) == 0
-    assert out["council_verdicts"][0].action == "drop"
-
-
-def test_council_judge_rule_guard_detected_downgrade():
-    """evidence 检测到 sanitize → downgrade。"""
-    c = G.CandidateIssue(
-        id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
-        severity_proposal=Severity.WARNING, claim="m", confidence=0.9,
-    )
-    notes = [EvidenceNote(candidate_id="c1", supports=["get_file_content: 代码含 sanitize 调用"])]
-    node = G._council_judge_node(llm=None)
-    out = node({
-        "candidate_issues": [c], "evidence_notes": notes,
-        "evidence_requests": [], "review_summaries": [],
-    })
-    assert out["council_verdicts"][0].action == "downgrade"
-    assert out["council_verdicts"][0].severity_override is not None
-
-
-def test_council_judge_rule_critical_partial_downgrade():
-    """CRITICAL + evidence 不足 → downgrade。"""
+def test_council_judge_rule_critical_insufficient_downgrade():
+    """CRITICAL + 全部 insufficient → downgrade 到 WARNING（并入 _rule_no_evidence）。"""
     c = G.CandidateIssue(
         id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
         severity_proposal=Severity.CRITICAL, claim="m", confidence=0.9,
     )
-    notes = [EvidenceNote(candidate_id="c1", status="not_found", unknowns=["x"])]
+    notes = [EvidenceNote(candidate_id="c1", status="insufficient", unknowns=["x"])]
     node = G._council_judge_node(llm=None)
     out = node({
         "candidate_issues": [c], "evidence_notes": notes,
@@ -248,6 +216,39 @@ def test_council_judge_rule_critical_partial_downgrade():
     })
     assert out["council_verdicts"][0].action == "downgrade"
     assert out["council_verdicts"][0].severity_override == Severity.WARNING
+
+
+def test_council_judge_rule_contradicted_by_status():
+    """EvidenceNote.status=="contradicted" + 低置信度 → drop。"""
+    c = G.CandidateIssue(
+        id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
+        severity_proposal=Severity.WARNING, claim="m", confidence=0.3,
+    )
+    notes = [EvidenceNote(candidate_id="c1", status="contradicted", contradicts=["反证:已有判空"])]
+    node = G._council_judge_node(llm=None)
+    out = node({
+        "candidate_issues": [c], "evidence_notes": notes,
+        "evidence_requests": [], "review_summaries": [],
+    })
+    assert len(out["final_issues"]) == 0
+    assert out["council_verdicts"][0].action == "drop"
+
+
+def test_council_judge_rule_strong_support_fast_track():
+    """高置信 + 全 supported + 零 contradicts → fast-track keep。"""
+    c = G.CandidateIssue(
+        id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
+        severity_proposal=Severity.CRITICAL, claim="m", confidence=0.95,
+    )
+    notes = [EvidenceNote(candidate_id="c1", status="supported", supports=["证据充分"])]
+    node = G._council_judge_node(llm=None)
+    out = node({
+        "candidate_issues": [c], "evidence_notes": notes,
+        "evidence_requests": [], "review_summaries": [],
+    })
+    keeps = [v for v in out["council_verdicts"] if v.action == "keep"]
+    assert len(keeps) == 1
+    assert keeps[0].reason_code == "strong_support"
 
 
 def test_council_judge_aggregation_dedup_same_file_line_type():
@@ -702,10 +703,9 @@ def test_evidence_agent_fallback_context_bundle_when_no_tool_client():
 
 
 def test_evidence_agent_marks_tool_failure_as_unknown():
-    """工具返回失败 → unknowns + not_found。"""
+    """工具返回失败 → unknowns + insufficient（无 supports 无 contradicts → insufficient）。"""
     mock = _MockToolClient()
 
-    # 覆写为返回失败
     def _fail_get_file_content(file_path=""):
         mock.calls.append(("get_file_content", {"file_path": file_path}))
         return _MockToolResponse(False, error="file not found")
@@ -727,7 +727,7 @@ def test_evidence_agent_marks_tool_failure_as_unknown():
         "candidate_issues": [candidate],
         "evidence_round": 0,
     })
-    assert out["evidence_notes"][0].status == "not_found"
+    assert out["evidence_notes"][0].status == "insufficient"
     assert len(out["evidence_notes"][0].unknowns) >= 1
 
 

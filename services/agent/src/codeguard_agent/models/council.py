@@ -116,7 +116,18 @@ class ContextBundle(BaseModel):
 
 
 EvidenceStatus = Literal["sufficient", "partial", "missing"]
-EvidenceNoteStatus = Literal["supported", "not_found", "unsupported", "mixed"]
+EvidenceNoteStatus = Literal["supported", "contradicted", "mixed", "insufficient", "not_found", "unsupported"]
+
+# ── EvidenceAgent LLM 证据分析的结构化输出 ──
+
+
+class EvidenceJudgment(BaseModel):
+    """evidence_agent 的 LLM 对单条证据的语义分析结果。"""
+
+    judgment: Literal["SUPPORTS", "CONTRADICTS", "INSUFFICIENT"] = Field(
+        description="证据对候选主张意味着什么"
+    )
+    reasoning: str = Field(default="", description="推理依据")
 ChallengeVerdict = Literal["keep", "downgrade", "merge", "drop", "needs_more_evidence"]
 
 
@@ -224,13 +235,18 @@ class CandidateIssue(BaseModel):
 
 
 class EvidenceNote(BaseModel):
-    """EvidenceAgent 写入的证据记录。"""
+    """EvidenceAgent 写入的证据记录。
+
+    supports/contradicts/unknowns 每条条目包含推理依据（格式: "[工具名] 判定: 推理"）。
+    status 根据 supports/contradicts 分布自动计算。
+    """
 
     candidate_id: str
     status: EvidenceNoteStatus = "mixed"
     supports: list[str] = Field(default_factory=list)
     contradicts: list[str] = Field(default_factory=list)
     unknowns: list[str] = Field(default_factory=list)
+    reasoning: str = Field(default="", description="LLM 证据分析的整体推理摘要")
     evidence_ids: list[str] = Field(default_factory=list)
 
 

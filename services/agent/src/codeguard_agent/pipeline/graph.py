@@ -27,6 +27,7 @@ from codeguard_agent.models.council import (
     CouncilRunStats,
     CouncilTrace,
     DEFAULT_MAX_EVIDENCE_ROUNDS as COUNCIL_DEFAULT_MAX_EVIDENCE_ROUNDS,
+    EvidenceJudgment,
     EvidenceNote,
     EvidenceRequest,
     JudgeDecision,  # noqa: F401  # 供测试通过 G.JudgeDecision 访问
@@ -342,6 +343,14 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                         CouncilTrace(node=reviewer.source_agent, event="discover_failed", detail=str(exc))
                     ],
                 }
+
+        # ReAct 跑完但未产出任何 issue → LLM 偶发空响应（DeepSeek 已知问题），
+        # 降级为 DirectEngine 直连复审以保住该域覆盖率。
+        if not outcome.result.issues:
+            logger.warning(
+                "[%s] ReAct 未产出 issue,降级直连复审以保住该域覆盖", reviewer.name
+            )
+            outcome = _direct_fallback(state)
         return {"outcome": outcome}
 
     def _collect(state: ReviewerState) -> dict:
@@ -499,17 +508,16 @@ def _conditional_route(state: ReviewState) -> str:
     return state.get("council_route") or _route_after_coordinator(state)
 
 
-def _evidence_agent_node(tool_client=None):
-    """EvidenceAgent:按 preferred_tools 确定性地调用 Java 工具补证。
+def _evidence_agent_node(tool_client=None, judge_llm=None):
+    """EvidenceAgent:调 Java 工具补证，再用 LLM 分析证据含义。
 
-    不再依赖 EvidenceKind——每种 preferred_tool 直接映射到一个 tool_client 方法。
-    同一 (文件, 工具) 去重，避免三个候选对同一文件重复扫描。
-    tool_client 不可用或 preferred_tools 为空时，回退 ContextBundle 字符串搜索。
+    两阶段:
+      1. 调 Java 工具获取原始事实（去重调用）
+      2. 对每条工具输出调 LLM 分析：SUPPORTS / CONTRADICTS / INSUFFICIENT
+    judge_llm 不可用时回退 raw output[:200] 模式。
     """
     from codeguard_agent.tools.tool_client import ToolResponse as _ToolResponse
 
-    # 工具名 → (调用函数, 参数构造器)
-    # 调用函数签名为 (**kwargs) -> ToolResponse
     def _tool_routes():
         return {
             "get_file_content": (
@@ -530,13 +538,47 @@ def _evidence_agent_node(tool_client=None):
             ),
         }
 
+    def _analyse_evidence(
+        judge_llm,
+        structured_method: str,
+        candidate: CandidateIssue,
+        tool_name: str,
+        tool_output: str,
+    ) -> EvidenceJudgment | None:
+        """调 LLM 分析单条证据的含义。失败返回 None。"""
+        from codeguard_agent.llm.client import invoke_with_retry
+
+        system_prompt = _load_prompt("evidence-analysis.txt")
+        user_prompt = (
+            f"候选问题:\n"
+            f"  文件: {candidate.file}:{candidate.line}\n"
+            f"  类型: {candidate.type}\n"
+            f"  主张: {candidate.claim}\n\n"
+            f"工具: {tool_name}\n"
+            f"工具返回:\n{tool_output[:3000]}\n"
+        )
+        try:
+            structured = judge_llm.with_structured_output(
+                EvidenceJudgment, method=structured_method
+            )
+            result = invoke_with_retry(
+                structured,
+                [("system", system_prompt), ("human", user_prompt)],
+                max_retries=1,
+            )
+            if isinstance(result, EvidenceJudgment):
+                return result
+        except Exception:
+            pass
+        return None
+
     def _node(state: ReviewState) -> dict:
         requests = state.get("evidence_requests") or []
         candidates = {c.id: c for c in state.get("candidate_issues") or []}
         notes: list[EvidenceNote] = []
         gathered: list[GatheredContext] = []
-        # 去重：同一 (工具, 参数) 不重复调用
         called: set[tuple[str, str]] = set()
+        structured_method = state.get("structured_method", "function_calling")
 
         routes = _tool_routes() if tool_client is not None else {}
 
@@ -545,21 +587,19 @@ def _evidence_agent_node(tool_client=None):
             if candidate is None:
                 continue
             supports: list[str] = []
+            contradicts: list[str] = []
             unknowns: list[str] = []
             evidence_ids: list[str] = []
-            status = "mixed"
+            all_reasoning: list[str] = []
 
             if tool_client is not None and req.preferred_tools:
                 for tool_name in req.preferred_tools:
                     if tool_name not in routes:
                         unknowns.append(f"EvidenceAgent 不支持工具:{tool_name}")
-                        if status != "supported":
-                            status = "unsupported"
                         continue
 
                     call_fn, arg_builder = routes[tool_name]
                     kwargs = arg_builder(candidate, req)
-                    # 用去重键
                     dedup_key = (tool_name, str(kwargs))
                     if dedup_key in called:
                         continue
@@ -567,42 +607,66 @@ def _evidence_agent_node(tool_client=None):
 
                     try:
                         resp = call_fn(**kwargs)
-                    except Exception as exc:  # noqa: BLE001 单工具失败不中断其他工具
+                    except Exception as exc:  # noqa: BLE001
                         unknowns.append(f"工具 {tool_name} 调用异常: {exc}")
-                        if status != "supported":
-                            status = "not_found"
                         continue
 
                     content = resp.as_tool_output() if hasattr(resp, "as_tool_output") else str(resp)
                     gathered.append(GatheredContext(tool_name, str(kwargs), content))
-                    if getattr(resp, "success", True) and content.strip():
-                        supports.append(f"[{tool_name}] {content[:200]}")
-                        evidence_ids.append(f"tool:{tool_name}:{str(kwargs)}")
-                        status = "supported"
-                    else:
+                    success = getattr(resp, "success", True)
+                    if not success or not content.strip():
                         unknowns.append(f"[{tool_name}] 无结果或失败")
-                        if status != "supported":
-                            status = "not_found"
+                        continue
+
+                    evidence_ids.append(f"tool:{tool_name}:{str(kwargs)}")
+
+                    # ── LLM 证据分析 ──
+                    if judge_llm is not None:
+                        judgment = _analyse_evidence(
+                            judge_llm, structured_method, candidate, tool_name, content
+                        )
+                        if judgment is not None:
+                            entry = f"[{tool_name}] {judgment.reasoning}"
+                            all_reasoning.append(judgment.reasoning)
+                            if judgment.judgment == "SUPPORTS":
+                                supports.append(entry)
+                            elif judgment.judgment == "CONTRADICTS":
+                                contradicts.append(entry)
+                            else:
+                                unknowns.append(entry)
+                            continue
+
+                    # 回退：raw output 模式
+                    supports.append(f"[{tool_name}] {content[:200]}")
             else:
-                # 兜底：tool_client 不可用或 preferred_tools 为空 → ContextBundle 搜索
                 bundle = state.get("context_bundle")
                 rendered = bundle.render(1200) if bundle is not None else ""
                 target = req.target or candidate.file
                 if target and target in rendered:
                     supports.append(f"ContextBundle 包含目标文件事实:{target}")
                     evidence_ids.append(f"context:{target}")
-                    status = "supported"
                 else:
                     question = f" question={req.question}" if req.question else ""
                     unknowns.append(f"当前上下文不足以补证:{target or 'unknown'}{question}")
-                    status = "not_found"
+
+            # ── status 自动计算 ──
+            if supports and not contradicts:
+                status = "supported"
+            elif contradicts and not supports:
+                status = "contradicted"
+            elif supports and contradicts:
+                status = "mixed"
+            else:
+                status = "insufficient"
 
             notes.append(
                 EvidenceNote(
                     candidate_id=req.candidate_id,
                     status=status,
                     supports=supports,
+                    contradicts=contradicts,
                     unknowns=unknowns,
+                    reasoning="; ".join(all_reasoning) if all_reasoning else "",
                     evidence_ids=evidence_ids,
                 )
             )
@@ -637,75 +701,59 @@ def _rule_invalid_file(candidate: CandidateIssue, _notes: list[EvidenceNote], _b
 
 
 def _rule_contradicted(candidate: CandidateIssue, notes: list[EvidenceNote], _bundle) -> Verdict | None:
-    """evidence 有 contradicts + 低置信度 → drop。"""
-    has_contradicts = any(n.contradicts for n in notes)
-    if has_contradicts and candidate.confidence < 0.5:
+    """evidence 有 contradicts（证据反驳） + 低置信度 → drop。"""
+    if not notes:
+        return None
+    has_contradiction = any(n.status in ("contradicted", "mixed") for n in notes)
+    if has_contradiction and candidate.confidence < 0.5:
         return Verdict(candidate_id=candidate.id, action="drop", reason_code="contradicted", reason="证据包含反证且候选置信度低")
     return None
 
 
 def _rule_no_evidence(candidate: CandidateIssue, notes: list[EvidenceNote], _bundle) -> Verdict | None:
-    """全部 evidence not_found + 低置信度 → drop。"""
+    """全部 evidence insufficient + 低置信度 → drop。CRITICAL 额外 downgrade。"""
     if not notes:
         return None
-    all_not_found = all(n.status == "not_found" for n in notes)
-    if all_not_found and candidate.confidence < 0.5:
-        return Verdict(candidate_id=candidate.id, action="drop", reason_code="no_evidence", reason="无法获取任何支持证据且置信度低")
-    return None
-
-
-def _rule_quality_no_metrics(candidate: CandidateIssue, notes: list[EvidenceNote], _bundle) -> Verdict | None:
-    """quality 类候选缺少维护性量化证据 → drop。"""
-    if candidate.category != "quality":
+    all_weak = all(n.status == "insufficient" for n in notes)
+    if not all_weak:
         return None
-    has_metrics = any("get_code_metrics" in eid for n in notes for eid in n.evidence_ids)
-    if not has_metrics and candidate.evidence_status == "missing":
-        return Verdict(candidate_id=candidate.id, action="drop", reason_code="quality_no_metrics", reason="维护性候选缺少量化度量证据")
-    return None
-
-
-def _rule_guard_detected(candidate: CandidateIssue, notes: list[EvidenceNote], _bundle) -> Verdict | None:
-    """evidence 中检测到保护逻辑（sanitize/try-catch/校验）→ downgrade 或 drop。"""
-    guard_keywords = ["sanitize", "try-catch", "try {", "validate", "校验", "escap", "filter"]
-    for note in notes:
-        for s in note.supports:
-            if any(kw.lower() in s.lower() for kw in guard_keywords):
-                return Verdict(
-                    candidate_id=candidate.id,
-                    action="downgrade",
-                    reason_code="guard_detected",
-                    reason="代码中已存在保护逻辑",
-                    severity_override=Severity.INFO if candidate.severity_proposal == Severity.WARNING else Severity.WARNING,
-                )
-    return None
-
-
-def _rule_critical_partial(candidate: CandidateIssue, notes: list[EvidenceNote], _bundle) -> Verdict | None:
-    """CRITICAL 但 evidence 不足（无任何 supported）→ downgrade 到 WARNING。"""
-    if candidate.severity_proposal != Severity.CRITICAL:
-        return None
-    has_no_support = notes and all(n.status in ("not_found", "unsupported", "mixed") for n in notes)
-    if has_no_support:
+    if candidate.confidence < 0.5:
+        return Verdict(candidate_id=candidate.id, action="drop", reason_code="no_evidence", reason="全部证据不足以支持或反驳且置信度低")
+    if candidate.severity_proposal == Severity.CRITICAL:
         return Verdict(
             candidate_id=candidate.id,
             action="downgrade",
-            reason_code="critical_partial_evidence",
-            reason="CRITICAL 判定但证据不充分，降级为 WARNING",
+            reason_code="critical_insufficient_evidence",
+            reason="CRITICAL 判定但证据全部 insufficient，降级为 WARNING",
             severity_override=Severity.WARNING,
         )
     return None
 
 
+def _rule_strong_support(candidate: CandidateIssue, notes: list[EvidenceNote], _bundle) -> Verdict | None:
+    """高置信 + 全 supported + 零 contradicts → fast-track keep（跳过 LLM 终审）。"""
+    if not notes:
+        return None
+    if candidate.confidence < 0.9:
+        return None
+    all_supported = all(n.status == "supported" for n in notes)
+    if all_supported:
+        return Verdict(
+            candidate_id=candidate.id,
+            action="keep",
+            reason_code="strong_support",
+            reason="高置信且证据完全支持，快速通道保留",
+        )
+    return None
+
+
 # 规则列表（优先级从高到低）。
-# 去重/合并不再由单独规则处理，而是复用 AggregationStage 的两段式去重
-# （规则指纹 + LLM 语义综合），在 council_judge 内部调用。
+# 去重/合并复用 AggregationStage 的两段式去重（规则指纹 + LLM 语义综合）。
 _COUNCIL_RULES = [
     _rule_invalid_file,
+    _rule_strong_support,
     _rule_contradicted,
     _rule_no_evidence,
-    _rule_quality_no_metrics,
-    _rule_guard_detected,
-    _rule_critical_partial,
 ]
 
 
@@ -732,26 +780,31 @@ def _council_judge_node(llm, judge_llm=None):
 
     def _build_llm_prompt(unhandled: list[CandidateIssue], handled: list[Verdict], bundle: ContextBundle | None) -> str:
         parts: list[str] = []
-        parts.append("你是代码审查裁决者。对以下候选问题逐一判定：keep（保留）/ drop（淘汰）/ downgrade（降级）/ merge（合并）。")
+        parts.append("你是代码审查裁决者。基于已分析的证据质量，对候选问题逐一判定。")
 
         if bundle is not None:
-            parts.append("\n## 共享上下文\n" + bundle.render(3000))
+            parts.append("\n## 共享上下文\n" + bundle.render(2000))
 
         if unhandled:
             parts.append("\n## 待裁决候选")
             for i, c in enumerate(unhandled):
-                evidence_summary = ""
+                # 结构化证据摘要
+                evidence_lines: list[str] = []
                 for note in c.evidence_notes:
-                    if note.supports:
-                        evidence_summary += f"  证据支持: {'; '.join(note.supports[:3])}\n"
-                    if note.unknowns:
-                        evidence_summary += f"  证据不足: {'; '.join(note.unknowns[:3])}\n"
+                    for s in note.supports:
+                        evidence_lines.append(f"    ✅ 支持: {s}")
+                    for ct in note.contradicts:
+                        evidence_lines.append(f"    ❌ 反驳: {ct}")
+                    for u in note.unknowns:
+                        evidence_lines.append(f"    ⚠️  不足: {u}")
+                evidence_block = "\n".join(evidence_lines) if evidence_lines else "    (无证据)"
+
                 parts.append(
                     f"[{i}] {c.id}\n"
                     f"  file={c.file}:{c.line} type={c.type} severity={c.severity_proposal}\n"
                     f"  source={c.source_agent} confidence={c.confidence:.2f}\n"
                     f"  claim={c.claim}\n"
-                    f"{evidence_summary}"
+                    f"  证据:\n{evidence_block}"
                 )
 
         if handled:
@@ -759,8 +812,12 @@ def _council_judge_node(llm, judge_llm=None):
             for v in handled:
                 parts.append(f"- {v.candidate_id}: {v.action} ({v.reason_code}) {v.reason}")
 
-        parts.append("\n对每条待裁决候选，输出一个 JSON 对象，包含 candidate_id / action / reason。")
-        parts.append("action 取值: keep, drop, downgrade, merge。不确定时保守 keep。")
+        parts.append("\n## 判定原则")
+        parts.append("- 有支持证据且无反证 → keep")
+        parts.append("- 有明确反证 → drop（反证确凿）或 downgrade（部分反证）")
+        parts.append("- 证据全部不足 → 按原置信度保守决策（高置信 keep，低置信 drop）")
+        parts.append("- 多条 candidate 共享相同证据链指向同一底层问题 → merge")
+        parts.append("\n对每条待裁决候选输出 candidate_id / action / reason。不确定时保守 keep。")
         return "\n".join(parts)
 
     def _node(state: ReviewState) -> dict:
@@ -1025,7 +1082,7 @@ def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=No
             make_reviewer_node(reviewer, checkpointer=checkpointer, llm=llm, tool_client=tool_client),
         )
     g.add_node("council_coordinator", _coordinator_node())
-    g.add_node("evidence_agent", _evidence_agent_node(tool_client))
+    g.add_node("evidence_agent", _evidence_agent_node(tool_client, judge_llm=fp_verify_llm))
     g.add_node("council_judge", _council_judge_node(llm, judge_llm=fp_verify_llm))
 
     if enable_summary:
