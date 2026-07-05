@@ -109,8 +109,14 @@ git diff → 一次 LLM 调用 → 返回结构化 issues → 打印
 **目标:做出市面常见方案没做/做得不够的事。以 Agent 为主,主打下面两个创新点。**
 
 ### 创新点 A:用 LangGraph 重构编排(强烈推荐)
-- [ ] 把 `AgentExecutor` 换成显式的 LangGraph 状态图
-- [ ] 实现可控的多轮审查 / 回溯 / 人在环路(human-in-the-loop)审批
+- [x] 把默认审查路径切到显式 LangGraph 状态图:ADR-032 ReviewCouncil 外层拓扑已落地
+- [x] 落地 ReviewCouncil 内部 Agent 职责:已从 security / logic / quality 过渡到 ThreatModel / Behavior / Maintainability 方法论分工
+- [x] 落地每个发现者 Agent 的第一版工具边界:ThreatModel / Behavior / Maintainability 已声明固定 allowlist;后续继续补齐 budget / 失败策略 / 禁止行为 / trace
+- [ ] 强化 CouncilCoordinator 的确定性调度:基于结构化字段控制 Evidence / Challenge / 轮次 / fast path,不回到自然语言关键词判断
+- [ ] 增强 EvidenceAgent 的证据路由:把 `related_snippet` / `caller_path` / `sensitive_sink` / `metric_context` / `open_question` 稳定映射到现有工具与证据状态
+- [ ] 把 SelfChecker 从旧 aggregation + fp_filter 包装升级为真正裁决节点:去重、证据一致性、challenge 处理、级别校准
+- [ ] 增加 ReviewCouncil 过程 trace 与 eval 指标:Agent 触发次数、补证次数、challenge 推翻率、证据覆盖率、候选丢弃原因等
+- [ ] 重新设计可控的多轮审查 / 回溯 / 人在环路(human-in-the-loop)审批
 - [ ] 用 `langgraph-checkpoint` 做有状态、可恢复的审查流程
 
 ### 创新点 B:记忆工程(让它越用越懂)

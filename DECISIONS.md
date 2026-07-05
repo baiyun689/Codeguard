@@ -942,6 +942,16 @@ Supervisor 当前承担三种不同性质的职责：
 
 ## ADR-031 · 架构重构：三审查员合一 + 上下文预计算 + SelfChecker 取缔聚合/误报过滤
 
+> **已废弃（2026-07-03）**：本 ADR 被 ADR-032 取代，保留作为设计演进记录。
+>
+> 废弃原因：
+> 1. 它把多 Agent 审查收敛成"单一 CodeReviewer"，虽然工程上更简单，但不符合本项目作为求职展示项目对"多 Agent 编排"亮点的目标。
+> 2. 它仍保留一个混合式 Supervisor，职责包含覆盖率、聚焦、充分性判断与重审决策，容易重新变成不稳定的 LLM 调度面。
+> 3. 它把 ContextProvider、Supervisor、CodeReviewer、SelfChecker 的职责边界写得过重，一次 change 同时改上下文、审查、裁决、工具退役与调度策略，实施风险偏大。
+> 4. 它没有充分体现"发现-举证-质疑-裁决"的多角色协作协议，而这是 ADR-032 要强调的架构亮点。
+>
+> ADR-031 中仍可复用的思想：上下文前置、Java 只产事实、repo map 从开放式工具退为内部事实来源、SelfChecker 负责最终证据校验与去重。
+
 **背景**:当前架构以 `security` / `logic` / `quality` 三个并行审查员为核心，通过专属工具（`find_sensitive_apis` / `find_callers` / `get_code_metrics`）和输出边界约束（"不归你管就别报"）来制造区分度。但实践下来发现三个深层问题：
 
 1. **分类轴选错了**:安全/逻辑/质量是按"问题长什么样"（issue taxonomy）来分类，不是按"如何发现"（review methodology）来分类。三个审查员拿到同一份 diff、用同一套 LLM 推理能力、走几乎相同的思考过程——只是输出时各戴一个 filter mask。这不叫三个审查员，这叫一个审查员带三个输出过滤器。
@@ -1104,4 +1114,483 @@ START
 
 ---
 
-<!-- 后续在这里继续追加 ADR-032、ADR-033 …… -->
+## ADR-032 · 证据驱动的多 Agent ReviewCouncil：确定性外层编排 + 多角色审查协作
+
+**背景**:ADR-031 试图把三审查员合并为单一 CodeReviewer，并用 ContextProvider + SelfChecker 简化管线。这个方向解决了"三维度审查员重复探索、工具调用不稳定"的问题，但也削弱了本项目最值得展示的亮点：多 Agent 编排。
+
+Codeguard 是求职展示项目，不只是要"能审代码"，也要体现系统设计能力。当前行业语境下，多 Agent 编排的价值不应体现在"把 security / logic / quality 切得更细"，而应体现在一套可解释、可恢复、可量化的协作协议：不同 Agent 以不同认知职责参与代码审查，围绕同一份事实上下文产出候选、补证据、提出质疑，最后由裁决节点统一输出。
+
+因此 ADR-032 取代 ADR-031，目标不是回到旧的 LLM Supervisor 动态派发，而是设计一条更适合展示也更可控的新路径：
+
+```
+START
+  ↓
+Summary（可选）
+  ↓
+ContextProvider
+  ↓
+CouncilCoordinator（确定性编排器）
+  ↓
+ReviewCouncilSubgraph（多 Agent 协作审查）
+  ↓
+SelfChecker（去重 + 证据校验 + 误报压制 + 级别校准）
+  ↓
+END
+```
+
+**核心定位**:
+
+> ADR-032 是 "multi-agent inside a deterministic review protocol"：多 Agent 是外层图中可见的审查子图，但调度逻辑不是黑盒 LLM Supervisor，而是确定性的 Coordinator + 结构化 State。
+
+---
+
+### 决策 1：保留多 Agent，但从"三维度并行审查员"升级为 ReviewCouncil
+
+ADR-032 不再采用 ADR-031 的"单一 CodeReviewer"目标形态。新的审查核心是 `ReviewCouncilSubgraph`，它在外层 LangGraph 中是显式节点/子图，从展示视角能清楚看到多 Agent 协作；从工程视角又可以作为一个独立阶段接入现有管线。
+
+ReviewCouncil 第一版只定义角色大纲，具体 prompt、工具细节、结构化输出 schema 后续另开 change 深入讨论。
+
+初步角色划分：
+
+| 角色 | 职责 | 非职责 | 输出 |
+|------|------|--------|------|
+| **ThreatModelAgent** | 从攻击者/滥用者视角发现安全风险，如输入可控性、敏感 API、权限边界、注入与数据泄露 | 不报普通空指针、纯复杂度或风格问题 | `CandidateIssue[]` |
+| **BehaviorAgent** | 从运行行为视角发现正确性问题，如空值、异常路径、事务一致性、状态变化、调用链影响 | 不报安全推测，不报纯维护性问题 | `CandidateIssue[]` |
+| **MaintainabilityAgent** | 从长期维护视角发现复杂度、重复、可测试性、局部设计退化 | 不报漏洞，不报运行时 bug，除非其主要影响是维护风险 | `CandidateIssue[]` |
+| **EvidenceAgent** | 针对候选 issue 补充支持证据、反证或未知项 | 不主动发现新 issue，不做最终裁决 | `EvidenceNote[]` |
+| **ChallengeAgent** | 对候选 issue 提出质疑：证据不足、重复、级别过高、已有保护逻辑 | 不主动发现新 issue，不替代 SelfChecker | `Challenge[]` |
+| **SelfChecker** | 最终去重、证据一致性校验、误报压制、严重级别校准、转成最终 `Issue` | 不做开放式上下文探索 | `ReviewResult` |
+
+这个划分的重点是**认知职责不同**，而不是简单把问题类型切得更细。前三个 Agent 是发现者，EvidenceAgent 是举证者，ChallengeAgent 是质疑者，SelfChecker 是裁决者。
+
+---
+
+### 决策 2：外层调度员不是 LLM Supervisor，而是确定性的 CouncilCoordinator
+
+旧 Supervisor 的问题在于：它使用 LLM 做派发、补派、finish 判断，导致调度结果不稳定，也容易把"工程编排"和"语义判断"混在一起。
+
+ADR-032 保留"调度员"概念，但职责改为 `CouncilCoordinator`：
+
+| 职责 | 做法 |
+|------|------|
+| 启动发现者 Agent | 固定 fan-out ThreatModel / Behavior / Maintainability |
+| 收集结果 | 通过 LangGraph reducer 汇总 `CandidateIssue[]` |
+| 控制 Evidence/Challenge 是否运行 | 读结构化字段和硬规则，不读自然语言关键词 |
+| 控制有限轮次 | `max_evidence_rounds`、预算上限、候选数量上限 |
+| 维护 trace | 记录每轮运行、跳过原因、预算消耗、候选数量 |
+| 路由到 SelfChecker | 达到终止条件后进入裁决节点 |
+
+`CouncilCoordinator` 不负责：
+
+- 判断某个 issue 是否真实
+- 用 LLM 动态决定"今天派不派某个发现 Agent"
+- 让 Agent 自由自然语言聊天
+- 替代 SelfChecker 做最终裁决
+- 直接调用 Java 判断"是不是问题"
+
+它本质上是：
+
+```
+LangGraph edges + State reducer + deterministic routing rules
+```
+
+---
+
+### 决策 3：Agent 之间通过共享黑板和结构化消息通信
+
+多 Agent 不做自由对话，也不做"Agent A 直接私聊 Agent B"。所有通信通过图 State 中的共享黑板完成：
+
+```
+ReviewCouncilState
+  context_bundle
+  candidate_issues[]
+  evidence_requests[]
+  evidence_notes[]
+  challenges[]
+  council_trace[]
+  evidence_round
+```
+
+发现者 Agent 输出 `CandidateIssue`，EvidenceAgent 读取候选与证据请求后输出 `EvidenceNote`，ChallengeAgent 读取候选与证据后输出 `Challenge`，SelfChecker 读取所有结构化数据后产出最终 `Issue`。
+
+关键结构化字段（大纲，后续 change 细化）：
+
+```
+CandidateIssue
+  id
+  agent
+  category
+  file
+  line
+  severity_proposal
+  claim
+  evidence_ids
+  evidence_status: sufficient | partial | missing
+  needs_evidence: bool
+  evidence_requests[]
+  confidence
+
+EvidenceRequest
+  candidate_id
+  kind: caller_chain | callee_impl | sensitive_api | metric | guard_condition | related_snippet
+  target
+  reason_code
+
+EvidenceNote
+  candidate_id
+  supports[]
+  contradicts[]
+  unknowns[]
+  evidence_ids[]
+
+Challenge
+  candidate_id
+  verdict: keep | downgrade | merge | drop | needs_more_evidence
+  reason_code[]
+  evidence_request?
+```
+
+Coordinator 的路由只能读取这些枚举/布尔/计数字段，禁止基于自然语言关键词判断。
+
+---
+
+### 决策 4：EvidenceAgent / ChallengeAgent 使用确定性路由 + 有限证据轮次
+
+固定调用一次 EvidenceAgent / ChallengeAgent 实现简单，但会浪费 token，也无法处理复杂跨文件问题需要二次补证的场景。完全交给 LLM Supervisor 动态决定则又回到旧问题。
+
+ADR-032 采用折中方案：**确定性路由 + 有限证据轮次**。
+
+第一版推荐规则：
+
+```
+if candidate_issues is empty:
+    skip EvidenceAgent
+    skip ChallengeAgent
+    go SelfChecker
+
+if any candidate.needs_evidence:
+    run EvidenceAgent
+
+run ChallengeAgent once if candidate_issues is not empty
+
+if any challenge.verdict == "needs_more_evidence"
+   and evidence_round < max_evidence_rounds:
+    run EvidenceAgent again
+    run ChallengeAgent again
+else:
+    go SelfChecker
+```
+
+默认配置：
+
+| 配置 | 默认 | 说明 |
+|------|------|------|
+| `max_evidence_rounds` | `1` | 第一版只允许一轮补证，复杂循环后续再开 |
+| `max_candidates_for_challenge` | 待定 | 候选过多时先做规则截断或分批 |
+| `min_confidence_for_fast_path` | 待定 | 高置信且证据充分的候选可减少补证 |
+| `max_evidence_requests_per_candidate` | 待定 | 防止单个候选拖垮预算 |
+
+这样能覆盖三种情况：
+
+- 无候选：跳过 Evidence/Challenge，节省成本
+- 普通候选：跑一轮举证 + 质疑
+- 复杂候选：允许一轮受限补证，不进入无限 ReAct
+
+---
+
+### 决策 5：ContextProvider 保留，但职责收敛为事实供给层
+
+ADR-031 中 ContextProvider 的方向保留，但不在 ADR-032 第一版继续膨胀成过大的"全能预计算节点"。它的边界是：为 ReviewCouncil 提供共享事实基础，而不是做问题判断。
+
+第一版 ContextProvider 外层职责：
+
+- 从 diff 派生 changed files / changed symbols
+- 复用 repo-map / tag extraction 产出符号摘要与相关候选文件
+- 复用或封装现有 Java 工具产出事实：敏感 API、调用方、复杂度、必要代码片段
+- 对事实排序、截断、打 provenance
+- 生成 `ContextBundle`
+
+不做：
+
+- 不判断漏洞/bug/质量问题是否成立
+- 不直接替代发现 Agent
+- 不做无限 RAG 或长期记忆
+- 不把 Java 工具变成 LLM 决策点
+
+`get_repo_map` 的处理延续 ADR-031 的可复用结论：repo map 能力保留，作为 ContextProvider 内部事实来源；`get_repo_map` 不再作为开放式 Agent tool 暴露给发现者 Agent。
+
+---
+
+### 决策 6：SelfChecker 合并 aggregation / fp_filter 的目标能力，但实现可分阶段复用旧代码
+
+ADR-032 的目标图中不再额外挂 `aggregation -> fp_filter` 两个阶段。最终图上只保留一个 `SelfChecker` 裁决节点：
+
+```
+ReviewCouncilSubgraph -> SelfChecker -> END
+```
+
+SelfChecker 目标职责：
+
+| 职责 | 来源 |
+|------|------|
+| 规则去重 | 复用当前 aggregation 第一段 |
+| 语义合并 | 复用当前 aggregation 第二段 |
+| 确定性误报规则 | 复用当前 fp_filter 第一段 |
+| 可选 LLM 复核 | 复用当前 fp_filter 第二段 |
+| 引用真实性校验 | ADR-032 新增 |
+| 事实冲突校验 | ADR-032 新增 |
+| Challenge 处理 | ADR-032 新增 |
+| 严重级别校准 | ADR-032 新增 |
+
+实现时可以先包装旧 `AggregationStage` 与 `FalsePositiveFilterStage`，保持行为可比；后续再内部重构成统一 SelfChecker。外部拓扑不再暴露两个独立节点。
+
+---
+
+### 决策 7：持久化与交互（ADR-026/027）第一版先舍弃
+
+ADR-032 第一版暂不把 checkpoint / HITL 作为必做范围。
+
+原因：
+
+1. 外层图拓扑发生较大变化，旧 ADR-027 的两个固定 interrupt 点（supervisor finish、reviewer hit limit）已经不适配。
+2. ReviewCouncil 的内部结构化 State 还未稳定，过早把 candidate/evidence/challenge 全部纳入可恢复契约，会放大迁移成本。
+3. 当前优先级是先把多 Agent 外层编排与通信协议跑通，让架构亮点成立。
+4. HITL 可以后续重新设计为 `review_council_complete` 或 `before_self_check` interrupt，而不是复用旧的 `supervisor_finish`。
+
+取舍：
+
+- ADR-032 第一版允许不启用 checkpointer。
+- 当前 `PipelineOrchestrator.run(thread_id=...)` 公共参数可以保留，但新图第一版不承诺完整恢复 ReviewCouncil 内部中间态。
+- `CODEGUARD_ENABLE_HITL` 在 ADR-032 默认路径下可暂时无效；旧 supervisor/HITL 实现迁移到 `services/agent/legacy/supervisor_graph/`，仅作历史参考，不作为运行回退。
+- 后续另开 ADR-033/034 专门设计"ReviewCouncil checkpoint + HITL"。
+
+---
+
+### 外层编排如何从当前实现迁移
+
+当前实现（简化）：
+
+```
+summary
+  ↓
+supervisor
+  ↓
+security / logic / quality reviewer subgraphs
+  ↓
+supervisor loop
+  ↓
+aggregation
+  ↓
+fp_filter
+```
+
+ADR-032 目标外层：
+
+```
+summary（可选）
+  ↓
+context_provider
+  ↓
+council_coordinator
+  ↓
+review_council_subgraph
+  ↓
+self_checker
+```
+
+迁移原则：
+
+1. **保留 LangGraph StateGraph 作为外层载体**：继续使用当前 `pipeline/graph.py` 的图构建方式和 reducer 思路。
+2. **废弃智能 Supervisor 默认路径**：旧 supervisor-scheduling 迁移到 `services/agent/legacy/supervisor_graph/`，仅作历史参考；新路径不再做 LLM 派发/finish，主编排代码不保留旧图运行分支。
+3. **新增 ContextProvider 节点**：先生成 `context_bundle`，写入图 State，供后续所有 Agent 只读使用。
+4. **新增 ReviewCouncilSubgraph**：作为外层图的一个子图或一组显式节点，内部包含发现者并行、证据、质疑的确定性流转。
+5. **新增 CouncilCoordinator 逻辑**：可以是独立节点，也可以是 conditional edges + reducer + helper function；第一版更推荐用显式 helper，避免再引入一个 LLM Agent。
+6. **SelfChecker 替代 aggregation/fp_filter 外层节点**：第一版内部复用旧 stage，外层只暴露 `self_checker`。
+7. **输出契约不变**：最终仍返回 `ReviewResult`，不向 `Issue` 增加 candidate/evidence/challenge 字段；这些中间态只进 trace/eval。
+
+推荐第一版节点：
+
+```
+START
+  ↓
+summary_node?             # 可继续复用
+  ↓
+context_provider_node     # 新增
+  ↓
+discover_fanout           # Threat / Behavior / Maintainability 并行
+  ↓
+council_route_node        # 规则判断是否需要 Evidence/Challenge
+  ↓
+evidence_node?            # 条件执行
+  ↓
+challenge_node?           # 条件执行
+  ↓
+self_checker_node         # 复用 aggregation + fp_filter + 新校验
+  ↓
+END
+```
+
+其中 `discover_fanout`、`evidence_node`、`challenge_node` 可以先直接做成外层节点，等逻辑稳定后再收敛为 `ReviewCouncilSubgraph`。
+
+---
+
+### 工具设计原则（大纲，后续另开任务细化）
+
+工具不按"所有 Agent 都能用全部工具"分配，而按职责分配：
+
+| 工具层 | 说明 |
+|--------|------|
+| 公共只读上下文工具 | `lookup_context_fact`、`get_context_snippet`、`cite_evidence`，只能查询 ContextBundle |
+| 角色专属事实工具 | ThreatModelAgent 偏 `find_sensitive_apis`，BehaviorAgent 偏 `find_callers`，MaintainabilityAgent 偏 `get_code_metrics` |
+| EvidenceAgent 补证工具 | 受限 `get_file_content`、related symbol lookup、caller/callee lookup，但只能响应结构化 `EvidenceRequest` |
+| 禁止工具 | 开放式 `get_repo_map`、任意文件读取、无边界 repo 探索 |
+
+具体工具 schema、allowlist、budget、失败策略后续另开 change 讨论。
+
+---
+
+### 后续优化策略（ADR-032 后续演进记录）
+
+ADR-032 已完成的是"外层拓扑 + 结构化通信 + 默认路径切换"。下一步优化不应急着堆更多节点，而应围绕
+ReviewCouncil 的专业分工、工具边界、调度策略和评测可观测性逐步精修。其中 ReviewCouncil 发现者职责、
+状态通信与外层轮次策略已于 2026-07-04 先行敲定，并已通过 `refine-review-council-agents` 落地第一版实现；
+其余方向继续作为候选策略记录，后续逐项讨论后再决定是否开新的 ADR / OpenSpec change。
+
+#### 已敲定：ReviewCouncil 内部发现者职责与状态边界
+
+核心原则：**内层可以 ReAct，外层不要群聊**。
+
+- 发现者 Agent 内部可以使用 ReAct 循环，基于本职工具完成初步探索与验证，一次性返回多个 `CandidateIssue`。
+- 外层 ReviewCouncil 不把补到的证据再返给原发现者重新审查，不做发现者之间的自由多轮对话。
+- 外层通过结构化黑板完成 `Discover -> Evidence -> Challenge -> Decide`：发现者提出候选，EvidenceAgent 补事实，
+  ChallengeAgent 质疑或降级，SelfChecker 最终聚合、去重、过滤并输出 `ReviewResult`。
+
+发现者命名从"问题类型分类"升级为"审查方法论分工"，但对外输出仍兼容现有 category：
+
+| 发现者 Agent | 对应 category | 核心问题 | 第一版工具边界 |
+|--------------|---------------|----------|----------------|
+| `ThreatModelAgent` | `security` | 是否引入真实可利用的攻击路径、信任边界破坏或敏感 sink 风险 | `get_file_content`、`find_sensitive_apis` |
+| `BehaviorAgent` | `logic` | 是否破坏运行行为、触发路径、状态流转、异常处理或业务不变量 | `get_file_content`、`find_callers` |
+| `MaintainabilityAgent` | `quality` | 是否制造值得 Code Review 阶段指出的维护风险 | `get_file_content`、`get_code_metrics` |
+
+三个发现者都不是最终裁判，只输出候选主张：
+
+```text
+CandidateIssue:
+  id
+  source_agent: threat_model | behavior | maintainability
+  category: security | logic | quality
+  file
+  line
+  claim
+  severity_proposal
+  confidence
+  evidence_status: sufficient | partial | missing
+  needs_evidence: bool
+  evidence_requests: EvidenceRequest[]
+  evidence_notes: EvidenceNote[]
+  challenge: Challenge | None
+```
+
+`EvidenceRequest.kind` 不追求覆盖所有情况，只作为 EvidenceAgent 的路由 hint。开放语义由 `question`、`reason`、
+`target` 承载，无法稳定归类的请求统一使用 `open_question`：
+
+```text
+EvidenceRequest:
+  kind: related_snippet | caller_path | sensitive_sink | metric_context | open_question
+  target
+  question
+  reason
+  preferred_tools
+```
+
+第一版建议的数量与成本上限：
+
+```text
+max_candidates_per_agent = 5
+max_evidence_requests_per_candidate = 2
+max_total_evidence_requests = 20
+max_evidence_rounds = 1
+```
+
+停止条件保持确定性：
+
+- 没有候选需要更多证据。
+- Challenge 已给出 `keep` / `downgrade` / `drop` 等终态 verdict。
+- 达到 `max_evidence_rounds`。
+- 工具不支持或查不到证据时，记录 `unsupported` / `not_found` 的 `EvidenceNote`，不继续追问。
+
+本次敲定范围不包括：发现者 prompt 的最终方法论、EvidenceAgent 的智能搜索策略、ChallengeAgent 的完整反方 prompt、
+SelfChecker 的真正法官化实现、发现者之间的多轮讨论、持久化与 HITL。
+
+已完成的优化项：
+
+1. **细化 ReviewCouncil 内部 Agent 职责**
+   已把现有 security / logic / quality reviewer 迁移为 ThreatModelAgent、BehaviorAgent、MaintainabilityAgent，
+   并把职责、非职责、输出约束写入 prompt 与结构化 schema，避免只是把原来的三个维度切得更碎。
+
+2. **定义每个 Agent 的工具边界**
+   第一版 allowlist 已按角色敲定：ThreatModelAgent 偏 `find_sensitive_apis`，BehaviorAgent 偏 `find_callers`，
+   MaintainabilityAgent 偏 `get_code_metrics`，三者共享 `get_file_content`，并已通过 `tool_allowlist` 生效。
+
+剩余优化项：
+
+3. **细化 EvidenceAgent 补证路由与证据质量**
+   EvidenceAgent 只响应结构化 EvidenceRequest 补事实，不能主动新增 issue。下一步应把 `related_snippet`、
+   `caller_path`、`sensitive_sink`、`metric_context`、`open_question` 稳定映射到现有工具、证据状态与 trace，
+   同时补齐 budget、失败策略、禁止行为与工具调用 trace。ChallengeAgent 只提出质疑，不能替代 SelfChecker 做最终裁决。
+
+4. **增强 CouncilCoordinator 的确定性调度策略**
+   当前第一版以 `needs_evidence`、challenge verdict、轮次上限等结构化字段路由，方向正确。后续可继续细化：
+   高危候选是否必须经过 Challenge；低置信候选是补证、降级还是丢弃；候选过多时如何排序和截断；
+   EvidenceAgent 是否允许多轮补证；哪些情况可以 fast path 直接进入 SelfChecker。调度条件仍应读取枚举、
+   布尔和计数字段，禁止回到自然语言关键词判断。
+
+5. **把 SelfChecker 从包装旧阶段升级为真正裁决节点**
+   第一版 SelfChecker 内部包装 AggregationStage 与 FalsePositiveFilterStage，保持行为可比。后续应逐步承担
+   ReviewCouncil 语境下的统一裁决：合并重复 CandidateIssue、根据 EvidenceNote 调整置信度、根据 Challenge
+   降级或剔除、校准 severity、保证最终 Issue 有可靠定位与建议。外部输出契约仍保持 `ReviewResult` / `Issue`
+   不变，中间态只进入 trace / eval。
+
+6. **补齐 ReviewCouncil 的过程可观测性与评测指标**
+   为了让"多 Agent 编排"不只是口号，后续 eval/report 可以增加过程指标：每次审查触发了哪些 Agent；
+   EvidenceAgent / ChallengeAgent 调用次数；Challenge 推翻、降级、合并了多少候选；有证据支持的问题占比；
+   SelfChecker 丢弃候选的原因分布；多 Agent 对同一候选的冲突率。这些指标能直接服务求职展示，也能指导后续调参。
+
+7. **增强 ContextProvider，但守住事实层边界**
+   ContextProvider 后续可以接入更好的 changed symbol 摘要、repo-map、caller/callee、敏感 API、复杂度和上下文片段
+   排序，并为不同 Agent 提供不同的 context slice。但它仍只产出事实、来源和截断信息，不判断"是不是问题"，
+   不替代发现者 Agent，也不把 Java Gateway 变成 LLM 决策点。
+
+8. **持久化与交互继续后置**
+   ADR-027 的简约持久化 + HITL 暂不接回 ADR-032 第一版。更合适的时机是在 Candidate / Evidence / Challenge
+   状态契约稳定后，重新设计 `review_council_complete` 或 `before_self_check` 这类 interrupt 点，再讨论 checkpoint
+   与人工确认。现在过早迁移会稀释 ReviewCouncil 编排主线。
+
+优先级建议：
+
+| 优先级 | 方向 | 原因 |
+|--------|------|------|
+| Done | ReviewCouncil 内部 Agent 职责与发现者工具边界 | 已通过 `refine-review-council-agents` 落地第一版 |
+| P1 | EvidenceAgent 证据路由与证据质量 | 让已定义的 EvidenceRequest 协议真正发挥作用，为 Challenge/SelfChecker 提供可靠材料 |
+| P1 | CouncilCoordinator 调度规则 | 决定多 Agent 是可控编排，而不是固定顺序调用 |
+| P2 | SelfChecker 裁决语义 | 直接影响误报、重复和最终输出质量 |
+| P2 | 过程 trace / eval 指标 | 让架构效果可展示、可量化 |
+| P3 | ContextProvider 深化 | 有价值，但要等 Agent 需要什么上下文更清楚后再加 |
+| P3 | checkpoint / HITL | 依赖中间态契约稳定，暂不抢跑 |
+
+---
+
+### 放弃的备选
+
+1. **继续 ADR-031 单一 CodeReviewer**：工程更简单，但多 Agent 亮点不足，不适合作为求职项目的核心展示。
+2. **恢复旧 LLM Supervisor 调度**：多 Agent 可见度强，但调度不稳定，且已在 ADR-029 暴露"两个 LLM 串行猜测"问题。
+3. **所有 Agent 自由 ReAct + 任意工具**：看起来更 Agentic，但 token 成本、可复现性、误报控制都会变差。
+4. **Evidence/Challenge 固定每次都跑**：简单但浪费成本；遇到复杂候选也缺少二次补证能力。
+5. **现在就把 HITL/checkpoint 一并迁移**：范围过大，且 interrupt 点需要基于新 State 重新设计，先舍弃。
+
+**日期**:2026-07-03
+
+---
+
+<!-- 后续在这里继续追加 ADR-033、ADR-034 …… -->
