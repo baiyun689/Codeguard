@@ -1,35 +1,15 @@
-"""审查阶段:并行运行多个领域审查员(安全 / 逻辑 / 质量)。
+"""ADR-032 发现者 Agent 定义与辅助函数。
 
-阶段 2:把阶段 1 的单一安全审查,扩成三个并行领域审查员。
-- 每个审查员 = 一个领域 prompt + 一次审查执行,彼此独立。
-- 用线程池并行:LLM 调用是 I/O 密集型,线程足矣;不引入 async
-  (见 docs/ROADMAP.md 阶段2 旁的 🔭 chunking/async 岔路口标记)。
-- 各审查员的 issues 全部合并进 context。**本阶段故意不去重**:先让"同一问题被多个
-  审查员重复报"的噪音暴露出来,才看得到阶段3聚合去重、阶段4误报过滤的价值。
-
-审查员的"执行方式"抽成可插拔引擎(见 pipeline/engines.py):
-- 无工具(context.tool_client 为 None)→ DirectEngine(单次直连,无工具对照基准)。
-- 有工具(配置了工具服务)→ ToolAgentEngine(ReAct,可调 Java 工具获取上下文)。
-两条路径并存、按配置分流(design.md D1)。
+Reviewer dataclass 描述每个发现者的配置（名称、prompt、工具边界）。
+DEFAULT_REVIEWERS 是三个默认发现者（ThreatModel/Behavior/Maintainability）。
+辅助函数供 graph.py 的发现者子图使用。
 """
 
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-
-from codeguard_agent.git.diff_collector import split_diff_by_file
-from codeguard_agent.llm.client import mock_review_result
-from codeguard_agent.models.schemas import ReviewResult
-from codeguard_agent.pipeline.engines import (
-    DirectEngine,
-    GatheredContext,
-    ReviewEngine,
-    ToolAgentEngine,
-)
-from codeguard_agent.pipeline.stages.base import PipelineContext, PipelineStage
 
 logger = logging.getLogger("codeguard")
 
@@ -111,19 +91,6 @@ def _build_user_prompt(diff_text: str, summary: str = "") -> str:
     )
 
 
-def _dedup_context(items: list[GatheredContext]) -> list[GatheredContext]:
-    """按(工具,参数)去重,保留首次出现的顺序。同一文件被多审查员读只留一份。"""
-    seen: set[tuple[str, str]] = set()
-    out: list[GatheredContext] = []
-    for it in items:
-        key = (it.tool, it.args)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(it)
-    return out
-
-
 def _build_relevant_diff(file_diffs: dict[str, str], relevant_files: list[str]) -> str:
     """把 relevant_files 对应的 diff 片段拼起来;无可拼片段时返回空串。"""
     parts = [file_diffs[fp] for fp in relevant_files if fp in file_diffs]
@@ -157,106 +124,3 @@ def _file_group_for_reviewer(file_groups: dict, reviewer: Reviewer) -> list[str]
     )
 
 
-def run_domain_reviewer(
-    llm,
-    diff_text: str,
-    reviewer: Reviewer,
-    max_retries: int = 3,
-    structured_method: str = "function_calling",
-) -> ReviewResult:
-    """跑单个领域审查员(无工具直连)。
-
-    保留此函数作为"直连审查"的稳定入口(现委托给 DirectEngine,行为不变)。
-    假定 llm 非 None、diff 非空——这两种边界由 ReviewerStage 统一处理。
-    解包 ReviewOutcome.result 保持原 ReviewResult 返回签名不变。
-    """
-    return DirectEngine().review(
-        llm,
-        system_prompt=_load_prompt(reviewer.prompt_file),
-        user_prompt=_build_user_prompt(diff_text),
-        reviewer_name=reviewer.name,
-        max_retries=max_retries,
-        structured_method=structured_method,
-    ).result
-
-
-class ReviewerStage(PipelineStage):
-    """并行领域审查阶段。"""
-
-    def __init__(self, reviewers: tuple[Reviewer, ...] = DEFAULT_REVIEWERS) -> None:
-        self.reviewers = reviewers
-
-    @property
-    def name(self) -> str:
-        return "reviewer"
-
-    def execute(self, context: PipelineContext) -> PipelineContext:
-        diff_text = context.diff_text
-        if not diff_text.strip():
-            context.summary = "没有检测到代码变更,无需审查。"
-            return context
-
-        # mock 模式:返回一次假数据即可,验证管线连通,不必每个审查员都假报一遍。
-        # 注意:mock 下绝不构造 Agent、不发起工具调用(即便配了 tool_client 也忽略)。
-        if context.llm is None:
-            logger.info("mock 模式,返回示例审查结果")
-            mock = mock_review_result()
-            context.issues.extend(mock.issues)
-            context.summary = mock.summary
-            return context
-
-        # 按是否配置了工具客户端分流(design.md D1):有→ReAct,无→直连基准。
-        engine: ReviewEngine
-        if context.tool_client is not None:
-            engine = ToolAgentEngine(context.tool_client, enabled_tools=context.enabled_tools)
-            mode = "ReAct(有工具)"
-        else:
-            engine = DirectEngine()
-            mode = "direct(无工具基准)"
-        logger.info(
-            "管线阶段 [reviewer]:并行运行 %d 个领域审查员 · 模式=%s", len(self.reviewers), mode
-        )
-
-        # 摘要阶段产出了 file_groups 时,按文件拆 diff,供各审查员按域裁剪(design.md D2)。
-        # file_groups 为空(摘要关闭 / mock / 摘要失败)→ file_diffs 为空 → 所有审查员吃整份 diff。
-        file_diffs = split_diff_by_file(diff_text) if context.file_groups else {}
-
-        # 并行只发生在引擎调用内;结果回到主线程后再合并,无共享可变状态。
-        summaries: list[str] = []
-        gathered: list[GatheredContext] = []
-        with ThreadPoolExecutor(max_workers=len(self.reviewers)) as pool:
-            future_to_reviewer = {
-                pool.submit(
-                    engine.review,
-                    context.llm,
-                    system_prompt=_load_prompt(reviewer.prompt_file),
-                    user_prompt=_build_user_prompt(
-                        _effective_diff(
-                            diff_text,
-                            file_diffs,
-                            _file_group_for_reviewer(context.file_groups, reviewer),
-                        ),
-                        summary=context.diff_summary,
-                    ),
-                    reviewer_name=reviewer.name,
-                    max_retries=context.max_retries,
-                    structured_method=context.structured_method,
-                ): reviewer
-                for reviewer in self.reviewers
-            }
-            for future in as_completed(future_to_reviewer):
-                reviewer = future_to_reviewer[future]
-                try:
-                    outcome = future.result()
-                except Exception as exc:  # noqa: BLE001 单个审查员失败不应拖垮整条管线
-                    logger.warning("[%s] 审查员失败,跳过: %s", reviewer.name, exc)
-                    continue
-                context.issues.extend(outcome.result.issues)
-                if outcome.result.summary:
-                    summaries.append(f"【{reviewer.name}】{outcome.result.summary}")
-                gathered.extend(outcome.gathered_context)
-
-        # 跨审查员汇总工具上下文,按(工具,参数)去重:同一文件被多审查员读只留一份。
-        context.gathered_context = _dedup_context(gathered)
-        context.summary = "  ".join(summaries)
-        return context

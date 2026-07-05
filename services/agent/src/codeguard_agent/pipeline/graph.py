@@ -23,7 +23,6 @@ from codeguard_agent.git.diff_collector import split_diff_by_file
 from codeguard_agent.llm.client import mock_review_result
 from codeguard_agent.models.council import (
     CandidateIssue,
-    Challenge,
     ContextBundle,
     CouncilRunStats,
     CouncilTrace,
@@ -181,22 +180,15 @@ class ReviewState(TypedDict, total=False):
     enabled_tools: Any
     max_retries: int
     structured_method: str
-    enable_hitl: bool
     react_recursion_limit: int
-    max_review_rounds: int
     max_evidence_rounds: int
-    fp_llm_verify: bool
 
     diff_summary: str
-    file_groups: dict
-    change_types: list
-    risk_level: int
 
     context_bundle: ContextBundle
     candidate_issues: Annotated[list[CandidateIssue], _candidate_dedup_reducer]
     evidence_requests: Annotated[list[EvidenceRequest], capped_evidence_request_reducer]
     evidence_notes: Annotated[list[EvidenceNote], operator.add]
-    challenges: Annotated[list[Challenge], operator.add]
     council_verdicts: list  # council_judge 产出，供 coordinator 路由判断（非 Annotated，每轮覆盖）
     council_trace: Annotated[list[CouncilTrace], operator.add]
     evidence_round: int
@@ -205,14 +197,11 @@ class ReviewState(TypedDict, total=False):
     truncated_candidates: Annotated[int, operator.add]
     truncated_evidence_requests: Annotated[int, operator.add]
 
-    issues: Annotated[list, operator.add]
     gathered_context: Annotated[list, dedup_gathered_reducer]
     review_summaries: Annotated[list, operator.add]
-    dispatched: Annotated[set, operator.or_]
 
     final_issues: list
     summary: str
-    filter_stats: Any
     council_stats: CouncilRunStats
 
 
@@ -261,7 +250,6 @@ def _state_to_context(state: ReviewState, llm=None, fp_verify_llm=None, tool_cli
         tool_client=tool_client,
         enabled_tools=state.get("enabled_tools"),
         diff_summary=state.get("diff_summary", ""),
-        file_groups=state.get("file_groups") or {},
         gathered_context=list(state.get("gathered_context") or []),
     )
     ctx.context_bundle = state.get("context_bundle")
@@ -272,12 +260,7 @@ def _summary_node(llm, tool_client):
     def _node(state: ReviewState) -> dict:
         ctx = _state_to_context(state, llm=llm, tool_client=tool_client)
         SummaryStage().execute(ctx)
-        return {
-            "diff_summary": ctx.diff_summary,
-            "file_groups": ctx.file_groups,
-            "change_types": ctx.change_types,
-            "risk_level": ctx.risk_level,
-        }
+        return {"diff_summary": ctx.diff_summary}
 
     return _node
 

@@ -14,7 +14,6 @@ import argparse
 import logging
 import sys
 import uuid
-from typing import Any
 
 import os
 
@@ -33,101 +32,6 @@ _SEVERITY_ICON = {
     Severity.WARNING: "🟡",
     Severity.INFO: "🔵",
 }
-
-
-def _hitl_supervisor_finish_dialog(payload: dict[str, Any]) -> dict[str, Any]:
-    """HITL supervisor finish 交互式对话。返回 resume dict。"""
-    print("\n" + "=" * 60)
-    print("审查完成 — 等待确认")
-    print("=" * 60)
-    print(f"发现 {payload['issues_count']} 个问题。已派发: {payload['dispatched']}")
-    print(f"supervisor 理由: {payload.get('reason', '无')}")
-    print()
-    print("[回车] 确认聚合  [list] 查看发现  [retry <审查员>] 追加派发  [help] 帮助")
-
-    while True:
-        try:
-            cmd = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\n已取消,进入聚合。")
-            return {"action": "continue"}
-
-        if not cmd:
-            return {"action": "continue"}
-        parts = cmd.split()
-        verb = parts[0].lower()
-
-        if verb == "list":
-            issues = payload.get("issues") or []
-            if not issues:
-                print("  (暂无发现)")
-            else:
-                print(f"\n  ── 当前发现 ({len(issues)} 条) ──\n")
-                for idx, iss in enumerate(issues, 1):
-                    sev = iss.get("severity", "")
-                    icon = _SEVERITY_ICON.get(Severity(sev), "•") if sev else "•"
-                    fname = iss.get("file", "?")
-                    line = iss.get("line", 0)
-                    loc = f"{fname}:{line}" if line else fname
-                    msg = (iss.get("message") or "")[:120]
-                    print(f"  {icon} [{idx}] {iss.get('type', '?')}  {loc}")
-                    print(f"      {msg}")
-                    sug = iss.get("suggestion")
-                    if sug:
-                        print(f"      建议: {str(sug)[:100]}")
-                print()
-            continue
-        elif verb == "retry" and len(parts) >= 2:
-            reviewers = [n for n in parts[1:] if n in ("security", "logic", "quality")]
-            if not reviewers:
-                print("  可用审查员: security, logic, quality")
-                continue
-            print(f"  已追加派发: {reviewers}")
-            return {"action": "retry", "reviewers": reviewers}
-        elif verb == "focus" and len(parts) >= 3:
-            reviewer = parts[1]
-            if reviewer not in ("security", "logic", "quality"):
-                print("  可用审查员: security, logic, quality")
-                continue
-            note = " ".join(parts[2:])
-            print(f"  已聚焦 {reviewer}: {note}")
-            return {"action": "retry", "reviewers": [reviewer], "focus_notes": {reviewer: note}}
-        elif verb == "help":
-            print("  [回车] 确认进入聚合")
-            print("  list     查看当前发现列表")
-            print("  retry <审查员> [审查员 ...]  追加派发(security/logic/quality)")
-            print("  focus <审查员> <说明>  带聚焦指令重派")
-            print("  help     打印本帮助")
-        else:
-            print(f"  未知命令: {cmd} (输入 help 查看帮助)")
-
-
-def _hitl_reviewer_limit_dialog(payload: dict[str, Any]) -> dict[str, Any]:
-    """HITL reviewer_hit_limit 交互式对话。返回 resume dict。"""
-    reviewer = payload.get("reviewer", "?")
-    gathered = payload.get("gathered_count", 0)
-    print(f"\n{'=' * 60}")
-    print(f"⚠ {reviewer} 审查员撞递归上限")
-    print(f"{'=' * 60}")
-    print(f"已收集 {gathered} 个文件上下文。")
-    print()
-    print("[回车] 以已有上下文收尾  [retry] 放宽步数重跑  [skip] 跳过")
-
-    while True:
-        try:
-            cmd = input("> ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print("\n已取消,以已有上下文收尾。")
-            return {"action": "continue"}
-
-        if not cmd or cmd == "continue":
-            return {"action": "continue"}
-        elif cmd == "retry":
-            return {"action": "retry"}
-        elif cmd == "skip":
-            return {"action": "skip"}
-        else:
-            print(f"  未知命令: {cmd} (回车=收尾 / retry=重跑 / skip=跳过)")
 
 
 def _print_result(result: ReviewResult) -> None:
@@ -163,37 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     review_parser.add_argument(
         "--thread-id",
         default=None,
-        help="检查点线程标识(需配 CODEGUARD_CHECKPOINT_BACKEND)。"
-             "相同 thread_id 重复调用可从上次中断点恢复继续执行。",
-    )
-    review_parser.add_argument(
-        "--non-interactive",
-        action="store_true",
-        default=False,
-        help="非交互式模式:HITL interrupt 触发时打印状态并退出(退出码 2),"
-             "不带此参数则进入终端交互式对话。",
-    )
-    review_parser.add_argument(
-        "--resume",
-        action="store_true",
-        default=False,
-        help="恢复模式:从上次 HITL interrupt 点继续执行。",
-    )
-    review_parser.add_argument(
-        "--resume-action",
-        default="continue",
-        choices=["continue", "retry", "skip"],
-        help="resume 时的动作(默认 continue)。",
-    )
-    review_parser.add_argument(
-        "--resume-reviewers",
-        default=None,
-        help="retry 时追加的审查员列表,逗号分隔(如 security,logic)。",
-    )
-    review_parser.add_argument(
-        "--resume-focus",
-        default=None,
-        help="retry 时的聚焦指令,格式: reviewer:说明(如 'security:重点审Payment.java')。",
+        help="检查点线程标识(需配 CODEGUARD_CHECKPOINT_BACKEND)。",
     )
 
     args = parser.parse_args(argv)
@@ -208,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         llm = build_llm(settings)
-        logger.info("审查方式:ADR-032 ReviewCouncil(摘要 → 上下文 → 多 Agent Council → SelfChecker)")
+        logger.info("审查方式:ADR-032 ReviewCouncil(summary → context → discover×3 → coordinator → evidence/council_judge)")
         # 裁决模型(优先异源+低温,供 council_judge 去重与终审使用;误报验证也复用)。
         # 只要配置了 CODEGUARD_JUDGE_* 就创建,不再仅依赖 fp_llm_verify 开关。
         fp_verify_llm = None
@@ -239,37 +113,16 @@ def main(argv: list[str] | None = None) -> int:
                 tool_client = None
 
         orch = PipelineOrchestrator(
-            fp_llm_verify=settings.fp_llm_verify,
             enable_summary=settings.enable_summary,
-            enable_supervisor=settings.enable_supervisor,
-            max_review_rounds=settings.max_review_rounds,
             max_evidence_rounds=settings.max_evidence_rounds,
             checkpoint_backend=settings.checkpoint_backend,
             checkpoint_db=settings.checkpoint_db,
-            enable_human_in_the_loop=settings.enable_human_in_the_loop,
             react_recursion_limit=settings.react_recursion_limit,
-            orchestration_profile=settings.review_orchestration,
         )
 
-        # thread_id:用户没传则自动生成,保证中断后能打印准确的恢复命令。
         effective_thread_id = args.thread_id or str(uuid.uuid4())
 
-        # HITL resume:构造 resume dict 从命令行参数。
-        resume: dict[str, Any] | None = None
-        if args.resume:
-            resume = {"action": args.resume_action}
-            if args.resume_reviewers:
-                resume["reviewers"] = [r.strip() for r in args.resume_reviewers.split(",")]
-            if args.resume_focus:
-                if ":" in args.resume_focus:
-                    reviewer, note = args.resume_focus.split(":", 1)
-                    resume["focus_notes"] = {reviewer.strip(): note.strip()}
-                else:
-                    resume["focus_notes"] = {"security": args.resume_focus.strip()}
-
         try:
-            from langgraph.errors import GraphInterrupt
-
             result = orch.run(
                 llm,
                 diff_text,
@@ -280,53 +133,7 @@ def main(argv: list[str] | None = None) -> int:
                 allowed_files=allowed_files,
                 tool_client=tool_client,
                 thread_id=effective_thread_id,
-                resume=resume,
             )
-        except GraphInterrupt as gi:
-            payload = gi.args[0] if gi.args else {}
-            ptype = payload.get("type", "") if isinstance(payload, dict) else ""
-
-            # 非交互式:打印状态 + 退出码 2。
-            if args.non_interactive:
-                print(f"\n[审查暂停] HITL interrupt: {ptype}")
-                print(f"payload: {payload}")
-                print("恢复命令:")
-                print(f"  python -m codeguard_agent review --repo {args.repo} "
-                      f"--thread-id {effective_thread_id} "
-                      f"--resume --resume-action continue")
-                if tool_client is not None:
-                    destroy_tool_session(tool_client)
-                return 2
-
-            # 交互式:进入对话循环。
-            if ptype == "supervisor_finish":
-                resume = _hitl_supervisor_finish_dialog(payload)
-            elif ptype == "reviewer_hit_limit":
-                resume = _hitl_reviewer_limit_dialog(payload)
-            else:
-                logger.warning("未知 interrupt 类型 '%s',默认 continue", ptype)
-                resume = {"action": "continue"}
-
-            # 用 resume 重新调用(同一 thread_id)。
-            try:
-                result = orch.run(
-                    llm,
-                    diff_text,
-                    max_retries=settings.max_retries,
-                    structured_method=settings.structured_method,
-                    fp_verify_llm=fp_verify_llm,
-                    repo_path=repo_abspath,
-                    allowed_files=allowed_files,
-                    tool_client=tool_client,
-                    thread_id=effective_thread_id,
-                    resume=resume,
-                )
-            except GraphInterrupt:
-                # 第二次 interrupt(如 retry 后又撞限):递归走交互式。
-                logger.info("二次 interrupt,进入交互式确认...")
-                if tool_client is not None:
-                    destroy_tool_session(tool_client)
-                return 2  # 简化处理:非交互式退出,下次可 resume
         finally:
             if tool_client is not None:
                 destroy_tool_session(tool_client)

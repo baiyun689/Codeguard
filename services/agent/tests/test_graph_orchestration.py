@@ -533,18 +533,9 @@ def test_hitl_is_ignored_in_adr032_default_path():
     orch = PipelineOrchestrator(
         enable_summary=False,
         checkpoint_backend="memory",
-        enable_human_in_the_loop=True,
     )
     result = orch.run(None, _DIFF, thread_id="hitl-ignored")
     assert len(result.issues) >= 1
-
-
-def test_config_hitl_default_false(monkeypatch):
-    from codeguard_agent.config import Settings
-
-    monkeypatch.setenv("CODEGUARD_ENABLE_HITL", "")
-    settings = Settings.from_env()
-    assert settings.enable_human_in_the_loop is False
 
 
 # ── EvidenceAgent preferred_tools 路由测试 ──

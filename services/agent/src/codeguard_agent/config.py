@@ -43,30 +43,16 @@ class Settings:
     max_retries: int        # LLM 调用最大重试次数
     structured_method: str  # 结构化输出方式:function_calling | json_schema | json_mode
     disable_thinking: bool  # 是否禁用思考模式(DeepSeek 等推理模型需要)
-    # 误报过滤第二段 LLM 复核:CLI/产品路径默认**开**(精确率最强杠杆:P↑、误报率腰斩)。
-    # 评测受控档由 profile 单独控制(fp_verify 是对照的独立变量,默认关),互不影响。
-    fp_llm_verify: bool = True
-    # 阶段 3:Java 工具服务地址。非空 → pipeline 审查员走 ReAct(可调工具);
-    # 空 → 走无工具直连基准(见 design.md D1)。不在代码里硬编码地址。
+    # 阶段 3:Java 工具服务地址。非空 → 发现者走 ReAct(可调工具);空 → 走直连基准。
     tool_server_url: str = ""
-    # 前置摘要/分派阶段开关:默认开(质量优先)。关闭时管线退回"无摘要、各审查员吃整份 diff"
-    # 的现状路径,便于控成本与做对照(见 design.md D6)。
+    # 前置摘要阶段开关:默认开。关闭时审查员不收到 diff_summary 背景。
     enable_summary: bool = True
-    # ADR-032:默认编排 profile。目前唯一运行路径为 adr-032;旧 supervisor 仅保存在 legacy 目录。
-    review_orchestration: str = "adr-032"
-    # 旧 supervisor 智能调度开关已退役。字段暂留兼容旧调用方,ADR-032 默认路径会忽略它。
-    enable_supervisor: bool = False
-    # 旧 supervisor 派发-复审循环的迭代上限。字段暂留兼容。
-    max_review_rounds: int = 3
-    # ReviewCouncil EvidenceAgent/ChallengeAgent 的补证轮次上限,第一版默认 1。
+    # ReviewCouncil 证据补充轮次上限。
     max_evidence_rounds: int = 1
-    # checkpoint 后端: "sqlite" | "memory" | 空=不启用(默认空,向后兼容)。
-    # 启用后 LangGraph 图的每步 State 自动持久化;API 故障后可用相同 thread_id 从断点恢复。
+    # checkpoint 后端: "sqlite" | "memory" | 空=不启用(默认空)。
     checkpoint_backend: str = ""
     # SqliteSaver 数据库文件路径(仅 checkpoint_backend="sqlite" 时生效)
     checkpoint_db: str = "codeguard_checkpoints.db"
-    # human-in-the-loop 开关:ADR-032 第一版暂不迁移 interrupt 点;字段暂留兼容,运行时忽略。
-    enable_human_in_the_loop: bool = False
     # ReAct Agent 的递归步数上限(单审查员)。默认 48:每个工具往返耗 2 步,48 步可做 ~16-20 次
     # 工具调用 + 思考;实测 24 太紧(含 repo_map + 多次 file 读的难例会撞墙),调大到 48 步后
     # 通过降级兜底确保安全(见 ADR-016→018→028)。
@@ -102,28 +88,13 @@ class Settings:
         disable_thinking = os.environ.get(
             "CODEGUARD_DISABLE_THINKING", "false"
         ).strip().lower() in ("1", "true", "yes", "on")
-        # 误报过滤第二段 LLM 复核:CLI/产品路径默认**开**(精确率最强杠杆)。设为 0/false/no/off 关。
-        fp_llm_verify = os.environ.get(
-            "CODEGUARD_FP_LLM_VERIFY", "true"
-        ).strip().lower() not in ("0", "false", "no", "off")
-        # 摘要阶段开关:默认开。设为 0/false/no/off 时关闭,退回无摘要的现状路径。
+        # 摘要阶段开关:默认开。设为 0/false/no/off 时关闭。
         enable_summary = os.environ.get(
             "CODEGUARD_ENABLE_SUMMARY", "true"
         ).strip().lower() not in ("0", "false", "no", "off")
-        review_orchestration = os.environ.get(
-            "CODEGUARD_REVIEW_ORCHESTRATION", "adr-032"
-        ).strip().lower() or "adr-032"
-        # supervisor 智能调度开关已退役;默认 false,即使设 true 也只会触发运行时告警。
-        enable_supervisor = os.environ.get(
-            "CODEGUARD_ENABLE_SUPERVISOR", "false"
-        ).strip().lower() not in ("0", "false", "no", "off")
-        max_review_rounds = int(os.environ.get("CODEGUARD_MAX_REVIEW_ROUNDS", "3"))
         max_evidence_rounds = int(os.environ.get("CODEGUARD_MAX_EVIDENCE_ROUNDS", "1"))
         checkpoint_backend = os.environ.get("CODEGUARD_CHECKPOINT_BACKEND", "").strip().lower()
         checkpoint_db = os.environ.get("CODEGUARD_CHECKPOINT_DB", "codeguard_checkpoints.db").strip()
-        enable_hitl = os.environ.get(
-            "CODEGUARD_ENABLE_HITL", "false"
-        ).strip().lower() in ("1", "true", "yes", "on")
         react_recursion_limit = int(os.environ.get("CODEGUARD_REACT_RECURSION_LIMIT", "48"))
         reasoning_effort = os.environ.get("CODEGUARD_REASONING_EFFORT", "").strip().lower()
         # 只接受 high/max,其余当未设(空字符串→不传参,用模型默认 high)。
@@ -137,16 +108,11 @@ class Settings:
             max_retries=int(os.environ.get("CODEGUARD_MAX_RETRIES", "3")),
             structured_method=structured_method,
             disable_thinking=disable_thinking,
-            fp_llm_verify=fp_llm_verify,
             tool_server_url=os.environ.get("CODEGUARD_TOOL_SERVER_URL", "").strip(),
             enable_summary=enable_summary,
-            review_orchestration=review_orchestration,
-            enable_supervisor=enable_supervisor,
-            max_review_rounds=max_review_rounds,
             max_evidence_rounds=max_evidence_rounds,
             checkpoint_backend=checkpoint_backend,
             checkpoint_db=checkpoint_db,
-            enable_human_in_the_loop=enable_hitl,
             react_recursion_limit=react_recursion_limit,
             reasoning_effort=reasoning_effort,
         )

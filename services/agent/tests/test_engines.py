@@ -10,16 +10,12 @@ from __future__ import annotations
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
 from codeguard_agent.pipeline.engines import (
     DirectEngine,
-    GatheredContext,
     ReviewOutcome,
     ToolAgentEngine,
     _extract_gathered_context,
     _extract_json_object,
     _last_message_text,
 )
-from codeguard_agent.pipeline.stages.reviewer_stage import _dedup_context
-
-
 def _engine() -> ToolAgentEngine:
     return ToolAgentEngine(tool_client=None)
 
@@ -103,15 +99,6 @@ def test_抽取_跳过空内容与非工具消息():
 def test_抽取_异常或非dict_返回空_不抛():
     assert _extract_gathered_context("not a dict") == []
     assert _extract_gathered_context({"messages": None}) == []
-
-
-def test_dedup_context_按工具与参数去重():
-    a = GatheredContext("get_file_content", '{"path":"A.java"}', "AAA")
-    a2 = GatheredContext("get_file_content", '{"path":"A.java"}', "AAA-again")
-    b = GatheredContext("find_sensitive_apis", "{}", "APIS")
-    out = _dedup_context([a, a2, b])
-    assert len(out) == 2
-    assert out[0] is a and out[1] is b  # 保留首次出现
 
 
 def test_优先用图内置的_structured_response():
