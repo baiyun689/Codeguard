@@ -67,6 +67,8 @@ class PipelineContext:
     # 误报过滤阶段写入的统计(FilterStats);None 表示该阶段未运行。
     # 用 Any 避免 base 反向依赖 fp_filter(后者要 import 本模块的 PipelineStage)。
     filter_stats: Any = None
+    # ADR-032:ContextProvider 写入的共享事实包。用 Any 避免 base 反向依赖 council 模型。
+    context_bundle: Any = None
 
 
 class PipelineStage(ABC):

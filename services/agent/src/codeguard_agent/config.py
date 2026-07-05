@@ -52,18 +52,20 @@ class Settings:
     # 前置摘要/分派阶段开关:默认开(质量优先)。关闭时管线退回"无摘要、各审查员吃整份 diff"
     # 的现状路径,便于控成本与做对照(见 design.md D6)。
     enable_summary: bool = True
-    # 阶段 4:supervisor 智能调度开关。CLI/产品路径默认**开**(展示多 agent 调度,见 design D9);
-    # 评测受控档由 runner 显式关闭以保控变量纯净度。关闭时退回确定性全量派发。
-    enable_supervisor: bool = True
-    # supervisor 派发-复审循环的迭代上限(护栏,见 design D10)。
+    # ADR-032:默认编排 profile。目前唯一运行路径为 adr-032;旧 supervisor 仅保存在 legacy 目录。
+    review_orchestration: str = "adr-032"
+    # 旧 supervisor 智能调度开关已退役。字段暂留兼容旧调用方,ADR-032 默认路径会忽略它。
+    enable_supervisor: bool = False
+    # 旧 supervisor 派发-复审循环的迭代上限。字段暂留兼容。
     max_review_rounds: int = 3
+    # ReviewCouncil EvidenceAgent/ChallengeAgent 的补证轮次上限,第一版默认 1。
+    max_evidence_rounds: int = 1
     # checkpoint 后端: "sqlite" | "memory" | 空=不启用(默认空,向后兼容)。
     # 启用后 LangGraph 图的每步 State 自动持久化;API 故障后可用相同 thread_id 从断点恢复。
     checkpoint_backend: str = ""
     # SqliteSaver 数据库文件路径(仅 checkpoint_backend="sqlite" 时生效)
     checkpoint_db: str = "codeguard_checkpoints.db"
-    # human-in-the-loop 开关:默认关(向后兼容)。开启后在 supervisor 判 finish 和审查员撞
-    # 递归上限时暂停等待人工决策(需配合 CODEGUARD_CHECKPOINT_BACKEND 使用)。
+    # human-in-the-loop 开关:ADR-032 第一版暂不迁移 interrupt 点;字段暂留兼容,运行时忽略。
     enable_human_in_the_loop: bool = False
     # ReAct Agent 的递归步数上限(单审查员)。默认 48:每个工具往返耗 2 步,48 步可做 ~16-20 次
     # 工具调用 + 思考;实测 24 太紧(含 repo_map + 多次 file 读的难例会撞墙),调大到 48 步后
@@ -108,11 +110,15 @@ class Settings:
         enable_summary = os.environ.get(
             "CODEGUARD_ENABLE_SUMMARY", "true"
         ).strip().lower() not in ("0", "false", "no", "off")
-        # supervisor 智能调度开关:CLI 默认开(D9)。设为 0/false/no/off 时退回确定性全派。
+        review_orchestration = os.environ.get(
+            "CODEGUARD_REVIEW_ORCHESTRATION", "adr-032"
+        ).strip().lower() or "adr-032"
+        # supervisor 智能调度开关已退役;默认 false,即使设 true 也只会触发运行时告警。
         enable_supervisor = os.environ.get(
-            "CODEGUARD_ENABLE_SUPERVISOR", "true"
+            "CODEGUARD_ENABLE_SUPERVISOR", "false"
         ).strip().lower() not in ("0", "false", "no", "off")
         max_review_rounds = int(os.environ.get("CODEGUARD_MAX_REVIEW_ROUNDS", "3"))
+        max_evidence_rounds = int(os.environ.get("CODEGUARD_MAX_EVIDENCE_ROUNDS", "1"))
         checkpoint_backend = os.environ.get("CODEGUARD_CHECKPOINT_BACKEND", "").strip().lower()
         checkpoint_db = os.environ.get("CODEGUARD_CHECKPOINT_DB", "codeguard_checkpoints.db").strip()
         enable_hitl = os.environ.get(
@@ -134,8 +140,10 @@ class Settings:
             fp_llm_verify=fp_llm_verify,
             tool_server_url=os.environ.get("CODEGUARD_TOOL_SERVER_URL", "").strip(),
             enable_summary=enable_summary,
+            review_orchestration=review_orchestration,
             enable_supervisor=enable_supervisor,
             max_review_rounds=max_review_rounds,
+            max_evidence_rounds=max_evidence_rounds,
             checkpoint_backend=checkpoint_backend,
             checkpoint_db=checkpoint_db,
             enable_human_in_the_loop=enable_hitl,

@@ -208,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         llm = build_llm(settings)
-        logger.info("审查方式:多阶段管线(摘要 → 并行审查 → 聚合 → 误报过滤)")
+        logger.info("审查方式:ADR-032 ReviewCouncil(摘要 → 上下文 → 多 Agent Council → SelfChecker)")
         # 误报过滤第二段验证模型(开了才建,优先异源,见 ADR-005)。
         fp_verify_llm = None
         if settings.fp_llm_verify:
@@ -238,10 +238,12 @@ def main(argv: list[str] | None = None) -> int:
             enable_summary=settings.enable_summary,
             enable_supervisor=settings.enable_supervisor,
             max_review_rounds=settings.max_review_rounds,
+            max_evidence_rounds=settings.max_evidence_rounds,
             checkpoint_backend=settings.checkpoint_backend,
             checkpoint_db=settings.checkpoint_db,
             enable_human_in_the_loop=settings.enable_human_in_the_loop,
             react_recursion_limit=settings.react_recursion_limit,
+            orchestration_profile=settings.review_orchestration,
         )
 
         # thread_id:用户没传则自动生成,保证中断后能打印准确的恢复命令。

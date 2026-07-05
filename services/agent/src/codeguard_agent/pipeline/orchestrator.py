@@ -1,10 +1,8 @@
 """审查编排器门面。
 
-`run()` 内部构建并执行一张 LangGraph 状态图(supervisor 驱动,见 graph.py),对外保持稳定签名:
-摘要 → supervisor 调度 → 并行领域审查员 → 两段式聚合 → 误报过滤 → 结构化 ReviewResult。
-
-阶段 4(change langgraph-supervisor-orchestration)起,原线性 stage 循环被状态图取代;各 stage 的
-逻辑(SummaryStage/ReviewerStage/AggregationStage/FalsePositiveFilterStage)被 graph.py 的节点复用。
+ADR-032 默认路径内部执行 ReviewCouncil 图:
+summary? → context_provider → review_council → self_checker → END。
+对外仍返回稳定的 `ReviewResult`。
 """
 
 from __future__ import annotations
@@ -13,11 +11,10 @@ import logging
 from typing import Any
 import uuid
 
-from langgraph.types import Command
-
 from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.pipeline.graph import (
     DEFAULT_MAX_ROUNDS,
+    DEFAULT_MAX_EVIDENCE_ROUNDS,
     DEFAULT_RECURSION_LIMIT,
     ReviewState,
     build_review_graph,
@@ -66,9 +63,9 @@ class PipelineOrchestrator:
     参数:
         fp_llm_verify:误报过滤是否启用第二段 LLM 复核(默认关)。
         enable_summary:是否启用前置摘要/分派节点(默认开)。
-        enable_supervisor:是否启用 supervisor 智能调度(默认关=确定性全派,保评测控变量;
-            CLI/产品路径由调用方显式置开,见 design D9)。
-        max_review_rounds:supervisor 派发-复审循环的迭代上限(护栏,见 design D10)。
+        enable_supervisor:旧参数,ADR-032 默认路径忽略它;旧实现仅保存在 legacy 目录。
+        max_review_rounds:旧参数,保留签名兼容;ADR-032 默认路径不再使用 supervisor 轮次。
+        max_evidence_rounds:ReviewCouncil 证据补充轮次上限,第一版默认 1。
         recursion_limit:图总步数硬上限(兜底护栏)。
         checkpoint_backend:checkpoint 后端("memory"/"sqlite"/""),默认空=不启用。
         checkpoint_db:SqliteSaver 数据库文件路径(仅 checkpoint_backend="sqlite" 生效)。
@@ -81,27 +78,37 @@ class PipelineOrchestrator:
         enable_summary: bool = True,
         enable_supervisor: bool = False,
         max_review_rounds: int = DEFAULT_MAX_ROUNDS,
+        max_evidence_rounds: int = DEFAULT_MAX_EVIDENCE_ROUNDS,
         recursion_limit: int = DEFAULT_RECURSION_LIMIT,
         checkpoint_backend: str = "",
         checkpoint_db: str = "codeguard_checkpoints.db",
         enable_human_in_the_loop: bool = False,
         react_recursion_limit: int = 24,
+        orchestration_profile: str = "adr-032",
     ) -> None:
         self._fp_llm_verify = fp_llm_verify
         self._enable_summary = enable_summary
         self._enable_supervisor = enable_supervisor
         self._max_review_rounds = max_review_rounds
+        self._max_evidence_rounds = max_evidence_rounds
         self._recursion_limit = recursion_limit
         self._checkpointer = _create_checkpointer(checkpoint_backend, checkpoint_db)
-        self._hitl_enabled = enable_human_in_the_loop
-        # 安全守卫:HITL 依赖 checkpointer 做状态持久化与 resume;无 checkpointer 时
-        # interrupt 虽能触发但 resume 无法恢复,会反复重头执行并再次命中 interrupt 形成死循环。
-        if self._hitl_enabled and self._checkpointer is None:
+        self._hitl_enabled = False
+        self._orchestration_profile = orchestration_profile or "adr-032"
+        if self._orchestration_profile != "adr-032":
             logger.warning(
-                "HITL 已开启但 checkpoint 未配置(CODEGUARD_CHECKPOINT_BACKEND 为空),"
-                "自动关闭 HITL。需设置 CODEGUARD_CHECKPOINT_BACKEND=memory 或 sqlite。"
+                "未知编排 profile '%s',ADR-032 已是唯一运行路径;继续使用 adr-032。",
+                self._orchestration_profile,
             )
-            self._hitl_enabled = False
+            self._orchestration_profile = "adr-032"
+        if enable_supervisor:
+            logger.warning(
+                "CODEGUARD_ENABLE_SUPERVISOR/enable_supervisor 已退役;ADR-032 默认路径不运行旧 Supervisor。"
+            )
+        if enable_human_in_the_loop:
+            logger.warning(
+                "ADR-032 第一版暂不迁移 HITL interrupt;本次运行将忽略 CODEGUARD_ENABLE_HITL。"
+            )
         self._react_recursion_limit = react_recursion_limit
 
     def run(
@@ -116,6 +123,7 @@ class PipelineOrchestrator:
         tool_client=None,
         enabled_tools: list[str] | None = None,
         trace_sink: list | None = None,
+        metadata_sink: dict[str, Any] | None = None,
         thread_id: str | None = None,
         resume: dict[str, Any] | None = None,
     ) -> ReviewResult:
@@ -128,6 +136,7 @@ class PipelineOrchestrator:
         trace_sink:可选的工具调用侧信道——传入一个列表时,管线结束后把本次审查员获取的
             工具上下文(gathered_context)追加进去,供评测做"工具使用画像"。这是**只读侧信道**,
             刻意不进 ReviewResult(产品输出不掺工具痕迹,守 ADR-001)。
+        metadata_sink:可选 eval 元数据侧信道,写入 council 统计和 trace 计数。
         thread_id:可选的检查点线程标识。非空且 checkpointer 已配置时,用相同 thread_id
             重复调用可从上次中断点恢复继续执行;为 None 则一次性执行(当前行为,向后兼容)。
         resume:可选的 HITL resume 指令。传入时表示恢复调用,以 Command(resume=resume)
@@ -154,6 +163,7 @@ class PipelineOrchestrator:
             "enable_hitl": self._hitl_enabled,
             "react_recursion_limit": self._react_recursion_limit,
             "max_review_rounds": self._max_review_rounds,
+            "max_evidence_rounds": self._max_evidence_rounds,
             "fp_llm_verify": self._fp_llm_verify,
             # fan-in / 控制 初值
             "issues": [],
@@ -161,8 +171,15 @@ class PipelineOrchestrator:
             "review_summaries": [],
             "dispatched": set(),
             "iteration": 0,
+            "candidate_issues": [],
+            "evidence_requests": [],
+            "evidence_notes": [],
+            "challenges": [],
+            "council_trace": [],
+            "evidence_round": 0,
+            "truncated_candidates": 0,
+            "truncated_evidence_requests": 0,
             "final_issues": [],
-            "supervisor_log": [],
         }
         invoke_config: dict = {"recursion_limit": self._recursion_limit}
         if self._checkpointer is not None:
@@ -172,9 +189,8 @@ class PipelineOrchestrator:
             effective_thread_id = thread_id or str(uuid.uuid4())
             invoke_config["configurable"] = {"thread_id": effective_thread_id}
         if resume is not None:
-            final_state = graph.invoke(Command(resume=resume), config=invoke_config)
-        else:
-            final_state = graph.invoke(initial, config=invoke_config)
+            logger.warning("ADR-032 默认路径暂无 HITL resume 点,忽略 resume 参数。")
+        final_state = graph.invoke(initial, config=invoke_config)
 
         # LangGraph 1.x:interrupt() 不抛 GraphInterrupt,而是在返回的 state 中放 __interrupt__ 键。
         # 此处手动检测并向上抛,让 CLI 层能进入交互式对话。(见 ADR-027 HITL)
@@ -186,6 +202,12 @@ class PipelineOrchestrator:
         # 侧信道:把工具上下文交给评测层(不进 ReviewResult,守 ADR-001)。
         if trace_sink is not None:
             trace_sink.extend(final_state.get("gathered_context") or [])
+        if metadata_sink is not None:
+            stats = final_state.get("council_stats")
+            metadata_sink["council"] = (
+                stats.model_dump() if hasattr(stats, "model_dump") else stats
+            )
+            metadata_sink["council_trace_events"] = len(final_state.get("council_trace") or [])
 
         return ReviewResult(
             summary=final_state.get("summary", ""),

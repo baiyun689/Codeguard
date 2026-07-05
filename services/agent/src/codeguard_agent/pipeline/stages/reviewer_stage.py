@@ -50,14 +50,38 @@ class Reviewer:
 
     name: str
     prompt_file: str
+    source_agent: str = ""
+    category: str = ""
     tool_allowlist: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_agent", self.source_agent or self.name)
+        object.__setattr__(self, "category", self.category or self.source_agent or self.name)
 
 
 # 阶段 2 默认的三个并行领域审查员(spec asymmetric-agent-tools:每人一个专属工具)
 DEFAULT_REVIEWERS: tuple[Reviewer, ...] = (
-    Reviewer("security", "security.txt", tool_allowlist=["get_file_content", "find_sensitive_apis"]),
-    Reviewer("logic", "logic.txt", tool_allowlist=["get_file_content", "find_callers"]),
-    Reviewer("quality", "quality.txt", tool_allowlist=["get_file_content", "get_code_metrics"]),
+    Reviewer(
+        "ThreatModelAgent",
+        "threat-model.txt",
+        source_agent="threat_model",
+        category="security",
+        tool_allowlist=["get_file_content", "find_sensitive_apis"],
+    ),
+    Reviewer(
+        "BehaviorAgent",
+        "behavior.txt",
+        source_agent="behavior",
+        category="logic",
+        tool_allowlist=["get_file_content", "find_callers"],
+    ),
+    Reviewer(
+        "MaintainabilityAgent",
+        "maintainability.txt",
+        source_agent="maintainability",
+        category="quality",
+        tool_allowlist=["get_file_content", "get_code_metrics"],
+    ),
 )
 
 
@@ -122,6 +146,15 @@ def _effective_diff(
     if relevant and len(relevant) < len(full_diff) * _CROP_ADOPT_RATIO:
         return relevant
     return full_diff
+
+
+def _file_group_for_reviewer(file_groups: dict, reviewer: Reviewer) -> list[str] | None:
+    """兼容旧 category 分派与新 source_agent 分派。"""
+    return (
+        file_groups.get(reviewer.source_agent)
+        or file_groups.get(reviewer.category)
+        or file_groups.get(reviewer.name)
+    )
 
 
 def run_domain_reviewer(
@@ -199,7 +232,9 @@ class ReviewerStage(PipelineStage):
                     system_prompt=_load_prompt(reviewer.prompt_file),
                     user_prompt=_build_user_prompt(
                         _effective_diff(
-                            diff_text, file_diffs, context.file_groups.get(reviewer.name)
+                            diff_text,
+                            file_diffs,
+                            _file_group_for_reviewer(context.file_groups, reviewer),
                         ),
                         summary=context.diff_summary,
                     ),
