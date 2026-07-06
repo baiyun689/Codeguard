@@ -22,11 +22,18 @@ public class ReviewExecutorImpl {
     private final JobRepository repo;
     private final Path workspacesDir;
     private final String githubToken;
+    private final ResultFeedback feedback;
 
     public ReviewExecutorImpl(JobRepository repo, Path workspacesDir, String githubToken) {
+        this(repo, workspacesDir, githubToken, null);
+    }
+
+    public ReviewExecutorImpl(JobRepository repo, Path workspacesDir, String githubToken,
+                              ResultFeedback feedback) {
         this.repo = repo;
         this.workspacesDir = workspacesDir;
         this.githubToken = githubToken;
+        this.feedback = feedback;
     }
 
     /**
@@ -48,6 +55,9 @@ public class ReviewExecutorImpl {
             job.setResultJson(stdout);
             job.setStatus(Status.DONE);
             repo.update(job);
+            if (feedback != null) {
+                feedback.postResults(job);
+            }
             log.info("审查完成: {} PR#{}", job.getRepo(), job.getPrNumber());
 
         } catch (IOException e) {

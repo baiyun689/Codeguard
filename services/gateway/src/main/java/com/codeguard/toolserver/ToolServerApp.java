@@ -30,10 +30,22 @@ public final class ToolServerApp {
         if (webhookSecret != null && !webhookSecret.isBlank()) {
             var jobRepo = new com.codeguard.ci.job.JobRepository("./data/codeguard-jobs");
             String githubToken = System.getenv().getOrDefault("CODEGUARD_GITHUB_TOKEN", "");
+
+            // GitHub App 客户端（用于 Check Runs + PR 评论）
+            com.codeguard.ci.github.GitHubClient githubClient = null;
+            String appId = System.getenv("CODEGUARD_GITHUB_APP_ID");
+            String privateKey = System.getenv("CODEGUARD_GITHUB_PRIVATE_KEY");
+            if (appId != null && !appId.isBlank() && privateKey != null && !privateKey.isBlank()) {
+                githubClient = new com.codeguard.ci.github.GitHubClient(appId, privateKey);
+            }
+
+            var feedback = githubClient != null
+                ? new com.codeguard.ci.executor.ResultFeedback(githubClient) : null;
             var executor = new com.codeguard.ci.executor.ReviewExecutorImpl(
                 jobRepo,
                 java.nio.file.Path.of(System.getProperty("java.io.tmpdir", "/tmp"), "codeguard-jobs"),
-                githubToken
+                githubToken,
+                feedback
             );
             var scheduler = new com.codeguard.ci.job.JobScheduler(jobRepo, 2, executor::accept);
             scheduler.start();
