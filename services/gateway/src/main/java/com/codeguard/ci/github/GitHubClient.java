@@ -251,9 +251,9 @@ public class GitHubClient {
         String token = getInstallationToken(installationId);
 
         ObjectNode body = MAPPER.createObjectNode();
-        body.put("name", "Codeguard Review");
         body.put("status", "completed");
         body.put("conclusion", conclusion);
+        body.put("completed_at", java.time.Instant.now().toString());
 
         ObjectNode output = MAPPER.createObjectNode();
         output.put("title", title);

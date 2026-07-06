@@ -65,6 +65,10 @@ def main(argv: list[str] | None = None) -> int:
     review_parser.add_argument("--repo", default=".", help="git 仓库路径(默认当前目录)")
     review_parser.add_argument("--base", default="HEAD", help="diff 对比基准(默认 HEAD)")
     review_parser.add_argument(
+        "--format", default="text", choices=["text", "json"],
+        help="输出格式:text=人类可读(默认),json=结构化 JSON(供 CI 消费)",
+    )
+    review_parser.add_argument(
         "--thread-id",
         default=None,
         help="检查点线程标识(需配 CODEGUARD_CHECKPOINT_BACKEND)。",
@@ -138,7 +142,10 @@ def main(argv: list[str] | None = None) -> int:
             if tool_client is not None:
                 destroy_tool_session(tool_client)
 
-        _print_result(result)
+        if args.format == "json":
+            print(result.model_dump_json(indent=2))
+        else:
+            _print_result(result)
 
         # 退出码约定:发现 CRITICAL 问题时返回非 0,方便接入 CI 做门禁
         has_critical = any(i.severity == Severity.CRITICAL for i in result.issues)

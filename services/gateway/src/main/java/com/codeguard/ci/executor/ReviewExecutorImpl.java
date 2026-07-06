@@ -10,6 +10,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -55,10 +56,16 @@ public class ReviewExecutorImpl {
             job.setResultJson(stdout);
             job.setStatus(Status.DONE);
             repo.update(job);
-            if (feedback != null) {
-                feedback.postResults(job);
-            }
             log.info("审查完成: {} PR#{}", job.getRepo(), job.getPrNumber());
+
+            // 结果反馈失败不影响审查结果（审查已完成，H2 已落盘）
+            if (feedback != null) {
+                try {
+                    feedback.postResults(job);
+                } catch (Exception e) {
+                    log.error("结果反馈失败(审查已完成): {}", job.dedupKey(), e);
+                }
+            }
 
         } catch (IOException e) {
             log.error("审查执行失败(IO): {}", job.dedupKey(), e);
@@ -88,13 +95,18 @@ public class ReviewExecutorImpl {
 
         if (Files.exists(dir.resolve(".git"))) {
             log.info("fetch 已有仓库: {}", dir);
-            runCmd(dir, 2, TimeUnit.MINUTES, "git", "fetch", "origin", job.getBaseRef());
+            runCmd(dir, 2, TimeUnit.MINUTES, "git", "fetch", "origin");
         } else {
             log.info("clone 新仓库: {} → {}", cloneUrl, dir);
             Files.createDirectories(dir.getParent());
             runCmd(dir.getParent(), 2, TimeUnit.MINUTES,
-                "git", "clone", "--depth=50", "--branch", job.getBaseRef(), cloneUrl, dir.getFileName().toString());
+                "git", "clone", "--depth=50", cloneUrl, dir.getFileName().toString());
         }
+
+        // fetch base 分支 + PR 分支 + checkout 到 PR 的 head commit
+        runCmd(dir, 2, TimeUnit.MINUTES, "git", "fetch", "origin", job.getBaseRef() + ":" + "refs/remotes/origin/" + job.getBaseRef());
+        runCmd(dir, 2, TimeUnit.MINUTES, "git", "fetch", "origin", "pull/" + job.getPrNumber() + "/head");
+        runCmd(dir, 1, TimeUnit.MINUTES, "git", "checkout", job.getHeadSha());
         return dir;
     }
 
@@ -105,11 +117,11 @@ public class ReviewExecutorImpl {
     // ── Python CLI ──
 
     List<String> buildCommand(Path workdir, ReviewJob job) {
+        String python = System.getenv().getOrDefault("CODEGUARD_PYTHON", "python");
         List<String> cmd = new ArrayList<>(List.of(
-            "python", "-m", "codeguard_agent", "review",
+            python, "-m", "codeguard_agent", "review",
             "--repo", workdir.toString(),
             "--base", "origin/" + job.getBaseRef(),
-            "--mode", "pipeline",
             "--format", "json"
         ));
         return cmd;
@@ -128,8 +140,18 @@ public class ReviewExecutorImpl {
         env.putIfAbsent("CODEGUARD_TOOL_SERVER_URL", "http://localhost:9090");
 
         Process process = pb.start();
-        String stdout = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        String stderr = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        // 异步读取 stdout/stderr，避免子进程不退出时 readAllBytes 永久阻塞
+        var stdoutFuture = new CompletableFuture<String>();
+        var stderrFuture = new CompletableFuture<String>();
+        new Thread(() -> {
+            try { stdoutFuture.complete(new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8)); }
+            catch (IOException e) { stdoutFuture.completeExceptionally(e); }
+        }).start();
+        new Thread(() -> {
+            try { stderrFuture.complete(new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8)); }
+            catch (IOException e) { stderrFuture.completeExceptionally(e); }
+        }).start();
 
         boolean finished = process.waitFor(10, TimeUnit.MINUTES);
         if (!finished) {
@@ -137,12 +159,15 @@ public class ReviewExecutorImpl {
             throw new ProcessTimeoutException();
         }
 
+        String stderr = "";
+        try { stderr = stderrFuture.get(5, TimeUnit.SECONDS); } catch (Exception ignored) {}
         if (!stderr.isBlank()) {
             int maxLen = Math.min(500, stderr.length());
             log.warn("审查 stderr(前{}字符): {}", maxLen, stderr.substring(0, maxLen));
         }
 
-        return stdout.trim();
+        try { return stdoutFuture.get(5, TimeUnit.SECONDS).trim(); }
+        catch (Exception e) { return ""; }
     }
 
     // ── 重试逻辑 ──

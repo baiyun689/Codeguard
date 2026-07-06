@@ -35,7 +35,7 @@ class JobSchedulerTest {
     void shouldExecuteSubmittedJob() throws Exception {
         scheduler.start();
         var job = repo.insert(new ReviewJob(
-            new WebhookPayload("a/b", "url", 1, "sha1", "main", 1L)
+            new WebhookPayload("a/b", "url", 1, "sha1", "main", "head", 1L)
         )).orElseThrow();
 
         scheduler.submit(job);
@@ -49,9 +49,9 @@ class JobSchedulerTest {
     @Test
     void shouldRecoverUnfinishedJobsOnStart() throws Exception {
         var j1 = repo.insert(new ReviewJob(
-            new WebhookPayload("a/b", "u1", 1, "sha1", "main", 1L))).orElseThrow();
+            new WebhookPayload("a/b", "u1", 1, "sha1", "main", "head", 1L))).orElseThrow();
         var j2 = repo.insert(new ReviewJob(
-            new WebhookPayload("a/b", "u2", 2, "sha2", "main", 1L))).orElseThrow();
+            new WebhookPayload("a/b", "u2", 2, "sha2", "main", "head", 1L))).orElseThrow();
         j2.setStatus(Status.RUNNING); // simulate crash
         repo.update(j2);
 
@@ -76,7 +76,7 @@ class JobSchedulerTest {
         // Submit jobs rapidly — eventually the queue fills
         boolean allAccepted = true;
         for (int i = 0; i < 20; i++) {
-            var job = new ReviewJob(new WebhookPayload("x/y", "u", i, "sha" + i, "main", 1L));
+            var job = new ReviewJob(new WebhookPayload("x/y", "u", i, "sha" + i, "main", "head", 1L));
             repo.insert(job);
             if (!tinyScheduler.submit(job)) {
                 allAccepted = false;

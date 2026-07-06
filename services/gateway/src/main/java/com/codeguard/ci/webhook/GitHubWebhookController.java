@@ -111,6 +111,7 @@ public class GitHubWebhookController {
         JsonNode repo = root.path("repository");
         JsonNode pr = root.path("pull_request");
         JsonNode head = pr.path("head");
+        JsonNode base = pr.path("base");
         JsonNode installation = root.path("installation");
 
         return new WebhookPayload(
@@ -118,6 +119,7 @@ public class GitHubWebhookController {
             repo.path("clone_url").asText(),
             pr.path("number").asInt(),
             head.path("sha").asText(),
+            base.path("ref").asText(),
             head.path("ref").asText(),
             installation.path("id").asLong()
         );

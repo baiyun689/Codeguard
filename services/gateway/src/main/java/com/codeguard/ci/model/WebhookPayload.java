@@ -16,6 +16,7 @@ public record WebhookPayload(
     @JsonProperty("pr_number") int prNumber,
     @JsonProperty("head_sha") String headSha,
     @JsonProperty("base_ref") String baseRef,
+    @JsonProperty("head_ref") String headRef,
     @JsonProperty("installation_id") long installationId
 ) {
     public WebhookPayload {
@@ -23,6 +24,7 @@ public record WebhookPayload(
         Objects.requireNonNull(cloneUrl, "cloneUrl 不能为 null");
         Objects.requireNonNull(headSha, "headSha 不能为 null");
         Objects.requireNonNull(baseRef, "baseRef 不能为 null");
+        Objects.requireNonNull(headRef, "headRef 不能为 null");
     }
 
     /** 幂等去重 key */

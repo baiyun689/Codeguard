@@ -3,16 +3,21 @@ package com.codeguard.ci.guard;
 import com.google.common.util.concurrent.RateLimiter;
 
 /**
- * 防护层: 接口限流 + 大 diff 降级 + 可重试判断。
+ * 防护层: 令牌桶限流 + 大 diff 降级 + 可重试判断。
  */
 public final class ReviewGuard {
 
     private final RateLimiter rateLimiter;
     private final int maxDiffLines;
 
-    public ReviewGuard(double permitsPerHour, int maxDiffLines) {
-        this.rateLimiter = permitsPerHour > 0
-            ? RateLimiter.create(permitsPerHour / 3600.0)
+    /**
+     * @param permitsPerSecond 每秒许可数。Guava 平滑突发模式:允许短期 burst,长期平滑。
+     *                         默认 0.5(= 每 2 秒 1 个许可,单用户绰绰有余)。0 表示不限流。
+     * @param maxDiffLines     超过此行数的 diff 跳过审查
+     */
+    public ReviewGuard(double permitsPerSecond, int maxDiffLines) {
+        this.rateLimiter = permitsPerSecond > 0
+            ? RateLimiter.create(permitsPerSecond)
             : null;
         this.maxDiffLines = maxDiffLines;
     }

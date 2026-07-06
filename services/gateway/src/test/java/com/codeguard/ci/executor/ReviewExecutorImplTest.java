@@ -34,7 +34,7 @@ class ReviewExecutorImplTest {
     void shouldFailOnInvalidRepoClone() {
         var job = new ReviewJob(new WebhookPayload(
             "no-such-org/no-such-repo", "https://github.com/no-such-org/no-such-repo.git",
-            1, "abc123", "main", 1L));
+            1, "abc123", "main", "head", 1L));
         repo.insert(job);
 
         executor.accept(job);
@@ -51,7 +51,7 @@ class ReviewExecutorImplTest {
 
         var job = new ReviewJob(new WebhookPayload(
             "fake-org/fake-repo", "https://github.com/fake-org/fake-repo.git",
-            42, "abc123", "main", 1L));
+            42, "abc123", "main", "head", 1L));
         repo.insert(job);
 
         // Override cloneOrFetch by pre-creating the directory
@@ -66,7 +66,7 @@ class ReviewExecutorImplTest {
     @Test
     void shouldHandleEmptyStdout() {
         var job = new ReviewJob(new WebhookPayload(
-            "fake/repo", "url", 1, "sha", "main", 1L));
+            "fake/repo", "url", 1, "sha", "main", "head", 1L));
         job.setStatus(Status.RUNNING);
         repo.insert(job);
 

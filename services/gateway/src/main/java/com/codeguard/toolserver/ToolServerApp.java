@@ -50,7 +50,7 @@ public final class ToolServerApp {
             var scheduler = new com.codeguard.ci.job.JobScheduler(jobRepo, 2, executor::accept);
             scheduler.start();
 
-            int rateLimit = Integer.parseInt(System.getenv().getOrDefault("CODEGUARD_WEBHOOK_RATE_LIMIT", "30"));
+            double rateLimit = Double.parseDouble(System.getenv().getOrDefault("CODEGUARD_WEBHOOK_RATE_LIMIT", "0.5"));
             int maxDiff = Integer.parseInt(System.getenv().getOrDefault("CODEGUARD_MAX_DIFF_LINES", "5000"));
             var guard = new com.codeguard.ci.guard.ReviewGuard(rateLimit, maxDiff);
 
