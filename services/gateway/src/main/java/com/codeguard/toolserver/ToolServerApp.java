@@ -29,7 +29,8 @@ public final class ToolServerApp {
         String webhookSecret = System.getenv("CODEGUARD_WEBHOOK_SECRET");
         if (webhookSecret != null && !webhookSecret.isBlank()) {
             var jobRepo = new com.codeguard.ci.job.JobRepository("./data/codeguard-jobs");
-            var scheduler = new com.codeguard.ci.job.JobScheduler(jobRepo, 2, null);
+            var scheduler = new com.codeguard.ci.job.JobScheduler(jobRepo, 2, job -> {});
+            scheduler.start();
             var webhookCtrl = new com.codeguard.ci.webhook.GitHubWebhookController(webhookSecret, jobRepo, scheduler);
             webhookCtrl.register(app);
             log.info("GitHub webhook 端点已启用: POST /webhooks/github");

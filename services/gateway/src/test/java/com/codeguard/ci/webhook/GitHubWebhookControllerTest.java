@@ -30,7 +30,7 @@ class GitHubWebhookControllerTest {
     void setUp() {
         String dbPath = System.getProperty("java.io.tmpdir") + "/codeguard-ctrl-" + System.nanoTime();
         repo = new JobRepository(dbPath);
-        scheduler = new JobScheduler(repo, 2, null);
+        scheduler = new JobScheduler(repo, 2, job -> {});
         controller = new GitHubWebhookController(SECRET, repo, scheduler);
     }
 
