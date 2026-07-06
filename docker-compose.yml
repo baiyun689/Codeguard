@@ -1,0 +1,27 @@
+services:
+  codeguard:
+    build: .
+    ports:
+      - "9090:9090"
+    environment:
+      # GitHub App (CI)
+      - CODEGUARD_WEBHOOK_SECRET=${CODEGUARD_WEBHOOK_SECRET:-}
+      - CODEGUARD_GITHUB_APP_ID=${CODEGUARD_GITHUB_APP_ID:-}
+      - CODEGUARD_GITHUB_PRIVATE_KEY=${CODEGUARD_GITHUB_PRIVATE_KEY:-}
+      # LLM
+      - CODEGUARD_PROVIDER=${CODEGUARD_PROVIDER:-openai}
+      - CODEGUARD_API_KEY=${CODEGUARD_API_KEY:-}
+      - CODEGUARD_MODEL=${CODEGUARD_MODEL:-}
+      # Review config
+      - CODEGUARD_TOOL_SERVER_URL=http://localhost:9090
+      - CODEGUARD_MAX_CONCURRENT_REVIEWS=${CODEGUARD_MAX_CONCURRENT_REVIEWS:-2}
+      - CODEGUARD_WEBHOOK_RATE_LIMIT=${CODEGUARD_WEBHOOK_RATE_LIMIT:-30}
+      - CODEGUARD_MAX_DIFF_LINES=${CODEGUARD_MAX_DIFF_LINES:-5000}
+    volumes:
+      - gateway-data:/app/data
+      - job-workspaces:/tmp/codeguard-jobs
+    restart: unless-stopped
+
+volumes:
+  gateway-data:
+  job-workspaces:
