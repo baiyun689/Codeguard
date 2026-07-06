@@ -30,6 +30,22 @@ public class ReviewJob {
         this.updatedAt = Instant.now();
     }
 
+    /**
+     * 供 JobRepository.mapRow() 使用，设置不可变业务键字段。
+     * 不触发 updatedAt 变更。
+     */
+    public ReviewJob(String repo, int prNumber, String headSha, String baseRef, String cloneUrl) {
+        this.repo = repo;
+        this.prNumber = prNumber;
+        this.headSha = headSha;
+        this.baseRef = baseRef;
+        this.cloneUrl = cloneUrl;
+        this.status = Status.PENDING;
+        this.retryCount = 0;
+        this.createdAt = Instant.now();
+        this.updatedAt = Instant.now();
+    }
+
     public ReviewJob(WebhookPayload payload) {
         Objects.requireNonNull(payload, "WebhookPayload 不能为 null");
         this.repo = payload.repoFullName();
@@ -67,6 +83,16 @@ public class ReviewJob {
     public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; this.updatedAt = Instant.now(); }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
     public void setInstallationId(long installationId) { this.installationId = installationId; this.updatedAt = Instant.now(); }
+
+    // ---- 供 JobRepository.mapRow() 使用，不触发 updatedAt 变更 ----
+    public void setIdFromDb(Long id) { this.id = id; }
+    public void setStatusFromDb(Status status) { this.status = status; }
+    public void setResultJsonFromDb(String resultJson) { this.resultJson = resultJson; }
+    public void setRetryCountFromDb(int retryCount) { this.retryCount = retryCount; }
+    public void setErrorMessageFromDb(String errorMessage) { this.errorMessage = errorMessage; }
+    public void setCreatedAtFromDb(Instant createdAt) { this.createdAt = createdAt; }
+    public void setUpdatedAtFromDb(Instant updatedAt) { this.updatedAt = updatedAt; }
+    public void setInstallationIdFromDb(long installationId) { this.installationId = installationId; }
 
     public String dedupKey() {
         return repo + ":" + prNumber + ":" + headSha;
