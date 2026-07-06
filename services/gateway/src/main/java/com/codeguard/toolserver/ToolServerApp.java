@@ -24,6 +24,16 @@ public final class ToolServerApp {
         });
         new ToolServerController().registerRoutes(app);
         app.get("/health", ctx -> ctx.result("OK"));
+
+        // CI 集成: webhook 端点
+        String webhookSecret = System.getenv("CODEGUARD_WEBHOOK_SECRET");
+        if (webhookSecret != null && !webhookSecret.isBlank()) {
+            var jobRepo = new com.codeguard.ci.job.JobRepository("./data/codeguard-jobs");
+            var scheduler = new com.codeguard.ci.job.JobScheduler(jobRepo, 2, null);
+            var webhookCtrl = new com.codeguard.ci.webhook.GitHubWebhookController(webhookSecret, jobRepo, scheduler);
+            webhookCtrl.register(app);
+            log.info("GitHub webhook 端点已启用: POST /webhooks/github");
+        }
     }
 
     public static int resolvePort() {
