@@ -1,6 +1,7 @@
 package com.codeguard.ci.model;
 
 import java.time.Instant;
+import java.util.Objects;
 
 /**
  * 审查 job 实体。持久化到 H2，重启不丢。
@@ -22,9 +23,15 @@ public class ReviewJob {
     private Instant createdAt;
     private Instant updatedAt;
 
-    public ReviewJob() {}
+    public ReviewJob() {
+        this.status = Status.PENDING;
+        this.retryCount = 0;
+        this.createdAt = Instant.now();
+        this.updatedAt = Instant.now();
+    }
 
     public ReviewJob(WebhookPayload payload) {
+        Objects.requireNonNull(payload, "WebhookPayload 不能为 null");
         this.repo = payload.repoFullName();
         this.prNumber = payload.prNumber();
         this.headSha = payload.headSha();
@@ -52,16 +59,33 @@ public class ReviewJob {
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 
-    // setters
-    public void setId(Long id) { this.id = id; }
+    // setters — 所有 setter 统一更新 updatedAt
+    public void setId(Long id) { this.id = id; this.updatedAt = Instant.now(); }
     public void setStatus(Status status) { this.status = status; this.updatedAt = Instant.now(); }
-    public void setResultJson(String resultJson) { this.resultJson = resultJson; }
-    public void setRetryCount(int retryCount) { this.retryCount = retryCount; }
-    public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+    public void setResultJson(String resultJson) { this.resultJson = resultJson; this.updatedAt = Instant.now(); }
+    public void setRetryCount(int retryCount) { this.retryCount = retryCount; this.updatedAt = Instant.now(); }
+    public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; this.updatedAt = Instant.now(); }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
-    public void setInstallationId(long installationId) { this.installationId = installationId; }
+    public void setInstallationId(long installationId) { this.installationId = installationId; this.updatedAt = Instant.now(); }
 
     public String dedupKey() {
         return repo + ":" + prNumber + ":" + headSha;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof ReviewJob other)) return false;
+        return Objects.equals(dedupKey(), other.dedupKey());
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(dedupKey());
+    }
+
+    @Override
+    public String toString() {
+        return "ReviewJob{" + dedupKey() + " status=" + status + " retry=" + retryCount + "}";
     }
 }
