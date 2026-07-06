@@ -29,7 +29,13 @@ public final class ToolServerApp {
         String webhookSecret = System.getenv("CODEGUARD_WEBHOOK_SECRET");
         if (webhookSecret != null && !webhookSecret.isBlank()) {
             var jobRepo = new com.codeguard.ci.job.JobRepository("./data/codeguard-jobs");
-            var scheduler = new com.codeguard.ci.job.JobScheduler(jobRepo, 2, job -> {});
+            String githubToken = System.getenv().getOrDefault("CODEGUARD_GITHUB_TOKEN", "");
+            var executor = new com.codeguard.ci.executor.ReviewExecutorImpl(
+                jobRepo,
+                java.nio.file.Path.of(System.getProperty("java.io.tmpdir", "/tmp"), "codeguard-jobs"),
+                githubToken
+            );
+            var scheduler = new com.codeguard.ci.job.JobScheduler(jobRepo, 2, executor::accept);
             scheduler.start();
             var webhookCtrl = new com.codeguard.ci.webhook.GitHubWebhookController(webhookSecret, jobRepo, scheduler);
             webhookCtrl.register(app);
