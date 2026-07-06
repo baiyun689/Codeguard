@@ -49,7 +49,12 @@ public final class ToolServerApp {
             );
             var scheduler = new com.codeguard.ci.job.JobScheduler(jobRepo, 2, executor::accept);
             scheduler.start();
-            var webhookCtrl = new com.codeguard.ci.webhook.GitHubWebhookController(webhookSecret, jobRepo, scheduler);
+
+            int rateLimit = Integer.parseInt(System.getenv().getOrDefault("CODEGUARD_WEBHOOK_RATE_LIMIT", "30"));
+            int maxDiff = Integer.parseInt(System.getenv().getOrDefault("CODEGUARD_MAX_DIFF_LINES", "5000"));
+            var guard = new com.codeguard.ci.guard.ReviewGuard(rateLimit, maxDiff);
+
+            var webhookCtrl = new com.codeguard.ci.webhook.GitHubWebhookController(webhookSecret, jobRepo, scheduler, guard);
             webhookCtrl.register(app);
             log.info("GitHub webhook 端点已启用: POST /webhooks/github");
         }

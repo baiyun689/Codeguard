@@ -1,5 +1,6 @@
 package com.codeguard.ci.webhook;
 
+import com.codeguard.ci.guard.ReviewGuard;
 import com.codeguard.ci.job.JobRepository;
 import com.codeguard.ci.job.JobScheduler;
 import com.codeguard.ci.model.ReviewJob;
@@ -24,11 +25,17 @@ public class GitHubWebhookController {
     private final WebhookVerifier verifier;
     private final JobRepository repo;
     private final JobScheduler scheduler;
+    private final ReviewGuard guard;
 
-    public GitHubWebhookController(String secret, JobRepository repo, JobScheduler scheduler) {
+    public GitHubWebhookController(String secret, JobRepository repo, JobScheduler scheduler, ReviewGuard guard) {
         this.verifier = new WebhookVerifier(secret);
         this.repo = repo;
         this.scheduler = scheduler;
+        this.guard = guard;
+    }
+
+    public GitHubWebhookController(String secret, JobRepository repo, JobScheduler scheduler) {
+        this(secret, repo, scheduler, null);
     }
 
     public void register(Javalin app) {
@@ -41,6 +48,12 @@ public class GitHubWebhookController {
         byte[] body = ctx.bodyAsBytes();
         if (!verifier.verify(sig, body)) {
             ctx.status(401).result("signature mismatch");
+            return;
+        }
+
+        // Layer 1.5: Rate limit check
+        if (guard != null && !guard.tryAcquireWebhook(100)) {
+            ctx.status(429).header("Retry-After", "120").json(Map.of("error", "rate_limited"));
             return;
         }
 
