@@ -43,6 +43,7 @@ public class JobRepository implements AutoCloseable {
                 result_json     CLOB,
                 retry_count     INT DEFAULT 0,
                 error_message   VARCHAR(1024),
+                diff_text       CLOB,
                 created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (repo, pr_number, head_sha)
@@ -67,9 +68,9 @@ public class JobRepository implements AutoCloseable {
 
         String sql = """
             MERGE INTO review_jobs (repo, pr_number, head_sha, base_ref, clone_url, installation_id,
-                                    status, result_json, retry_count, error_message, created_at, updated_at)
+                                    status, result_json, retry_count, error_message, diff_text, created_at, updated_at)
             KEY (repo, pr_number, head_sha)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
         try (PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
             ps.setString(1, job.getRepo());
@@ -82,8 +83,9 @@ public class JobRepository implements AutoCloseable {
             ps.setString(8, job.getResultJson());
             ps.setInt(9, job.getRetryCount());
             ps.setString(10, job.getErrorMessage());
-            ps.setTimestamp(11, Timestamp.from(job.getCreatedAt()));
-            ps.setTimestamp(12, Timestamp.from(job.getUpdatedAt()));
+            ps.setString(11, job.getDiffText());
+            ps.setTimestamp(12, Timestamp.from(job.getCreatedAt()));
+            ps.setTimestamp(13, Timestamp.from(job.getUpdatedAt()));
 
             ps.executeUpdate();
             try (ResultSet keys = ps.getGeneratedKeys()) {
@@ -124,7 +126,7 @@ public class JobRepository implements AutoCloseable {
     public void update(ReviewJob job) {
         String sql = """
             UPDATE review_jobs
-            SET status = ?, result_json = ?, retry_count = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP
+            SET status = ?, result_json = ?, retry_count = ?, error_message = ?, diff_text = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -132,7 +134,8 @@ public class JobRepository implements AutoCloseable {
             ps.setString(2, job.getResultJson());
             ps.setInt(3, job.getRetryCount());
             ps.setString(4, job.getErrorMessage());
-            ps.setLong(5, job.getId());
+            ps.setString(5, job.getDiffText());
+            ps.setLong(6, job.getId());
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException("更新 ReviewJob 失败: id=" + job.getId(), e);
@@ -173,6 +176,7 @@ public class JobRepository implements AutoCloseable {
         job.setResultJsonFromDb(rs.getString("result_json"));
         job.setRetryCountFromDb(rs.getInt("retry_count"));
         job.setErrorMessageFromDb(rs.getString("error_message"));
+        job.setDiffTextFromDb(rs.getString("diff_text"));
         job.setInstallationIdFromDb(rs.getLong("installation_id"));
 
         Timestamp createdAtTs = rs.getTimestamp("created_at");
