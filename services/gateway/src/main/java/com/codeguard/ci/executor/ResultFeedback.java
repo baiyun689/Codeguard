@@ -99,6 +99,58 @@ public class ResultFeedback {
         return annots;
     }
 
+    /**
+     * 将源文件绝对行号映射为 unified diff 中的 new-side 行号。
+     * <p>
+     * 解析 diff 文本，找到目标文件对应的 hunk，在 hunk 内逐行推进 new-side 行号计数，
+     * 匹配到 absoluteLine 时返回对应的 new-side 行号。
+     *
+     * @param diffText     unified diff 全文
+     * @param targetFile   目标文件路径
+     * @param absoluteLine 源文件中的绝对行号
+     * @return diff 内的 new-side 行号；找不到返回 -1
+     */
+    static int mapToDiffLine(String diffText, String targetFile, int absoluteLine) {
+        if (diffText == null || diffText.isEmpty() || targetFile == null || absoluteLine <= 0) {
+            return -1;
+        }
+
+        // 找 "diff --git a/" + targetFile 开头的文件块
+        String fileMarker = "diff --git a/" + targetFile;
+        int fileStart = diffText.indexOf(fileMarker);
+        if (fileStart == -1) {
+            fileMarker = "diff --git b/" + targetFile;
+            fileStart = diffText.indexOf(fileMarker);
+            if (fileStart == -1) return -1;
+        }
+
+        int nextFileStart = diffText.indexOf("diff --git ", fileStart + fileMarker.length());
+        String fileBlock = nextFileStart == -1
+            ? diffText.substring(fileStart)
+            : diffText.substring(fileStart, nextFileStart);
+
+        java.util.regex.Pattern hunkPattern = java.util.regex.Pattern.compile(
+            "@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@");
+        java.util.regex.Matcher m = hunkPattern.matcher(fileBlock);
+
+        while (m.find()) {
+            int newLine = Integer.parseInt(m.group(2));
+            int bodyStart = m.end();
+            int bodyEnd = fileBlock.indexOf("@@", bodyStart);
+            if (bodyEnd == -1) bodyEnd = fileBlock.length();
+            String body = fileBlock.substring(bodyStart, bodyEnd);
+
+            for (String line : body.split("\n")) {
+                if (line.startsWith("-")) continue;
+                if (line.startsWith("+") || line.startsWith(" ")) {
+                    if (newLine == absoluteLine) return newLine;
+                    newLine++;
+                }
+            }
+        }
+        return -1;
+    }
+
     private void postHighSeverityComments(ReviewJob job, List<JsonNode> issues) {
         List<JsonNode> criticals = issues.stream()
             .filter(i -> "CRITICAL".equals(i.path("severity").asText()))
@@ -113,26 +165,32 @@ public class ResultFeedback {
 
         for (JsonNode issue : criticals) {
             try {
+                int absoluteLine = Math.max(issue.path("line").asInt(), 1);
+                int diffLine = mapToDiffLine(job.getDiffText(), issue.path("file").asText(), absoluteLine);
                 String body = String.format("🔴 **%s**: %s\n\n建议: %s",
                     issue.path("type").asText(),
                     issue.path("message").asText(),
                     issue.path("suggestion").asText("无"));
-                boolean ok = client.createPRComment(job.getRepo(), job.getPrNumber(),
-                    job.getHeadSha(), issue.path("file").asText(),
-                    Math.max(issue.path("line").asInt(), 1),
-                    body, job.getInstallationId());
-                if (!ok) {
-                    failedIssues.add(String.format("- `%s:%s` **%s**: %s",
-                        issue.path("file").asText(),
-                        issue.path("line").asInt(),
-                        issue.path("type").asText(),
-                        issue.path("message").asText()));
+                if (diffLine > 0) {
+                    boolean ok = client.createPRComment(job.getRepo(), job.getPrNumber(),
+                        job.getHeadSha(), issue.path("file").asText(),
+                        diffLine,
+                        body, job.getInstallationId());
+                    if (!ok) {
+                        failedIssues.add(String.format("- `%s:%d` **%s**: %s",
+                            issue.path("file").asText(), absoluteLine,
+                            issue.path("type").asText(), issue.path("message").asText()));
+                    }
+                } else {
+                    failedIssues.add(String.format("- `%s:%d` **%s**: %s",
+                        issue.path("file").asText(), absoluteLine,
+                        issue.path("type").asText(), issue.path("message").asText()));
                 }
             } catch (Exception e) {
                 log.warn("行级评论失败: {}", e.getMessage());
-                failedIssues.add(String.format("- `%s:%s` **%s**: %s",
+                failedIssues.add(String.format("- `%s:%d` **%s**: %s",
                     issue.path("file").asText(),
-                    issue.path("line").asInt(),
+                    Math.max(issue.path("line").asInt(), 1),
                     issue.path("type").asText(),
                     issue.path("message").asText()));
             }
