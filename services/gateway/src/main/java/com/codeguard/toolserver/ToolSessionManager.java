@@ -6,6 +6,7 @@ import com.codeguard.agent.tools.FileAccessSandbox;
 import com.codeguard.agent.tools.FindCallersTool;
 import com.codeguard.agent.tools.FindSensitiveApisTool;
 import com.codeguard.agent.tools.GetCodeMetricsTool;
+import com.codeguard.agent.tools.GetDiffASTTool;
 import com.codeguard.agent.tools.GetFileContentTool;
 import com.codeguard.agent.tools.ToolRegistry;
 
@@ -57,7 +58,7 @@ public final class ToolSessionManager {
             this.registry.register(new FindSensitiveApisTool(sandbox));
             this.registry.register(new FindCallersTool(sandbox));
             this.registry.register(new GetCodeMetricsTool(sandbox));
-            // get_repo_map 已断开调用—— Java 实现(GetRepoMapTool / repomap/)保留不删备参考
+            this.registry.register(new GetDiffASTTool(sandbox));
         }
 
         public String getId() {
