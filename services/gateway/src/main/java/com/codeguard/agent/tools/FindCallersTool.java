@@ -24,7 +24,6 @@ import java.util.stream.Stream;
  * 输入格式:"文件路径#方法名"(如 "src/main/java/com/example/OrderService.java#calculatePrice")。
  * 扫描仓库内所有 Java 源文件的方法调用表达式,按方法简单名匹配,返回 (文件, 行号, 调用代码片段) 列表。
  * <p>
- * 复用 {@link com.codeguard.agent.repomap.JavaTagExtractor} 的 ref 抽取思路:
  * 用 JavaParser 的 MethodCallExpr 做简单名匹配,免去全限定解析与 classpath 配置。
  * 调用方上限 K=50,超过截断并标注其余数量。
  */

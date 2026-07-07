@@ -12,11 +12,8 @@ import java.util.Set;
  *   <li>源码白名单:只允许读 repo 根内、扩展名属于源码类型的文件(见 {@link #SOURCE_EXTENSIONS})。</li>
  * </ul>
  * <p>
- * 护栏放宽说明(design.md D5):自 get_repo_map 落地后,审查员需要读 diff 之外、由地图指向的
- * 定义文件,故授权从"仅本次 diff 改动文件集合"放宽为"repo 根内 + 源码扩展名白名单"。仍保留
- * 路径穿越防御与(由 {@link GetFileContentTool} 施加的)大小上限,并以"只读源码类型"排除二进制/
- * 配置/密钥文件 —— 放宽边界,但不等于任意读。{@code allowedFiles}(diff 改动集合)保留下来,
- * 作为 get_repo_map 的相关性种子,不再用于读授权。
+ * 护栏已放宽:审查员可读取 repo 根内任意源码文件(受扩展名白名单约束),
+ * 不再限制为仅 diff 文件。仍保留路径穿越防御与(由 {@link GetFileContentTool} 施加的)大小上限。
  * <p>
  * 路径比对统一规范化为相对仓库根的**正斜杠**相对路径,以兼容 Windows 反斜杠。
  * 本类只做"判定",不读文件;读取与大小限制由 {@link GetFileContentTool} 负责。
@@ -52,7 +49,7 @@ public final class FileAccessSandbox {
         return resolved;
     }
 
-    /** 该相对路径是否落在本次 diff 的允许文件集合内(保留供 get_repo_map 种子等用途,不再用于读授权)。 */
+    /** 该相对路径是否落在本次 diff 的允许文件集合内。 */
     public boolean isFileInScope(String relativePath) {
         Path resolved;
         try {
