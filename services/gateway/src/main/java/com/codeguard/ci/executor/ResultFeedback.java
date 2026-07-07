@@ -25,28 +25,55 @@ public class ResultFeedback {
     public void postResults(ReviewJob job) {
         if (client == null || job.getResultJson() == null || job.getResultJson().isBlank()) return;
 
+        JsonNode root;
         try {
-            JsonNode root = MAPPER.readTree(job.getResultJson());
-            JsonNode issues = root.path("issues");
-            if (!issues.isArray()) return;
+            root = MAPPER.readTree(job.getResultJson());
+        } catch (Exception e) {
+            log.error("结果 JSON 解析失败: {}", job.dedupKey(), e);
+            return;
+        }
+        JsonNode issues = root.path("issues");
+        if (!issues.isArray()) return;
 
-            List<JsonNode> issueList = new ArrayList<>();
-            issues.forEach(issueList::add);
+        List<JsonNode> issueList = new ArrayList<>();
+        issues.forEach(issueList::add);
 
-            // Check Run
-            long checkRunId = client.createCheckRun(job.getRepo(), job.getHeadSha(), job.getInstallationId());
-            String conclusion = determineConclusion(issueList);
-            String title = "发现 " + issueList.size() + " 个问题";
-            String summary = buildSummary(issueList);
-            List<GitHubClient.IssueAnnot> annotations = buildAnnotations(issueList);
+        // Check Run —— annotations 失败不阻塞后续反馈
+        completeCheckRunSafe(job, issueList);
+
+        // 行级评论 —— Check Run 失败也继续执行
+        try {
+            postHighSeverityComments(job, issueList);
+        } catch (Exception e) {
+            log.error("行级评论失败: {}", job.dedupKey(), e);
+        }
+    }
+
+    private void completeCheckRunSafe(ReviewJob job, List<JsonNode> issueList) {
+        long checkRunId;
+        try {
+            checkRunId = client.createCheckRun(job.getRepo(), job.getHeadSha(), job.getInstallationId());
+        } catch (Exception e) {
+            log.error("创建 Check Run 失败: {}", job.dedupKey(), e);
+            return;
+        }
+
+        String conclusion = determineConclusion(issueList);
+        String title = "发现 " + issueList.size() + " 个问题";
+        String summary = buildSummary(issueList);
+        List<GitHubClient.IssueAnnot> annotations = buildAnnotations(issueList);
+
+        try {
             client.completeCheckRun(job.getRepo(), checkRunId, conclusion, title,
                 summary, annotations, job.getInstallationId());
-
-            // Line comments (high-severity only)
-            postHighSeverityComments(job, issueList);
-
         } catch (Exception e) {
-            log.error("结果反馈失败: {}", job.dedupKey(), e);
+            log.warn("Check Run 带 annotations 完成失败，降级为无 annotations: {}", e.getMessage());
+            try {
+                client.completeCheckRun(job.getRepo(), checkRunId, conclusion, title,
+                    summary, List.of(), job.getInstallationId());
+            } catch (Exception e2) {
+                log.error("Check Run 无 annotations 降级也失败: {}", e2.getMessage());
+            }
         }
     }
 
