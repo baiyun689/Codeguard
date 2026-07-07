@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from codeguard_agent.git.diff_collector import parse_changed_files
 from codeguard_agent.models.council import ContextBundle, ContextFact
@@ -18,6 +19,14 @@ def _clip(text: str, budget: int = _FACT_BUDGET) -> tuple[str, bool]:
     if len(text) <= budget:
         return text, False
     return text[:budget] + "...(已截断)", True
+
+
+def _split_ast_blocks(text: str) -> list[str]:
+    """将多文件 AST 文本按 'AST for:' 分隔符拆分为单文件块。"""
+    if not text.strip():
+        return []
+    blocks = re.split(r'\n(?=AST for:)', text.strip())
+    return [b.strip() for b in blocks if b.strip()]
 
 
 class ContextProviderStage(PipelineStage):
@@ -64,6 +73,20 @@ class ContextProviderStage(PipelineStage):
                 )
                 gathered.append(GatheredContext("find_sensitive_apis", "{}", content))
                 sources.append("tool:find_sensitive_apis")
+
+        # 4. AST 结构提取（diff 内文件）
+        if context.tool_client is not None:
+            resp = context.tool_client.get_diff_ast(context.diff_text)
+            content = resp.as_tool_output() if hasattr(resp, "as_tool_output") else str(resp)
+            if content.strip() and "无可解析" not in content:
+                for file_block in _split_ast_blocks(content):
+                    facts.append(ContextFact(
+                        source="tool:get_diff_ast",
+                        kind="ast_structure",
+                        content=file_block,
+                    ))
+                gathered.append(GatheredContext("get_diff_ast", "{}", content))
+                sources.append("tool:get_diff_ast")
 
         bundle = ContextBundle(
             changed_files=changed_files,

@@ -74,6 +74,10 @@ class ToolClient:
         """扫描 diff 文件中的危险 API 调用(安全审查员专属,无入参)。"""
         return self._post_tool("find_sensitive_apis", {})
 
+    def get_diff_ast(self, diff_text: str) -> ToolResponse:
+        """获取 diff 涉及文件的 AST 结构信息（context_provider 专属）。"""
+        return self._post_tool("get_diff_ast", {"query": diff_text})
+
     def find_callers(self, query: str) -> ToolResponse:
         """查询指定方法的直接调用方(逻辑审查员专属)。"""
         return self._post_tool("find_callers", {"query": query})
