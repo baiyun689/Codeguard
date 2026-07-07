@@ -84,6 +84,8 @@ public class ResultFeedback {
         return sb.toString();
     }
 
+    private static final int MAX_ANNOTATION_MSG_LEN = 200;
+
     private List<GitHubClient.IssueAnnot> buildAnnotations(List<JsonNode> issues) {
         List<GitHubClient.IssueAnnot> annots = new ArrayList<>();
         int limit = Math.min(issues.size(), MAX_ANNOTATIONS);
@@ -93,7 +95,7 @@ public class ResultFeedback {
                 issue.path("file").asText(),
                 Math.max(issue.path("line").asInt(), 1),
                 toAnnotationLevel(issue.path("severity").asText()),
-                issue.path("message").asText()
+                ellipsis(issue.path("message").asText(), MAX_ANNOTATION_MSG_LEN)
             ));
         }
         return annots;
