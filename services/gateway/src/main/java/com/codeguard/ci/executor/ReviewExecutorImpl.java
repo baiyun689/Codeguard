@@ -45,6 +45,7 @@ public class ReviewExecutorImpl {
         Path workdir = null;
         try {
             workdir = cloneOrFetch(job);
+            job.setDiffText(runGitDiff(workdir, job));
             List<String> cmd = buildCommand(workdir, job);
             String stdout = runProcess(cmd, workdir);
 
@@ -212,6 +213,32 @@ public class ReviewExecutorImpl {
         if (p.exitValue() != 0) {
             String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             throw new IOException("git 命令失败: " + out);
+        }
+    }
+
+    private String runGitDiff(Path workdir, ReviewJob job) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(
+                "git", "diff", "origin/" + job.getBaseRef() + "..." + job.getHeadSha());
+            pb.directory(workdir.toFile());
+            pb.redirectErrorStream(false);
+            Process p = pb.start();
+            String stdout = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            boolean finished = p.waitFor(1, TimeUnit.MINUTES);
+            if (!finished) {
+                p.destroyForcibly();
+                log.warn("git diff 超时(1min): {}", job.dedupKey());
+                return "";
+            }
+            if (p.exitValue() != 0) {
+                String stderr = new String(p.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+                log.warn("git diff 失败(exit={}): {} stderr={}", p.exitValue(), job.dedupKey(), stderr);
+                return "";
+            }
+            return stdout;
+        } catch (Exception e) {
+            log.warn("git diff 异常: {} {}", job.dedupKey(), e.getMessage());
+            return "";
         }
     }
 
