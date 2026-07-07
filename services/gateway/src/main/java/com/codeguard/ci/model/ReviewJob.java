@@ -16,6 +16,7 @@ public class ReviewJob {
     private String baseRef;
     private String cloneUrl;
     private long installationId;
+    private String diffText;
     private Status status;
     private String resultJson;
     private int retryCount;
@@ -68,6 +69,7 @@ public class ReviewJob {
     public String getBaseRef() { return baseRef; }
     public String getCloneUrl() { return cloneUrl; }
     public long getInstallationId() { return installationId; }
+    public String getDiffText() { return diffText; }
     public Status getStatus() { return status; }
     public String getResultJson() { return resultJson; }
     public int getRetryCount() { return retryCount; }
@@ -83,6 +85,7 @@ public class ReviewJob {
     public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; this.updatedAt = Instant.now(); }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
     public void setInstallationId(long installationId) { this.installationId = installationId; this.updatedAt = Instant.now(); }
+    public void setDiffText(String diffText) { this.diffText = diffText; this.updatedAt = Instant.now(); }
 
     // ---- 供 JobRepository.mapRow() 使用，不触发 updatedAt 变更 ----
     public void setIdFromDb(Long id) { this.id = id; }
@@ -93,6 +96,7 @@ public class ReviewJob {
     public void setCreatedAtFromDb(Instant createdAt) { this.createdAt = createdAt; }
     public void setUpdatedAtFromDb(Instant updatedAt) { this.updatedAt = updatedAt; }
     public void setInstallationIdFromDb(long installationId) { this.installationId = installationId; }
+    public void setDiffTextFromDb(String diffText) { this.diffText = diffText; }
 
     public String dedupKey() {
         return repo + ":" + prNumber + ":" + headSha;
