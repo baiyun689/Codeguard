@@ -109,18 +109,45 @@ public class ResultFeedback {
             .limit(MAX_LINE_COMMENTS)
             .toList();
 
+        List<String> failedIssues = new ArrayList<>();
+
         for (JsonNode issue : criticals) {
             try {
                 String body = String.format("🔴 **%s**: %s\n\n建议: %s",
                     issue.path("type").asText(),
                     issue.path("message").asText(),
                     issue.path("suggestion").asText("无"));
-                client.createPRComment(job.getRepo(), job.getPrNumber(),
+                boolean ok = client.createPRComment(job.getRepo(), job.getPrNumber(),
                     job.getHeadSha(), issue.path("file").asText(),
                     Math.max(issue.path("line").asInt(), 1),
                     body, job.getInstallationId());
+                if (!ok) {
+                    failedIssues.add(String.format("- `%s:%s` **%s**: %s",
+                        issue.path("file").asText(),
+                        issue.path("line").asInt(),
+                        issue.path("type").asText(),
+                        issue.path("message").asText()));
+                }
             } catch (Exception e) {
                 log.warn("行级评论失败: {}", e.getMessage());
+                failedIssues.add(String.format("- `%s:%s` **%s**: %s",
+                    issue.path("file").asText(),
+                    issue.path("line").asInt(),
+                    issue.path("type").asText(),
+                    issue.path("message").asText()));
+            }
+        }
+
+        // 无法精确定位到行的 issue 降级为一条 PR 普通评论
+        if (!failedIssues.isEmpty()) {
+            try {
+                String summary = "### 🔴 以下问题未能定位到具体代码行（LLM 行号与 diff 不匹配）\n\n"
+                    + String.join("\n", failedIssues)
+                    + "\n\n> 请人工确认这些问题在 PR diff 中的实际位置。";
+                client.createIssueComment(job.getRepo(), job.getPrNumber(),
+                    summary, job.getInstallationId());
+            } catch (Exception e) {
+                log.error("降级评论也失败了: {}", e.getMessage());
             }
         }
     }

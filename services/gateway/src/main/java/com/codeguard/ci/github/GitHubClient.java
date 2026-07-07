@@ -295,10 +295,12 @@ public class GitHubClient {
 
     /**
      * 在 PR 指定文件的指定行创建行内评论。
+     * @return true 成功，false 行号无法解析（422）或其他客户端错误
+     * @throws IOException 网络/认证错误
      */
-    public void createPRComment(String repo, int prNumber, String commitId,
-                                 String path, int line, String body,
-                                 long installationId) throws IOException, InterruptedException {
+    public boolean createPRComment(String repo, int prNumber, String commitId,
+                                   String path, int line, String body,
+                                   long installationId) throws IOException, InterruptedException {
         String token = getInstallationToken(installationId);
 
         ObjectNode commentBody = MAPPER.createObjectNode();
@@ -315,11 +317,45 @@ public class GitHubClient {
             .build();
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() != 201) {
-            log.error("创建 PR 评论失败: HTTP {} {}", response.statusCode(), response.body());
-            throw new IOException("创建 PR 评论失败: HTTP " + response.statusCode());
+        if (response.statusCode() == 201) {
+            log.info("已创建 PR 评论: repo={} PR#{} path={}:{}", repo, prNumber, path, line);
+            return true;
         }
 
-        log.info("已创建 PR 评论: repo={} PR#{} path={}:{}", repo, prNumber, path, line);
+        // 422: 行号在 diff 中无法解析（LLM 报的绝对行号与 diff 上下文不匹配）
+        if (response.statusCode() == 422) {
+            log.warn("PR 行级评论跳过(行号无法映射到 diff): repo={} PR#{} path={}:{}", repo, prNumber, path, line);
+            return false;
+        }
+
+        // 其他错误仍抛异常
+        log.error("创建 PR 评论失败: HTTP {} {}", response.statusCode(), response.body());
+        throw new IOException("创建 PR 评论失败: HTTP " + response.statusCode());
+    }
+
+    /**
+     * 在 PR 下创建一条普通评论（不绑定到具体行）。
+     */
+    public void createIssueComment(String repo, int prNumber, String body,
+                                   long installationId) throws IOException, InterruptedException {
+        String token = getInstallationToken(installationId);
+
+        ObjectNode req = MAPPER.createObjectNode();
+        req.put("body", body);
+
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(API_BASE + "/repos/" + repo + "/issues/" + prNumber + "/comments"))
+            .header("Authorization", "Bearer " + token)
+            .header("Accept", "application/vnd.github+json")
+            .POST(HttpRequest.BodyPublishers.ofString(req.toString()))
+            .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() != 201) {
+            log.error("创建 PR 普通评论失败: HTTP {} {}", response.statusCode(), response.body());
+            throw new IOException("创建 PR 普通评论失败: HTTP " + response.statusCode());
+        }
+
+        log.info("已创建 PR 普通评论: repo={} PR#{}", repo, prNumber);
     }
 }
