@@ -50,12 +50,7 @@ class PipelineContext:
     # --- 摘要阶段产出(SummaryStage 写入,ReviewerStage 读取)---
     # diff_summary:结构化变更摘要文本,作为背景透传给各审查员的 user 输入({{summary}})。
     #   与下面的 summary(面向人的最终审查摘要)是两个不同概念,刻意分开两个字段。
-    # file_groups:reviewer 名 → 该维度相关文件路径列表(软路由);空 dict 表示未做分派,
-    #   审查员吃整份 diff。change_types / risk_level 仅用于日志与诊断。
     diff_summary: str = ""
-    file_groups: dict[str, list[str]] = field(default_factory=dict)
-    change_types: list[str] = field(default_factory=list)
-    risk_level: int = 0
 
     # --- 输出(stage 累积写入)---
     issues: list[Issue] = field(default_factory=list)

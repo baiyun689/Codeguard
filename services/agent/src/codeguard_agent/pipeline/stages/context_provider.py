@@ -42,20 +42,6 @@ class ContextProviderStage(PipelineStage):
     def execute(self, context: PipelineContext) -> PipelineContext:
         changed_files = parse_changed_files(context.diff_text)
         facts: list[ContextFact] = []
-        sources = ["diff"]
-
-        for path in changed_files:
-            facts.append(ContextFact(source="diff", kind="changed_file", content=path))
-
-        if context.diff_summary.strip():
-            facts.append(
-                ContextFact(
-                    source="summary",
-                    kind="summary",
-                    content=context.diff_summary.strip(),
-                )
-            )
-            sources.append("summary")
 
         gathered: list[GatheredContext] = []
         if context.tool_client is not None:
@@ -72,7 +58,6 @@ class ContextProviderStage(PipelineStage):
                     )
                 )
                 gathered.append(GatheredContext("find_sensitive_apis", "{}", content))
-                sources.append("tool:find_sensitive_apis")
 
         # 4. AST 结构提取（diff 内文件）
         if context.tool_client is not None:
@@ -86,22 +71,18 @@ class ContextProviderStage(PipelineStage):
                         content=file_block,
                     ))
                 gathered.append(GatheredContext("get_diff_ast", "{}", content))
-                sources.append("tool:get_diff_ast")
 
         bundle = ContextBundle(
             changed_files=changed_files,
-            diff_summary=context.diff_summary,
             facts=facts,
-            sources=sorted(set(sources)),
-            truncated=any(f.truncated for f in facts),
         )
         context.context_bundle = bundle
         context.gathered_context.extend(gathered)
+        fact_sources = sorted({fact.source for fact in facts} | {"diff"})
         logger.info(
             "管线阶段 [context_provider]:%d 个文件,%d 条事实,来源=%s",
             len(changed_files),
             len(facts),
-            bundle.sources,
+            fact_sources,
         )
         return context
-

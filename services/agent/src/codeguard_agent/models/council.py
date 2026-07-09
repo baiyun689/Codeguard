@@ -63,8 +63,8 @@ class JudgeDecisions(BaseModel):
 class ContextFact(BaseModel):
     """ContextProvider 收集到的一段事实。"""
 
-    source: str = Field(description="事实来源,如 diff/summary/tool:get_file_content")
-    kind: str = Field(description="事实类型,如 changed_file/summary/sensitive_api")
+    source: str = Field(description="事实来源,如 diff/tool:get_file_content")
+    kind: str = Field(description="事实类型,如 sensitive_api/ast_structure")
     content: str = Field(description="事实内容")
     truncated: bool = Field(default=False, description="内容是否因预算被截断")
 
@@ -73,10 +73,7 @@ class ContextBundle(BaseModel):
     """ReviewCouncil 共享的只读上下文包。"""
 
     changed_files: list[str] = Field(default_factory=list)
-    diff_summary: str = ""
     facts: list[ContextFact] = Field(default_factory=list)
-    sources: list[str] = Field(default_factory=list)
-    truncated: bool = False
 
     def render(self, budget: int = 6000) -> str:
         """渲染为 prompt 可读文本,并按字符预算截断。"""
@@ -84,12 +81,9 @@ class ContextBundle(BaseModel):
         if self.changed_files:
             lines.append("变更文件:")
             lines.extend(f"- {path}" for path in self.changed_files)
-        if self.diff_summary:
-            lines.append("")
-            lines.append("变更摘要:")
-            lines.append(self.diff_summary)
         if self.facts:
-            lines.append("")
+            if lines:
+                lines.append("")
             lines.append("上下文事实:")
             for fact in self.facts:
                 flag = " (已截断)" if fact.truncated else ""

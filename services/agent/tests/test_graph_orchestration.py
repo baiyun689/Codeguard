@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from codeguard_agent.models.council import ContextBundle, ContextFact, EvidenceNote, Verdict
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
 from codeguard_agent.pipeline import graph as G
@@ -22,8 +24,13 @@ def test_dedup_gathered_reducer_dedups_by_tool_args_keep_order():
 def test_context_bundle_render_truncates():
     bundle = ContextBundle(
         changed_files=["A.java"],
-        diff_summary="摘要",
-        facts=[ContextFact(source="diff", kind="changed_file", content="A.java")],
+        facts=[
+            ContextFact(
+                source="tool:get_diff_ast",
+                kind="ast_structure",
+                content="A.java " * 20,
+            )
+        ],
     )
     rendered = bundle.render(20)
     assert "A.java" in rendered
@@ -35,10 +42,40 @@ def test_context_provider_builds_fact_bundle_without_judgement():
     ctx = PipelineContext(diff_text=diff, diff_summary="新增字段")
     ContextProviderStage().execute(ctx)
     assert ctx.context_bundle.changed_files == ["A.java"]
-    assert "diff" in ctx.context_bundle.sources
     text = ctx.context_bundle.render()
-    assert "新增字段" in text
+    assert "新增字段" not in text
     assert "漏洞" not in text
+
+
+def test_context_provider_keeps_summary_and_files_out_of_facts():
+    diff = "diff --git a/A.java b/A.java\n+++ b/A.java\n+class A {}"
+    ctx = PipelineContext(diff_text=diff, diff_summary="新增 A")
+
+    ContextProviderStage().execute(ctx)
+
+    dumped = ctx.context_bundle.model_dump()
+    assert set(dumped) == {"changed_files", "facts"}
+    assert dumped["changed_files"] == ["A.java"]
+    assert all(
+        fact["kind"] not in {"changed_file", "summary"}
+        for fact in dumped["facts"]
+    )
+
+
+def test_summary_prompts_only_request_summary():
+    prompt_dir = Path(__file__).resolve().parents[1] / "src" / "codeguard_agent" / "prompts"
+    combined = (
+        (prompt_dir / "summary-system.txt").read_text(encoding="utf-8")
+        + (prompt_dir / "summary-user.txt").read_text(encoding="utf-8")
+    )
+    for obsolete in (
+        "changed_files",
+        "change_types",
+        "estimated_risk_level",
+        "file_focus",
+    ):
+        assert obsolete not in combined
+    assert "summary" in combined
 
 
 def _base_state(**over):
@@ -735,7 +772,13 @@ def test_evidence_agent_fallback_context_bundle_when_no_tool_client():
     )
     bundle = G.ContextBundle(
         changed_files=["UserService.java"],
-        diff_summary="修改了 UserService",
+        facts=[
+            ContextFact(
+                source="tool:get_diff_ast",
+                kind="ast_structure",
+                content="UserService.java class UserService",
+            )
+        ],
     )
     node = G._evidence_agent_node(tool_client=None)
     out = node({
