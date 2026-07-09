@@ -26,3 +26,5 @@
 按结构化输出返回：
 - `judgment`: "SUPPORTS" | "CONTRADICTS" | "INSUFFICIENT"
 - `reasoning`: 一句话说明判断依据，引用工具输出的具体行/内容
+
+reasoning 会直接进入对应的支持、反驳或不足条目,不要再生成第二份整体摘要。

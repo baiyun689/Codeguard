@@ -85,9 +85,16 @@ def dedup_gathered_reducer(existing: list | None, new: list | None) -> list:
 
 
 def capped_evidence_request_reducer(existing: list | None, new: list | None) -> list:
-    """`evidence_requests` reducer:合并后按全局上限截断。"""
+    """`evidence_requests` reducer:按稳定 ID 去重后再按全局上限截断。"""
     merged = list(existing or []) + list(new or [])
-    return merged[:MAX_TOTAL_EVIDENCE_REQUESTS]
+    seen: set[str] = set()
+    unique: list[EvidenceRequest] = []
+    for request in merged:
+        if request.id in seen:
+            continue
+        seen.add(request.id)
+        unique.append(request)
+    return unique[:MAX_TOTAL_EVIDENCE_REQUESTS]
 
 
 def _candidate_dedup_reducer(existing: list | None, new: list | None) -> list:
@@ -555,7 +562,14 @@ def _evidence_agent_node(tool_client=None, judge_llm=None):
         return None
 
     def _node(state: ReviewState) -> dict:
-        requests = state.get("evidence_requests") or []
+        processed_request_ids = {
+            note.request_id for note in state.get("evidence_notes") or []
+        }
+        requests = [
+            request
+            for request in state.get("evidence_requests") or []
+            if request.id not in processed_request_ids
+        ]
         candidates = {c.id: c for c in state.get("candidate_issues") or []}
         notes: list[EvidenceNote] = []
         gathered: list[GatheredContext] = []
@@ -1018,6 +1032,9 @@ def _council_judge_node(llm, judge_llm=None):
         drop_ids: set[str] = set()
         severity_overrides: dict[str, Severity] = {}
         new_evidence_requests: list[EvidenceRequest] = []
+        existing_evidence_request_ids = {
+            request.id for request in state.get("evidence_requests") or []
+        }
 
         for v in verdicts:
             if v.action == "drop":
@@ -1032,12 +1049,15 @@ def _council_judge_node(llm, judge_llm=None):
                 candidate = next((c for c in candidates if c.id == v.candidate_id), None)
                 if candidate is not None:
                     tools = v.suggested_tools or ["get_file_content"]
-                    new_evidence_requests.append(EvidenceRequest(
+                    request = EvidenceRequest(
                         candidate_id=v.candidate_id,
                         target=candidate.file,
                         question=f"[council_judge] {v.reason}",
                         preferred_tools=tools,
-                    ))
+                    )
+                    if request.id not in existing_evidence_request_ids:
+                        existing_evidence_request_ids.add(request.id)
+                        new_evidence_requests.append(request)
 
         final_candidates = [c for c in candidates if c.id not in drop_ids]
         for c in final_candidates:
