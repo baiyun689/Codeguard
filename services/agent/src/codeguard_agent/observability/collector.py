@@ -96,7 +96,7 @@ class _TraceCollector:
     def run_with_tracing(
         self,
         graph: Any,
-        initial_state: dict,
+        initial_state: Any,
         config: dict,
     ) -> dict:
         """同步执行异步事件流并返回图最终 State。"""
@@ -169,7 +169,7 @@ class _TraceCollector:
     async def _collect_and_return(
         self,
         graph: Any,
-        initial_state: dict,
+        initial_state: Any,
         config: dict,
     ) -> dict:
         """消费一次事件流，并用顶层图 run 精确捕获最终 State。"""

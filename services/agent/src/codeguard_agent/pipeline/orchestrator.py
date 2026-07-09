@@ -88,6 +88,7 @@ class PipelineOrchestrator:
         enabled_tools: list[str] | None = None,
         trace_enabled: bool = False,
         trace_dir: str = "trace",
+        trace_max_llm_content: int = 0,
         trace_sink: list | None = None,
         metadata_sink: dict[str, Any] | None = None,
         thread_id: str | None = None,
@@ -103,7 +104,6 @@ class PipelineOrchestrator:
         if not diff_text.strip():
             return ReviewResult(summary="没有检测到代码变更,无需审查。")
 
-        import uuid
         _run_id = thread_id or str(uuid.uuid4())
 
         graph = build_review_graph(
@@ -142,7 +142,11 @@ class PipelineOrchestrator:
             from codeguard_agent.observability.collector import _TraceCollector
             from codeguard_agent.observability.dashboard import render_dashboard_file
 
-            tracer = _TraceCollector(diff_text, _run_id)
+            tracer = _TraceCollector(
+                diff_text,
+                _run_id,
+                max_llm_content=trace_max_llm_content,
+            )
             try:
                 final_state = tracer.run_with_tracing(graph, initial, invoke_config)
             except Exception:
@@ -162,9 +166,12 @@ class PipelineOrchestrator:
             trace_sink.extend(final_state.get("gathered_context") or [])
         if metadata_sink is not None:
             stats = final_state.get("council_stats")
-            metadata_sink["council"] = (
-                stats.model_dump() if hasattr(stats, "model_dump") else stats
-            )
+            if stats is None:
+                metadata_sink["council"] = None
+            elif hasattr(stats, "model_dump"):
+                metadata_sink["council"] = stats.model_dump()
+            else:
+                metadata_sink["council"] = stats
             metadata_sink["council_trace_events"] = len(final_state.get("council_trace") or [])
 
         return ReviewResult(

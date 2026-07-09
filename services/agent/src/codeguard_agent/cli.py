@@ -143,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
                 thread_id=effective_thread_id,
                 trace_enabled=args.trace,
                 trace_dir=settings.trace_dir,
+                trace_max_llm_content=settings.trace_max_llm_content,
             )
         finally:
             if tool_client is not None:

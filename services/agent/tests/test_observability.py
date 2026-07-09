@@ -8,8 +8,6 @@ import re
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from codeguard_agent.observability.collector import (
     _NODE_PHASE_MAP,
     _TraceCollector,
@@ -560,6 +558,54 @@ class TestDashboard:
 
 
 class TestEndToEnd:
+    def test_orchestrator_passes_trace_max_llm_content(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        from codeguard_agent.pipeline.orchestrator import (
+            PipelineOrchestrator,
+        )
+
+        observed = {}
+
+        class FakeCollector:
+            def __init__(
+                self,
+                diff_text,
+                run_id,
+                max_llm_content=0,
+            ):
+                observed["max_llm_content"] = max_llm_content
+
+            def run_with_tracing(self, graph, initial, config):
+                return graph.invoke(initial, config=config)
+
+            def finalize(self):
+                return TraceReport(run_id="fake", timestamp="now")
+
+        monkeypatch.setattr(
+            "codeguard_agent.observability.collector._TraceCollector",
+            FakeCollector,
+        )
+        monkeypatch.setattr(
+            (
+                "codeguard_agent.observability.dashboard."
+                "render_dashboard_file"
+            ),
+            lambda *args, **kwargs: tmp_path / "trace.html",
+        )
+
+        PipelineOrchestrator(enable_summary=False).run(
+            None,
+            "diff --git a/Foo.java b/Foo.java\n-old\n+new\n",
+            trace_enabled=True,
+            trace_dir=str(tmp_path),
+            trace_max_llm_content=1234,
+        )
+
+        assert observed["max_llm_content"] == 1234
+
     def test_mock_review_with_trace(self):
         """跑一次 mock 审查 + trace，验证：
         1. ReviewResult 与无 trace 时一致
@@ -590,3 +636,31 @@ class TestEndToEnd:
             assert '"events":' in content
             assert '"node_start"' in content
             assert "</html>" in content
+
+            match = re.search(
+                (
+                    r'<script id="trace-data" type="application/json">'
+                    r"(.*?)</script>"
+                ),
+                content,
+                re.DOTALL,
+            )
+            assert match is not None
+            report_data = json.loads(match.group(1))
+            assert report_data["events"]
+            assert any(
+                event["event_type"] == "node_start"
+                and "input" in event["detail"]
+                for event in report_data["events"]
+            )
+            assert all(
+                event["depth"] >= 0
+                for event in report_data["events"]
+            )
+            invocation_ids = {
+                item["invocation_id"]
+                for item in report_data["summary"]["node_timeline"]
+            }
+            assert len(invocation_ids) == len(
+                report_data["summary"]["node_timeline"]
+            )
