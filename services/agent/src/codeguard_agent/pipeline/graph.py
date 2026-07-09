@@ -1080,15 +1080,12 @@ def _council_judge_node(llm, judge_llm=None):
         summaries = state.get("review_summaries") or []
         summary = "  ".join(summaries)
 
-        # 合并新产生的 evidence_requests（needs_more_evidence 路径）
-        all_evidence_requests = list(state.get("evidence_requests") or []) + new_evidence_requests
-        return {
+        out = {
             "council_verdicts": verdicts,
             "final_issues": final_issues,
             "council_stats": stats,
             "summary": summary,
             "judge_pass": state.get("judge_pass", 0) + 1,
-            "evidence_requests": all_evidence_requests,
             "council_trace": [
                 CouncilTrace(
                     node="council_judge",
@@ -1097,6 +1094,9 @@ def _council_judge_node(llm, judge_llm=None):
                 )
             ],
         }
+        if new_evidence_requests:
+            out["evidence_requests"] = new_evidence_requests
+        return out
 
     return _node
 

@@ -55,7 +55,7 @@ def _base_state(**over):
     return state
 
 
-def _candidate(*, needs_evidence=False, confidence=0.9):
+def _candidate(*, confidence=0.9):
     issue = Issue(
         severity=Severity.WARNING,
         file="A.java",
@@ -78,7 +78,7 @@ def test_coordinator_skips_evidence_and_judge_when_no_candidates():
 
 def test_coordinator_routes_to_evidence_on_first_round():
     """第一轮有 evidence_requests → 进 evidence_agent。"""
-    c = _candidate(needs_evidence=True)
+    c = _candidate()
     req = G.EvidenceRequest(candidate_id=c.id, target="A.java", preferred_tools=["get_file_content"])
     assert G._route_after_coordinator(_base_state(candidate_issues=[c], evidence_requests=[req])) == "evidence_agent"
 
@@ -91,7 +91,7 @@ def test_coordinator_routes_to_council_judge_when_no_evidence_needed():
 
 def test_coordinator_after_evidence_round_goes_to_council_judge():
     """evidence_round>0 时不再自动进 evidence_agent。"""
-    c = _candidate(needs_evidence=True)
+    c = _candidate()
     assert G._route_after_coordinator(_base_state(candidate_issues=[c], evidence_round=1)) == "council_judge"
 
 
@@ -340,6 +340,56 @@ def test_council_judge_needs_more_evidence_generates_request():
     assert len(out.get("evidence_requests", [])) >= 1
     # 候选保留在 final_issues 中（needs_more 不 drop）
     assert len(out["final_issues"]) >= 1
+
+
+def test_council_judge_emits_only_new_evidence_request_delta():
+    candidate = G.CandidateIssue(
+        id="c1",
+        source_agent="threat_model",
+        file="A.java",
+        line=1,
+        type="t",
+        severity_proposal=Severity.WARNING,
+        claim="m",
+        confidence=0.9,
+    )
+    existing = G.EvidenceRequest(
+        candidate_id="c1",
+        target="A.java",
+        question="已有请求",
+    )
+
+    class _JudgeLLM:
+        def with_structured_output(self, *args, **kwargs):
+            class _Invoker:
+                def invoke(self, _messages):
+                    return G.JudgeDecisions(
+                        decisions=[
+                            G.JudgeDecision(
+                                candidate_id="C001",
+                                action="needs_more_evidence",
+                                reason="需要补充调用方证据",
+                            )
+                        ]
+                    )
+
+            return _Invoker()
+
+    node = G._council_judge_node(llm=_JudgeLLM())
+    out = node(
+        {
+            "candidate_issues": [candidate],
+            "evidence_notes": [],
+            "evidence_requests": [existing],
+            "review_summaries": [],
+        }
+    )
+
+    emitted = out["evidence_requests"]
+    assert len(emitted) == 1
+    assert emitted[0].id != existing.id
+    reduced = G.capped_evidence_request_reducer([existing], emitted)
+    assert [request.id for request in reduced] == [existing.id, emitted[0].id]
 
 
 def test_run_routes_gathered_context_to_trace_sink_and_council_metadata(monkeypatch):
