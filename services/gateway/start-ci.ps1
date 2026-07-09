@@ -24,6 +24,9 @@ if (Test-Path $envFile) {
 $env:CODEGUARD_WEBHOOK_SECRET = "test123"
 $env:CODEGUARD_PYTHON = "E:\ProgramData\Anaconda3\envs\codeguard\python.exe"
 $env:CODEGUARD_REACT_RECURSION_LIMIT = "8"
+$env:CODEGUARD_TRACE_DIR = [IO.Path]::GetFullPath(
+    (Join-Path $PSScriptRoot "..\agent\trace")
+)
 
 # 4. GitHub App（从独立文件读，避免硬编码在脚本里）
 $appIdFile = Join-Path $PSScriptRoot "github-app-id.txt"
