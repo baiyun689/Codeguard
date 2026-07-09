@@ -915,6 +915,11 @@ class TestEndToEnd:
             assert match is not None
             report_data = json.loads(match.group(1))
             assert report_data["events"]
+            assert report_data["view"]["main_stages"]
+            assert len(report_data["view"]["reviewer_sections"]) == 3
+            assert "integrity" in report_data["view"]
+            assert 'id="trace-story"' in content
+            assert "_prototype_trace_flow" not in content
             assert any(
                 event["event_type"] == "node_start"
                 and "input" in event["detail"]
