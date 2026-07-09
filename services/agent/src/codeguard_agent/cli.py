@@ -73,6 +73,10 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="检查点线程标识(需配 CODEGUARD_CHECKPOINT_BACKEND)。",
     )
+    review_parser.add_argument(
+        "--trace", action=argparse.BooleanOptionalAction, default=True,
+        help="开启审查追踪，产出可视化 Dashboard HTML 文件（默认开），--no-trace 关闭",
+    )
 
     args = parser.parse_args(argv)
 
@@ -137,6 +141,8 @@ def main(argv: list[str] | None = None) -> int:
                 allowed_files=allowed_files,
                 tool_client=tool_client,
                 thread_id=effective_thread_id,
+                trace_enabled=args.trace,
+                trace_dir=settings.trace_dir,
             )
         finally:
             if tool_client is not None:
