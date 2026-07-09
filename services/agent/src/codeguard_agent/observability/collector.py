@@ -91,6 +91,7 @@ class _TraceCollector:
         self._tool_counts: dict[str, int] = {}
         self._tokens_by_run: dict[str, TokenUsage] = {}
         self._tokens_by_path: dict[str, TokenUsage] = {}
+        self._root_graph_run_id = ""
 
     def run_with_tracing(
         self,
@@ -171,34 +172,36 @@ class _TraceCollector:
         initial_state: dict,
         config: dict,
     ) -> dict:
-        """消费事件流；Task 3 会单独收紧顶层最终 State 识别。"""
-        final_state: dict = {}
-        try:
-            async for event in graph.astream_events(
-                initial_state,
-                config=config,
-                version="v2",
+        """消费一次事件流，并用顶层图 run 精确捕获最终 State。"""
+        final_state: dict | None = None
+        async for event in graph.astream_events(
+            initial_state,
+            config=config,
+            version="v2",
+        ):
+            if (
+                event.get("event") == "on_chain_start"
+                and event.get("name") == "LangGraph"
+                and not (event.get("parent_ids") or [])
             ):
-                try:
-                    self._handle_event(event)
-                except Exception:  # noqa: BLE001
-                    logger.debug("处理追踪事件失败", exc_info=True)
-                if (
-                    event.get("event") == "on_chain_end"
-                    and event.get("name") == "LangGraph"
-                    and (event.get("tags") or []) == []
-                ):
-                    output = (event.get("data") or {}).get("output")
-                    if isinstance(output, dict) and output:
-                        final_state = output
-            if not final_state:
-                final_state = graph.invoke(initial_state, config=config)
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "追踪采集异常，降级为无追踪执行",
-                exc_info=True,
-            )
-            final_state = graph.invoke(initial_state, config=config)
+                self._root_graph_run_id = _event_id(event.get("run_id"))
+
+            try:
+                self._handle_event(event)
+            except Exception:  # noqa: BLE001
+                logger.debug("处理追踪事件失败", exc_info=True)
+
+            if (
+                event.get("event") == "on_chain_end"
+                and _event_id(event.get("run_id"))
+                == self._root_graph_run_id
+            ):
+                output = (event.get("data") or {}).get("output")
+                if isinstance(output, dict):
+                    final_state = output
+
+        if final_state is None:
+            raise RuntimeError("追踪事件流缺少顶层图最终输出")
         return final_state
 
     def _handle_event(self, event: dict[str, Any]) -> None:

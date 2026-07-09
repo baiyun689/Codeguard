@@ -425,6 +425,55 @@ class TestCollectorLineage:
         assert tool.detail["input"]["content"] == "x" * 5000
 
 
+class _FakeGraph:
+    def __init__(self):
+        self.stream_calls = 0
+        self.invoke_calls = 0
+
+    async def astream_events(self, initial_state, *, config, version):
+        self.stream_calls += 1
+        yield {
+            "event": "on_chain_start",
+            "name": "LangGraph",
+            "run_id": "root-run",
+            "parent_ids": [],
+            "tags": ["graph:root"],
+            "metadata": {},
+            "data": {"input": initial_state},
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "LangGraph",
+            "run_id": "root-run",
+            "parent_ids": [],
+            "tags": ["graph:root"],
+            "metadata": {},
+            "data": {
+                "output": {
+                    "final_issues": [],
+                    "review_summary": "done",
+                }
+            },
+        }
+
+    def invoke(self, initial_state, *, config):
+        self.invoke_calls += 1
+        raise AssertionError(
+            "normal tracing must not invoke graph a second time"
+        )
+
+
+def test_run_with_tracing_returns_root_output_without_second_execution():
+    graph = _FakeGraph()
+    collector = _TraceCollector("diff", "trace-run")
+
+    result = collector.run_with_tracing(graph, {"diff_text": "diff"}, {})
+
+    assert result["review_summary"] == "done"
+    assert graph.stream_calls == 1
+    assert graph.invoke_calls == 0
+
+
 class TestDashboard:
     def test_render_with_placeholder(self):
         """验证 __TRACE_DATA__ 被替换且产出合法 HTML。"""
