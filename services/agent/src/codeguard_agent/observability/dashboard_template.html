@@ -2,365 +2,419 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Codeguard Trace Viewer</title>
 <style>
-* { box-sizing: border-box; }
-:root {
-  --bg: #171925; --panel: #24283b; --panel2: #1e2233;
-  --border: #414868; --text: #c0caf5; --dim: #7982a9;
-  --blue: #7aa2f7; --green: #9ece6a; --orange: #e0af68;
-  --purple: #bb9af7; --cyan: #7dcfff; --red: #f7768e;
+*{box-sizing:border-box}
+:root{
+  --bg:#0b1020;--panel:#11182a;--panel2:#171f34;--line:#27334f;
+  --text:#e7ecff;--dim:#8e9aba;--blue:#72a7ff;--purple:#bd8cff;
+  --orange:#ffb65c;--cyan:#56d7d0;--green:#87d787;--red:#ff758f;
+  --yellow:#f5d66f;--shadow:0 14px 40px #04071288
 }
-body {
-  margin: 0; height: 100vh; display: flex; flex-direction: column;
-  font-family: "Segoe UI", system-ui, sans-serif; font-size: 13px;
-  color: var(--text); background: var(--bg);
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+  font:13px/1.45 Inter,"Segoe UI",system-ui,sans-serif}
+button,input{font:inherit}button{color:inherit}
+body{display:flex;flex-direction:column;overflow:hidden}
+.top{padding:12px 18px;background:#10172a;border-bottom:1px solid var(--line)}
+.topline,.metrics,.tabs,.tools,.step-top,.crumbs{display:flex;align-items:center}
+.topline{gap:14px}.brand{font-size:17px;font-weight:800;letter-spacing:.02em}
+.metrics{margin-left:auto;gap:8px;flex-wrap:wrap}
+.metric{padding:4px 8px;border:1px solid var(--line);background:var(--panel2);
+  border-radius:7px;color:var(--dim)}.metric b{color:var(--text)}
+.warning{color:var(--yellow)}.sensitive{color:var(--yellow)}
+.bar{display:flex;gap:12px;padding:8px 18px;background:#0f1628;
+  border-bottom:1px solid var(--line)}.tabs{gap:4px}
+.tab,.mini{border:1px solid transparent;background:transparent;border-radius:7px;
+  padding:6px 10px;cursor:pointer}
+.tab.active,.tab:hover,.mini:hover{background:var(--panel2);border-color:var(--line)}
+.tools{margin-left:auto;gap:8px}
+.search{width:280px;padding:7px 10px;color:var(--text);background:#090e1b;
+  border:1px solid var(--line);border-radius:7px}
+.workspace{flex:1;min-height:0;display:grid;
+  grid-template-columns:220px minmax(560px,1fr) 390px}
+.workspace.secondary{grid-template-columns:minmax(560px,1fr) 390px}
+.workspace.secondary .outline{display:none}
+.outline{padding:16px;border-right:1px solid var(--line);background:#0e1526;
+  overflow:auto}.outline-title,.section-title{margin:0 0 10px;font-size:11px;
+  text-transform:uppercase;letter-spacing:.12em;color:var(--dim)}
+.outline button{display:block;width:100%;text-align:left;padding:8px;border:0;
+  border-radius:7px;background:transparent;color:var(--dim);cursor:pointer}
+.outline button:hover{background:var(--panel2);color:var(--text)}
+.story{padding:18px;overflow:auto;scroll-behavior:smooth}
+.inspector{overflow:auto;background:#0e1526;border-left:1px solid var(--line)}
+.main-flow{display:flex;align-items:stretch;gap:0;min-width:max-content;
+  margin-bottom:26px}
+.main-stage{width:190px;min-height:96px;padding:12px;border:1px solid var(--line);
+  border-radius:10px;background:linear-gradient(145deg,#151e34,#10172a);
+  cursor:pointer}.main-stage.selected,.step.selected{outline:2px solid var(--blue);
+  outline-offset:2px}.main-stage.missing{border-style:dashed;border-color:var(--red)}
+.arrow{width:44px;display:grid;place-items:center;color:var(--dim);font-size:20px}
+.seq{color:var(--dim);font:11px Consolas,monospace}
+.title{font-weight:800;font-size:15px;margin:4px 0 2px}
+.code{font:11px Consolas,monospace;color:var(--blue);overflow-wrap:anywhere}
+.summary{margin-top:7px;color:var(--dim);font-size:11px}
+.story-section{margin:0 0 28px;padding:14px;border:1px solid var(--line);
+  border-radius:12px;background:#0e1526}
+.story-section h2{margin:0;font-size:16px}
+.section-head{position:sticky;top:-18px;z-index:3;display:flex;
+  justify-content:space-between;gap:12px;margin:-14px -14px 12px;padding:12px 14px;
+  background:#18223a;border-bottom:1px solid var(--line);border-radius:12px 12px 0 0}
+.step{position:relative;margin:0 0 22px;padding:10px 11px;border:1px solid var(--line);
+  border-left:4px solid var(--blue);border-radius:8px;background:#0d1425;cursor:pointer}
+.step:after{content:"↓";position:absolute;left:50%;bottom:-21px;color:#52617f}
+.step:last-child:after{display:none}.step.llm{border-left-color:var(--purple)}
+.step.tool_call{border-left-color:var(--orange)}
+.step.tool_result{border-left-color:var(--cyan)}
+.step.output{border-left-color:var(--green)}.step.missing{border-color:var(--red)}
+.step.dimmed{opacity:.3}.step.neighbor{outline:1px dashed #6680aa}
+.step-top{gap:7px}.kind{padding:1px 6px;border-radius:999px;background:#252e47;
+  color:var(--dim);font-size:9px;text-transform:uppercase}
+.step-name{font-weight:750;flex:1}.duration{color:var(--dim);
+  font:10px Consolas,monospace}.step-summary{margin-top:5px;color:var(--dim);
+  font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.inspect-head{padding:15px;border-bottom:1px solid var(--line);position:sticky;
+  top:0;background:#0e1526;z-index:4}.inspect-head h2{margin:4px 0 2px;font-size:17px}
+.inspect-tabs{display:flex;overflow:auto;padding:8px 10px;border-bottom:1px solid var(--line)}
+.inspect-tab{white-space:nowrap;border:0;background:transparent;color:var(--dim);
+  padding:7px 9px;cursor:pointer;border-bottom:2px solid transparent}
+.inspect-tab.active{color:var(--text);border-color:var(--blue)}
+.inspect-body{padding:14px}.panel{border:1px solid var(--line);border-radius:8px;
+  margin-bottom:10px;overflow:hidden}.panel h3{margin:0;padding:8px 10px;
+  background:#171f34;color:var(--cyan);font-size:11px}
+.panel pre{margin:0;max-height:520px;overflow:auto;padding:11px;background:#080d19;
+  color:#dce4ff;font:11px/1.5 Consolas,monospace;white-space:pre-wrap;
+  overflow-wrap:anywhere}.change{display:grid;
+  grid-template-columns:minmax(100px,.6fr) 1fr 28px 1fr;gap:8px;align-items:start;
+  padding:9px;border-bottom:1px solid var(--line)}.change:last-child{border:0}
+.change code{color:var(--blue)}.old,.new{padding:7px;background:#090f1d;
+  border-radius:6px;max-height:160px;overflow:auto;font:10px Consolas,monospace;
+  white-space:pre-wrap}.new{box-shadow:inset 3px 0 var(--green)}
+.empty{padding:30px;color:var(--dim);text-align:center}
+.crumbs{position:sticky;bottom:0;gap:6px;padding:8px 12px;background:#10182bdd;
+  border-top:1px solid var(--line);backdrop-filter:blur(12px);flex-wrap:wrap}
+.crumb{color:var(--dim)}.crumb:last-of-type{color:var(--text)}
+.state-table{width:100%;border-collapse:collapse}.state-table th,.state-table td{
+  padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.state-table th{position:sticky;top:-18px;background:#11192c;color:var(--dim)}
+.state-table tr{cursor:pointer}.state-table tr:hover{background:#141d31}
+.raw-event{display:grid;grid-template-columns:65px 120px 1fr 240px;gap:8px;
+  padding:8px;border-bottom:1px solid var(--line);cursor:pointer}
+.raw-event:hover,.raw-event.selected{background:#121a2d}.raw-event code{
+  color:var(--blue);overflow-wrap:anywhere}
+#error{padding:24px;color:var(--red);font-family:monospace;white-space:pre-wrap}
+@media(max-width:1100px){
+  .workspace{grid-template-columns:180px minmax(500px,1fr)}
+  .workspace.secondary{grid-template-columns:1fr}.inspector{position:absolute;right:0;
+    top:108px;bottom:0;width:min(430px,92vw);box-shadow:var(--shadow)}
+  .metrics{display:none}
 }
-.header {
-  padding: 10px 16px; flex-shrink: 0; background: var(--panel);
-  border-bottom: 1px solid var(--border);
-}
-.header h1 { display: inline; margin: 0 18px 0 0; color: var(--blue); font-size: 16px; }
-.meta { color: var(--dim); font-size: 11px; }
-.filters {
-  display: flex; gap: 8px; align-items: center; padding: 7px 16px;
-  flex-shrink: 0; background: var(--panel); border-bottom: 1px solid var(--border);
-}
-.filters input, .filters select {
-  color: var(--text); background: var(--bg); border: 1px solid var(--border);
-  border-radius: 4px; padding: 5px 8px; font-size: 12px;
-}
-.filters input { width: 260px; }
-.main { display: flex; flex: 1; min-height: 0; }
-.topology {
-  width: 330px; padding: 12px; overflow: auto; flex-shrink: 0;
-  background: var(--panel); border-right: 1px solid var(--border);
-}
-.topology-title {
-  margin: 2px 0 10px; color: var(--dim); font-size: 10px;
-  text-transform: uppercase; letter-spacing: .08em;
-}
-.topo-node {
-  margin: 4px 0; padding: 7px 9px; cursor: pointer;
-  border: 1px solid transparent; border-left: 3px solid var(--blue);
-  border-radius: 5px; background: var(--panel2);
-}
-.topo-node:hover { border-color: var(--border); border-left-color: var(--blue); }
-.topo-node .path { overflow-wrap: anywhere; font-weight: 600; }
-.topo-node .stats { margin-top: 3px; color: var(--dim); font-size: 10px; }
-.timeline { flex: 1; overflow: auto; padding: 12px; }
-.empty { padding: 24px; color: var(--dim); text-align: center; }
-.event {
-  margin: 3px 0; overflow: hidden; border: 1px solid transparent;
-  border-radius: 5px; background: rgba(36, 40, 59, .45);
-}
-.event:hover { border-color: var(--border); }
-.event.node_start { border-left: 3px solid var(--blue); }
-.event.node_end { border-left: 3px solid var(--green); }
-.event.llm_start, .event.llm_end { border-left: 3px solid var(--purple); }
-.event.tool_start, .event.tool_end { border-left: 3px solid var(--orange); }
-.event.route_decision { border-left: 3px solid var(--cyan); }
-.event.error, .event.fallback { border-left: 3px solid var(--red); }
-.event-header {
-  display: flex; gap: 8px; align-items: center; padding: 7px 9px;
-  cursor: pointer;
-}
-.event-header .time { width: 74px; flex-shrink: 0; color: var(--dim); font: 11px monospace; }
-.event-header .icon { width: 18px; text-align: center; }
-.event-header .summary { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.badge {
-  max-width: 44%; padding: 2px 6px; overflow: hidden; border-radius: 3px;
-  color: var(--dim); background: var(--bg); font-size: 10px;
-  text-overflow: ellipsis; white-space: nowrap;
-}
-.event-body {
-  display: none; padding: 8px 12px 12px 34px;
-  border-top: 1px solid var(--border); background: rgba(0, 0, 0, .12);
-}
-.event.open .event-body { display: block; }
-.detail-block { margin: 5px 0; border: 1px solid var(--border); border-radius: 4px; }
-.detail-block > summary {
-  padding: 6px 8px; cursor: pointer; color: var(--cyan); background: var(--panel2);
-}
-.detail-block pre {
-  max-height: 520px; margin: 0; padding: 9px; overflow: auto;
-  color: #d5dcff; background: #12141e; font: 11px/1.45 Consolas, monospace;
-  white-space: pre-wrap; overflow-wrap: anywhere;
-}
-.message-role { color: var(--purple); }
-.tokens { margin-top: 7px; color: var(--dim); font-size: 11px; }
-.token-bar {
-  display: flex; gap: 16px; align-items: center; padding: 8px 16px;
-  flex-shrink: 0; overflow-x: auto; background: var(--panel);
-  border-top: 1px solid var(--border); white-space: nowrap;
-}
-.token-total { color: var(--blue); font-weight: 700; }
-.token-chip { padding: 3px 8px; border-radius: 10px; background: var(--bg); font-size: 11px; }
-#error { padding: 24px; color: var(--red); font-family: monospace; white-space: pre-wrap; }
 </style>
 </head>
 <body>
-<div class="header">
-  <h1>Codeguard Trace Viewer</h1>
-  <span class="meta" id="meta"></span>
+<header class="top">
+  <div class="topline">
+    <span class="brand">Codeguard Trace</span>
+    <div class="metrics" id="metrics"></div>
+  </div>
+</header>
+<div class="bar">
+  <nav class="tabs">
+    <button class="tab active" data-view="flow">执行流</button>
+    <button class="tab" data-view="state">状态演进</button>
+    <button class="tab" data-view="raw">原始事件</button>
+  </nav>
+  <div class="tools">
+    <input id="search" class="search" placeholder="搜索节点、字段、Prompt、工具结果…">
+  </div>
 </div>
-<div class="filters">
-  <input id="search" type="text" placeholder="搜索 State、Prompt、工具结果…" oninput="renderTimeline()">
-  <select id="type-filter" onchange="renderTimeline()">
-    <option value="">全部事件</option>
-    <option value="node_start">node_start</option>
-    <option value="node_end">node_end</option>
-    <option value="llm_start">llm_start</option>
-    <option value="llm_end">llm_end</option>
-    <option value="tool_start">tool_start</option>
-    <option value="tool_end">tool_end</option>
-    <option value="route_decision">route_decision</option>
-    <option value="error">error</option>
-  </select>
-  <select id="path-filter" onchange="renderTimeline()">
-    <option value="">全部路径</option>
-  </select>
-  <label><input id="expand-all" type="checkbox" onchange="renderTimeline()"> 展开全部</label>
-</div>
-<div class="main" id="main">
-  <div class="topology" id="topology"></div>
-  <div class="timeline" id="timeline"></div>
-</div>
-<div class="token-bar" id="token-bar"></div>
+<main id="workspace" class="workspace">
+  <nav id="trace-outline" class="outline"></nav>
+  <article id="trace-story" class="story"></article>
+  <aside id="trace-inspector" class="inspector"></aside>
+</main>
 <script id="trace-data" type="application/json">__TRACE_DATA__</script>
 <script>
-(function () {
-  "use strict";
-  try {
-    var DATA = JSON.parse(document.getElementById("trace-data").textContent);
-    var EVENTS = DATA.events || [];
-    var SUMMARY = DATA.summary || {};
-    window.renderTimeline = renderTimeline;
-    renderMeta();
-    renderTopology();
-    populatePathFilter();
-    renderTokenBar();
-    renderTimeline();
-  } catch (error) {
-    showError("渲染错误: " + error.message + "\n" + (error.stack || ""));
-  }
+(function(){
+"use strict";
+try{
+  var DATA=JSON.parse(document.getElementById("trace-data").textContent);
+  var VIEW=DATA.view||{},EVENTS=DATA.events||[],STEPS=VIEW.steps||{};
+  var EVENTS_BY_SEQUENCE={},activeView="flow",selectedStepId=null;
+  var selectedRawSequence=null,inspectorTab="changes",viewPositions={};
+  EVENTS.forEach(function(event){EVENTS_BY_SEQUENCE[event.sequence]=event});
+  selectedStepId=initialStepId();
+  bindGlobalControls();
+  renderMeta();
+  renderActiveView();
+}catch(error){showError("渲染错误: "+error.message+"\n"+(error.stack||""))}
 
-  function esc(value) {
-    var element = document.createElement("div");
-    element.textContent = value == null ? "" : String(value);
-    return element.innerHTML;
-  }
+function esc(value){var element=document.createElement("div");
+  element.textContent=value==null?"":String(value);return element.innerHTML}
+function pretty(value){try{return JSON.stringify(value,null,2)}catch(error){return String(value)}}
+function formatMs(value){var ms=Number(value||0);return ms<1000?ms.toFixed(0)+"ms":
+  (ms/1000).toFixed(2)+"s"}
+function countValue(value){if(value==null)return"0 项";if(Array.isArray(value))
+  return value.length+" 项";if(typeof value==="object")return Object.keys(value).length+
+  " 个字段";return String(value).length+" 字符"}
+function initialStepId(){var all=orderedSteps();return all.length?all[0].id:null}
+function orderedSteps(){return Object.keys(STEPS).map(function(key){return STEPS[key]})
+  .sort(function(a,b){return a.sequence-b.sequence})}
+function selectedStep(){return selectedStepId?STEPS[selectedStepId]:null}
+function eventAt(sequence){return sequence==null?null:EVENTS_BY_SEQUENCE[sequence]||null}
 
-  function pretty(value) {
-    try { return JSON.stringify(value, null, 2); }
-    catch (error) { return String(value); }
-  }
+function renderMeta(){
+  var summary=DATA.summary||{},tokens=(summary.total_tokens||{}).total_tokens||0;
+  var integrity=VIEW.integrity||{},status=integrity.status==="complete"?"":" warning";
+  document.getElementById("metrics").innerHTML=
+    '<span class="metric">Run <b>'+esc(String(DATA.run_id||"").slice(0,8))+'</b></span>'+
+    '<span class="metric">耗时 <b>'+formatMs(summary.total_duration_ms)+'</b></span>'+
+    '<span class="metric">事件 <b>'+EVENTS.length+'</b></span>'+
+    '<span class="metric">Token <b>'+Number(tokens).toLocaleString()+'</b></span>'+
+    '<span class="metric'+status+'">完整性 <b>'+esc(integrity.status||"unknown")+'</b></span>'+
+    '<span class="metric sensitive">⚠ 包含源码与模型上下文</span>'
+}
 
-  function formatMs(value) {
-    var ms = Number(value || 0);
-    return ms < 1000 ? ms.toFixed(1) + "ms" : (ms / 1000).toFixed(2) + "s";
+function bindGlobalControls(){
+  document.querySelectorAll("[data-view]").forEach(function(button){
+    button.onclick=function(){switchView(button.getAttribute("data-view"))}
+  });
+  document.getElementById("search").oninput=function(){
+    renderPreservingReadingPosition(function(){})
   }
+}
+function bindRenderedControls(){
+  document.querySelectorAll("[data-step-id]").forEach(function(element){
+    element.onclick=function(){selectStep(element.getAttribute("data-step-id"))}
+  });
+  document.querySelectorAll("[data-inspector-tab]").forEach(function(element){
+    element.onclick=function(){renderPreservingReadingPosition(function(){
+      inspectorTab=element.getAttribute("data-inspector-tab")
+    })}
+  });
+  document.querySelectorAll("[data-outline-target]").forEach(function(element){
+    element.onclick=function(){var target=document.getElementById(
+      element.getAttribute("data-outline-target"));if(target)target.scrollIntoView()}
+  });
+  document.querySelectorAll("[data-state-step]").forEach(function(element){
+    element.onclick=function(){selectStep(element.getAttribute("data-state-step"))}
+  });
+  document.querySelectorAll("[data-raw-sequence]").forEach(function(element){
+    element.onclick=function(){renderPreservingReadingPosition(function(){
+      selectedRawSequence=Number(element.getAttribute("data-raw-sequence"))
+    })}
+  });
+  var previous=document.getElementById("previous-step");
+  var next=document.getElementById("next-step");
+  if(previous)previous.onclick=function(){moveSelection(-1)};
+  if(next)next.onclick=function(){moveSelection(1)};
+  var pair=document.getElementById("paired-step");
+  if(pair)pair.onclick=jumpToPairedStep
+}
+function switchView(nextView){
+  viewPositions[activeView]=captureReadingPosition();
+  activeView=nextView;
+  document.querySelectorAll("[data-view]").forEach(function(button){
+    button.classList.toggle("active",button.getAttribute("data-view")===activeView)
+  });
+  renderActiveView();
+  restoreReadingPosition(viewPositions[activeView]||{top:0,left:0})
+}
+function captureReadingPosition(){var story=document.getElementById("trace-story");
+  return{top:story.scrollTop,left:story.scrollLeft}}
+function restoreReadingPosition(position){var story=document.getElementById("trace-story");
+  story.scrollTop=position.top||0;story.scrollLeft=position.left||0}
+function renderPreservingReadingPosition(update){
+  var position=captureReadingPosition();update();renderActiveView();
+  restoreReadingPosition(position)
+}
+function selectStep(stepId){if(!STEPS[stepId])return;
+  renderPreservingReadingPosition(function(){selectedStepId=stepId})}
+function moveSelection(delta){var all=orderedSteps(),index=all.findIndex(function(step){
+  return step.id===selectedStepId});if(index<0)index=0;
+  selectStep(all[Math.max(0,Math.min(all.length-1,index+delta))].id)}
+function jumpToPairedStep(){var step=selectedStep();if(!step||!step.pair_id)return;
+  var pair=orderedSteps().find(function(candidate){return candidate.id!==step.id&&
+    candidate.pair_id===step.pair_id});if(pair)selectStep(pair.id)}
 
-  function formatTokens(value) {
-    var count = Number(value || 0);
-    return count >= 1000 ? (count / 1000).toFixed(1) + "K" : String(count);
+function renderActiveView(){
+  var workspace=document.getElementById("workspace");
+  workspace.classList.toggle("secondary",activeView!=="flow");
+  if(activeView==="flow")renderFlow();else if(activeView==="state")renderStateEvolution();
+  else renderRawEvents();
+  renderInspector();bindRenderedControls()
+}
+function renderFlow(){
+  document.getElementById("trace-outline").innerHTML=renderOutline();
+  document.getElementById("trace-story").innerHTML=renderMainFlow()+
+    (VIEW.reviewer_sections||[]).map(renderReviewerSection).join("")+
+    renderCoordinationSection()
+}
+function renderOutline(){
+  var html='<div class="outline-title">审查目录</div>'+
+    '<button data-outline-target="main-flow">主执行流</button>';
+  (VIEW.reviewer_sections||[]).forEach(function(section){
+    html+='<button data-outline-target="reviewer-'+esc(section.key)+'">'+
+      esc(section.title)+' <small>('+section.step_ids.length+')</small></button>'
+  });
+  html+='<button data-outline-target="coordination">协调与证据闭环</button>';
+  return html
+}
+function renderMainFlow(){
+  var stages=VIEW.main_stages||[];
+  return'<section class="story-section" id="main-flow"><div class="section-title">'+
+    'LangGraph 主执行流</div><div class="main-flow">'+stages.map(function(stage,index){
+      var selected=stage.step_id&&stage.step_id===selectedStepId?" selected":"";
+      var missing=stage.status==="missing"?" missing":"";
+      return'<div class="main-stage'+selected+missing+'"'+
+        (stage.step_id?' data-step-id="'+esc(stage.step_id)+'"':"")+'>'+
+        '<span class="seq">#'+String(index+1).padStart(2,"0")+'</span>'+
+        '<div class="title">'+esc(stage.title)+'</div><div class="code">'+
+        esc(stage.code_name)+'</div><div class="summary">'+esc(stage.summary)+'</div></div>'+
+        (index<stages.length-1?'<div class="arrow">→</div>':"")
+    }).join("")+'</div></section>'
+}
+function renderReviewerSection(section){
+  var cards=section.step_ids.map(function(stepId){return renderStepCard(STEPS[stepId])}).join("");
+  return'<section class="story-section" id="reviewer-'+esc(section.key)+'">'+
+    '<header class="section-head"><span><h2>'+esc(section.title)+'</h2>'+
+    '<div class="code">'+esc(section.code_name)+'</div></span><span>'+
+    section.step_ids.length+' 步</span></header>'+cards+'</section>'
+}
+function renderCoordinationSection(){
+  var ids=VIEW.coordination_steps||[];
+  return'<section class="story-section" id="coordination"><header class="section-head">'+
+    '<span><h2>协调与证据闭环</h2><div class="code">ReviewCouncil shared path</div></span>'+
+    '<span>'+ids.length+' 步</span></header>'+
+    (ids.length?ids.map(function(id){return renderStepCard(STEPS[id])}).join(""):
+      '<div class="empty">本次执行没有进入证据或挑战闭环</div>')+'</section>'
+}
+function renderStepCard(step){
+  if(!step)return"";var selected=step.id===selectedStepId?" selected":"";
+  var missing=step.status==="missing"?" missing":"",kind=step.kind.replace("_"," ");
+  var input=stepInput(step),output=stepOutput(step);
+  return'<div class="step '+esc(step.kind)+selected+missing+'" data-step-id="'+
+    esc(step.id)+'"><div class="step-top"><span class="seq">#'+step.sequence+
+    '</span><span class="kind">'+esc(kind)+'</span><span class="step-name">'+
+    esc(step.title)+'</span><span class="duration">'+formatMs(step.duration_ms)+
+    '</span></div><div class="code">'+esc(step.code_name)+(step.round?
+      ' · 第 '+step.round+' 轮':"")+'</div><div class="step-summary">'+
+    esc(step.summary)+' · 输入 '+esc(countValue(input))+' → 输出 '+
+    esc(countValue(output))+'</div></div>'
+}
+
+function stepInput(step){
+  var start=eventAt(step.start_sequence),end=eventAt(step.end_sequence);
+  if(step.kind==="llm")return start&&start.detail?start.detail.messages:null;
+  if(step.kind==="tool_call")return start&&start.detail?start.detail.input:null;
+  return start&&start.detail&&start.detail.input!==undefined?start.detail.input:
+    end&&end.detail?end.detail.input:null
+}
+function stepOutput(step){
+  var end=eventAt(step.end_sequence);
+  if(!end||!end.detail)return null;
+  if(step.kind==="llm")return end.detail.response;
+  return end.detail.output
+}
+function renderJsonValue(title,value){
+  return'<section class="panel"><h3>'+esc(title)+'</h3><pre>'+
+    esc(pretty(value))+'</pre></section>'
+}
+function renderInspector(){
+  var inspector=document.getElementById("trace-inspector");
+  if(activeView==="raw"&&selectedRawSequence!=null){
+    var raw=eventAt(selectedRawSequence);
+    inspector.innerHTML='<div class="inspect-head"><span class="seq">#'+
+      selectedRawSequence+'</span><h2>原始事件</h2><div class="code">'+
+      esc(raw.event_type)+' · '+esc(raw.node_path||raw.node_name)+'</div></div>'+
+      '<div class="inspect-body">'+renderJsonValue("原始 JSON",raw)+'</div>';
+    return
   }
+  var step=selectedStep();
+  if(!step){inspector.innerHTML='<div class="empty">选择一个执行步骤</div>';return}
+  var tabs=[["overview","概览"],["input","节点输入"],["output","节点输出"],
+    ["changes","状态变化"],["internal","内部步骤"],["raw","原始 JSON"]];
+  inspector.innerHTML='<div class="inspect-head"><span class="seq">#'+step.sequence+
+    '</span><h2>'+esc(step.title)+'</h2><div class="code">'+esc(step.node_path)+
+    '</div><div class="summary">'+esc(step.summary)+'</div></div>'+
+    '<div class="inspect-tabs">'+tabs.map(function(tab){return'<button class="inspect-tab '+
+      (inspectorTab===tab[0]?"active":"")+'" data-inspector-tab="'+tab[0]+'">'+
+      tab[1]+'</button>'}).join("")+'</div><div class="inspect-body">'+
+    renderInspectorBody(step)+'</div>'+renderCrumbs(step)
+}
+function renderInspectorBody(step){
+  var start=eventAt(step.start_sequence),end=eventAt(step.end_sequence);
+  if(inspectorTab==="overview")return renderJsonValue("执行实例",{
+    sequence:step.sequence,kind:step.kind,node_path:step.node_path,
+    invocation_id:step.invocation_id,pair_id:step.pair_id,
+    duration_ms:step.duration_ms,status:step.status
+  });
+  if(inspectorTab==="input")return renderJsonValue("节点输入 / 模型请求 / 工具参数",
+    stepInput(step));
+  if(inspectorTab==="output")return renderJsonValue("节点输出 patch / 模型响应 / 工具结果",
+    stepOutput(step));
+  if(inspectorTab==="internal")return renderJsonValue("开始事件",start)+
+    renderJsonValue("结束事件",end);
+  if(inspectorTab==="raw")return renderJsonValue("原始 JSON",{start:start,end:end});
+  return renderStateChanges(step)
+}
+function renderStateChanges(step){
+  if(step.kind!=="node")return'<div class="empty">该执行步骤不直接写入 LangGraph State；'+
+    '请查看输入与输出。</div>';
+  var input=stepInput(step),output=stepOutput(step);
+  if(!output||typeof output!=="object"||Array.isArray(output))
+    return'<div class="empty">该节点没有可展示的 State patch。</div>';
+  input=input&&typeof input==="object"&&!Array.isArray(input)?input:{};
+  var rows=Object.keys(output).map(function(field){return'<div class="change"><code>'+
+    esc(field)+'</code><div class="old">'+esc(pretty(input[field]))+
+    '</div><div>→</div><div class="new">'+esc(pretty(output[field]))+
+    '</div></div>'}).join("");
+  return'<section class="panel"><h3>字段级写入：输入值 → 节点输出 patch</h3>'+
+    rows+'</section><p class="warning">并行节点在 LangGraph superstep 边界统一合并；'+
+    '此处不伪造单个并行节点的合并后 State。</p>'
+}
+function renderCrumbs(step){
+  var parts=String(step.node_path||step.code_name).split("/");
+  var paired=orderedSteps().some(function(candidate){return candidate.id!==step.id&&
+    candidate.pair_id&&candidate.pair_id===step.pair_id});
+  return'<div class="crumbs"><button class="mini" id="previous-step">← 上一步</button>'+
+    '<button class="mini" id="next-step">下一步 →</button>'+
+    (paired?'<button class="mini" id="paired-step">查看配对步骤</button>':"")+
+    parts.map(function(part){return'<span class="crumb">/ '+esc(part)+'</span>'}).join("")+
+    '</div>'
+}
 
-  function eventPath(event) {
-    return event.node_path || event.node_name || "unknown";
-  }
-
-  function renderJsonValue(title, value, open) {
-    if (typeof value === "undefined") { return ""; }
-    return '<details class="detail-block"' + (open ? " open" : "") + ">" +
-      "<summary>" + esc(title) + "</summary><pre>" +
-      esc(pretty(value)) + "</pre></details>";
-  }
-
-  function renderMeta() {
-    var total = (SUMMARY.total_tokens || {}).total_tokens || 0;
-    document.getElementById("meta").textContent =
-      "Run: " + DATA.run_id + " | " + DATA.timestamp +
-      " | Diff: " + DATA.diff_size + " 字符 | 事件: " + EVENTS.length +
-      " | 耗时: " + formatMs(SUMMARY.total_duration_ms) +
-      " | Token: " + formatTokens(total);
-  }
-
-  function renderTopology() {
-    var container = document.getElementById("topology");
-    var timeline = SUMMARY.node_timeline || [];
-    container.innerHTML = '<div class="topology-title">实际节点实例</div>';
-    if (!timeline.length) {
-      container.innerHTML += '<div class="empty">没有节点事件</div>';
-      return;
-    }
-    for (var index = 0; index < timeline.length; index += 1) {
-      var node = timeline[index];
-      var element = document.createElement("div");
-      element.className = "topo-node";
-      element.setAttribute("data-invocation", node.invocation_id || node.run_id || "");
-      element.innerHTML =
-        '<div class="path">' + esc(node.node_path || node.node_name) + "</div>" +
-        '<div class="stats">depth ' + Number(node.depth || 0) +
-        " · " + formatMs(node.duration_ms) +
-        " · LLM " + Number(node.llm_calls || 0) +
-        " · Tool " + Number(node.tool_calls || 0) +
-        " · Token " + formatTokens((node.tokens || {}).total_tokens) + "</div>";
-      element.onclick = makeTopologyClick(
-        node.invocation_id || node.run_id || ""
-      );
-      container.appendChild(element);
-    }
-  }
-
-  function makeTopologyClick(invocationId) {
-    return function () {
-      var nodes = document.querySelectorAll(".event");
-      for (var index = 0; index < nodes.length; index += 1) {
-        if (nodes[index].getAttribute("data-invocation") === invocationId) {
-          nodes[index].scrollIntoView({behavior: "smooth", block: "center"});
-          nodes[index].classList.add("open");
-          return;
-        }
-      }
-    };
-  }
-
-  function populatePathFilter() {
-    var paths = {};
-    var select = document.getElementById("path-filter");
-    for (var index = 0; index < EVENTS.length; index += 1) {
-      paths[eventPath(EVENTS[index])] = true;
-    }
-    Object.keys(paths).sort().forEach(function (path) {
-      var option = document.createElement("option");
-      option.value = path;
-      option.textContent = path;
-      select.appendChild(option);
-    });
-  }
-
-  function eventIcon(type) {
-    var icons = {
-      node_start: "▶", node_end: "■", llm_start: "💬", llm_end: "✓",
-      tool_start: "🔧", tool_end: "📋", route_decision: "↗",
-      fallback: "⚠", error: "❌"
-    };
-    return icons[type] || "•";
-  }
-
-  function renderMessages(messages) {
-    var html = "";
-    for (var index = 0; index < (messages || []).length; index += 1) {
-      var message = messages[index];
-      html += renderJsonValue(
-        "消息 " + (index + 1) + " · " + (message.role || "unknown"),
-        message,
-        true
-      );
-    }
-    return html;
-  }
-
-  function renderEventBody(event) {
-    var detail = event.detail || {};
-    var html = "";
-    if (event.event_type === "node_start") {
-      html += renderJsonValue("节点输入", detail.input, true);
-    } else if (event.event_type === "node_end") {
-      html += renderJsonValue("节点输入", detail.input, false);
-      html += renderJsonValue("节点输出", detail.output, true);
-    } else if (event.event_type === "llm_start") {
-      html += renderMessages(detail.messages || []);
-      html += renderJsonValue("LLM 调用元数据", detail.metadata, false);
-    } else if (event.event_type === "llm_end") {
-      html += renderJsonValue("LLM 响应", detail.response, true);
-      html += renderJsonValue("LLM 调用元数据", detail.metadata, false);
-    } else if (event.event_type === "tool_start") {
-      html += renderJsonValue("工具输入", detail.input, true);
-    } else if (event.event_type === "tool_end") {
-      html += renderJsonValue("工具输出", detail.output, true);
-    } else if (event.event_type === "route_decision") {
-      html += renderJsonValue("路由决策", detail, true);
-    }
-    if (event.tokens) {
-      html += '<div class="tokens">Input ' +
-        Number(event.tokens.input_tokens || 0) + " · Output " +
-        Number(event.tokens.output_tokens || 0) + " · Total " +
-        Number(event.tokens.total_tokens || 0) + "</div>";
-    }
-    html += renderJsonValue("原始 JSON", event, false);
-    return html;
-  }
-
-  function shouldShow(event, search, type, path) {
-    if (type && event.event_type !== type) { return false; }
-    if (path && eventPath(event) !== path) { return false; }
-    if (!search) { return true; }
-    return pretty(event).toLowerCase().indexOf(search) >= 0;
-  }
-
-  function renderTimeline() {
-    var container = document.getElementById("timeline");
-    var search = document.getElementById("search").value.toLowerCase();
-    var type = document.getElementById("type-filter").value;
-    var path = document.getElementById("path-filter").value;
-    var expandAll = document.getElementById("expand-all").checked;
-    var shown = 0;
-    container.innerHTML = "";
-
-    for (var index = 0; index < EVENTS.length; index += 1) {
-      var event = EVENTS[index];
-      if (!shouldShow(event, search, type, path)) { continue; }
-      shown += 1;
-      var element = document.createElement("div");
-      var depth = Math.min(Number(event.depth || 0), 6);
-      element.className = "event " + event.event_type;
-      element.style.marginLeft = (depth * 16) + "px";
-      element.setAttribute("data-invocation", event.invocation_id || "");
-      if (
-        expandAll ||
-        event.event_type === "node_start" ||
-        event.event_type === "node_end"
-      ) {
-        element.classList.add("open");
-      }
-      element.innerHTML =
-        '<div class="event-header"><span class="time">' +
-        formatMs(event.timestamp_ms) + '</span><span class="icon">' +
-        eventIcon(event.event_type) + '</span><span class="summary">' +
-        esc(event.summary) + '</span><span class="badge" title="' +
-        esc(eventPath(event)) + '">' + esc(eventPath(event)) +
-        '</span></div><div class="event-body">' +
-        renderEventBody(event) + "</div>";
-      element.querySelector(".event-header").onclick = function () {
-        this.parentElement.classList.toggle("open");
-      };
-      container.appendChild(element);
-    }
-    if (!shown) {
-      container.innerHTML = '<div class="empty">没有匹配事件</div>';
-    }
-  }
-
-  function renderTokenBar() {
-    var container = document.getElementById("token-bar");
-    var total = SUMMARY.total_tokens || {};
-    var byNode = SUMMARY.tokens_by_node || {};
-    var html = '<span class="token-total">总计 ' +
-      formatTokens(total.total_tokens) + " tokens</span>";
-    Object.keys(byNode).sort().forEach(function (path) {
-      html += '<span class="token-chip">' + esc(path) + " · " +
-        formatTokens(byNode[path].total_tokens) + "</span>";
-    });
-    container.innerHTML = html;
-  }
-
-  function showError(message) {
-    document.getElementById("main").innerHTML =
-      '<div id="error">' + esc(message) + "</div>";
-  }
+function renderStateEvolution(){
+  document.getElementById("trace-outline").innerHTML="";
+  var writes=VIEW.state_writes||{},fields=Object.keys(writes).sort();
+  var query=document.getElementById("search").value.toLowerCase();
+  fields=fields.filter(function(field){return!query||field.toLowerCase().indexOf(query)>=0||
+    pretty(writes[field]).toLowerCase().indexOf(query)>=0});
+  document.getElementById("trace-story").innerHTML='<div class="section-title">'+
+    'State 字段跨执行实例的写入轨迹</div><table class="state-table"><thead><tr>'+
+    '<th>字段</th><th>写入次数</th><th>执行轨迹</th></tr></thead><tbody>'+
+    fields.map(function(field){var items=writes[field];return'<tr data-state-step="'+
+      esc(items[items.length-1].step_id)+'"><td><code>'+esc(field)+'</code></td><td>'+
+      items.length+'</td><td>'+items.map(function(item){return'<div><span class="seq">#'+
+        item.sequence+'</span> '+esc(item.node_path)+' → '+esc(countValue(item.value))+
+        ' <small>(patch)</small></div>'}).join("")+'</td></tr>'}).join("")+
+    '</tbody></table>'
+}
+function renderRawEvents(){
+  document.getElementById("trace-outline").innerHTML="";
+  var query=document.getElementById("search").value.toLowerCase();
+  var filtered=EVENTS.filter(function(event){return!query||
+    pretty(event).toLowerCase().indexOf(query)>=0});
+  document.getElementById("trace-story").innerHTML='<div class="section-title">'+
+    '原始事件 · '+filtered.length+' / '+EVENTS.length+'</div>'+
+    filtered.map(function(event){return'<div class="raw-event '+
+      (event.sequence===selectedRawSequence?"selected":"")+
+      '" data-raw-sequence="'+event.sequence+'"><span class="seq">#'+event.sequence+
+      '</span><span>'+esc(event.event_type)+'</span><span>'+esc(event.summary)+
+      '</span><code>'+esc(event.node_path||event.node_name)+'</code></div>'}).join("")
+}
+function showError(message){document.getElementById("workspace").innerHTML=
+  '<div id="error">'+esc(message)+'</div>'}
 })();
 </script>
 </body>

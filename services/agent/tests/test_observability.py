@@ -204,6 +204,12 @@ def _extract_trace_payload(html: str) -> dict:
     return json.loads(match.group(1))
 
 
+def _dashboard_template() -> str:
+    return Path(
+        "src/codeguard_agent/observability/dashboard_template.html"
+    ).read_text(encoding="utf-8")
+
+
 def test_trace_view_groups_reviewer_react_steps_and_state_writes():
     report = _flow_report_fixture()
 
@@ -756,14 +762,31 @@ class TestDashboard:
         assert parsed["events"][0]["detail"]["input"]["diff_text"] == dangerous
 
     def test_template_renders_generic_node_and_raw_details(self):
-        template = Path(
-            "src/codeguard_agent/observability/dashboard_template.html"
-        ).read_text(encoding="utf-8")
+        template = _dashboard_template()
 
         assert "节点输入" in template
         assert "节点输出" in template
         assert "原始 JSON" in template
         assert "renderJsonValue" in template
+
+    def test_uses_narrative_layout_and_stable_step_identity(self):
+        template = _dashboard_template()
+
+        assert 'id="trace-outline"' in template
+        assert 'id="trace-story"' in template
+        assert 'id="trace-inspector"' in template
+        assert "renderMainFlow" in template
+        assert "renderReviewerSection" in template
+        assert "renderStateEvolution" in template
+        assert "renderRawEvents" in template
+
+    def test_preserves_reading_position_for_local_updates(self):
+        template = _dashboard_template()
+
+        assert "captureReadingPosition" in template
+        assert "restoreReadingPosition" in template
+        assert "renderPreservingReadingPosition" in template
+        assert "selectStep" in template
 
     def test_render_with_placeholder(self):
         """验证 __TRACE_DATA__ 被替换且产出合法 HTML。"""
