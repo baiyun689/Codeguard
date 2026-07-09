@@ -416,3 +416,92 @@ git log -8 --oneline
 ```
 
 Expected: only pre-existing `.superpowers/` remains untracked; implementation and design changes are committed.
+
+---
+
+### Task 5: 可折叠 JSON Tree
+
+**Files:**
+- Modify: `services/agent/src/codeguard_agent/observability/dashboard_template.html`
+- Modify: `services/agent/tests/test_observability.py`
+
+**Interfaces:**
+- Consumes: any JSON-compatible value already embedded in `TraceReport`
+- Produces: `renderJsonTree(value: Any) -> string`
+- Preserves: full raw values and the existing full-data search behavior
+
+- [x] **Step 1: Write the failing template contract test**
+
+```python
+def test_json_details_render_as_collapsed_tree():
+    template = _dashboard_template()
+
+    assert "renderJsonTree" in template
+    assert "renderJsonBranch" in template
+    assert "json-tree" in template
+    assert "json-summary" in template
+    assert "json-long-string" in template
+```
+
+- [x] **Step 2: Run the focused test and verify RED**
+
+Run:
+
+```powershell
+conda run -n codeguard --no-capture-output python -m pytest tests/test_observability.py::TestDashboard::test_json_details_render_as_collapsed_tree -q
+```
+
+Expected: FAIL because the current detail panel renders JSON inside `<pre>`.
+
+- [x] **Step 3: Implement the recursive tree renderer**
+
+Use native `<details>/<summary>` nodes:
+
+```javascript
+function renderJsonTree(value) {
+  return '<div class="json-tree">' + renderJsonBranch(value, null) + '</div>';
+}
+
+function renderJsonBranch(value, key) {
+  if (value !== null && typeof value === "object") {
+    var entries = Array.isArray(value)
+      ? value.map(function (item, index) { return [index, item]; })
+      : Object.keys(value).map(function (name) { return [name, value[name]]; });
+    return '<details class="json-branch"><summary class="json-summary">' +
+      renderJsonKey(key) + collectionSummary(value, entries.length) +
+      '</summary><div class="json-children">' +
+      entries.map(function (entry) {
+        return renderJsonBranch(entry[1], entry[0]);
+      }).join("") + '</div></details>';
+  }
+  return renderJsonLeaf(key, value);
+}
+```
+
+Required behavior:
+
+- Object and array branches are closed by default.
+- Object summaries show `{N keys}` and arrays show `[N items]`.
+- Primitive leaves remain inline and use separate CSS colors for strings, numbers, booleans and `null`.
+- Strings longer than 160 characters show a one-line preview in a closed `<details class="json-long-string">`; opening it reveals the full value.
+- `renderJsonValue` wraps `renderJsonTree` instead of `<pre>`.
+- State-change old/new cells also call `renderJsonTree`.
+
+- [x] **Step 4: Verify tests and JavaScript syntax**
+
+Run:
+
+```powershell
+conda run -n codeguard --no-capture-output python -m pytest tests/ -q
+conda run -n codeguard --no-capture-output ruff check src/codeguard_agent/observability/ tests/test_observability.py
+conda run -n codeguard --no-capture-output mypy src/codeguard_agent/observability/
+```
+
+Then extract the final inline script and run `node --check -`.
+
+- [x] **Step 5: Commit**
+
+```powershell
+git add services/agent/src/codeguard_agent/observability/dashboard_template.html services/agent/tests/test_observability.py docs/superpowers/plans/2026-07-09-observability-trace-flow-visualization.md
+git commit -m "feat(observability): 支持折叠查看 JSON 字段"
+```

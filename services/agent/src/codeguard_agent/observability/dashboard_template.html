@@ -102,6 +102,20 @@ body{display:flex;flex-direction:column;overflow:hidden}
   padding:8px;border-bottom:1px solid var(--line);cursor:pointer}
 .raw-event:hover,.raw-event.selected{background:#121a2d}.raw-event code{
   color:var(--blue);overflow-wrap:anywhere}
+.json-tree{padding:9px 11px;overflow:auto;color:#dce4ff;background:#080d19;
+  font:11px/1.55 Consolas,monospace}.json-branch{margin:2px 0}
+.json-summary{padding:2px 4px;cursor:pointer;border-radius:4px;list-style-position:inside}
+.json-summary:hover{background:#151e34}.json-key{color:var(--cyan);font-weight:700}
+.json-meta{margin-left:7px;color:var(--dim)}.json-children{margin:3px 0 5px 13px;
+  padding-left:11px;border-left:1px solid var(--line)}
+.json-leaf{display:flex;gap:8px;min-width:0;padding:2px 4px}
+.json-leaf>.json-key{flex:0 0 auto}.json-value{min-width:0;overflow-wrap:anywhere}
+.json-string{color:#b9e38c}.json-number{color:#ffca75}.json-boolean{color:#bd8cff}
+.json-null{color:#8e9aba;font-style:italic}.json-long-string{min-width:0}
+.json-long-string>summary{cursor:pointer;color:#b9e38c;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.json-full-string{margin-top:4px;padding:7px;border-left:2px solid var(--green);
+  white-space:pre-wrap;overflow-wrap:anywhere;color:#b9e38c}
 #error{padding:24px;color:var(--red);font-family:monospace;white-space:pre-wrap}
 @media(max-width:1100px){
   .workspace{grid-template-columns:180px minmax(500px,1fr)}
@@ -356,8 +370,58 @@ function stepOutput(step){
   return end.detail.output
 }
 function renderJsonValue(title,value){
-  return'<section class="panel"><h3>'+esc(title)+'</h3><pre>'+
-    esc(pretty(value))+'</pre></section>'
+  return'<section class="panel"><h3>'+esc(title)+'</h3>'+
+    renderJsonTree(value)+'</section>'
+}
+function renderJsonTree(value){
+  if(value!==null&&typeof value==="object"){
+    var entries=jsonEntries(value);
+    return'<div class="json-tree">'+entries.map(function(entry){
+      return renderJsonBranch(entry[1],entry[0])
+    }).join("")+(entries.length?"":'<span class="json-meta">'+
+      collectionSummary(value,0)+'</span>')+'</div>'
+  }
+  return'<div class="json-tree">'+renderJsonLeaf(null,value)+'</div>'
+}
+function renderJsonBranch(value,key){
+  if(value!==null&&typeof value==="object"){
+    var entries=jsonEntries(value);
+    return'<details class="json-branch"><summary class="json-summary">'+
+      renderJsonKey(key)+collectionSummary(value,entries.length)+
+      '</summary><div class="json-children">'+entries.map(function(entry){
+        return renderJsonBranch(entry[1],entry[0])
+      }).join("")+'</div></details>'
+  }
+  return renderJsonLeaf(key,value)
+}
+function jsonEntries(value){
+  if(Array.isArray(value))return value.map(function(item,index){
+    return[index,item]
+  });
+  return Object.keys(value).map(function(name){return[name,value[name]]})
+}
+function renderJsonKey(key){
+  if(key===null||key===undefined)return"";
+  var label=typeof key==="number"?"["+key+"]":String(key);
+  return'<span class="json-key">'+esc(label)+'</span>'
+}
+function collectionSummary(value,length){
+  return'<span class="json-meta">'+(Array.isArray(value)?
+    "["+length+" items]":"{"+length+" keys}")+'</span>'
+}
+function renderJsonLeaf(key,value){
+  var keyHtml=renderJsonKey(key),type=value===null?"null":typeof value;
+  if(type==="string"&&value.length>160){
+    var preview=value.slice(0,160).replace(/\s+/g," ")+"…";
+    return'<div class="json-leaf">'+keyHtml+
+      '<details class="json-long-string"><summary>'+esc(JSON.stringify(preview))+
+      '</summary><div class="json-full-string">'+esc(JSON.stringify(value))+
+      '</div></details></div>'
+  }
+  var rendered=type==="string"?JSON.stringify(value):
+    type==="undefined"?"undefined":String(value);
+  return'<div class="json-leaf">'+keyHtml+'<span class="json-value json-'+
+    esc(type)+'">'+esc(rendered)+'</span></div>'
 }
 function renderInspector(){
   var inspector=document.getElementById("trace-inspector");
@@ -410,8 +474,8 @@ function renderStateChanges(step){
     return'<div class="empty">该节点没有可展示的 State patch。</div>';
   input=input&&typeof input==="object"&&!Array.isArray(input)?input:{};
   var rows=Object.keys(output).map(function(field){return'<div class="change"><code>'+
-    esc(field)+'</code><div class="old">'+esc(pretty(input[field]))+
-    '</div><div>→</div><div class="new">'+esc(pretty(output[field]))+
+    esc(field)+'</code><div class="old">'+renderJsonTree(input[field])+
+    '</div><div>→</div><div class="new">'+renderJsonTree(output[field])+
     '</div></div>'}).join("");
   return'<section class="panel"><h3>字段级写入：输入值 → 节点输出 patch</h3>'+
     rows+'</section><p class="warning">并行节点在 LangGraph superstep 边界统一合并；'+

@@ -814,6 +814,15 @@ class TestDashboard:
         assert "firstAnomalousStep" in template
         assert "stepRelationClass" in template
 
+    def test_json_details_render_as_collapsed_tree(self):
+        template = _dashboard_template()
+
+        assert "renderJsonTree" in template
+        assert "renderJsonBranch" in template
+        assert "json-tree" in template
+        assert "json-summary" in template
+        assert "json-long-string" in template
+
     def test_render_with_placeholder(self):
         """验证 __TRACE_DATA__ 被替换且产出合法 HTML。"""
         report = TraceReport(
