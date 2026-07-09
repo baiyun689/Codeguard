@@ -5,216 +5,361 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Codeguard Trace Viewer</title>
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px;
-  background: #1a1b26; color: #c0caf5; height: 100vh; display: flex; flex-direction: column; }
-.header { background: #24283b; border-bottom: 1px solid #414868; padding: 10px 16px; flex-shrink: 0; }
-.header h1 { font-size: 16px; color: #7aa2f7; display: inline; margin-right: 20px; }
-.header .meta { font-size: 11px; color: #565f89; display: inline; }
-.filter-bar { padding: 6px 16px; background: #24283b; border-bottom: 1px solid #414868; display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
-.filter-bar input, .filter-bar select { background: #1a1b26; border: 1px solid #414868; color: #c0caf5; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
-.filter-bar input { width: 200px; }
-.main { display: flex; flex: 1; overflow: hidden; }
-.topology { width: 260px; flex-shrink: 0; background: #24283b; border-right: 1px solid #414868; overflow-y: auto; padding: 12px; }
-.timeline { flex: 1; overflow-y: auto; padding: 12px; }
-.topo-label { font-size: 10px; color: #565f89; text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 4px; padding-left: 4px; }
-.topo-node { padding: 6px 10px; margin: 3px 0; border-radius: 5px; cursor: pointer; font-size: 12px; border-left: 3px solid transparent; transition: background 0.15s; }
-.topo-node:hover { background: rgba(122,162,247,0.1); }
-.topo-node .name { font-weight: 600; }
-.topo-node .stats { font-size: 10px; color: #565f89; margin-top: 2px; }
-.topo-node.c1 { border-left-color: #7aa2f7; }  /* ThreatModel */
-.topo-node.c2 { border-left-color: #9ece6a; }  /* Behavior */
-.topo-node.c3 { border-left-color: #e0af68; }  /* Maintainability */
-.topo-node.c4 { border-left-color: #bb9af7; }  /* Judge/Coordinator */
-.topo-node.c5 { border-left-color: #7dcfff; }  /* Evidence */
-.event { margin: 2px 0; border-radius: 4px; border: 1px solid transparent; }
-.event:hover { border-color: #414868; }
-.event-header { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 12px; cursor: pointer; }
-.event-header .time { color: #565f89; font-size: 11px; min-width: 72px; font-family: monospace; }
-.event-header .icon { width: 20px; text-align: center; }
-.event-header .summary { flex: 1; }
-.event-header .badge { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: #1a1b26; color: #565f89; }
-.event-body { display: none; padding: 8px 12px 12px 36px; background: rgba(0,0,0,0.15); border-top: 1px solid #414868; font-size: 12px; }
+* { box-sizing: border-box; }
+:root {
+  --bg: #171925; --panel: #24283b; --panel2: #1e2233;
+  --border: #414868; --text: #c0caf5; --dim: #7982a9;
+  --blue: #7aa2f7; --green: #9ece6a; --orange: #e0af68;
+  --purple: #bb9af7; --cyan: #7dcfff; --red: #f7768e;
+}
+body {
+  margin: 0; height: 100vh; display: flex; flex-direction: column;
+  font-family: "Segoe UI", system-ui, sans-serif; font-size: 13px;
+  color: var(--text); background: var(--bg);
+}
+.header {
+  padding: 10px 16px; flex-shrink: 0; background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.header h1 { display: inline; margin: 0 18px 0 0; color: var(--blue); font-size: 16px; }
+.meta { color: var(--dim); font-size: 11px; }
+.filters {
+  display: flex; gap: 8px; align-items: center; padding: 7px 16px;
+  flex-shrink: 0; background: var(--panel); border-bottom: 1px solid var(--border);
+}
+.filters input, .filters select {
+  color: var(--text); background: var(--bg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 5px 8px; font-size: 12px;
+}
+.filters input { width: 260px; }
+.main { display: flex; flex: 1; min-height: 0; }
+.topology {
+  width: 330px; padding: 12px; overflow: auto; flex-shrink: 0;
+  background: var(--panel); border-right: 1px solid var(--border);
+}
+.topology-title {
+  margin: 2px 0 10px; color: var(--dim); font-size: 10px;
+  text-transform: uppercase; letter-spacing: .08em;
+}
+.topo-node {
+  margin: 4px 0; padding: 7px 9px; cursor: pointer;
+  border: 1px solid transparent; border-left: 3px solid var(--blue);
+  border-radius: 5px; background: var(--panel2);
+}
+.topo-node:hover { border-color: var(--border); border-left-color: var(--blue); }
+.topo-node .path { overflow-wrap: anywhere; font-weight: 600; }
+.topo-node .stats { margin-top: 3px; color: var(--dim); font-size: 10px; }
+.timeline { flex: 1; overflow: auto; padding: 12px; }
+.empty { padding: 24px; color: var(--dim); text-align: center; }
+.event {
+  margin: 3px 0; overflow: hidden; border: 1px solid transparent;
+  border-radius: 5px; background: rgba(36, 40, 59, .45);
+}
+.event:hover { border-color: var(--border); }
+.event.node_start { border-left: 3px solid var(--blue); }
+.event.node_end { border-left: 3px solid var(--green); }
+.event.llm_start, .event.llm_end { border-left: 3px solid var(--purple); }
+.event.tool_start, .event.tool_end { border-left: 3px solid var(--orange); }
+.event.route_decision { border-left: 3px solid var(--cyan); }
+.event.error, .event.fallback { border-left: 3px solid var(--red); }
+.event-header {
+  display: flex; gap: 8px; align-items: center; padding: 7px 9px;
+  cursor: pointer;
+}
+.event-header .time { width: 74px; flex-shrink: 0; color: var(--dim); font: 11px monospace; }
+.event-header .icon { width: 18px; text-align: center; }
+.event-header .summary { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.badge {
+  max-width: 44%; padding: 2px 6px; overflow: hidden; border-radius: 3px;
+  color: var(--dim); background: var(--bg); font-size: 10px;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.event-body {
+  display: none; padding: 8px 12px 12px 34px;
+  border-top: 1px solid var(--border); background: rgba(0, 0, 0, .12);
+}
 .event.open .event-body { display: block; }
-.event-body pre { background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; overflow-x: auto; max-height: 400px; overflow-y: auto; font-size: 11px; white-space: pre-wrap; word-break: break-all; margin: 4px 0; }
-.event.d0 { margin-left: 0; } .event.d1 { margin-left: 16px; } .event.d2 { margin-left: 32px; } .event.d3 { margin-left: 48px; }
-.event.d4 { margin-left: 56px; } .event.d5 { margin-left: 60px; } .event.d6 { margin-left: 64px; } .event.d7 { margin-left: 68px; } .event.d8 { margin-left: 72px; }
-.event.route_decision { border-left: 3px solid #bb9af7; }
-.event.fallback, .event.error { border-left: 3px solid #f7768e; }
-.token-bar { background: #24283b; border-top: 1px solid #414868; padding: 8px 16px; flex-shrink: 0; display: flex; gap: 20px; align-items: center; font-size: 12px; }
-.token-bar .total { font-weight: 700; color: #7aa2f7; }
-.token-bar .breakdown { display: flex; gap: 12px; flex-wrap: wrap; }
-.token-chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #1a1b26; }
-.token-chip b { font-weight: 600; }
-#err-msg { color: #f7768e; padding: 20px; font-family: monospace; white-space: pre-wrap; }
+.detail-block { margin: 5px 0; border: 1px solid var(--border); border-radius: 4px; }
+.detail-block > summary {
+  padding: 6px 8px; cursor: pointer; color: var(--cyan); background: var(--panel2);
+}
+.detail-block pre {
+  max-height: 520px; margin: 0; padding: 9px; overflow: auto;
+  color: #d5dcff; background: #12141e; font: 11px/1.45 Consolas, monospace;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.message-role { color: var(--purple); }
+.tokens { margin-top: 7px; color: var(--dim); font-size: 11px; }
+.token-bar {
+  display: flex; gap: 16px; align-items: center; padding: 8px 16px;
+  flex-shrink: 0; overflow-x: auto; background: var(--panel);
+  border-top: 1px solid var(--border); white-space: nowrap;
+}
+.token-total { color: var(--blue); font-weight: 700; }
+.token-chip { padding: 3px 8px; border-radius: 10px; background: var(--bg); font-size: 11px; }
+#error { padding: 24px; color: var(--red); font-family: monospace; white-space: pre-wrap; }
 </style>
 </head>
 <body>
 <div class="header">
   <h1>Codeguard Trace Viewer</h1>
-  <span class="meta" id="meta-info"></span>
+  <span class="meta" id="meta"></span>
 </div>
-<div class="filter-bar">
-  <input type="text" id="filter-search" placeholder="搜索事件..." oninput="render()">
-  <select id="filter-type" onchange="render()">
-    <option value="">全部类型</option><option value="node_start">node_start</option><option value="node_end">node_end</option>
-    <option value="llm_start">llm_start</option><option value="llm_end">llm_end</option>
-    <option value="tool_start">tool_start</option><option value="tool_end">tool_end</option>
-    <option value="route_decision">route_decision</option><option value="fallback">fallback</option><option value="error">error</option>
+<div class="filters">
+  <input id="search" type="text" placeholder="搜索 State、Prompt、工具结果…" oninput="renderTimeline()">
+  <select id="type-filter" onchange="renderTimeline()">
+    <option value="">全部事件</option>
+    <option value="node_start">node_start</option>
+    <option value="node_end">node_end</option>
+    <option value="llm_start">llm_start</option>
+    <option value="llm_end">llm_end</option>
+    <option value="tool_start">tool_start</option>
+    <option value="tool_end">tool_end</option>
+    <option value="route_decision">route_decision</option>
+    <option value="error">error</option>
   </select>
-  <select id="filter-node" onchange="render()"><option value="">全部节点</option></select>
-  <label><input type="checkbox" id="expand-all" onchange="render()"> 展开全部</label>
+  <select id="path-filter" onchange="renderTimeline()">
+    <option value="">全部路径</option>
+  </select>
+  <label><input id="expand-all" type="checkbox" onchange="renderTimeline()"> 展开全部</label>
 </div>
-<div class="main" id="main-area">
+<div class="main" id="main">
   <div class="topology" id="topology"></div>
   <div class="timeline" id="timeline"></div>
 </div>
 <div class="token-bar" id="token-bar"></div>
 <script id="trace-data" type="application/json">__TRACE_DATA__</script>
 <script>
-(function(){
+(function () {
+  "use strict";
   try {
-    var DATA = JSON.parse(document.getElementById('trace-data').textContent);
-    if (!DATA || !DATA.events) { showErr('数据为空或格式错误'); return; }
-    window._D = DATA;
-    var events = DATA.events;
-    var ss = DATA.summary || {};
-    var tbn = ss.tokens_by_node || {};
-    var ntl = ss.node_timeline || [];
-
-    // --- helpers ---
-    function fmtMs(ms) { return ms < 1000 ? ms.toFixed(1)+'ms' : (ms/1000).toFixed(2)+'s'; }
-    function fmtTok(n) { return n >= 1000 ? (n/1000).toFixed(1)+'K' : String(n||0); }
-    function esc(s) { if (s==null) return ''; var d=document.createElement('div'); d.textContent=String(s); return d.innerHTML; }
-
-    var NLABEL = {
-      summary:'Summary', context_provider:'ContextProvider',
-      discover_threat_model:'ThreatModel', discover_behavior:'Behavior',
-      discover_maintainability:'Maintainability', council_coordinator:'Coordinator',
-      evidence_agent:'EvidenceAgent', council_judge:'CouncilJudge',
-      prepare:'prepare', review:'review', collect:'collect'
-    };
-    function nlbl(n) { return NLABEL[n] || n; }
-
-    function ncolor(n) {
-      if (n.indexOf('threat')>=0) return 'c1';
-      if (n.indexOf('behavior')>=0) return 'c2';
-      if (n.indexOf('maintainability')>=0) return 'c3';
-      if (n.indexOf('coordinator')>=0||n.indexOf('judge')>=0) return 'c4';
-      if (n.indexOf('evidence')>=0) return 'c5';
-      return '';
-    }
-
-    var ICONS = {node_start:'▶',node_end:'■',llm_start:'💬',llm_end:'✓',tool_start:'🔧',tool_end:'📋',route_decision:'↗',fallback:'⚠',error:'❌'};
-    function ico(t) { return ICONS[t]||'•'; }
-
-    // --- meta ---
-    document.getElementById('meta-info').textContent =
-      'Run: '+DATA.run_id+' | '+DATA.timestamp+' | Diff: '+DATA.diff_size+'字符 | '+
-      '总耗时: '+fmtMs(ss.total_duration_ms)+' | Token: '+fmtTok((ss.total_tokens||{}).total_tokens);
-
-    // --- topology ---
-    var topo = document.getElementById('topology');
-    var GROUPS = [
-      {l:'外层图', ns:['summary','context_provider']},
-      {l:'发现者Agent', ns:['discover_threat_model','discover_behavior','discover_maintainability']},
-      {l:'发现者内部', ns:['prepare','review','collect']},
-      {l:'编排与裁决', ns:['council_coordinator','evidence_agent','council_judge']}
-    ];
-    GROUPS.forEach(function(g){
-      var lb = document.createElement('div'); lb.className='topo-label'; lb.textContent=g.l; topo.appendChild(lb);
-      g.ns.forEach(function(nm){
-        var st = null;
-        for (var i=0; i<ntl.length; i++) { if (ntl[i].node_name===nm) { st=ntl[i]; break; } }
-        if (!st) return;
-        var d = document.createElement('div');
-        d.className = 'topo-node '+ncolor(nm);
-        d.innerHTML = '<div class="name">'+esc(nlbl(nm))+'</div><div class="stats">'+
-          fmtMs(st.duration_ms)+' | LLM:'+st.llm_calls+' | Tool:'+st.tool_calls+' | Token:'+fmtTok((st.tokens||{}).total_tokens)+'</div>';
-        d.onclick = (function(n){return function(){
-          document.querySelectorAll('.topo-node').forEach(function(x){x.style.background='';});
-          d.style.background='rgba(122,162,247,0.2)';
-          var el = document.querySelector('.event[data-node="'+n+'"]');
-          if (el) el.scrollIntoView({behavior:'smooth',block:'center'});
-        };})(nm);
-        topo.appendChild(d);
-      });
-    });
-
-    // --- filter node dropdown ---
-    var nodeSet = {};
-    for (var i=0; i<events.length; i++) { nodeSet[events[i].node_name]=1; }
-    var sel = document.getElementById('filter-node');
-    Object.keys(nodeSet).sort().forEach(function(n){
-      var o = document.createElement('option'); o.value=n; o.textContent=nlbl(n); sel.appendChild(o);
-    });
-
-    // --- render timeline ---
-    function autoOpen(ev) {
-      return ev.event_type==='node_start'||ev.event_type==='node_end';
-    }
-
-    function renderEventBody(ev) {
-      var h='', d=ev.detail||{};
-      if (ev.event_type==='llm_start' && d.messages) {
-        h+='<strong>消息:</strong>';
-        (d.messages||[]).forEach(function(m){
-          var c=m.content||'', rl=m.role==='system'?'System':m.role==='human'?'User':m.role==='ai'?'AI':m.role||'?';
-          h+='<details><summary>'+esc(rl)+' ('+c.length+'字符)</summary><pre>'+esc(c)+'</pre></details>';
-        });
-      }
-      if (ev.event_type==='llm_end' && d.response) h+='<strong>响应:</strong><pre>'+esc(d.response)+'</pre>';
-      if (ev.event_type==='tool_start' && d.input) h+='<strong>入参:</strong><pre>'+esc(d.input)+'</pre>';
-      if (ev.event_type==='tool_end' && d.output) h+='<strong>返回:</strong><pre>'+esc(d.output)+'</pre>';
-      if (ev.event_type==='route_decision' && d.route) h+='<strong>路由:</strong> <span style="color:#7aa2f7">'+esc(d.route)+'</span>';
-      if (ev.tokens) h+='<div style="margin-top:4px;font-size:11px;color:#565f89">Input:'+ev.tokens.input_tokens+' | Output:'+ev.tokens.output_tokens+' | Total:'+ev.tokens.total_tokens+(ev.tokens.model?' | Model:'+esc(ev.tokens.model):'')+'</div>';
-      return h||'<span style="color:#565f89">(无详情)</span>';
-    }
-
-    window.render = function(){
-      var tl=document.getElementById('timeline'); tl.innerHTML='';
-      var fs=document.getElementById('filter-search').value.toLowerCase();
-      var ft=document.getElementById('filter-type').value;
-      var fn=document.getElementById('filter-node').value;
-      var expandAll=document.getElementById('expand-all').checked;
-
-      for (var i=0; i<events.length; i++){
-        var ev=events[i];
-        if (fn && ev.node_name!==fn) continue;
-        if (ft && ev.event_type!==ft) continue;
-        if (fs) {
-          var hay=(ev.summary+' '+JSON.stringify(ev.detail||{})+' '+ev.node_name).toLowerCase();
-          if (hay.indexOf(fs)===-1) continue;
-        }
-        var div=document.createElement('div');
-        div.className='event d'+ev.depth+' '+ev.event_type;
-        div.setAttribute('data-node',ev.node_name);
-        if (autoOpen(ev)||expandAll) div.classList.add('open');
-        var phaseBadge=ev.phase!=='outer_graph'?' <span class="badge">'+esc(ev.phase)+'</span>':'';
-        div.innerHTML='<div class="event-header"><span class="time">'+fmtMs(ev.timestamp_ms)+'</span><span class="icon">'+ico(ev.event_type)+'</span><span class="summary">'+esc(ev.summary)+'</span>'+phaseBadge+'<span class="badge">'+esc(ev.node_name)+'</span></div><div class="event-body">'+renderEventBody(ev)+'</div>';
-        div.querySelector('.event-header').onclick=function(){this.parentElement.classList.toggle('open');};
-        tl.appendChild(div);
-      }
-    };
-
-    // --- token bar ---
-    var tbar=document.getElementById('token-bar'), tt=ss.total_tokens||{};
-    var bh='<span class="total">总计: '+fmtTok(tt.total_tokens)+' tokens</span><div class="breakdown">';
-    Object.keys(tbn).forEach(function(k){
-      var t=tbn[k];
-      bh+='<span class="token-chip">'+esc(nlbl(k))+': <b>'+fmtTok(t.total_tokens)+'</b></span>';
-    });
-    bh+='</div>'; tbar.innerHTML=bh;
-
-    // --- initial render ---
-    render();
-  } catch(e) {
-    showErr('渲染错误: '+e.message+'\n'+e.stack);
+    var DATA = JSON.parse(document.getElementById("trace-data").textContent);
+    var EVENTS = DATA.events || [];
+    var SUMMARY = DATA.summary || {};
+    window.renderTimeline = renderTimeline;
+    renderMeta();
+    renderTopology();
+    populatePathFilter();
+    renderTokenBar();
+    renderTimeline();
+  } catch (error) {
+    showError("渲染错误: " + error.message + "\n" + (error.stack || ""));
   }
 
-  function showErr(msg) {
-    var m=document.getElementById('main-area');
-    m.innerHTML='<div id="err-msg">'+msg.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</div>';
+  function esc(value) {
+    var element = document.createElement("div");
+    element.textContent = value == null ? "" : String(value);
+    return element.innerHTML;
+  }
+
+  function pretty(value) {
+    try { return JSON.stringify(value, null, 2); }
+    catch (error) { return String(value); }
+  }
+
+  function formatMs(value) {
+    var ms = Number(value || 0);
+    return ms < 1000 ? ms.toFixed(1) + "ms" : (ms / 1000).toFixed(2) + "s";
+  }
+
+  function formatTokens(value) {
+    var count = Number(value || 0);
+    return count >= 1000 ? (count / 1000).toFixed(1) + "K" : String(count);
+  }
+
+  function eventPath(event) {
+    return event.node_path || event.node_name || "unknown";
+  }
+
+  function renderJsonValue(title, value, open) {
+    if (typeof value === "undefined") { return ""; }
+    return '<details class="detail-block"' + (open ? " open" : "") + ">" +
+      "<summary>" + esc(title) + "</summary><pre>" +
+      esc(pretty(value)) + "</pre></details>";
+  }
+
+  function renderMeta() {
+    var total = (SUMMARY.total_tokens || {}).total_tokens || 0;
+    document.getElementById("meta").textContent =
+      "Run: " + DATA.run_id + " | " + DATA.timestamp +
+      " | Diff: " + DATA.diff_size + " 字符 | 事件: " + EVENTS.length +
+      " | 耗时: " + formatMs(SUMMARY.total_duration_ms) +
+      " | Token: " + formatTokens(total);
+  }
+
+  function renderTopology() {
+    var container = document.getElementById("topology");
+    var timeline = SUMMARY.node_timeline || [];
+    container.innerHTML = '<div class="topology-title">实际节点实例</div>';
+    if (!timeline.length) {
+      container.innerHTML += '<div class="empty">没有节点事件</div>';
+      return;
+    }
+    for (var index = 0; index < timeline.length; index += 1) {
+      var node = timeline[index];
+      var element = document.createElement("div");
+      element.className = "topo-node";
+      element.setAttribute("data-invocation", node.invocation_id || node.run_id || "");
+      element.innerHTML =
+        '<div class="path">' + esc(node.node_path || node.node_name) + "</div>" +
+        '<div class="stats">depth ' + Number(node.depth || 0) +
+        " · " + formatMs(node.duration_ms) +
+        " · LLM " + Number(node.llm_calls || 0) +
+        " · Tool " + Number(node.tool_calls || 0) +
+        " · Token " + formatTokens((node.tokens || {}).total_tokens) + "</div>";
+      element.onclick = makeTopologyClick(
+        node.invocation_id || node.run_id || ""
+      );
+      container.appendChild(element);
+    }
+  }
+
+  function makeTopologyClick(invocationId) {
+    return function () {
+      var nodes = document.querySelectorAll(".event");
+      for (var index = 0; index < nodes.length; index += 1) {
+        if (nodes[index].getAttribute("data-invocation") === invocationId) {
+          nodes[index].scrollIntoView({behavior: "smooth", block: "center"});
+          nodes[index].classList.add("open");
+          return;
+        }
+      }
+    };
+  }
+
+  function populatePathFilter() {
+    var paths = {};
+    var select = document.getElementById("path-filter");
+    for (var index = 0; index < EVENTS.length; index += 1) {
+      paths[eventPath(EVENTS[index])] = true;
+    }
+    Object.keys(paths).sort().forEach(function (path) {
+      var option = document.createElement("option");
+      option.value = path;
+      option.textContent = path;
+      select.appendChild(option);
+    });
+  }
+
+  function eventIcon(type) {
+    var icons = {
+      node_start: "▶", node_end: "■", llm_start: "💬", llm_end: "✓",
+      tool_start: "🔧", tool_end: "📋", route_decision: "↗",
+      fallback: "⚠", error: "❌"
+    };
+    return icons[type] || "•";
+  }
+
+  function renderMessages(messages) {
+    var html = "";
+    for (var index = 0; index < (messages || []).length; index += 1) {
+      var message = messages[index];
+      html += renderJsonValue(
+        "消息 " + (index + 1) + " · " + (message.role || "unknown"),
+        message,
+        true
+      );
+    }
+    return html;
+  }
+
+  function renderEventBody(event) {
+    var detail = event.detail || {};
+    var html = "";
+    if (event.event_type === "node_start") {
+      html += renderJsonValue("节点输入", detail.input, true);
+    } else if (event.event_type === "node_end") {
+      html += renderJsonValue("节点输入", detail.input, false);
+      html += renderJsonValue("节点输出", detail.output, true);
+    } else if (event.event_type === "llm_start") {
+      html += renderMessages(detail.messages || []);
+      html += renderJsonValue("LLM 调用元数据", detail.metadata, false);
+    } else if (event.event_type === "llm_end") {
+      html += renderJsonValue("LLM 响应", detail.response, true);
+      html += renderJsonValue("LLM 调用元数据", detail.metadata, false);
+    } else if (event.event_type === "tool_start") {
+      html += renderJsonValue("工具输入", detail.input, true);
+    } else if (event.event_type === "tool_end") {
+      html += renderJsonValue("工具输出", detail.output, true);
+    } else if (event.event_type === "route_decision") {
+      html += renderJsonValue("路由决策", detail, true);
+    }
+    if (event.tokens) {
+      html += '<div class="tokens">Input ' +
+        Number(event.tokens.input_tokens || 0) + " · Output " +
+        Number(event.tokens.output_tokens || 0) + " · Total " +
+        Number(event.tokens.total_tokens || 0) + "</div>";
+    }
+    html += renderJsonValue("原始 JSON", event, false);
+    return html;
+  }
+
+  function shouldShow(event, search, type, path) {
+    if (type && event.event_type !== type) { return false; }
+    if (path && eventPath(event) !== path) { return false; }
+    if (!search) { return true; }
+    return pretty(event).toLowerCase().indexOf(search) >= 0;
+  }
+
+  function renderTimeline() {
+    var container = document.getElementById("timeline");
+    var search = document.getElementById("search").value.toLowerCase();
+    var type = document.getElementById("type-filter").value;
+    var path = document.getElementById("path-filter").value;
+    var expandAll = document.getElementById("expand-all").checked;
+    var shown = 0;
+    container.innerHTML = "";
+
+    for (var index = 0; index < EVENTS.length; index += 1) {
+      var event = EVENTS[index];
+      if (!shouldShow(event, search, type, path)) { continue; }
+      shown += 1;
+      var element = document.createElement("div");
+      var depth = Math.min(Number(event.depth || 0), 6);
+      element.className = "event " + event.event_type;
+      element.style.marginLeft = (depth * 16) + "px";
+      element.setAttribute("data-invocation", event.invocation_id || "");
+      if (
+        expandAll ||
+        event.event_type === "node_start" ||
+        event.event_type === "node_end"
+      ) {
+        element.classList.add("open");
+      }
+      element.innerHTML =
+        '<div class="event-header"><span class="time">' +
+        formatMs(event.timestamp_ms) + '</span><span class="icon">' +
+        eventIcon(event.event_type) + '</span><span class="summary">' +
+        esc(event.summary) + '</span><span class="badge" title="' +
+        esc(eventPath(event)) + '">' + esc(eventPath(event)) +
+        '</span></div><div class="event-body">' +
+        renderEventBody(event) + "</div>";
+      element.querySelector(".event-header").onclick = function () {
+        this.parentElement.classList.toggle("open");
+      };
+      container.appendChild(element);
+    }
+    if (!shown) {
+      container.innerHTML = '<div class="empty">没有匹配事件</div>';
+    }
+  }
+
+  function renderTokenBar() {
+    var container = document.getElementById("token-bar");
+    var total = SUMMARY.total_tokens || {};
+    var byNode = SUMMARY.tokens_by_node || {};
+    var html = '<span class="token-total">总计 ' +
+      formatTokens(total.total_tokens) + " tokens</span>";
+    Object.keys(byNode).sort().forEach(function (path) {
+      html += '<span class="token-chip">' + esc(path) + " · " +
+        formatTokens(byNode[path].total_tokens) + "</span>";
+    });
+    container.innerHTML = html;
+  }
+
+  function showError(message) {
+    document.getElementById("main").innerHTML =
+      '<div id="error">' + esc(message) + "</div>";
   }
 })();
 </script>

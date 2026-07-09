@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -23,10 +24,27 @@ def _load_template() -> str:
 def render_dashboard(report: TraceReport) -> str:
     """把 TraceReport 渲染为完整的 HTML 字符串。模板中的 __TRACE_DATA__ 被替换为 JSON 数据。"""
     template = _load_template()
-    data_json = report.model_dump_json(indent=2)
+    data_json = _json_for_html_script(report)
     if "__TRACE_DATA__" not in template:
         logger.warning("Dashboard 模板缺少 __TRACE_DATA__ 占位符")
     return template.replace("__TRACE_DATA__", data_json)
+
+
+def _json_for_html_script(report: TraceReport) -> str:
+    """编码可安全嵌入 ``script[type=application/json]`` 的 JSON。"""
+    payload = json.dumps(
+        report.model_dump(mode="json"),
+        ensure_ascii=False,
+        indent=2,
+    )
+    return (
+        payload
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
 
 
 def render_dashboard_file(report: TraceReport, output_dir: str, run_id: str) -> Path:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 import tempfile
 from pathlib import Path
 
@@ -475,6 +476,53 @@ def test_run_with_tracing_returns_root_output_without_second_execution():
 
 
 class TestDashboard:
+    def test_json_embedding_preserves_script_like_source(self):
+        dangerous = (
+            "</script><script>window.pwned=true</script>\u2028\u2029"
+        )
+        report = TraceReport(
+            run_id="safe-json",
+            timestamp="2026-07-09T00:00:00",
+            events=[
+                TraceEvent(
+                    sequence=1,
+                    timestamp_ms=0,
+                    event_type="node_start",
+                    node_name="review",
+                    phase="reviewer_subgraph",
+                    depth=1,
+                    summary="input",
+                    detail={"input": {"diff_text": dangerous}},
+                )
+            ],
+        )
+
+        html = render_dashboard(report)
+        match = re.search(
+            (
+                r'<script id="trace-data" type="application/json">'
+                r"(.*?)</script>"
+            ),
+            html,
+            re.DOTALL,
+        )
+
+        assert match is not None
+        payload = match.group(1)
+        assert "</script><script>" not in payload
+        parsed = json.loads(payload)
+        assert parsed["events"][0]["detail"]["input"]["diff_text"] == dangerous
+
+    def test_template_renders_generic_node_and_raw_details(self):
+        template = Path(
+            "src/codeguard_agent/observability/dashboard_template.html"
+        ).read_text(encoding="utf-8")
+
+        assert "节点输入" in template
+        assert "节点输出" in template
+        assert "原始 JSON" in template
+        assert "renderJsonValue" in template
+
     def test_render_with_placeholder(self):
         """验证 __TRACE_DATA__ 被替换且产出合法 HTML。"""
         report = TraceReport(
