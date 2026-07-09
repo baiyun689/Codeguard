@@ -157,7 +157,18 @@ function formatMs(value){var ms=Number(value||0);return ms<1000?ms.toFixed(0)+"m
 function countValue(value){if(value==null)return"0 项";if(Array.isArray(value))
   return value.length+" 项";if(typeof value==="object")return Object.keys(value).length+
   " 个字段";return String(value).length+" 字符"}
-function initialStepId(){var all=orderedSteps();return all.length?all[0].id:null}
+function initialStepId(){
+  var anomalous=firstAnomalousStep();
+  if(anomalous)return anomalous.id;
+  var council=(VIEW.main_stages||[]).find(function(stage){
+    return stage.code_name==="review_council"
+  });
+  if(council&&council.step_id)return council.step_id;
+  var all=orderedSteps();return all.length?all[0].id:null
+}
+function firstAnomalousStep(){
+  return orderedSteps().find(function(step){return step.status==="missing"})
+}
 function orderedSteps(){return Object.keys(STEPS).map(function(key){return STEPS[key]})
   .sort(function(a,b){return a.sequence-b.sequence})}
 function selectedStep(){return selectedStepId?STEPS[selectedStepId]:null}
@@ -171,7 +182,9 @@ function renderMeta(){
     '<span class="metric">耗时 <b>'+formatMs(summary.total_duration_ms)+'</b></span>'+
     '<span class="metric">事件 <b>'+EVENTS.length+'</b></span>'+
     '<span class="metric">Token <b>'+Number(tokens).toLocaleString()+'</b></span>'+
-    '<span class="metric'+status+'">完整性 <b>'+esc(integrity.status||"unknown")+'</b></span>'+
+    '<span class="metric'+status+'">完整性 <b>'+esc(integrity.status||"unknown")+
+    '</b> · 缺结束 '+Number(integrity.missing_end_count||0)+
+    ' · 未关联 '+Number(integrity.unassociated_count||0)+'</span>'+
     '<span class="metric sensitive">⚠ 包含源码与模型上下文</span>'
 }
 
@@ -305,8 +318,9 @@ function stepMatchesSearch(stepId){
 function renderStepCard(step){
   if(!step)return"";var selected=step.id===selectedStepId?" selected":"";
   var missing=step.status==="missing"?" missing":"",kind=step.kind.replace("_"," ");
+  var relation=stepRelationClass(step);
   var input=stepInput(step),output=stepOutput(step);
-  return'<div class="step '+esc(step.kind)+selected+missing+'" data-step-id="'+
+  return'<div class="step '+esc(step.kind)+selected+missing+relation+'" data-step-id="'+
     esc(step.id)+'"><div class="step-top"><span class="seq">#'+step.sequence+
     '</span><span class="kind">'+esc(kind)+'</span><span class="step-name">'+
     esc(step.title)+'</span><span class="duration">'+formatMs(step.duration_ms)+
@@ -314,6 +328,18 @@ function renderStepCard(step){
       ' · 第 '+step.round+' 轮':"")+'</div><div class="step-summary">'+
     esc(step.summary)+' · 输入 '+esc(countValue(input))+' → 输出 '+
     esc(countValue(output))+'</div></div>'
+}
+function stepRelationClass(step){
+  var selected=selectedStep();
+  if(!selected||!selected.reviewer||step.reviewer!==selected.reviewer||
+    step.id===selected.id)return"";
+  var section=(VIEW.reviewer_sections||[]).find(function(item){
+    return item.key===selected.reviewer
+  });
+  if(!section)return"";
+  var selectedIndex=section.step_ids.indexOf(selected.id);
+  var stepIndex=section.step_ids.indexOf(step.id);
+  return Math.abs(selectedIndex-stepIndex)===1?" neighbor":" dimmed"
 }
 
 function stepInput(step){
@@ -372,6 +398,11 @@ function renderInspectorBody(step){
   return renderStateChanges(step)
 }
 function renderStateChanges(step){
+  if(step.kind==="group")return renderJsonValue("ReviewCouncil 总览",
+    (VIEW.reviewer_sections||[]).map(function(section){return{
+      reviewer:section.title,code_name:section.code_name,
+      observable_steps:section.step_ids.length
+    }}));
   if(step.kind!=="node")return'<div class="empty">该执行步骤不直接写入 LangGraph State；'+
     '请查看输入与输出。</div>';
   var input=stepInput(step),output=stepOutput(step);

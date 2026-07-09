@@ -237,16 +237,11 @@ def test_trace_view_groups_reviewer_react_steps_and_state_writes():
 def test_trace_view_main_stages_resolve_without_copying_state_values():
     view = build_trace_view(_flow_report_fixture())
 
-    concrete_stages = [
-        stage
-        for stage in view["main_stages"]
-        if stage["code_name"] != "review_council"
-    ]
-
     assert all(
         stage["step_id"] in view["steps"]
-        for stage in concrete_stages
+        for stage in view["main_stages"]
     )
+    assert view["steps"]["group:review_council"]["kind"] == "group"
     assert {"diff_summary", "context_bundle", "final_issues"} <= set(
         view["state_writes"]
     )
@@ -291,6 +286,11 @@ def test_trace_view_reports_missing_and_unassociated_events():
     assert view["integrity"]["missing_end_count"] == 1
     assert view["integrity"]["unassociated_count"] == 2
     assert view["integrity"]["status"] == "incomplete"
+    assert all(
+        stage["step_id"] in view["steps"]
+        for stage in view["main_stages"]
+    )
+    assert view["steps"]["placeholder:self_checker"]["status"] == "missing"
 
 
 def test_dashboard_payload_keeps_raw_report_and_adds_flow_view():
@@ -811,6 +811,8 @@ class TestDashboard:
         assert "renderPreservingReadingPosition" in template
         assert "selectStep" in template
         assert "stepMatchesSearch" in template
+        assert "firstAnomalousStep" in template
+        assert "stepRelationClass" in template
 
     def test_render_with_placeholder(self):
         """验证 __TRACE_DATA__ 被替换且产出合法 HTML。"""

@@ -52,14 +52,25 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
     node_steps = _pair_events(report.events, "node_start", "node_end")
     llm_steps = _pair_events(report.events, "llm_start", "llm_end")
     tool_steps = _tool_event_steps(report.events)
+    main_placeholders = _missing_main_steps(node_steps)
+    node_steps_with_placeholders = node_steps + main_placeholders
     visible_node_steps = [
         step
-        for step in node_steps
+        for step in node_steps_with_placeholders
         if _is_visible_node_step(step)
     ]
-    steps = _index_steps(visible_node_steps + llm_steps + tool_steps)
+    review_council_step = _review_council_step(node_steps)
+    steps = _index_steps(
+        visible_node_steps
+        + llm_steps
+        + tool_steps
+        + [review_council_step]
+    )
     return {
-        "main_stages": _main_stages(node_steps),
+        "main_stages": _main_stages(
+            node_steps_with_placeholders,
+            review_council_step,
+        ),
         "reviewer_sections": _reviewer_sections(steps),
         "coordination_steps": _coordination_steps(steps),
         "steps": steps,
@@ -183,6 +194,7 @@ def _index_steps(
 
 def _main_stages(
     node_steps: list[dict[str, Any]],
+    review_council_step: dict[str, Any],
 ) -> list[dict[str, Any]]:
     by_name: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for step in node_steps:
@@ -195,22 +207,14 @@ def _main_stages(
     ):
         stages.append(_main_stage(code_name, title, by_name.get(code_name)))
 
-    discoverers = [
-        step
-        for root in REVIEWERS
-        for step in by_name.get(root, [])
-    ]
     stages.append({
         "id": "main:review_council",
         "title": "审查委员会",
         "code_name": "review_council",
-        "status": "complete" if discoverers else "missing",
-        "step_id": None,
-        "sequence": min(
-            (step["sequence"] for step in discoverers),
-            default=0,
-        ),
-        "summary": f"{len(discoverers)} 名审查员",
+        "status": review_council_step["status"],
+        "step_id": review_council_step["id"],
+        "sequence": review_council_step["sequence"],
+        "summary": review_council_step["summary"],
     })
     stages.append(_main_stage(
         "self_checker",
@@ -218,6 +222,63 @@ def _main_stages(
         by_name.get("self_checker"),
     ))
     return stages
+
+
+def _review_council_step(
+    node_steps: list[dict[str, Any]],
+) -> dict[str, Any]:
+    discoverers = [
+        step
+        for step in node_steps
+        if step["code_name"] in REVIEWERS
+    ]
+    return {
+        "id": "group:review_council",
+        "sequence": min(
+            (step["sequence"] for step in discoverers),
+            default=0,
+        ),
+        "kind": "group",
+        "title": "审查委员会",
+        "code_name": "review_council",
+        "node_path": "review_council",
+        "invocation_id": "",
+        "pair_id": "",
+        "start_sequence": None,
+        "end_sequence": None,
+        "duration_ms": 0.0,
+        "status": "complete" if discoverers else "missing",
+        "summary": f"{len(discoverers)} 名审查员并行执行",
+    }
+
+
+def _missing_main_steps(
+    node_steps: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    present = {step["code_name"] for step in node_steps}
+    placeholders: list[dict[str, Any]] = []
+    for index, code_name in enumerate(
+        ("summary", "context_provider", "self_checker"),
+        start=1,
+    ):
+        if code_name in present:
+            continue
+        placeholders.append({
+            "id": f"placeholder:{code_name}",
+            "sequence": 1_000_000 + index,
+            "kind": "node",
+            "title": _NODE_TITLES[code_name],
+            "code_name": code_name,
+            "node_path": code_name,
+            "invocation_id": "",
+            "pair_id": "",
+            "start_sequence": None,
+            "end_sequence": None,
+            "duration_ms": 0.0,
+            "status": "missing",
+            "summary": "当前 Trace 未采集到该节点",
+        })
+    return placeholders
 
 
 def _main_stage(
