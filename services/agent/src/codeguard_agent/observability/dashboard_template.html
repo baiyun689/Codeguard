@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codeguard Trace Viewer</title>
+<style>
+:root {
+  --bg: #1a1b26; --panel: #24283b; --border: #414868;
+  --text: #c0caf5; --dim: #565f89; --accent: #7aa2f7;
+  --green: #9ece6a; --orange: #e0af68; --red: #f7768e; --purple: #bb9af7;
+  --cyan: #7dcfff; --gray: #565f89;
+  font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px;
+  background: var(--bg); color: var(--text); margin: 0;
+}
+body { margin: 0; height: 100vh; display: flex; flex-direction: column; }
+.header { background: var(--panel); border-bottom: 1px solid var(--border); padding: 10px 16px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
+.header h1 { margin: 0; font-size: 16px; color: var(--accent); }
+.header .meta { font-size: 11px; color: var(--dim); }
+.filter-bar { padding: 6px 16px; background: var(--panel); border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+.filter-bar input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; font-size: 12px; width: 200px; }
+.filter-bar select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+.filter-bar label { font-size: 11px; color: var(--dim); display: flex; align-items: center; gap: 4px; }
+.main { display: flex; flex: 1; overflow: hidden; }
+.topology { width: 280px; flex-shrink: 0; background: var(--panel); border-right: 1px solid var(--border); overflow-y: auto; padding: 12px; }
+.timeline { flex: 1; overflow-y: auto; padding: 12px; }
+.topo-node { padding: 6px 10px; margin: 3px 0; border-radius: 5px; cursor: pointer; font-size: 12px; transition: background 0.15s; border-left: 3px solid transparent; }
+.topo-node:hover { background: rgba(122,162,247,0.1); }
+.topo-node.active { background: rgba(122,162,247,0.2); border-left-color: var(--accent); }
+.topo-node .name { font-weight: 600; }
+.topo-node .stats { font-size: 10px; color: var(--dim); margin-top: 2px; }
+.topo-label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; margin: 10px 0 4px; padding-left: 4px; }
+.color-T { border-left-color: var(--accent); }
+.color-B { border-left-color: var(--green); }
+.color-M { border-left-color: var(--orange); }
+.color-C { border-left-color: var(--purple); }
+.color-E { border-left-color: var(--cyan); }
+.color-G { border-left-color: var(--gray); }
+.event { margin: 2px 0; border-radius: 4px; border: 1px solid transparent; cursor: pointer; }
+.event:hover { border-color: var(--border); }
+.event-header { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 12px; }
+.event-header .time { color: var(--dim); font-size: 11px; min-width: 70px; font-family: monospace; }
+.event-header .icon { width: 18px; text-align: center; font-size: 13px; }
+.event-header .summary { flex: 1; }
+.event-header .badge { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: var(--bg); color: var(--dim); }
+.event-body { display: none; padding: 8px 12px 12px 36px; background: rgba(0,0,0,0.15); border-top: 1px solid var(--border); font-size: 12px; }
+.event.open .event-body { display: block; }
+.event-body pre { background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; overflow-x: auto; max-height: 400px; overflow-y: auto; font-size: 11px; white-space: pre-wrap; word-break: break-all; margin: 4px 0; }
+.event.depth-0 { margin-left: 0; }
+.event.depth-1 { margin-left: 16px; }
+.event.depth-2 { margin-left: 32px; }
+.event.route_decision { border-left: 3px solid var(--purple); }
+.event.fallback, .event.error { border-left: 3px solid var(--red); }
+.token-bar { background: var(--panel); border-top: 1px solid var(--border); padding: 8px 16px; flex-shrink: 0; display: flex; gap: 20px; align-items: center; font-size: 12px; }
+.token-bar .total { font-weight: 700; color: var(--accent); }
+.token-bar .breakdown { display: flex; gap: 12px; flex-wrap: wrap; }
+.token-chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--bg); }
+.token-chip span { font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="header"><div><h1>Codeguard Trace Viewer</h1><div class="meta" id="meta-info"></div></div></div>
+<div class="filter-bar">
+  <input type="text" id="filter-search" placeholder="搜索事件..." oninput="applyFilter()">
+  <select id="filter-type" onchange="applyFilter()">
+    <option value="">全部类型</option>
+    <option value="node_start">node_start</option><option value="node_end">node_end</option>
+    <option value="llm_start">llm_start</option><option value="llm_end">llm_end</option>
+    <option value="tool_start">tool_start</option><option value="tool_end">tool_end</option>
+    <option value="route_decision">route_decision</option>
+    <option value="fallback">fallback</option><option value="error">error</option>
+  </select>
+  <select id="filter-node" onchange="applyFilter()"><option value="">全部节点</option></select>
+  <label><input type="checkbox" id="filter-expand-all" onchange="toggleExpandAll()"> 展开全部</label>
+</div>
+<div class="main">
+  <div class="topology" id="topology"></div>
+  <div class="timeline" id="timeline"></div>
+</div>
+<div class="token-bar" id="token-bar"></div>
+<script id="trace-data" type="application/json">__TRACE_DATA__</script>
+<script>
+const DATA = JSON.parse(document.getElementById('trace-data').textContent);
+const events = DATA.events || [];
+const summary = DATA.summary || {};
+const tokensByNode = summary.tokens_by_node || {};
+const nodeTimeline = summary.node_timeline || [];
+
+function nodeColorClass(name) {
+  if (name.includes('threat')) return 'color-T';
+  if (name.includes('behavior')) return 'color-B';
+  if (name.includes('maintainability')) return 'color-M';
+  if (name.includes('coordinator') || name.includes('judge')) return 'color-C';
+  if (name.includes('evidence')) return 'color-E';
+  return 'color-G';
+}
+
+function nodeLabel(name) {
+  const m = {'summary':'Summary','context_provider':'ContextProvider',
+    'discover_threat_model':'ThreatModel','discover_behavior':'Behavior',
+    'discover_maintainability':"Maint'bility",'council_coordinator':'Coordinator',
+    'evidence_agent':'EvidenceAgent','council_judge':'CouncilJudge',
+    'prepare':'  prepare','review':'  review','collect':'  collect'};
+  return m[name] || name;
+}
+
+function formatMs(ms) { return ms < 1000 ? ms.toFixed(1) + 'ms' : (ms/1000).toFixed(2) + 's'; }
+function formatTokens(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'K' : String(n); }
+
+document.getElementById('meta-info').textContent =
+  'Run: ' + DATA.run_id + '  |  ' + DATA.timestamp + '  |  Diff: ' + DATA.diff_size + '字符  |  ' +
+  '总耗时: ' + formatMs(summary.total_duration_ms) + '  |  总Token: ' + formatTokens(summary.total_tokens?.total_tokens || 0);
+
+const topo = document.getElementById('topology');
+const TOPO_ORDER = [
+  {label:'外层图', nodes:['summary','context_provider']},
+  {label:'发现者Agent', nodes:['discover_threat_model','discover_behavior','discover_maintainability']},
+  {label:'发现者内部', nodes:['prepare','review','collect']},
+  {label:'编排与裁决', nodes:['council_coordinator','evidence_agent','council_judge']},
+];
+
+TOPO_ORDER.forEach(group => {
+  const label = document.createElement('div'); label.className = 'topo-label'; label.textContent = group.label; topo.appendChild(label);
+  group.nodes.forEach(name => {
+    const stats = nodeTimeline.find(n => n.node_name === name);
+    if (!stats) return;
+    const div = document.createElement('div');
+    div.className = 'topo-node ' + nodeColorClass(name);
+    div.innerHTML = '<div class="name">' + nodeLabel(name) + '</div><div class="stats">' +
+      formatMs(stats.duration_ms) + '  |  LLM: ' + stats.llm_calls + '  |  Tool: ' + stats.tool_calls +
+      '  |  Token: ' + formatTokens(stats.tokens?.total_tokens || 0) + '</div>';
+    div.onclick = function() { scrollToNode(name); };
+    div.id = 'topo-' + name;
+    topo.appendChild(div);
+  });
+});
+
+function scrollToNode(name) {
+  document.querySelectorAll('.topo-node').forEach(function(n) { n.classList.remove('active'); });
+  var tn = document.getElementById('topo-' + name); if (tn) tn.classList.add('active');
+  var first = document.querySelector('.event[data-node="' + name + '"]');
+  if (first) first.scrollIntoView({behavior:'smooth',block:'center'});
+}
+
+var filterNode = '', filterType = '', filterSearch = '';
+function applyFilter() {
+  filterSearch = document.getElementById('filter-search').value.toLowerCase();
+  filterType = document.getElementById('filter-type').value;
+  filterNode = document.getElementById('filter-node').value;
+  renderTimeline();
+}
+function toggleExpandAll() {
+  var checked = document.getElementById('filter-expand-all').checked;
+  document.querySelectorAll('.event').forEach(function(e) { if (checked) e.classList.add('open'); else e.classList.remove('open'); });
+}
+
+var nodeNames = [...new Set(events.map(function(e) { return e.node_name; }))].sort();
+var sel = document.getElementById('filter-node');
+nodeNames.forEach(function(name) { var opt = document.createElement('option'); opt.value = name; opt.textContent = nodeLabel(name); sel.appendChild(opt); });
+
+function eventIcon(type) {
+  var icons = {node_start:'▶',node_end:'■',llm_start:'💬',llm_end:'✓',tool_start:'🔧',tool_end:'📋',route_decision:'↗',fallback:'⚠',error:'❌'};
+  return icons[type] || '•';
+}
+
+function shouldAutoOpen(ev) { return ev.depth <= 1 && (ev.event_type === 'node_start' || ev.event_type === 'node_end'); }
+
+function renderTimeline() {
+  var tl = document.getElementById('timeline'); tl.innerHTML = '';
+  var filtered = events.filter(function(e) {
+    if (filterNode && e.node_name !== filterNode) return false;
+    if (filterType && e.event_type !== filterType) return false;
+    if (filterSearch) { var h = (e.summary + ' ' + JSON.stringify(e.detail||{}) + ' ' + e.node_name).toLowerCase(); if (h.indexOf(filterSearch) === -1) return false; }
+    return true;
+  });
+  filtered.forEach(function(ev) {
+    var div = document.createElement('div');
+    div.className = 'event depth-' + ev.depth + ' ' + ev.event_type;
+    div.setAttribute('data-node', ev.node_name);
+    if (shouldAutoOpen(ev)) div.classList.add('open');
+    var phaseBadge = ev.phase !== 'outer_graph' ? '<span class="badge">' + escHtml(ev.phase) + '</span>' : '';
+    div.innerHTML = '<div class="event-header"><span class="time">' + formatMs(ev.timestamp_ms) + '</span><span class="icon">' + eventIcon(ev.event_type) + '</span><span class="summary">' + escHtml(ev.summary) + '</span>' + phaseBadge + '<span class="badge">' + ev.node_name + '</span></div><div class="event-body">' + renderEventBody(ev) + '</div>';
+    div.querySelector('.event-header').onclick = function() { div.classList.toggle('open'); };
+    tl.appendChild(div);
+  });
+}
+
+function escHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function renderEventBody(ev) {
+  var html = '', d = ev.detail || {};
+  if (ev.event_type === 'llm_start' && d.messages) {
+    html += '<strong>消息:</strong>';
+    d.messages.forEach(function(m) {
+      var content = m.content || '', roleLabel = m.role === 'system' ? 'System' : m.role === 'human' ? 'User' : m.role === 'ai' ? 'AI' : m.role;
+      html += '<details><summary>' + escHtml(roleLabel) + ' (' + content.length + ' 字符)</summary><pre>' + escHtml(content) + '</pre></details>';
+    });
+  }
+  if (ev.event_type === 'llm_end' && d.response) html += '<strong>响应:</strong><pre>' + escHtml(d.response) + '</pre>';
+  if (ev.event_type === 'tool_start' && d.input) html += '<strong>入参:</strong><pre>' + escHtml(d.input) + '</pre>';
+  if (ev.event_type === 'tool_end' && d.output) html += '<strong>返回:</strong><pre>' + escHtml(d.output) + '</pre>';
+  if (ev.event_type === 'route_decision' && d.route) html += '<strong>路由目标:</strong> <span style="color:var(--accent)">' + escHtml(d.route) + '</span>';
+  if (ev.tokens) html += '<div style="margin-top:4px;font-size:11px;color:var(--dim)">Input: ' + ev.tokens.input_tokens + '  |  Output: ' + ev.tokens.output_tokens + '  |  Total: ' + ev.tokens.total_tokens + (ev.tokens.model ? '  |  Model: ' + escHtml(ev.tokens.model) : '') + '</div>';
+  return html || '<span style="color:var(--dim)">(无详情)</span>';
+}
+
+var tbar = document.getElementById('token-bar'), totalT = summary.total_tokens || {};
+var barHtml = '<span class="total">总计: ' + formatTokens(totalT.total_tokens || 0) + ' tokens</span><div class="breakdown">';
+Object.entries(tokensByNode || {}).forEach(function(e) { barHtml += '<span class="token-chip">' + escHtml(nodeLabel(e[0])) + ': <span>' + formatTokens(e[1].total_tokens || 0) + '</span></span>'; });
+barHtml += '</div>'; tbar.innerHTML = barHtml;
+renderTimeline();
+</script>
+</body>
+</html>
