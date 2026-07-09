@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from codeguard_agent.observability.models import TraceReport
+from codeguard_agent.observability.view_model import build_trace_view
 
 logger = logging.getLogger("codeguard.observability")
 
@@ -33,7 +35,7 @@ def render_dashboard(report: TraceReport) -> str:
 def _json_for_html_script(report: TraceReport) -> str:
     """编码可安全嵌入 ``script[type=application/json]`` 的 JSON。"""
     payload = json.dumps(
-        report.model_dump(mode="json"),
+        _dashboard_payload(report),
         ensure_ascii=False,
         indent=2,
     )
@@ -45,6 +47,13 @@ def _json_for_html_script(report: TraceReport) -> str:
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
     )
+
+
+def _dashboard_payload(report: TraceReport) -> dict[str, Any]:
+    """保留原始报告结构，并附加无大字段副本的展示索引。"""
+    payload = report.model_dump(mode="json")
+    payload["view"] = build_trace_view(report)
+    return payload
 
 
 def render_dashboard_file(report: TraceReport, output_dir: str, run_id: str) -> Path:

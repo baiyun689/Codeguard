@@ -191,6 +191,19 @@ def _flow_report_fixture() -> TraceReport:
     )
 
 
+def _extract_trace_payload(html: str) -> dict:
+    match = re.search(
+        (
+            r'<script id="trace-data" type="application/json">'
+            r"(.*?)</script>"
+        ),
+        html,
+        re.DOTALL,
+    )
+    assert match is not None
+    return json.loads(match.group(1))
+
+
 def test_trace_view_groups_reviewer_react_steps_and_state_writes():
     report = _flow_report_fixture()
 
@@ -249,6 +262,16 @@ def test_trace_view_reports_missing_and_unassociated_events():
     assert view["integrity"]["missing_end_count"] == 1
     assert view["integrity"]["unassociated_count"] == 2
     assert view["integrity"]["status"] == "incomplete"
+
+
+def test_dashboard_payload_keeps_raw_report_and_adds_flow_view():
+    report = _flow_report_fixture()
+
+    payload = _extract_trace_payload(render_dashboard(report))
+
+    assert payload["events"] == report.model_dump(mode="json")["events"]
+    assert payload["view"]["reviewer_sections"][0]["step_ids"]
+    assert payload["view"]["integrity"]["event_count"] == len(report.events)
 
 
 class TestTraceSerialization:
