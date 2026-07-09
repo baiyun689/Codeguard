@@ -40,3 +40,6 @@ packages = ["src/codeguard_agent"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.mypy]
+exclude = ["src/codeguard_agent/legacy/"]

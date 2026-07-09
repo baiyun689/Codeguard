@@ -191,7 +191,7 @@ class ToolAgentEngine(ReviewEngine):
         tools = [available[n]() for n in names if n in available]
         if not tools:  # 防御:白名单解析为空时回退全开,避免构造无工具的 Agent。
             tools = [factory() for factory in available.values()]
-        agent = create_agent(
+        agent: Any = create_agent(
             llm,
             tools,
             system_prompt=system_prompt,
@@ -216,7 +216,8 @@ class ToolAgentEngine(ReviewEngine):
                 pass
 
         # 2) 兜底:扫描全部消息的文本抠 JSON(不止最后一条,防止模型在中间消息吐了结果)。
-        msgs = raw.get("messages") if isinstance(raw, dict) else []
+        raw_messages = raw.get("messages") if isinstance(raw, dict) else []
+        msgs = raw_messages if isinstance(raw_messages, list) else []
         for msg in reversed(msgs):  # 从后往前扫,优先用最后一条
             text = getattr(msg, "content", "") if hasattr(msg, "content") else str(msg)
             snippet = _extract_json_object(text)

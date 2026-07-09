@@ -28,6 +28,7 @@ from codeguard_agent.models.council import (
     DEFAULT_MAX_EVIDENCE_ROUNDS as COUNCIL_DEFAULT_MAX_EVIDENCE_ROUNDS,
     EvidenceJudgment,
     EvidenceNote,
+    EvidenceNoteStatus,
     EvidenceRequest,
     JudgeDecision,  # noqa: F401  # 供测试通过 G.JudgeDecision 访问
     JudgeDecisions,
@@ -643,6 +644,7 @@ def _evidence_agent_node(tool_client=None, judge_llm=None):
                     unknowns.append(f"当前上下文不足以补证:{target or 'unknown'}{question}")
 
             # ── status 自动计算 ──
+            status: EvidenceNoteStatus
             if supports and not contradicts:
                 status = "supported"
             elif contradicts and not supports:
@@ -928,7 +930,13 @@ def _council_judge_node(llm, judge_llm=None):
                                         suggested_target_id=best.id,
                                     ))
                     else:
-                        surviving.append(dedup_issue)  # fallback
+                        fallback = next(
+                            (c for c in remaining if c.id not in merged_ids),
+                            None,
+                        )
+                        if fallback is not None:
+                            surviving.append(fallback)
+                            merged_ids.add(fallback.id)
                 remaining = surviving
 
         # ── 安全网：同文件+同根因合并（方法名匹配优先，邻行容差兜底）──
@@ -1045,12 +1053,12 @@ def _council_judge_node(llm, judge_llm=None):
                 severity_overrides[v.candidate_id] = v.severity_override
             elif v.action == "needs_more_evidence":
                 # 生成新 EvidenceRequest 供下轮 evidence_agent 补证
-                candidate = next((c for c in candidates if c.id == v.candidate_id), None)
-                if candidate is not None:
+                matched_candidate = next((c for c in candidates if c.id == v.candidate_id), None)
+                if matched_candidate is not None:
                     tools = v.suggested_tools or ["get_file_content"]
                     request = EvidenceRequest(
                         candidate_id=v.candidate_id,
-                        target=candidate.file,
+                        target=matched_candidate.file,
                         question=f"[council_judge] {v.reason}",
                         preferred_tools=tools,
                     )
