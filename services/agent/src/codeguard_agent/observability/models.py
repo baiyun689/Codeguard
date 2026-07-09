@@ -30,6 +30,11 @@ class TraceEvent(BaseModel):
     summary: str
     detail: dict = Field(default_factory=dict)
     tokens: TokenUsage | None = None
+    run_id: str = ""
+    parent_ids: list[str] = Field(default_factory=list)
+    parent_run_id: str = ""
+    node_path: str = ""
+    invocation_id: str = ""
 
 
 class NodeStats(BaseModel):
@@ -42,6 +47,11 @@ class NodeStats(BaseModel):
     llm_calls: int = 0
     tool_calls: int = 0
     tokens: TokenUsage = Field(default_factory=TokenUsage)
+    run_id: str = ""
+    parent_run_id: str = ""
+    node_path: str = ""
+    depth: int = 0
+    invocation_id: str = ""
 
 
 class TraceSummary(BaseModel):

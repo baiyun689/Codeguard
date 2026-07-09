@@ -1,13 +1,9 @@
-"""追踪采集器：通过 LangGraph astream_events() 捕获图执行的全部事件。
-
-_TraceCollector 是核心——它用 asyncio.run() 包装 astream_events() v2 异步流，
-在同步 PipelineOrchestrator.run() 内可调用。每个 LangGraph/LangChain 事件被转换
-为 TraceEvent 并聚合为 TraceReport。
-"""
+"""通过 LangGraph ``astream_events`` 采集完整审查执行轨迹。"""
 
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import logging
 import time
 from typing import Any
@@ -18,6 +14,11 @@ from codeguard_agent.observability.models import (
     TraceEvent,
     TraceReport,
     TraceSummary,
+)
+from codeguard_agent.observability.serialization import (
+    serialize_llm_response,
+    serialize_messages,
+    serialize_trace_value,
 )
 
 logger = logging.getLogger("codeguard.observability")
@@ -42,247 +43,525 @@ def _phase_for(node_name: str) -> str:
 
 
 def _summarize_value(value: Any, max_len: int = 200) -> str:
-    """把任意值转成一行摘要字符串。"""
+    """保留旧测试和摘要调用使用的一行值摘要。"""
     if value is None:
         return "None"
     if isinstance(value, dict):
         keys = list(value.keys())
-        return "{" + ", ".join(f"{k}=..." for k in keys[:8]) + "}"
+        return "{" + ", ".join(f"{key}=..." for key in keys[:8]) + "}"
     if isinstance(value, list):
         return f"[{len(value)} items]"
-    s = str(value)
-    if len(s) > max_len:
-        return s[:max_len] + "..."
-    return s
+    text = str(value)
+    return text[:max_len] + "..." if len(text) > max_len else text
 
 
-def _serialize_messages(messages_input: Any) -> list[dict]:
-    """把 chat model 的输入消息转成可序列化的 dict 列表。"""
-    result: list[dict] = []
-    if not isinstance(messages_input, dict):
-        return result
-    msgs = messages_input.get("messages", [])
-    for msg in msgs:
-        try:
-            if hasattr(msg, "type") and hasattr(msg, "content"):
-                entry: dict = {
-                    "role": msg.type,
-                    "content": str(getattr(msg, "content", ""))[:3000],
-                }
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    entry["tool_calls"] = [
-                        {"name": tc.get("name", ""), "args": str(tc.get("args", {}))[:500]}
-                        for tc in msg.tool_calls
-                        if isinstance(tc, dict)
-                    ]
-                result.append(entry)
-            elif isinstance(msg, (list, tuple)) and len(msg) >= 2:
-                result.append({"role": str(msg[0]), "content": str(msg[1])[:3000]})
-        except Exception:
-            result.append({"role": "unknown", "content": str(msg)[:500]})
-    return result
+def _serialize_messages(messages_input: Any) -> list[dict[str, Any]]:
+    """向后兼容旧私有 helper；新代码统一走无损序列化模块。"""
+    return serialize_messages(messages_input)
+
+
+@dataclass
+class _NodeRun:
+    run_id: str
+    node_name: str
+    parent_run_id: str
+    node_path: str
+    depth: int
+    start_ms: float
+    end_ms: float | None = None
 
 
 class _TraceCollector:
-    """事件采集器：订阅 astream_events() 流，聚合为 TraceReport。"""
+    """订阅事件流，并按原生 run 血缘聚合为 ``TraceReport``。"""
 
-    def __init__(self, diff_text: str, run_id: str) -> None:
+    def __init__(
+        self,
+        diff_text: str,
+        run_id: str,
+        max_llm_content: int = 0,
+    ) -> None:
         self._events: list[TraceEvent] = []
         self._seq = 0
         self._start = time.time()
         self._run_id = run_id
         self._diff_size = len(diff_text)
-        self._node_stack: list[str] = []
-        self._node_starts: dict[str, float] = {}
-        self._node_ends: dict[str, float] = {}
+        self._max_llm_content = max(0, max_llm_content)
+        self._node_runs: dict[str, _NodeRun] = {}
         self._llm_counts: dict[str, int] = {}
         self._tool_counts: dict[str, int] = {}
-        self._tokens_by_node: dict[str, TokenUsage] = {}
+        self._tokens_by_run: dict[str, TokenUsage] = {}
+        self._tokens_by_path: dict[str, TokenUsage] = {}
 
-    def run_with_tracing(self, graph, initial_state: dict, config: dict) -> dict:
-        """同步入口：用 asyncio.run() 执行带追踪的图。返回最终 state。"""
-        return asyncio.run(self._collect_and_return(graph, initial_state, config))
+    def run_with_tracing(
+        self,
+        graph: Any,
+        initial_state: dict,
+        config: dict,
+    ) -> dict:
+        """同步执行异步事件流并返回图最终 State。"""
+        return asyncio.run(
+            self._collect_and_return(graph, initial_state, config)
+        )
 
     def finalize(self) -> TraceReport:
-        """聚合为 TraceReport。"""
+        """按节点实例聚合时间线、调用次数和 token。"""
         node_timeline: list[NodeStats] = []
-        all_node_names = set(self._node_starts.keys()) | set(self._node_ends.keys())
-        for name in sorted(all_node_names):
-            start_ms = self._node_starts.get(name, 0)
-            end_ms = self._node_ends.get(name, start_ms)
-            tokens = self._tokens_by_node.get(name, TokenUsage(node_name=name))
+        for node_run in sorted(
+            self._node_runs.values(),
+            key=lambda item: item.start_ms,
+        ):
+            end_ms = (
+                node_run.end_ms
+                if node_run.end_ms is not None
+                else node_run.start_ms
+            )
+            tokens = self._tokens_by_run.get(
+                node_run.run_id,
+                TokenUsage(
+                    node_name=node_run.node_path or node_run.node_name,
+                ),
+            )
             node_timeline.append(NodeStats(
-                node_name=name, start_ms=start_ms, end_ms=end_ms,
-                duration_ms=end_ms - start_ms,
-                llm_calls=self._llm_counts.get(name, 0),
-                tool_calls=self._tool_counts.get(name, 0),
+                node_name=node_run.node_name,
+                start_ms=node_run.start_ms,
+                end_ms=end_ms,
+                duration_ms=end_ms - node_run.start_ms,
+                llm_calls=self._llm_counts.get(node_run.run_id, 0),
+                tool_calls=self._tool_counts.get(node_run.run_id, 0),
                 tokens=tokens,
+                run_id=node_run.run_id,
+                parent_run_id=node_run.parent_run_id,
+                node_path=node_run.node_path,
+                depth=node_run.depth,
+                invocation_id=node_run.run_id,
             ))
 
         event_counts: dict[str, int] = {}
-        for e in self._events:
-            event_counts[e.event_type] = event_counts.get(e.event_type, 0) + 1
+        for event in self._events:
+            event_counts[event.event_type] = (
+                event_counts.get(event.event_type, 0) + 1
+            )
 
         total_tokens = TokenUsage(node_name="total")
-        for t in self._tokens_by_node.values():
-            total_tokens.input_tokens += t.input_tokens
-            total_tokens.output_tokens += t.output_tokens
-            total_tokens.total_tokens += t.total_tokens
+        for usage in self._tokens_by_path.values():
+            total_tokens.input_tokens += usage.input_tokens
+            total_tokens.output_tokens += usage.output_tokens
+            total_tokens.total_tokens += usage.total_tokens
 
         return TraceReport(
             run_id=self._run_id,
-            timestamp=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(self._start)),
-            diff_size=self._diff_size, events=self._events,
+            timestamp=time.strftime(
+                "%Y-%m-%dT%H:%M:%S",
+                time.localtime(self._start),
+            ),
+            diff_size=self._diff_size,
+            events=self._events,
             summary=TraceSummary(
                 total_duration_ms=(time.time() - self._start) * 1000,
-                total_tokens=total_tokens, tokens_by_node=self._tokens_by_node,
-                event_counts=event_counts, node_timeline=node_timeline,
+                total_tokens=total_tokens,
+                tokens_by_node=self._tokens_by_path,
+                event_counts=event_counts,
+                node_timeline=node_timeline,
             ),
         )
 
-    async def _collect_and_return(self, graph, initial_state: dict, config: dict) -> dict:
-        """异步执行图并采集事件，返回最终 state。从最外层 LangGraph 链的 on_chain_end 捕获 output。"""
+    async def _collect_and_return(
+        self,
+        graph: Any,
+        initial_state: dict,
+        config: dict,
+    ) -> dict:
+        """消费事件流；Task 3 会单独收紧顶层最终 State 识别。"""
         final_state: dict = {}
         try:
-            async for event in graph.astream_events(initial_state, config=config, version="v2"):
+            async for event in graph.astream_events(
+                initial_state,
+                config=config,
+                version="v2",
+            ):
                 try:
                     self._handle_event(event)
-                except Exception:
+                except Exception:  # noqa: BLE001
                     logger.debug("处理追踪事件失败", exc_info=True)
                 if (
                     event.get("event") == "on_chain_end"
                     and event.get("name") == "LangGraph"
                     and (event.get("tags") or []) == []
                 ):
-                    output = event.get("data", {}).get("output")
+                    output = (event.get("data") or {}).get("output")
                     if isinstance(output, dict) and output:
                         final_state = output
             if not final_state:
                 final_state = graph.invoke(initial_state, config=config)
-        except Exception:
-            logger.warning("追踪采集异常，降级为无追踪执行", exc_info=True)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "追踪采集异常，降级为无追踪执行",
+                exc_info=True,
+            )
             final_state = graph.invoke(initial_state, config=config)
         return final_state
 
-    def _handle_event(self, event: dict) -> None:
-        ev = event.get("event", "")
-        name = event.get("name", "")
-        tags = list(event.get("tags", []) or [])
-        meta = event.get("metadata", {}) or {}
-        data = event.get("data", {}) or {}
-        lg_node_name = meta.get("langgraph_node", "")
-        is_lg_node = bool(lg_node_name)
+    def _handle_event(self, event: dict[str, Any]) -> None:
+        event_type = event.get("event", "")
+        if event_type == "on_chain_start" and self._is_real_node_event(event):
+            self._on_node_start(event)
+        elif (
+            event_type == "on_chain_end"
+            and self._is_real_node_event(event)
+        ):
+            self._on_node_end(event)
+        elif event_type == "on_chat_model_start":
+            self._on_llm_start(event)
+        elif event_type == "on_chat_model_end":
+            self._on_llm_end(event)
+        elif event_type == "on_tool_start":
+            self._on_tool_start(event)
+        elif event_type == "on_tool_end":
+            self._on_tool_end(event)
 
-        if ev == "on_chain_start":
-            if is_lg_node and lg_node_name:
-                self._on_node_start(lg_node_name, data)
-        elif ev == "on_chain_end":
-            if is_lg_node and lg_node_name:
-                self._on_node_end(lg_node_name, data)
-        elif ev == "on_chat_model_start":
-            self._on_llm_start(name, data)
-        elif ev == "on_chat_model_end":
-            self._on_llm_end(name, data)
-        elif ev == "on_tool_start":
-            self._on_tool_start(name, data)
-        elif ev == "on_tool_end":
-            self._on_tool_end(name, data)
+    @staticmethod
+    def _is_real_node_event(event: dict[str, Any]) -> bool:
+        metadata = event.get("metadata") or {}
+        node_name = metadata.get("langgraph_node", "")
+        return bool(node_name and event.get("name") == node_name)
 
-    def _on_node_start(self, node_name: str, data: dict) -> None:
-        self._node_stack.append(node_name)
-        depth = len(self._node_stack) - 1
-        now_ms = (time.time() - self._start) * 1000
-        if node_name not in self._node_starts:
-            self._node_starts[node_name] = now_ms
-        input_data = data.get("input", {})
-        input_keys = list(input_data.keys()) if isinstance(input_data, dict) else []
-        self._add_event("node_start", node_name, _phase_for(node_name), depth,
-                        f"输入: {', '.join(input_keys[:6])}", {"input_keys": input_keys})
+    def _on_node_start(self, event: dict[str, Any]) -> None:
+        metadata = event.get("metadata") or {}
+        data = event.get("data") or {}
+        node_name = str(metadata.get("langgraph_node") or event.get("name"))
+        run_id = _event_id(event.get("run_id"))
+        parent_ids = _parent_ids(event)
+        parent = self._nearest_node_run(parent_ids)
+        parent_run_id = parent.run_id if parent is not None else ""
+        node_path = (
+            f"{parent.node_path}/{node_name}"
+            if parent is not None
+            else node_name
+        )
+        depth = parent.depth + 1 if parent is not None else 0
+        node_run = _NodeRun(
+            run_id=run_id,
+            node_name=node_name,
+            parent_run_id=parent_run_id,
+            node_path=node_path,
+            depth=depth,
+            start_ms=self._elapsed_ms(),
+        )
+        self._node_runs[run_id] = node_run
 
-    def _on_node_end(self, node_name: str, data: dict) -> None:
-        depth = len(self._node_stack) - 1
-        self._node_ends[node_name] = (time.time() - self._start) * 1000
-        if self._node_stack and self._node_stack[-1] == node_name:
-            self._node_stack.pop()
-        output_data = data.get("output", {})
-        output_keys = list(output_data.keys()) if isinstance(output_data, dict) else []
-        self._add_event("node_end", node_name, _phase_for(node_name), depth,
-                        f"输出: {', '.join(output_keys[:6])}", {"output_keys": output_keys})
-        if isinstance(output_data, dict):
-            route = output_data.get("council_route", "")
-            if route:
-                self._add_event("route_decision", node_name, _phase_for(node_name), depth,
-                                f"路由 => {route}", {"route": route})
+        input_value = serialize_trace_value(data.get("input"))
+        input_keys = (
+            list(input_value.keys())
+            if isinstance(input_value, dict)
+            else []
+        )
+        self._add_event(
+            event_type="node_start",
+            node_name=node_name,
+            node_path=node_path,
+            phase=self._phase_for_path(node_path, node_name),
+            depth=depth,
+            summary=f"输入: {', '.join(input_keys[:8])}",
+            detail={
+                "input": input_value,
+                "metadata": serialize_trace_value(metadata),
+            },
+            raw_event=event,
+            invocation_id=run_id,
+        )
 
-    def _on_llm_start(self, model_name: str, data: dict) -> None:
-        current = self._node_stack[-1] if self._node_stack else "unknown"
-        depth = len(self._node_stack)
-        self._llm_counts[current] = self._llm_counts.get(current, 0) + 1
-        call_num = self._llm_counts[current]
-        messages_input = data.get("input", {})
-        self._add_event("llm_start", current, _phase_for(current), depth,
-                        f"LLM #{call_num} ({model_name})",
-                        {"model": model_name, "messages": _serialize_messages(messages_input)})
-
-    def _on_llm_end(self, model_name: str, data: dict) -> None:
-        current = self._node_stack[-1] if self._node_stack else "unknown"
-        depth = len(self._node_stack)
-        output = data.get("output")
-        usage = None
-        response_text = ""
-        if hasattr(output, "usage_metadata") and output.usage_metadata:
-            um = output.usage_metadata
-            usage = TokenUsage(
-                input_tokens=um.get("input_tokens", 0),
-                output_tokens=um.get("output_tokens", 0),
-                total_tokens=um.get("total_tokens", 0),
-                model=model_name, node_name=current,
+    def _on_node_end(self, event: dict[str, Any]) -> None:
+        metadata = event.get("metadata") or {}
+        data = event.get("data") or {}
+        node_name = str(metadata.get("langgraph_node") or event.get("name"))
+        run_id = _event_id(event.get("run_id"))
+        node_run = self._node_runs.get(run_id)
+        if node_run is None:
+            parent = self._nearest_node_run(_parent_ids(event))
+            node_run = _NodeRun(
+                run_id=run_id,
+                node_name=node_name,
+                parent_run_id=parent.run_id if parent is not None else "",
+                node_path=(
+                    f"{parent.node_path}/{node_name}"
+                    if parent is not None
+                    else node_name
+                ),
+                depth=parent.depth + 1 if parent is not None else 0,
+                start_ms=self._elapsed_ms(),
             )
-            if current not in self._tokens_by_node:
-                self._tokens_by_node[current] = TokenUsage(node_name=current)
-            t = self._tokens_by_node[current]
-            t.input_tokens += usage.input_tokens
-            t.output_tokens += usage.output_tokens
-            t.total_tokens += usage.total_tokens
-        if hasattr(output, "content"):
-            response_text = str(output.content)
-        elif isinstance(output, dict):
-            response_text = str(output.get("content", output))[:3000]
-        else:
-            response_text = str(output)[:3000] if output else ""
-        total = usage.total_tokens if usage else "?"
-        self._add_event("llm_end", current, _phase_for(current), depth,
-                        f"完成 ({total} tokens)",
-                        {"model": model_name, "response": response_text[:3000]}, tokens=usage)
+            self._node_runs[run_id] = node_run
+        node_run.end_ms = self._elapsed_ms()
 
-    def _on_tool_start(self, tool_name: str, data: dict) -> None:
-        current = self._node_stack[-1] if self._node_stack else "unknown"
-        depth = len(self._node_stack)
-        self._tool_counts[current] = self._tool_counts.get(current, 0) + 1
-        tool_input = data.get("input", {})
-        self._add_event("tool_start", current, _phase_for(current), depth,
-                        f"Tool: {tool_name}",
-                        {"tool_name": tool_name, "input": _summarize_value(tool_input, 500)})
+        input_value = serialize_trace_value(data.get("input"))
+        output_value = serialize_trace_value(data.get("output"))
+        output_keys = (
+            list(output_value.keys())
+            if isinstance(output_value, dict)
+            else []
+        )
+        self._add_event(
+            event_type="node_end",
+            node_name=node_name,
+            node_path=node_run.node_path,
+            phase=self._phase_for_path(node_run.node_path, node_name),
+            depth=node_run.depth,
+            summary=f"输出: {', '.join(output_keys[:8])}",
+            detail={
+                "input": input_value,
+                "output": output_value,
+                "metadata": serialize_trace_value(metadata),
+            },
+            raw_event=event,
+            invocation_id=run_id,
+        )
 
-    def _on_tool_end(self, tool_name: str, data: dict) -> None:
-        current = self._node_stack[-1] if self._node_stack else "unknown"
-        depth = len(self._node_stack)
+        route = (
+            output_value.get("council_route", "")
+            if isinstance(output_value, dict)
+            else ""
+        )
+        if route:
+            self._add_event(
+                event_type="route_decision",
+                node_name=node_name,
+                node_path=node_run.node_path,
+                phase=self._phase_for_path(node_run.node_path, node_name),
+                depth=node_run.depth,
+                summary=f"路由 => {route}",
+                detail={"route": route},
+                raw_event=event,
+                invocation_id=run_id,
+            )
+
+    def _on_llm_start(self, event: dict[str, Any]) -> None:
+        metadata = event.get("metadata") or {}
+        data = event.get("data") or {}
+        owner = self._owner_for(event)
+        owner_id = owner.run_id if owner is not None else ""
+        node_name = owner.node_name if owner is not None else "unknown"
+        node_path = owner.node_path if owner is not None else "unknown"
+        self._llm_counts[owner_id] = self._llm_counts.get(owner_id, 0) + 1
+        call_number = self._llm_counts[owner_id]
+        model_name = str(
+            metadata.get("ls_model_name") or event.get("name") or ""
+        )
+        self._add_event(
+            event_type="llm_start",
+            node_name=node_name,
+            node_path=node_path,
+            phase=self._phase_for_path(node_path, node_name),
+            depth=(owner.depth + 1 if owner is not None else 0),
+            summary=f"LLM #{call_number} ({model_name})",
+            detail={
+                "model": model_name,
+                "messages": serialize_messages(
+                    data.get("input"),
+                    max_content_length=self._max_llm_content,
+                ),
+                "metadata": serialize_trace_value(metadata),
+            },
+            raw_event=event,
+            invocation_id=owner_id,
+        )
+
+    def _on_llm_end(self, event: dict[str, Any]) -> None:
+        metadata = event.get("metadata") or {}
+        data = event.get("data") or {}
         output = data.get("output")
-        output_str = ""
-        if hasattr(output, "content"):
-            output_str = str(output.content)
-        else:
-            output_str = str(output)[:3000] if output else ""
-        self._add_event("tool_end", current, _phase_for(current), depth,
-                        f"返回 ({len(output_str)} 字符)",
-                        {"tool_name": tool_name, "output": output_str[:3000]})
+        owner = self._owner_for(event)
+        owner_id = owner.run_id if owner is not None else ""
+        node_name = owner.node_name if owner is not None else "unknown"
+        node_path = owner.node_path if owner is not None else "unknown"
+        model_name = str(
+            metadata.get("ls_model_name") or event.get("name") or ""
+        )
+        usage = _token_usage_from(
+            output,
+            model_name=model_name,
+            node_name=node_path,
+        )
+        if usage is not None:
+            self._accumulate_tokens(owner_id, node_path, usage)
+        total = usage.total_tokens if usage is not None else "?"
+        self._add_event(
+            event_type="llm_end",
+            node_name=node_name,
+            node_path=node_path,
+            phase=self._phase_for_path(node_path, node_name),
+            depth=(owner.depth + 1 if owner is not None else 0),
+            summary=f"完成 ({total} tokens)",
+            detail={
+                "model": model_name,
+                "response": serialize_llm_response(
+                    output,
+                    max_content_length=self._max_llm_content,
+                ),
+                "metadata": serialize_trace_value(metadata),
+            },
+            raw_event=event,
+            invocation_id=owner_id,
+            tokens=usage,
+        )
 
-    def _add_event(self, event_type, node_name, phase, depth, summary,
-                   detail=None, tokens=None):
+    def _on_tool_start(self, event: dict[str, Any]) -> None:
+        data = event.get("data") or {}
+        metadata = event.get("metadata") or {}
+        owner = self._owner_for(event)
+        owner_id = owner.run_id if owner is not None else ""
+        node_name = owner.node_name if owner is not None else "unknown"
+        node_path = owner.node_path if owner is not None else "unknown"
+        self._tool_counts[owner_id] = (
+            self._tool_counts.get(owner_id, 0) + 1
+        )
+        tool_name = str(event.get("name") or "")
+        self._add_event(
+            event_type="tool_start",
+            node_name=node_name,
+            node_path=node_path,
+            phase=self._phase_for_path(node_path, node_name),
+            depth=(owner.depth + 1 if owner is not None else 0),
+            summary=f"Tool: {tool_name}",
+            detail={
+                "tool_name": tool_name,
+                "input": serialize_trace_value(data.get("input")),
+                "metadata": serialize_trace_value(metadata),
+            },
+            raw_event=event,
+            invocation_id=owner_id,
+        )
+
+    def _on_tool_end(self, event: dict[str, Any]) -> None:
+        data = event.get("data") or {}
+        metadata = event.get("metadata") or {}
+        owner = self._owner_for(event)
+        owner_id = owner.run_id if owner is not None else ""
+        node_name = owner.node_name if owner is not None else "unknown"
+        node_path = owner.node_path if owner is not None else "unknown"
+        tool_name = str(event.get("name") or "")
+        output = serialize_trace_value(data.get("output"))
+        self._add_event(
+            event_type="tool_end",
+            node_name=node_name,
+            node_path=node_path,
+            phase=self._phase_for_path(node_path, node_name),
+            depth=(owner.depth + 1 if owner is not None else 0),
+            summary=f"返回: {_summary_length(output)}",
+            detail={
+                "tool_name": tool_name,
+                "output": output,
+                "metadata": serialize_trace_value(metadata),
+            },
+            raw_event=event,
+            invocation_id=owner_id,
+        )
+
+    def _nearest_node_run(
+        self,
+        parent_ids: list[str],
+    ) -> _NodeRun | None:
+        for parent_id in reversed(parent_ids):
+            node_run = self._node_runs.get(parent_id)
+            if node_run is not None:
+                return node_run
+        return None
+
+    def _owner_for(self, event: dict[str, Any]) -> _NodeRun | None:
+        return self._nearest_node_run(_parent_ids(event))
+
+    @staticmethod
+    def _phase_for_path(node_path: str, node_name: str) -> str:
+        root = node_path.split("/", 1)[0]
+        if root.startswith("discover_"):
+            return "reviewer_subgraph"
+        return _phase_for(node_name)
+
+    def _accumulate_tokens(
+        self,
+        owner_id: str,
+        node_path: str,
+        usage: TokenUsage,
+    ) -> None:
+        for bucket, key in (
+            (self._tokens_by_run, owner_id),
+            (self._tokens_by_path, node_path),
+        ):
+            if key not in bucket:
+                bucket[key] = TokenUsage(node_name=node_path)
+            target = bucket[key]
+            target.input_tokens += usage.input_tokens
+            target.output_tokens += usage.output_tokens
+            target.total_tokens += usage.total_tokens
+            target.model = usage.model
+
+    def _add_event(
+        self,
+        *,
+        event_type: str,
+        node_name: str,
+        node_path: str,
+        phase: str,
+        depth: int,
+        summary: str,
+        detail: dict[str, Any],
+        raw_event: dict[str, Any],
+        invocation_id: str,
+        tokens: TokenUsage | None = None,
+    ) -> None:
         self._seq += 1
+        parent_ids = _parent_ids(raw_event)
         self._events.append(TraceEvent(
             sequence=self._seq,
-            timestamp_ms=(time.time() - self._start) * 1000,
-            event_type=event_type, node_name=node_name, phase=phase,
-            depth=depth, summary=summary, detail=detail or {}, tokens=tokens,
+            timestamp_ms=self._elapsed_ms(),
+            event_type=event_type,
+            node_name=node_name,
+            phase=phase,
+            depth=depth,
+            summary=summary,
+            detail=detail,
+            tokens=tokens,
+            run_id=_event_id(raw_event.get("run_id")),
+            parent_ids=parent_ids,
+            parent_run_id=parent_ids[-1] if parent_ids else "",
+            node_path=node_path,
+            invocation_id=invocation_id,
         ))
+
+    def _elapsed_ms(self) -> float:
+        return (time.time() - self._start) * 1000
+
+
+def _event_id(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+def _parent_ids(event: dict[str, Any]) -> list[str]:
+    return [_event_id(item) for item in (event.get("parent_ids") or [])]
+
+
+def _token_usage_from(
+    output: Any,
+    *,
+    model_name: str,
+    node_name: str,
+) -> TokenUsage | None:
+    usage = getattr(output, "usage_metadata", None)
+    if usage is None and isinstance(output, dict):
+        usage = output.get("usage_metadata")
+    if not isinstance(usage, dict):
+        return None
+    return TokenUsage(
+        input_tokens=int(usage.get("input_tokens", 0) or 0),
+        output_tokens=int(usage.get("output_tokens", 0) or 0),
+        total_tokens=int(usage.get("total_tokens", 0) or 0),
+        model=model_name,
+        node_name=node_name,
+    )
+
+
+def _summary_length(value: Any) -> str:
+    if isinstance(value, str):
+        return f"{len(value)} 字符"
+    if isinstance(value, (list, dict)):
+        return f"{len(value)} 项"
+    return type(value).__name__

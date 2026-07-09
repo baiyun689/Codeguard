@@ -11,6 +11,7 @@ import pytest
 
 from codeguard_agent.observability.collector import (
     _NODE_PHASE_MAP,
+    _TraceCollector,
     _phase_for,
     _serialize_messages,
     _summarize_value,
@@ -227,6 +228,201 @@ class TestSerializeMessages:
         assert result[0]["role"] == "ai"
         assert "tool_calls" in result[0]
         assert result[0]["tool_calls"][0]["name"] == "get_file_content"
+
+
+def _chain_event(
+    event_type,
+    *,
+    name,
+    run_id,
+    parent_ids,
+    node_name,
+    data,
+    checkpoint_ns="",
+):
+    return {
+        "event": event_type,
+        "name": name,
+        "run_id": run_id,
+        "parent_ids": parent_ids,
+        "tags": [],
+        "metadata": {
+            "langgraph_node": node_name,
+            "langgraph_checkpoint_ns": checkpoint_ns,
+        },
+        "data": data,
+    }
+
+
+class TestCollectorLineage:
+    def test_parallel_nodes_are_siblings_and_wrapper_events_are_ignored(self):
+        collector = _TraceCollector("diff", "trace-run")
+        root = "graph-root"
+        for name in (
+            "discover_threat_model",
+            "discover_behavior",
+            "discover_maintainability",
+        ):
+            collector._handle_event(_chain_event(
+                "on_chain_start",
+                name=name,
+                run_id=f"run-{name}",
+                parent_ids=[root],
+                node_name=name,
+                data={"input": {"diff_text": "full diff"}},
+            ))
+            collector._handle_event(_chain_event(
+                "on_chain_start",
+                name="LangGraph",
+                run_id=f"wrapper-{name}",
+                parent_ids=[root, f"run-{name}"],
+                node_name=name,
+                data={"input": {"diff_text": "full diff"}},
+            ))
+
+        starts = [
+            event
+            for event in collector.finalize().events
+            if event.event_type == "node_start"
+        ]
+
+        assert len(starts) == 3
+        assert {event.depth for event in starts} == {0}
+        assert {event.node_path for event in starts} == {
+            "discover_threat_model",
+            "discover_behavior",
+            "discover_maintainability",
+        }
+
+    def test_same_named_subgraph_nodes_keep_distinct_reviewer_paths(self):
+        collector = _TraceCollector("diff", "trace-run")
+        root = "graph-root"
+        for reviewer in ("discover_threat_model", "discover_behavior"):
+            reviewer_run = f"run-{reviewer}"
+            collector._handle_event(_chain_event(
+                "on_chain_start",
+                name=reviewer,
+                run_id=reviewer_run,
+                parent_ids=[root],
+                node_name=reviewer,
+                data={"input": {}},
+            ))
+            collector._handle_event(_chain_event(
+                "on_chain_start",
+                name="prepare",
+                run_id=f"prepare-{reviewer}",
+                parent_ids=[root, reviewer_run, f"wrapper-{reviewer}"],
+                node_name="prepare",
+                checkpoint_ns=f"{reviewer}:uuid|prepare:uuid",
+                data={"input": {"diff_text": reviewer}},
+            ))
+
+        prepares = [
+            event
+            for event in collector.finalize().events
+            if event.event_type == "node_start" and event.node_name == "prepare"
+        ]
+
+        assert len(prepares) == 2
+        assert {event.depth for event in prepares} == {1}
+        assert {event.node_path for event in prepares} == {
+            "discover_threat_model/prepare",
+            "discover_behavior/prepare",
+        }
+        assert len({event.invocation_id for event in prepares}) == 2
+
+    def test_node_events_store_complete_input_and_output_values(self):
+        collector = _TraceCollector("diff", "trace-run")
+        start = _chain_event(
+            "on_chain_start",
+            name="context_provider",
+            run_id="context-run",
+            parent_ids=["graph-root"],
+            node_name="context_provider",
+            data={
+                "input": {
+                    "diff_text": "actual diff",
+                    "enabled_tools": ["get_file_content"],
+                }
+            },
+        )
+        end = _chain_event(
+            "on_chain_end",
+            name="context_provider",
+            run_id="context-run",
+            parent_ids=["graph-root"],
+            node_name="context_provider",
+            data={
+                "input": start["data"]["input"],
+                "output": {
+                    "context_bundle": {
+                        "facts": [{"content": "fact text"}],
+                    }
+                },
+            },
+        )
+
+        collector._handle_event(start)
+        collector._handle_event(end)
+        events = collector.finalize().events
+
+        assert events[0].detail["input"]["diff_text"] == "actual diff"
+        assert (
+            events[1].detail["output"]["context_bundle"]["facts"][0]["content"]
+            == "fact text"
+        )
+
+    def test_llm_and_tool_events_attach_to_nearest_node_and_keep_full_data(self):
+        collector = _TraceCollector("diff", "trace-run")
+        collector._handle_event(_chain_event(
+            "on_chain_start",
+            name="review",
+            run_id="review-run",
+            parent_ids=["root", "discover-run", "subgraph-root"],
+            node_name="review",
+            checkpoint_ns="discover_threat_model:uuid|review:uuid",
+            data={"input": {"user_prompt": "review me"}},
+        ))
+        collector._handle_event({
+            "event": "on_chat_model_start",
+            "name": "ChatOpenAI",
+            "run_id": "llm-run",
+            "parent_ids": [
+                "root",
+                "discover-run",
+                "subgraph-root",
+                "review-run",
+            ],
+            "metadata": {"ls_model_name": "deepseek-v4-pro"},
+            "data": {"input": [("human", "prompt" * 1000)]},
+        })
+        collector._handle_event({
+            "event": "on_tool_start",
+            "name": "get_file_content",
+            "run_id": "tool-run",
+            "parent_ids": [
+                "root",
+                "discover-run",
+                "subgraph-root",
+                "review-run",
+            ],
+            "metadata": {},
+            "data": {
+                "input": {
+                    "file_path": "src/Foo.java",
+                    "content": "x" * 5000,
+                }
+            },
+        })
+
+        events = collector.finalize().events
+        llm = next(event for event in events if event.event_type == "llm_start")
+        tool = next(event for event in events if event.event_type == "tool_start")
+
+        assert llm.node_path == "review"
+        assert llm.detail["messages"][0]["content"] == "prompt" * 1000
+        assert tool.node_path == "review"
+        assert tool.detail["input"]["content"] == "x" * 5000
 
 
 class TestDashboard:
