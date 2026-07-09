@@ -152,7 +152,7 @@ class _TraceCollector:
                 if (
                     event.get("event") == "on_chain_end"
                     and event.get("name") == "LangGraph"
-                    and "langgraph_node" not in (event.get("tags") or [])
+                    and (event.get("tags") or []) == []
                 ):
                     output = event.get("data", {}).get("output")
                     if isinstance(output, dict) and output:
@@ -170,8 +170,8 @@ class _TraceCollector:
         tags = list(event.get("tags", []) or [])
         meta = event.get("metadata", {}) or {}
         data = event.get("data", {}) or {}
-        is_lg_node = "langgraph_node" in tags
         lg_node_name = meta.get("langgraph_node", "")
+        is_lg_node = bool(lg_node_name)
 
         if ev == "on_chain_start":
             if is_lg_node and lg_node_name:
