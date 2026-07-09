@@ -195,7 +195,6 @@ class ReviewState(TypedDict, total=False):
     council_verdicts: list  # council_judge 产出，供 coordinator 路由判断（非 Annotated，每轮覆盖）
     council_trace: Annotated[list[CouncilTrace], operator.add]
     evidence_round: int
-    judge_pass: int  # council_judge 执行次数计数器
     council_route: str
     truncated_candidates: Annotated[int, operator.add]
     truncated_evidence_requests: Annotated[int, operator.add]
@@ -1089,7 +1088,6 @@ def _council_judge_node(llm, judge_llm=None):
             "final_issues": final_issues,
             "council_stats": stats,
             "summary": summary,
-            "judge_pass": state.get("judge_pass", 0) + 1,
             "council_trace": [
                 CouncilTrace(
                     node="council_judge",

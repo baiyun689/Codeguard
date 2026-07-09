@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import codeguard_agent.pipeline.orchestrator as orchestrator_module
 from codeguard_agent.models.council import ContextBundle, ContextFact, EvidenceNote, Verdict
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
 from codeguard_agent.pipeline import graph as G
@@ -85,7 +86,6 @@ def _base_state(**over):
         "challenges": [],
         "council_verdicts": [],
         "evidence_round": 0,
-        "judge_pass": 0,
         "max_evidence_rounds": 2,
     }
     state.update(over)
@@ -668,6 +668,39 @@ def test_run_routes_gathered_context_to_trace_sink_and_council_metadata(monkeypa
     assert meta["council"]["candidate_count"] == 1
     assert meta["council_trace_events"] == 2
     assert not hasattr(result, "candidate_issues")
+
+
+def test_orchestrator_initial_state_omits_empty_runtime_outputs(monkeypatch):
+    captured: dict = {}
+
+    class _Graph:
+        def invoke(self, initial, config=None):
+            captured.update(initial)
+            return {"summary": "", "final_issues": []}
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        "build_review_graph",
+        lambda **_kwargs: _Graph(),
+    )
+    PipelineOrchestrator(enable_summary=False).run(None, _DIFF)
+
+    assert {
+        "gathered_context",
+        "review_summaries",
+        "candidate_issues",
+        "evidence_requests",
+        "evidence_notes",
+        "council_verdicts",
+        "council_trace",
+        "judge_pass",
+        "final_issues",
+    }.isdisjoint(captured)
+    assert captured["diff_text"] == _DIFF
+
+
+def test_review_state_excludes_unused_judge_pass():
+    assert "judge_pass" not in G.ReviewState.__annotations__
 
 
 def test_run_empty_diff_short_circuits():

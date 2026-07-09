@@ -120,19 +120,6 @@ class PipelineOrchestrator:
             "structured_method": structured_method,
             "react_recursion_limit": self._react_recursion_limit,
             "max_evidence_rounds": self._max_evidence_rounds,
-            # fan-in / 控制 初值
-            "gathered_context": [],
-            "review_summaries": [],
-            "candidate_issues": [],
-            "evidence_requests": [],
-            "evidence_notes": [],
-            "council_verdicts": [],
-            "council_trace": [],
-            "evidence_round": 0,
-            "judge_pass": 0,
-            "truncated_candidates": 0,
-            "truncated_evidence_requests": 0,
-            "final_issues": [],
         }
         invoke_config: dict = {"recursion_limit": self._recursion_limit}
         if self._checkpointer is not None:
