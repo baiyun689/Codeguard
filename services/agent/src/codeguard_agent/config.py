@@ -61,6 +61,12 @@ class Settings:
     # "max" 给模型更多思考预算,对复杂代码审查任务可能有更好的推理质量(走 extra_body 透传)。
     # 留空不设;非 DeepSeek 端点静默无视。注意:"max" 会消耗更多 token(含不可见的 reasoning_tokens)。
     reasoning_effort: str = ""
+    # 追踪模块:默认开启(可通过 --no-trace 关闭)。
+    trace_enabled: bool = True
+    # 追踪文件输出目录。
+    trace_dir: str = "trace"
+    # LLM 输出截断字符数,0=不截断。
+    trace_max_llm_content: int = 0
 
     @property
     def needs_api_key(self) -> bool:
@@ -100,6 +106,11 @@ class Settings:
         # 只接受 high/max,其余当未设(空字符串→不传参,用模型默认 high)。
         if reasoning_effort not in ("high", "max"):
             reasoning_effort = ""
+        trace_enabled = os.environ.get(
+            "CODEGUARD_TRACE_ENABLED", "true"
+        ).strip().lower() not in ("0", "false", "no", "off")
+        trace_dir = os.environ.get("CODEGUARD_TRACE_DIR", "trace").strip()
+        trace_max_llm_content = int(os.environ.get("CODEGUARD_TRACE_MAX_LLM_CONTENT", "0"))
         return cls(
             provider=provider,
             model=model,
@@ -115,6 +126,9 @@ class Settings:
             checkpoint_db=checkpoint_db,
             react_recursion_limit=react_recursion_limit,
             reasoning_effort=reasoning_effort,
+            trace_enabled=trace_enabled,
+            trace_dir=trace_dir,
+            trace_max_llm_content=trace_max_llm_content,
         )
 
     @classmethod
