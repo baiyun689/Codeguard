@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import tempfile
 from pathlib import Path
@@ -22,6 +23,68 @@ from codeguard_agent.observability.models import (
     TraceReport,
     TraceSummary,
 )
+from codeguard_agent.observability.serialization import (
+    serialize_llm_response,
+    serialize_messages,
+    serialize_trace_value,
+)
+
+
+class TestTraceSerialization:
+    def test_preserves_long_nested_values(self):
+        @dataclass
+        class Payload:
+            body: str
+
+        value = {"payload": Payload(body="x" * 5000), "items": (1, 2)}
+
+        serialized = serialize_trace_value(value)
+
+        assert serialized["payload"]["body"] == "x" * 5000
+        assert serialized["items"] == [1, 2]
+
+    def test_messages_accept_direct_tuple_message_list(self):
+        messages = [("system", "system text"), ("human", "user text")]
+
+        assert serialize_messages(messages) == [
+            {"role": "system", "content": "system text"},
+            {"role": "human", "content": "user text"},
+        ]
+
+    def test_messages_flatten_single_batch(self):
+        messages = [[("system", "system text"), ("human", "user text")]]
+
+        result = serialize_messages(messages)
+
+        assert [item["role"] for item in result] == ["system", "human"]
+        assert result[1]["content"] == "user text"
+
+    def test_llm_response_keeps_tool_calls_when_content_empty(self):
+        class FakeAIMessage:
+            type = "ai"
+            content = ""
+            tool_calls = [
+                {
+                    "id": "call-1",
+                    "name": "get_file_content",
+                    "args": {"file_path": "src/Foo.java"},
+                }
+            ]
+            invalid_tool_calls = []
+            additional_kwargs = {"reasoning_content": "need source"}
+            response_metadata = {"finish_reason": "tool_calls"}
+            usage_metadata = {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+            }
+
+        result = serialize_llm_response(FakeAIMessage())
+
+        assert result["content"] == ""
+        assert result["tool_calls"][0]["name"] == "get_file_content"
+        assert result["tool_calls"][0]["args"]["file_path"] == "src/Foo.java"
+        assert result["additional_kwargs"]["reasoning_content"] == "need source"
 
 
 class TestTokenUsage:
