@@ -6,31 +6,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from hashlib import sha256
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from codeguard_agent.models.schemas import Issue, Severity
 
 
 SourceAgent = Literal["threat_model", "behavior", "maintainability"]
 
-
-AGENT_CATEGORY_MAP: dict[str, str] = {
-    "threat_model": "security",
-    "behavior": "logic",
-    "maintainability": "quality",
-    # 旧名称兼容:ADR-032 第一版中间态可能仍以旧 reviewer 名写入。
-    "security": "security",
-    "logic": "logic",
-    "quality": "quality",
-}
-
-AGENT_DISPLAY_NAME_MAP: dict[str, str] = {
-    "threat_model": "ThreatModelAgent",
-    "behavior": "BehaviorAgent",
-    "maintainability": "MaintainabilityAgent",
-}
 
 MAX_CANDIDATES_PER_AGENT = 10
 MAX_EVIDENCE_REQUESTS_PER_CANDIDATE = 2
@@ -115,7 +100,6 @@ class ContextBundle(BaseModel):
         return text[:budget] + "\n...(ContextBundle 已达预算上限,后续省略)"
 
 
-EvidenceStatus = Literal["sufficient", "partial", "missing"]
 EvidenceNoteStatus = Literal["supported", "contradicted", "mixed", "insufficient", "not_found", "unsupported"]
 
 # ── EvidenceAgent LLM 证据分析的结构化输出 ──
@@ -128,18 +112,28 @@ class EvidenceJudgment(BaseModel):
         description="证据对候选主张意味着什么"
     )
     reasoning: str = Field(default="", description="推理依据")
-ChallengeVerdict = Literal["keep", "downgrade", "merge", "drop", "needs_more_evidence"]
-
-
 class EvidenceRequest(BaseModel):
     """候选 issue 对证据的结构化请求。"""
 
+    id: str = ""
     candidate_id: str
     target: str = ""
     question: str = ""
-    reason: str = ""
     preferred_tools: list[str] = Field(default_factory=list)
-    reason_code: str = ""
+
+    @model_validator(mode="after")
+    def assign_stable_id(self) -> "EvidenceRequest":
+        if not self.id:
+            payload = "\0".join(
+                [
+                    self.candidate_id,
+                    self.target,
+                    self.question,
+                    *self.preferred_tools,
+                ]
+            )
+            self.id = f"evidence-{sha256(payload.encode('utf-8')).hexdigest()[:16]}"
+        return self
 
 
 class CandidateIssue(BaseModel):
@@ -147,25 +141,13 @@ class CandidateIssue(BaseModel):
 
     id: str
     source_agent: str
-    category: str = ""
     file: str
     line: int = 0
     type: str
     severity_proposal: Severity
     claim: str
     suggestion: str = ""
-    evidence_ids: list[str] = Field(default_factory=list)
-    evidence_status: EvidenceStatus = "missing"
-    needs_evidence: bool = False
-    evidence_requests: list[EvidenceRequest] = Field(default_factory=list)
-    evidence_notes: list["EvidenceNote"] = Field(default_factory=list)
-    challenge: "Challenge | None" = None
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-
-    @property
-    def agent(self) -> str:
-        """旧字段兼容别名。"""
-        return self.source_agent
 
     @classmethod
     def from_issue(
@@ -173,51 +155,19 @@ class CandidateIssue(BaseModel):
         issue: Issue,
         *,
         index: int,
-        source_agent: str | None = None,
-        category: str | None = None,
-        agent: str | None = None,
+        source_agent: str,
     ) -> "CandidateIssue":
         """把现有 reviewer 输出转换为内部候选结构。"""
-        resolved_agent = source_agent or agent or "unknown"
-        resolved_category = category or AGENT_CATEGORY_MAP.get(resolved_agent, resolved_agent)
-        cid = f"{resolved_agent}-{index}-{issue.file}:{issue.line}:{issue.type}"
-        needs_evidence = issue.confidence < 0.75 or issue.line <= 0
-        requests = []
-        if needs_evidence:
-            # 按 source_agent 分派默认证据工具:
-            #   threat_model → 查敏感 API + 读文件
-            #   behavior → 查调用方 + 读文件
-            #   maintainability → 查代码度量 + 读文件
-            # 低置信度或无行号时额外追加 get_file_content。
-            agent_tools: dict[str, list[str]] = {
-                "threat_model": ["find_sensitive_apis", "get_file_content"],
-                "behavior": ["find_callers", "get_file_content"],
-                "maintainability": ["get_code_metrics", "get_file_content"],
-            }
-            preferred = list(agent_tools.get(resolved_agent, ["get_file_content"]))
-            requests.append(
-                EvidenceRequest(
-                    candidate_id=cid,
-                    target=issue.file,
-                    question=f"确认 {issue.file} 中候选问题的相关代码片段是否支持该主张",
-                    reason="候选定位不完整或置信度偏低,需要补充代码事实",
-                    preferred_tools=preferred,
-                    reason_code="low_confidence_or_unlocated",
-                )
-            )
+        cid = f"{source_agent}-{index}-{issue.file}:{issue.line}:{issue.type}"
         return cls(
             id=cid,
-            source_agent=resolved_agent,
-            category=resolved_category,
+            source_agent=source_agent,
             file=issue.file,
             line=issue.line,
             type=issue.type,
             severity_proposal=issue.severity,
             claim=issue.message,
             suggestion=issue.suggestion,
-            evidence_status="partial" if needs_evidence else "sufficient",
-            needs_evidence=needs_evidence,
-            evidence_requests=requests,
             confidence=issue.confidence,
         )
 
@@ -234,6 +184,29 @@ class CandidateIssue(BaseModel):
         )
 
 
+def build_evidence_requests(candidate: CandidateIssue) -> list[EvidenceRequest]:
+    if candidate.confidence >= 0.75 and candidate.line > 0:
+        return []
+    agent_tools = {
+        "threat_model": ["find_sensitive_apis", "get_file_content"],
+        "behavior": ["find_callers", "get_file_content"],
+        "maintainability": ["get_code_metrics", "get_file_content"],
+    }
+    return [
+        EvidenceRequest(
+            candidate_id=candidate.id,
+            target=candidate.file,
+            question=(
+                f"确认 {candidate.file} 中候选问题的相关代码片段"
+                "是否支持该主张"
+            ),
+            preferred_tools=list(
+                agent_tools.get(candidate.source_agent, ["get_file_content"])
+            ),
+        )
+    ]
+
+
 class EvidenceNote(BaseModel):
     """EvidenceAgent 写入的证据记录。
 
@@ -241,22 +214,13 @@ class EvidenceNote(BaseModel):
     status 根据 supports/contradicts 分布自动计算。
     """
 
+    request_id: str
     candidate_id: str
     status: EvidenceNoteStatus = "mixed"
     supports: list[str] = Field(default_factory=list)
     contradicts: list[str] = Field(default_factory=list)
     unknowns: list[str] = Field(default_factory=list)
-    reasoning: str = Field(default="", description="LLM 证据分析的整体推理摘要")
     evidence_ids: list[str] = Field(default_factory=list)
-
-
-class Challenge(BaseModel):
-    """ChallengeAgent 写入的候选质疑结果。"""
-
-    candidate_id: str
-    verdict: ChallengeVerdict = "keep"
-    reason: str = ""
-    suggested_target_id: str = ""
 
 
 class CouncilTrace(BaseModel):

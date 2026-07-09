@@ -36,6 +36,7 @@ from codeguard_agent.models.council import (
     MAX_EVIDENCE_REQUESTS_PER_CANDIDATE,
     MAX_TOTAL_EVIDENCE_REQUESTS,
     Verdict,
+    build_evidence_requests,
 )
 from codeguard_agent.models.schemas import ReviewResult, Severity
 from codeguard_agent.pipeline.engines import (
@@ -137,10 +138,7 @@ def _candidate_dedup_reducer(existing: list | None, new: list | None) -> list:
                 if c.line > 0 and abs(c.line - s_line) <= 3:
                     merged_into = survivor
                     break
-            if merged_into is not None:
-                merged_into.evidence_notes = list(merged_into.evidence_notes) + list(c.evidence_notes)
-                merged_into.evidence_ids = list(set(merged_into.evidence_ids + c.evidence_ids))
-            else:
+            if merged_into is None:
                 seen.append((c_file, c.line, c, c_tokens))
                 final.append(c)
         return final
@@ -416,19 +414,19 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             CandidateIssue.from_issue(
                 issue,
                 source_agent=reviewer.source_agent,
-                category=reviewer.category,
                 index=i + 1,
             )
             for i, issue in enumerate(kept_issues)
         ]
         truncated_evidence_requests = 0
+        requests: list[EvidenceRequest] = []
         for candidate in candidates:
-            original_count = len(candidate.evidence_requests)
-            candidate.evidence_requests = candidate.evidence_requests[
-                :MAX_EVIDENCE_REQUESTS_PER_CANDIDATE
-            ]
-            truncated_evidence_requests += max(0, original_count - len(candidate.evidence_requests))
-        requests = [req for c in candidates for req in c.evidence_requests]
+            candidate_requests = build_evidence_requests(candidate)
+            requests.extend(candidate_requests[:MAX_EVIDENCE_REQUESTS_PER_CANDIDATE])
+            truncated_evidence_requests += max(
+                0,
+                len(candidate_requests) - MAX_EVIDENCE_REQUESTS_PER_CANDIDATE,
+            )
         out: dict = {
             "dispatched": result.get("dispatched") or {reviewer.source_agent},
             "candidate_issues": candidates,
@@ -590,7 +588,6 @@ def _evidence_agent_node(tool_client=None, judge_llm=None):
             contradicts: list[str] = []
             unknowns: list[str] = []
             evidence_ids: list[str] = []
-            all_reasoning: list[str] = []
 
             if tool_client is not None and req.preferred_tools:
                 for tool_name in req.preferred_tools:
@@ -627,7 +624,6 @@ def _evidence_agent_node(tool_client=None, judge_llm=None):
                         )
                         if judgment is not None:
                             entry = f"[{tool_name}] {judgment.reasoning}"
-                            all_reasoning.append(judgment.reasoning)
                             if judgment.judgment == "SUPPORTS":
                                 supports.append(entry)
                             elif judgment.judgment == "CONTRADICTS":
@@ -661,12 +657,12 @@ def _evidence_agent_node(tool_client=None, judge_llm=None):
 
             notes.append(
                 EvidenceNote(
+                    request_id=req.id,
                     candidate_id=req.candidate_id,
                     status=status,
                     supports=supports,
                     contradicts=contradicts,
                     unknowns=unknowns,
-                    reasoning="; ".join(all_reasoning) if all_reasoning else "",
                     evidence_ids=evidence_ids,
                 )
             )
@@ -778,7 +774,12 @@ def _council_judge_node(llm, judge_llm=None):
     """
     _judge = judge_llm or llm
 
-    def _build_llm_prompt(unhandled: list[CandidateIssue], handled: list[Verdict], bundle: ContextBundle | None) -> tuple[str, dict[str, str]]:
+    def _build_llm_prompt(
+        unhandled: list[CandidateIssue],
+        handled: list[Verdict],
+        bundle: ContextBundle | None,
+        notes_by_candidate: dict[str, list[EvidenceNote]],
+    ) -> tuple[str, dict[str, str]]:
         """构建 LLM 终审 prompt，同时返回短别名→真实 ID 的映射表。
 
         用短别名（C001/C002/...）替代冗长的真实 candidate_id，
@@ -803,7 +804,7 @@ def _council_judge_node(llm, judge_llm=None):
                 id_map[c.id] = alias
 
                 evidence_lines: list[str] = []
-                for note in c.evidence_notes:
+                for note in notes_by_candidate.get(c.id, []):
                     for s in note.supports:
                         evidence_lines.append(f"    ✅ 支持: {s}")
                     for ct in note.contradicts:
@@ -891,7 +892,7 @@ def _council_judge_node(llm, judge_llm=None):
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[council_judge] LLM 语义综合失败,使用规则去重结果: %s", exc)
 
-            # 2c. 映射回 CandidateIssue（保留被合并方的 evidence）
+            # 2c. 映射回 CandidateIssue
             if len(deduped) < len(remaining):
                 surviving: list[CandidateIssue] = []
                 merged_ids: set[str] = set()
@@ -917,13 +918,10 @@ def _council_judge_node(llm, judge_llm=None):
                     if best is not None:
                         surviving.append(best)
                         merged_ids.add(best.id)
-                        # 把其他没被选中的同源 candidate 的 evidence 合进来
                         for other in remaining:
                             if other.id != best.id and other.id not in merged_ids:
                                 o_file = (other.file or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
                                 if o_file == c_file and abs(other.line - best.line) <= 10:
-                                    best.evidence_notes = list(best.evidence_notes) + list(other.evidence_notes)
-                                    best.evidence_ids = list(set(best.evidence_ids + other.evidence_ids))
                                     merged_ids.add(other.id)
                                     verdicts.append(Verdict(
                                         candidate_id=other.id,
@@ -956,8 +954,6 @@ def _council_judge_node(llm, judge_llm=None):
                         merged_into = survivor
                         break
                 if merged_into is not None:
-                    merged_into.evidence_notes = list(merged_into.evidence_notes) + list(c.evidence_notes)
-                    merged_into.evidence_ids = list(set(merged_into.evidence_ids + c.evidence_ids))
                     verdicts.append(Verdict(
                         candidate_id=c.id,
                         action="merge",
@@ -974,7 +970,12 @@ def _council_judge_node(llm, judge_llm=None):
         unhandled = remaining
         if unhandled and _judge is not None:
             try:
-                prompt, alias_map = _build_llm_prompt(unhandled, verdicts, state.get("context_bundle"))
+                prompt, alias_map = _build_llm_prompt(
+                    unhandled,
+                    verdicts,
+                    state.get("context_bundle"),
+                    notes_by_candidate,
+                )
                 # 用 JudgeDecisions 包装而非 list[JudgeDecision]——
                 # DeepSeek 等兼容端点不支持 list[T] 泛型作为 response_format。
                 structured_llm = _judge.with_structured_output(
@@ -1051,9 +1052,7 @@ def _council_judge_node(llm, judge_llm=None):
                         candidate_id=v.candidate_id,
                         target=candidate.file,
                         question=f"[council_judge] {v.reason}",
-                        reason=v.reason,
                         preferred_tools=tools,
-                        reason_code=v.reason_code,
                     ))
 
         final_candidates = [c for c in candidates if c.id not in drop_ids]

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from codeguard_agent.models.council import CandidateIssue, EvidenceRequest
+from codeguard_agent.models.council import (
+    CandidateIssue,
+    EvidenceRequest,
+    build_evidence_requests,
+)
 from codeguard_agent.models.schemas import Issue, Severity
 
 
-def test_candidate_from_issue_records_source_agent_and_category_mapping():
+def test_candidate_contains_only_the_candidate_claim():
     issue = Issue(
         severity=Severity.WARNING,
         file="src/UserService.java",
@@ -17,41 +21,47 @@ def test_candidate_from_issue_records_source_agent_and_category_mapping():
     )
 
     candidate = CandidateIssue.from_issue(
-        issue,
-        source_agent="threat_model",
-        category="security",
-        index=1,
+        issue, source_agent="threat_model", index=1
     )
 
-    assert candidate.source_agent == "threat_model"
-    assert candidate.category == "security"
-    assert candidate.evidence_status == "partial"
-    assert candidate.needs_evidence is True
-    assert "find_sensitive_apis" in candidate.evidence_requests[0].preferred_tools
-    assert "get_file_content" in candidate.evidence_requests[0].preferred_tools
-    assert candidate.evidence_requests[0].question
-    assert candidate.evidence_requests[0].reason
+    assert set(candidate.model_dump()) == {
+        "id",
+        "source_agent",
+        "file",
+        "line",
+        "type",
+        "severity_proposal",
+        "claim",
+        "suggestion",
+        "confidence",
+    }
 
 
-def test_evidence_request_carries_preferred_tools_and_open_semantics():
-    """EvidenceRequest 不再有 kind 字段，改用 preferred_tools 表达证据需求。"""
-    request = EvidenceRequest(
+def test_evidence_request_id_is_stable_for_the_same_semantics():
+    first = EvidenceRequest(
         candidate_id="c1",
-        target="NewPaymentFlowConfig",
-        question="确认该 feature flag 在生产环境是否默认开启",
-        reason="如果生产默认开启，行为变更影响范围更大",
-        preferred_tools=["get_file_content", "find_callers"],
+        target="A.java",
+        question="确认保护逻辑",
+        preferred_tools=["get_file_content"],
+    )
+    second = EvidenceRequest(
+        candidate_id="c1",
+        target="A.java",
+        question="确认保护逻辑",
+        preferred_tools=["get_file_content"],
+    )
+    different = EvidenceRequest(
+        candidate_id="c1",
+        target="A.java",
+        question="确认调用方",
+        preferred_tools=["find_callers"],
     )
 
-    dumped = request.model_dump()
-    assert "kind" not in dumped
-    assert dumped["question"] == "确认该 feature flag 在生产环境是否默认开启"
-    assert dumped["reason"] == "如果生产默认开启，行为变更影响范围更大"
-    assert dumped["preferred_tools"] == ["get_file_content", "find_callers"]
+    assert first.id == second.id
+    assert first.id != different.id
 
 
-def test_from_issue_dispatches_preferred_tools_by_source_agent():
-    """各 source_agent 产出正确的默认 preferred_tools。"""
+def test_build_evidence_requests_dispatches_tools_by_source_agent():
     issue = Issue(
         severity=Severity.WARNING,
         file="A.java",
@@ -60,19 +70,22 @@ def test_from_issue_dispatches_preferred_tools_by_source_agent():
         message="m",
         confidence=0.5,
     )
+    expected = {
+        "threat_model": ["find_sensitive_apis", "get_file_content"],
+        "behavior": ["find_callers", "get_file_content"],
+        "maintainability": ["get_code_metrics", "get_file_content"],
+    }
 
-    threat = CandidateIssue.from_issue(issue, source_agent="threat_model", index=1)
-    assert threat.evidence_requests[0].preferred_tools == ["find_sensitive_apis", "get_file_content"]
+    for source_agent, tools in expected.items():
+        candidate = CandidateIssue.from_issue(
+            issue, source_agent=source_agent, index=1
+        )
+        requests = build_evidence_requests(candidate)
+        assert len(requests) == 1
+        assert requests[0].preferred_tools == tools
 
-    behavior = CandidateIssue.from_issue(issue, source_agent="behavior", index=1)
-    assert behavior.evidence_requests[0].preferred_tools == ["find_callers", "get_file_content"]
 
-    maintain = CandidateIssue.from_issue(issue, source_agent="maintainability", index=1)
-    assert maintain.evidence_requests[0].preferred_tools == ["get_code_metrics", "get_file_content"]
-
-
-def test_from_issue_high_confidence_no_evidence_needed():
-    """高置信度 + 有行号的候选不需要证据补充。"""
+def test_build_evidence_requests_skips_located_high_confidence_candidate():
     issue = Issue(
         severity=Severity.WARNING,
         file="A.java",
@@ -81,7 +94,7 @@ def test_from_issue_high_confidence_no_evidence_needed():
         message="m",
         confidence=0.95,
     )
-    candidate = CandidateIssue.from_issue(issue, source_agent="threat_model", index=1)
-    assert candidate.needs_evidence is False
-    assert candidate.evidence_requests == []
-    assert candidate.evidence_status == "sufficient"
+    candidate = CandidateIssue.from_issue(
+        issue, source_agent="threat_model", index=1
+    )
+    assert build_evidence_requests(candidate) == []

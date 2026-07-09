@@ -64,9 +64,11 @@ def _candidate(*, needs_evidence=False, confidence=0.9):
         message="m",
         confidence=confidence,
     )
-    candidate = G.CandidateIssue.from_issue(issue, agent="security", index=1)
-    candidate.needs_evidence = needs_evidence
-    return candidate
+    return G.CandidateIssue.from_issue(
+        issue,
+        source_agent="threat_model",
+        index=1,
+    )
 
 
 def test_coordinator_skips_evidence_and_judge_when_no_candidates():
@@ -177,7 +179,7 @@ def test_council_judge_rule_contradicted_drop():
         id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
         severity_proposal=Severity.WARNING, claim="m", confidence=0.3,
     )
-    notes = [EvidenceNote(candidate_id="c1", contradicts=["反证:已有校验"])]
+    notes = [EvidenceNote(request_id="r1", candidate_id="c1", contradicts=["反证:已有校验"])]
     node = G._council_judge_node(llm=None)
     out = node({
         "candidate_issues": [c], "evidence_notes": notes,
@@ -193,7 +195,7 @@ def test_council_judge_rule_no_evidence_drop():
         id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
         severity_proposal=Severity.WARNING, claim="m", confidence=0.3,
     )
-    notes = [EvidenceNote(candidate_id="c1", status="insufficient", unknowns=["x"])]
+    notes = [EvidenceNote(request_id="r1", candidate_id="c1", status="insufficient", unknowns=["x"])]
     node = G._council_judge_node(llm=None)
     out = node({
         "candidate_issues": [c], "evidence_notes": notes,
@@ -208,7 +210,7 @@ def test_council_judge_rule_critical_insufficient_downgrade():
         id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
         severity_proposal=Severity.CRITICAL, claim="m", confidence=0.9,
     )
-    notes = [EvidenceNote(candidate_id="c1", status="insufficient", unknowns=["x"])]
+    notes = [EvidenceNote(request_id="r1", candidate_id="c1", status="insufficient", unknowns=["x"])]
     node = G._council_judge_node(llm=None)
     out = node({
         "candidate_issues": [c], "evidence_notes": notes,
@@ -224,7 +226,7 @@ def test_council_judge_rule_contradicted_by_status():
         id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
         severity_proposal=Severity.WARNING, claim="m", confidence=0.3,
     )
-    notes = [EvidenceNote(candidate_id="c1", status="contradicted", contradicts=["反证:已有判空"])]
+    notes = [EvidenceNote(request_id="r1", candidate_id="c1", status="contradicted", contradicts=["反证:已有判空"])]
     node = G._council_judge_node(llm=None)
     out = node({
         "candidate_issues": [c], "evidence_notes": notes,
@@ -240,7 +242,7 @@ def test_council_judge_rule_strong_support_fast_track():
         id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
         severity_proposal=Severity.CRITICAL, claim="m", confidence=0.95,
     )
-    notes = [EvidenceNote(candidate_id="c1", status="supported", supports=["证据充分"])]
+    notes = [EvidenceNote(request_id="r1", candidate_id="c1", status="supported", supports=["证据充分"])]
     node = G._council_judge_node(llm=None)
     out = node({
         "candidate_issues": [c], "evidence_notes": notes,
@@ -455,24 +457,22 @@ def test_build_graph_default_nodes_are_adr032():
 def test_candidate_and_evidence_request_limits_are_enforced(monkeypatch):
     original_from_issue = G.CandidateIssue.from_issue
 
-    def _many_candidates_from_issue(issue, *, source_agent, category, index):
-        c = original_from_issue(
+    def _many_candidates_from_issue(issue, *, source_agent, index):
+        return original_from_issue(
             issue,
             source_agent=source_agent,
-            category=category,
             index=index,
         )
-        c.needs_evidence = True
-        c.evidence_requests = [
+
+    def _many_evidence_requests(candidate):
+        return [
             G.EvidenceRequest(
-                candidate_id=c.id,
-                target=f"{issue.file}:{i}",
+                candidate_id=candidate.id,
+                target=f"{candidate.file}:{i}",
                 question=f"q{i}",
-                reason=f"r{i}",
             )
             for i in range(3)
         ]
-        return c
 
     class _ManyIssueEngine:
         def review(
@@ -499,6 +499,7 @@ def test_candidate_and_evidence_request_limits_are_enforced(monkeypatch):
             return ReviewOutcome(ReviewResult(summary=f"sum-{reviewer_name}", issues=issues))
 
     monkeypatch.setattr(G.CandidateIssue, "from_issue", _many_candidates_from_issue)
+    monkeypatch.setattr(G, "build_evidence_requests", _many_evidence_requests)
     monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _ManyIssueEngine())
     orch = PipelineOrchestrator(enable_summary=False)
     meta: dict = {}
