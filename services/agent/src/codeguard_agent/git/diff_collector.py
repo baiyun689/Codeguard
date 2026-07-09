@@ -77,13 +77,13 @@ def parse_changed_files(diff_text: str) -> list[str]:
 def split_diff_by_file(diff_text: str) -> dict[str, str]:
     """把 unified diff 按文件拆成 {现文件相对路径: 该文件的 diff 片段}。
 
-    用途:摘要阶段产出 file_groups(reviewer→相关文件)后,审查阶段据此为每个审查员
-    拼出其维度相关文件的裁剪 diff(见 design.md D2)。
+    用途:保留为通用 diff 工具,供测试、诊断或后续明确需要按文件查看 diff
+    的场景复用。当前 ADR-032 发现者运行链路始终读取完整 diff,不再按文件裁剪。
 
     设计要点:
     - 以 `diff --git ` 行为分段边界,每段保留完整的文件头与 hunk。
-    - 段的 key 取该段内 `+++ b/<path>` 头(与 parse_changed_files 同口径,确保和 file_groups 键对齐)。
-    - 删除文件的新文件头是 `+++ /dev/null`,没有"现文件"路径,跳过(裁剪场景用不到)。
+    - 段的 key 取该段内 `+++ b/<path>` 头(与 parse_changed_files 同口径)。
+    - 删除文件的新文件头是 `+++ /dev/null`,没有"现文件"路径,跳过。
     - 确定性纯函数,可独立单测、不触发 IO;空 diff / 无法解析 → 返回空 dict。
     """
     if not diff_text:

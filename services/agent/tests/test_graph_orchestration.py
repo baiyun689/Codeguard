@@ -155,20 +155,65 @@ def test_reviewer_subgraph_exposes_internal_nodes():
     assert {"prepare", "review", "collect"} <= set(sub.get_graph().nodes)
 
 
+def test_reviewer_state_excludes_retired_routing_fields():
+    assert {
+        "file_groups",
+        "focus_notes",
+        "enable_hitl",
+        "dispatched",
+        "eff_diff",
+    }.isdisjoint(G.ReviewerState.__annotations__)
+
+
+def test_reviewer_prompt_contains_summary_once(monkeypatch):
+    captured: dict[str, str] = {}
+
+    class _CapturingEngine:
+        def review(
+            self,
+            llm,
+            *,
+            system_prompt,
+            user_prompt,
+            reviewer_name,
+            max_retries,
+            structured_method,
+            enable_hitl=False,
+        ):
+            captured["prompt"] = user_prompt
+            return ReviewOutcome(ReviewResult(summary="", issues=[]))
+
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _CapturingEngine())
+    sub = G.build_reviewer_subgraph(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
+
+    sub.invoke({
+        "diff_text": "diff --git a/A.java b/A.java\n+++ b/A.java\n+class A {}",
+        "diff_summary": "唯一摘要标记-Task3",
+        "structured_method": "function_calling",
+    })
+
+    assert captured["prompt"].count("唯一摘要标记-Task3") == 1
+
+
+def test_discoverer_prompts_do_not_reference_retired_routing():
+    prompt_dir = Path(__file__).resolve().parents[1] / "src" / "codeguard_agent" / "prompts"
+    for filename in ("threat-model.txt", "behavior.txt", "maintainability.txt"):
+        text = (prompt_dir / filename).read_text(encoding="utf-8")
+        for obsolete in ("file_groups", "file_focus", "focus_notes", "Supervisor"):
+            assert obsolete not in text
+
+
 def test_default_discoverers_are_methodology_roles_with_tool_boundaries():
     by_source = {r.source_agent: r for r in G.DEFAULT_REVIEWERS}
     assert set(by_source) == {"threat_model", "behavior", "maintainability"}
     assert by_source["threat_model"].name == "ThreatModelAgent"
-    assert by_source["threat_model"].category == "security"
     assert by_source["threat_model"].tool_allowlist == [
         "get_file_content",
         "find_sensitive_apis",
     ]
     assert by_source["behavior"].name == "BehaviorAgent"
-    assert by_source["behavior"].category == "logic"
     assert by_source["behavior"].tool_allowlist == ["get_file_content", "find_callers"]
     assert by_source["maintainability"].name == "MaintainabilityAgent"
-    assert by_source["maintainability"].category == "quality"
     assert by_source["maintainability"].tool_allowlist == [
         "get_file_content",
         "get_code_metrics",
@@ -181,7 +226,6 @@ def test_reviewer_subgraph_mock_only_threat_model_returns_issues():
             "ThreatModelAgent",
             "threat-model.txt",
             source_agent="threat_model",
-            category="security",
         ),
         llm=None,
     )
@@ -190,7 +234,6 @@ def test_reviewer_subgraph_mock_only_threat_model_returns_issues():
             "BehaviorAgent",
             "behavior.txt",
             source_agent="behavior",
-            category="logic",
         ),
         llm=None,
     )

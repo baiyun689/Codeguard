@@ -19,7 +19,6 @@ import logging
 import operator
 from typing import Annotated, Any, TypedDict
 
-from codeguard_agent.git.diff_collector import split_diff_by_file
 from codeguard_agent.llm.client import mock_review_result
 from codeguard_agent.models.council import (
     CandidateIssue,
@@ -52,8 +51,6 @@ from codeguard_agent.pipeline.stages.reviewer_stage import (
     DEFAULT_REVIEWERS,
     Reviewer,
     _build_user_prompt,
-    _effective_diff,
-    _file_group_for_reviewer,
     _load_prompt,
 )
 from codeguard_agent.pipeline.stages.aggregation import (
@@ -212,19 +209,14 @@ class ReviewerState(TypedDict, total=False):
     max_retries: int
     structured_method: str
     diff_summary: str
-    file_groups: dict
-    focus_notes: dict
-    enable_hitl: bool
     react_recursion_limit: int
     context_bundle: ContextBundle
 
     issues: list
     gathered_context: list
     review_summaries: list
-    dispatched: set
     council_trace: Annotated[list[CouncilTrace], operator.add]
 
-    eff_diff: str
     user_prompt: str
     outcome: Any
 
@@ -300,16 +292,13 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
     def _prepare(state: ReviewerState) -> dict:
         if llm is None:
             return {}
-        file_groups = state.get("file_groups") or {}
-        file_diffs = split_diff_by_file(state["diff_text"]) if file_groups else {}
-        eff_diff = _effective_diff(
-            state["diff_text"], file_diffs, _file_group_for_reviewer(file_groups, reviewer)
+        user = _build_user_prompt(
+            state["diff_text"], summary=state.get("diff_summary", "")
         )
-        user = _build_user_prompt(eff_diff, summary=state.get("diff_summary", ""))
         bundle = state.get("context_bundle")
         if bundle is not None:
             user += "\n\n<shared_context>\n" + bundle.render() + "\n</shared_context>"
-        return {"eff_diff": eff_diff, "user_prompt": user}
+        return {"user_prompt": user}
 
     def _review(state: ReviewerState) -> dict:
         if llm is None:
@@ -354,7 +343,6 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
     def _collect(state: ReviewerState) -> dict:
         outcome = state.get("outcome")
         out: dict = {
-            "dispatched": {reviewer.source_agent},
             "council_trace": [
                 CouncilTrace(node=reviewer.source_agent, event="discover_done")
             ],
@@ -400,9 +388,6 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 "max_retries": state.get("max_retries", 3),
                 "structured_method": state.get("structured_method", "function_calling"),
                 "diff_summary": state.get("diff_summary", ""),
-                "file_groups": {},  # 三个审查员始终吃整份 diff，不做文件分派
-                "focus_notes": {},
-                "enable_hitl": False,
                 "react_recursion_limit": state.get("react_recursion_limit", 24),
                 "context_bundle": state.get("context_bundle"),
             }
@@ -428,7 +413,6 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 len(candidate_requests) - MAX_EVIDENCE_REQUESTS_PER_CANDIDATE,
             )
         out: dict = {
-            "dispatched": result.get("dispatched") or {reviewer.source_agent},
             "candidate_issues": candidates,
             "evidence_requests": requests,
             "truncated_candidates": truncated_candidates,
