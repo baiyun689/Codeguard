@@ -778,17 +778,30 @@ def _council_judge_node(llm, judge_llm=None):
     """
     _judge = judge_llm or llm
 
-    def _build_llm_prompt(unhandled: list[CandidateIssue], handled: list[Verdict], bundle: ContextBundle | None) -> str:
-        parts: list[str] = []
-        parts.append("你是代码审查裁决者。基于已分析的证据质量，对候选问题逐一判定。")
+    def _build_llm_prompt(unhandled: list[CandidateIssue], handled: list[Verdict], bundle: ContextBundle | None) -> tuple[str, dict[str, str]]:
+        """构建 LLM 终审 prompt，同时返回短别名→真实 ID 的映射表。
 
+        用短别名（C001/C002/...）替代冗长的真实 candidate_id，
+        LLM 返回后再通过映射表校验并还原——不再无条件信任 LLM 返回的 ID。
+        """
+        template = _load_prompt("council-judge.txt")
+
+        # 共享上下文
+        context_block = ""
         if bundle is not None:
-            parts.append("\n## 共享上下文\n" + bundle.render(2000))
+            context_block = "## 共享上下文\n" + bundle.render(2000)
 
+        # 短别名映射: C001 → 真实 candidate_id
+        alias_map: dict[str, str] = {}
+        id_map: dict[str, str] = {}  # 反向: 真实 id → 短别名
+
+        candidates_lines: list[str] = []
         if unhandled:
-            parts.append("\n## 待裁决候选")
             for i, c in enumerate(unhandled):
-                # 结构化证据摘要
+                alias = f"C{i + 1:03d}"
+                alias_map[alias] = c.id
+                id_map[c.id] = alias
+
                 evidence_lines: list[str] = []
                 for note in c.evidence_notes:
                     for s in note.supports:
@@ -799,26 +812,32 @@ def _council_judge_node(llm, judge_llm=None):
                         evidence_lines.append(f"    ⚠️  不足: {u}")
                 evidence_block = "\n".join(evidence_lines) if evidence_lines else "    (无证据)"
 
-                parts.append(
-                    f"[{i}] {c.id}\n"
-                    f"  file={c.file}:{c.line} type={c.type} severity={c.severity_proposal}\n"
-                    f"  source={c.source_agent} confidence={c.confidence:.2f}\n"
-                    f"  claim={c.claim}\n"
-                    f"  证据:\n{evidence_block}"
+                candidates_lines.append(
+                    f"--- 候选 {alias} ---\n"
+                    f"file: {c.file}:{c.line}\n"
+                    f"type: {c.type}\n"
+                    f"severity: {c.severity_proposal}\n"
+                    f"source: {c.source_agent}\n"
+                    f"confidence: {c.confidence:.2f}\n"
+                    f"claim: {c.claim}\n"
+                    f"证据:\n{evidence_block}"
                 )
+        candidates_block = "\n\n".join(candidates_lines) if candidates_lines else "(无待裁决候选)"
 
+        # 已被规则处理的候选
+        handled_block = ""
         if handled:
-            parts.append("\n## 已被规则处理的候选（供参考，防止重复判断）")
+            handled_lines = ["## 已被规则处理的候选（供参考，防止重复判断）"]
             for v in handled:
-                parts.append(f"- {v.candidate_id}: {v.action} ({v.reason_code}) {v.reason}")
+                handled_alias = id_map.get(v.candidate_id, v.candidate_id)
+                handled_lines.append(f"- {handled_alias}: {v.action} ({v.reason_code}) {v.reason}")
+            handled_block = "\n".join(handled_lines)
 
-        parts.append("\n## 判定原则")
-        parts.append("- 有支持证据且无反证 → keep")
-        parts.append("- 有明确反证 → drop（反证确凿）或 downgrade（部分反证）")
-        parts.append("- 证据全部不足 → 按原置信度保守决策（高置信 keep，低置信 drop）")
-        parts.append("- 多条 candidate 共享相同证据链指向同一底层问题 → merge")
-        parts.append("\n对每条待裁决候选输出 candidate_id / action / reason。不确定时保守 keep。")
-        return "\n".join(parts)
+        return template.format(
+            context_block=context_block,
+            candidates_block=candidates_block,
+            handled_block=handled_block,
+        ), alias_map
 
     def _node(state: ReviewState) -> dict:
         candidates = list(state.get("candidate_issues") or [])
@@ -955,7 +974,7 @@ def _council_judge_node(llm, judge_llm=None):
         unhandled = remaining
         if unhandled and _judge is not None:
             try:
-                prompt = _build_llm_prompt(unhandled, verdicts, state.get("context_bundle"))
+                prompt, alias_map = _build_llm_prompt(unhandled, verdicts, state.get("context_bundle"))
                 # 用 JudgeDecisions 包装而非 list[JudgeDecision]——
                 # DeepSeek 等兼容端点不支持 list[T] 泛型作为 response_format。
                 structured_llm = _judge.with_structured_output(
@@ -964,21 +983,42 @@ def _council_judge_node(llm, judge_llm=None):
                 llm_result = structured_llm.invoke([("human", prompt)])
                 decisions = llm_result.decisions if isinstance(llm_result, JudgeDecisions) else []
                 if isinstance(decisions, list):
+                    seen_aliases: set[str] = set()
                     for decision in decisions:
+                        raw_id = decision.candidate_id
+                        # 校验: candidate_id 必须在 alias_map 中
+                        real_id = alias_map.get(raw_id)
+                        if real_id is None:
+                            logger.warning(
+                                "[council_judge] LLM 返回未知 candidate_id=%r，不在 alias_map 中，丢弃该裁决",
+                                raw_id,
+                            )
+                            continue
+                        # 校验: 同一候选不得重复裁决
+                        if raw_id in seen_aliases:
+                            logger.warning(
+                                "[council_judge] LLM 对 %r 重复裁决，保留首次，丢弃后续", raw_id
+                            )
+                            continue
+                        seen_aliases.add(raw_id)
+                        # 转换 merge_target_id: 短别名 → 真实 ID
+                        merge_target = decision.merge_target_id or ""
+                        if merge_target and merge_target in alias_map:
+                            merge_target = alias_map[merge_target]
                         verdicts.append(Verdict(
-                            candidate_id=decision.candidate_id,
+                            candidate_id=real_id,
                             action=decision.action,
                             reason_code="llm_judge",
                             reason=decision.reason,
-                            suggested_target_id=decision.merge_target_id,
+                            suggested_target_id=merge_target,
                             severity_override=decision.adjusted_severity,
                             suggested_tools=decision.suggested_tools if decision.action == "needs_more_evidence" else [],
                         ))
-                        handled_ids.add(decision.candidate_id)
+                        handled_ids.add(real_id)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("CouncilJudge LLM 调用失败: %s，规则未命中的候选保守 keep", exc)
 
-        # 未命中规则 + LLM 未返回 → 保守 keep
+        # 未命中规则 + LLM 未返回（或返回无效 ID）→ 保守 keep
         for candidate in unhandled:
             if candidate.id not in handled_ids:
                 verdicts.append(Verdict(

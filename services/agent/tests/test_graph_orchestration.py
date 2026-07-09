@@ -320,7 +320,7 @@ def test_council_judge_needs_more_evidence_generates_request():
                 def invoke(self, _msgs):
                     return G.JudgeDecisions(decisions=[
                         G.JudgeDecision(
-                            candidate_id="c1",
+                            candidate_id="C001",  # 短别名，与 _build_llm_prompt 的映射一致
                             action="needs_more_evidence",
                             reason="证据不足，需要更多工具调用",
                         )
