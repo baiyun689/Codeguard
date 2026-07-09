@@ -86,6 +86,8 @@ class PipelineOrchestrator:
         allowed_files: list[str] | None = None,
         tool_client=None,
         enabled_tools: list[str] | None = None,
+        trace_enabled: bool = False,
+        trace_dir: str = "trace",
         trace_sink: list | None = None,
         metadata_sink: dict[str, Any] | None = None,
         thread_id: str | None = None,
@@ -100,6 +102,9 @@ class PipelineOrchestrator:
         """
         if not diff_text.strip():
             return ReviewResult(summary="没有检测到代码变更,无需审查。")
+
+        import uuid
+        _run_id = thread_id or str(uuid.uuid4())
 
         graph = build_review_graph(
             enable_summary=self._enable_summary,
@@ -133,7 +138,24 @@ class PipelineOrchestrator:
         if self._checkpointer is not None:
             effective_thread_id = thread_id or str(uuid.uuid4())
             invoke_config["configurable"] = {"thread_id": effective_thread_id}
-        final_state = graph.invoke(initial, config=invoke_config)
+        if trace_enabled:
+            from codeguard_agent.observability.collector import _TraceCollector
+            from codeguard_agent.observability.dashboard import render_dashboard_file
+
+            tracer = _TraceCollector(diff_text, _run_id)
+            try:
+                final_state = tracer.run_with_tracing(graph, initial, invoke_config)
+            except Exception:
+                logger.warning("追踪执行异常，降级为无追踪模式", exc_info=True)
+                final_state = graph.invoke(initial, config=invoke_config)
+            else:
+                try:
+                    report = tracer.finalize()
+                    render_dashboard_file(report, trace_dir, _run_id)
+                except Exception:
+                    logger.warning("追踪报告生成失败", exc_info=True)
+        else:
+            final_state = graph.invoke(initial, config=invoke_config)
 
         # 侧信道:把工具上下文交给评测层(不进 ReviewResult,守 ADR-001)。
         if trace_sink is not None:
