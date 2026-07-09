@@ -28,6 +28,227 @@ from codeguard_agent.observability.serialization import (
     serialize_messages,
     serialize_trace_value,
 )
+from codeguard_agent.observability.view_model import build_trace_view
+
+
+def _flow_event(
+    sequence: int,
+    event_type: str,
+    node_name: str,
+    node_path: str,
+    run_id: str,
+    *,
+    detail: dict | None = None,
+    invocation_id: str = "",
+) -> TraceEvent:
+    return TraceEvent(
+        sequence=sequence,
+        timestamp_ms=float(sequence * 10),
+        event_type=event_type,
+        node_name=node_name,
+        node_path=node_path,
+        phase="reviewer_subgraph",
+        depth=node_path.count("/"),
+        summary=f"{event_type}: {node_name}",
+        detail=detail or {},
+        run_id=run_id,
+        invocation_id=invocation_id or run_id,
+    )
+
+
+def _flow_report_fixture() -> TraceReport:
+    events = [
+        _flow_event(1, "node_start", "summary", "summary", "summary-run"),
+        _flow_event(
+            2,
+            "node_end",
+            "summary",
+            "summary",
+            "summary-run",
+            detail={"output": {"diff_summary": "summary"}},
+        ),
+        _flow_event(
+            3,
+            "node_start",
+            "context_provider",
+            "context_provider",
+            "context-run",
+        ),
+        _flow_event(
+            4,
+            "node_end",
+            "context_provider",
+            "context_provider",
+            "context-run",
+            detail={"output": {"context_bundle": {"facts": []}}},
+        ),
+        _flow_event(
+            5,
+            "node_start",
+            "discover_threat_model",
+            "discover_threat_model",
+            "discover-run",
+        ),
+        _flow_event(
+            6,
+            "node_start",
+            "prepare",
+            "discover_threat_model/prepare",
+            "prepare-run",
+        ),
+        _flow_event(
+            7,
+            "node_end",
+            "prepare",
+            "discover_threat_model/prepare",
+            "prepare-run",
+            detail={"output": {"messages": [{"role": "human"}]}},
+        ),
+        _flow_event(
+            8,
+            "llm_start",
+            "model",
+            "discover_threat_model/review/model",
+            "llm-run",
+            detail={"messages": [{"role": "human", "content": "review"}]},
+            invocation_id="model-run",
+        ),
+        _flow_event(
+            9,
+            "llm_end",
+            "model",
+            "discover_threat_model/review/model",
+            "llm-run",
+            detail={"response": {"tool_calls": [{"name": "get_file_content"}]}},
+            invocation_id="model-run",
+        ),
+        _flow_event(
+            10,
+            "tool_start",
+            "tools",
+            "discover_threat_model/review/tools",
+            "tool-run",
+            detail={
+                "tool_name": "get_file_content",
+                "input": {"file_path": "src/Foo.java"},
+            },
+            invocation_id="tools-run",
+        ),
+        _flow_event(
+            11,
+            "tool_end",
+            "tools",
+            "discover_threat_model/review/tools",
+            "tool-run",
+            detail={
+                "tool_name": "get_file_content",
+                "output": {"content": "class Foo {}"},
+            },
+            invocation_id="tools-run",
+        ),
+        _flow_event(
+            12,
+            "node_start",
+            "collect",
+            "discover_threat_model/collect",
+            "collect-run",
+        ),
+        _flow_event(
+            13,
+            "node_end",
+            "collect",
+            "discover_threat_model/collect",
+            "collect-run",
+            detail={"output": {"candidate_issues": [{"type": "security"}]}},
+        ),
+        _flow_event(
+            14,
+            "node_end",
+            "discover_threat_model",
+            "discover_threat_model",
+            "discover-run",
+        ),
+        _flow_event(
+            15,
+            "node_start",
+            "self_checker",
+            "self_checker",
+            "self-run",
+        ),
+        _flow_event(
+            16,
+            "node_end",
+            "self_checker",
+            "self_checker",
+            "self-run",
+            detail={"output": {"final_issues": []}},
+        ),
+    ]
+    return TraceReport(
+        run_id="flow-run",
+        timestamp="2026-07-09T00:00:00",
+        events=events,
+    )
+
+
+def test_trace_view_groups_reviewer_react_steps_and_state_writes():
+    report = _flow_report_fixture()
+
+    view = build_trace_view(report)
+
+    assert [item["code_name"] for item in view["main_stages"]] == [
+        "summary",
+        "context_provider",
+        "review_council",
+        "self_checker",
+    ]
+    threat = next(
+        item
+        for item in view["reviewer_sections"]
+        if item["key"] == "threat_model"
+    )
+    assert [
+        view["steps"][step_id]["kind"]
+        for step_id in threat["step_ids"]
+    ] == ["node", "llm", "tool_call", "tool_result", "node"]
+    assert view["state_writes"]["candidate_issues"][0]["step_id"]
+    assert view["integrity"]["missing_end_count"] == 0
+
+
+def test_trace_view_reports_missing_and_unassociated_events():
+    report = TraceReport(
+        run_id="incomplete-run",
+        timestamp="2026-07-09T00:00:00",
+        events=[
+            _flow_event(
+                1,
+                "node_start",
+                "summary",
+                "summary",
+                "missing-end-run",
+            ),
+            _flow_event(
+                2,
+                "llm_start",
+                "unknown",
+                "unknown",
+                "unassociated-run",
+            ),
+            _flow_event(
+                3,
+                "llm_end",
+                "unknown",
+                "unknown",
+                "unassociated-run",
+            ),
+        ],
+    )
+
+    view = build_trace_view(report)
+
+    assert view["integrity"]["missing_end_count"] == 1
+    assert view["integrity"]["unassociated_count"] == 2
+    assert view["integrity"]["status"] == "incomplete"
 
 
 class TestTraceSerialization:
