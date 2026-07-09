@@ -129,7 +129,7 @@ Required semantics:
 - Include `prepare` and `collect` node steps; suppress ReAct wrapper nodes named `review`、`model`、`tools` when their LLM/tool children already provide the concrete visible step.
 - Aggregate three `discover_*` roots as one `review_council` main stage without inventing child-event causality.
 - Add a missing `self_checker` placeholder only when the report lacks it, with `status="missing"`.
-- Build `state_writes` only from `node_end.detail.output` mappings and label values as patches.
+- Build `state_writes` only from `node_end.detail.output` mappings, store only source step references, and resolve patch values from raw events in the browser.
 - Count unmatched starts, unmatched ends and events with `node_path in {"", "unknown"}`.
 
 - [ ] **Step 4: Run focused tests and verify GREEN**

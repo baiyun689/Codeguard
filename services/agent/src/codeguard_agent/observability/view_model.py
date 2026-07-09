@@ -162,6 +162,8 @@ def _tool_event_steps(
 
 def _is_visible_node_step(step: dict[str, Any]) -> bool:
     code_name = step["code_name"]
+    if code_name in {"summary", "context_provider", "self_checker"}:
+        return True
     if code_name in {"review", "model", "tools"}:
         return False
     root = str(step["node_path"]).split("/", 1)[0]
@@ -284,12 +286,11 @@ def _state_writes(
         output = event.detail.get("output")
         if not isinstance(output, dict):
             continue
-        for field_name, value in output.items():
+        for field_name in output:
             writes[str(field_name)].append({
                 "step_id": step["id"],
                 "sequence": step["sequence"],
                 "node_path": step["node_path"],
-                "value": value,
                 "semantics": "state_patch",
             })
     return dict(writes)

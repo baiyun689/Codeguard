@@ -275,19 +275,32 @@ function renderMainFlow(){
     }).join("")+'</div></section>'
 }
 function renderReviewerSection(section){
-  var cards=section.step_ids.map(function(stepId){return renderStepCard(STEPS[stepId])}).join("");
+  var visibleIds=section.step_ids.filter(stepMatchesSearch);
+  var cards=visibleIds.map(function(stepId){return renderStepCard(STEPS[stepId])}).join("");
   return'<section class="story-section" id="reviewer-'+esc(section.key)+'">'+
     '<header class="section-head"><span><h2>'+esc(section.title)+'</h2>'+
     '<div class="code">'+esc(section.code_name)+'</div></span><span>'+
-    section.step_ids.length+' 步</span></header>'+cards+'</section>'
+    visibleIds.length+' / '+section.step_ids.length+' 步</span></header>'+
+    (cards||'<div class="empty">没有匹配的执行步骤</div>')+'</section>'
 }
 function renderCoordinationSection(){
-  var ids=VIEW.coordination_steps||[];
+  var ids=(VIEW.coordination_steps||[]).filter(stepMatchesSearch);
   return'<section class="story-section" id="coordination"><header class="section-head">'+
     '<span><h2>协调与证据闭环</h2><div class="code">ReviewCouncil shared path</div></span>'+
     '<span>'+ids.length+' 步</span></header>'+
     (ids.length?ids.map(function(id){return renderStepCard(STEPS[id])}).join(""):
       '<div class="empty">本次执行没有进入证据或挑战闭环</div>')+'</section>'
+}
+function stepMatchesSearch(stepId){
+  var query=document.getElementById("search").value.toLowerCase();
+  if(!query)return true;
+  var step=STEPS[stepId];
+  if(!step)return false;
+  return pretty({
+    step:step,
+    start:eventAt(step.start_sequence),
+    end:eventAt(step.end_sequence)
+  }).toLowerCase().indexOf(query)>=0
 }
 function renderStepCard(step){
   if(!step)return"";var selected=step.id===selectedStepId?" selected":"";
@@ -389,16 +402,24 @@ function renderStateEvolution(){
   var writes=VIEW.state_writes||{},fields=Object.keys(writes).sort();
   var query=document.getElementById("search").value.toLowerCase();
   fields=fields.filter(function(field){return!query||field.toLowerCase().indexOf(query)>=0||
-    pretty(writes[field]).toLowerCase().indexOf(query)>=0});
+    pretty(writes[field]).toLowerCase().indexOf(query)>=0||
+    writes[field].some(function(item){return pretty(stateWriteValue(field,item)).
+      toLowerCase().indexOf(query)>=0})});
   document.getElementById("trace-story").innerHTML='<div class="section-title">'+
     'State 字段跨执行实例的写入轨迹</div><table class="state-table"><thead><tr>'+
     '<th>字段</th><th>写入次数</th><th>执行轨迹</th></tr></thead><tbody>'+
     fields.map(function(field){var items=writes[field];return'<tr data-state-step="'+
       esc(items[items.length-1].step_id)+'"><td><code>'+esc(field)+'</code></td><td>'+
       items.length+'</td><td>'+items.map(function(item){return'<div><span class="seq">#'+
-        item.sequence+'</span> '+esc(item.node_path)+' → '+esc(countValue(item.value))+
+        item.sequence+'</span> '+esc(item.node_path)+' → '+
+        esc(countValue(stateWriteValue(field,item)))+
         ' <small>(patch)</small></div>'}).join("")+'</td></tr>'}).join("")+
     '</tbody></table>'
+}
+function stateWriteValue(field,item){
+  var step=STEPS[item.step_id],end=step?eventAt(step.end_sequence):null;
+  var output=end&&end.detail?end.detail.output:null;
+  return output&&typeof output==="object"?output[field]:null
 }
 function renderRawEvents(){
   document.getElementById("trace-outline").innerHTML="";
