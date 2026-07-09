@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -61,7 +62,17 @@ def render_dashboard_file(report: TraceReport, output_dir: str, run_id: str) -> 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     html = render_dashboard(report)
-    file_path = out_dir / f"trace-{run_id[:8]}.html"
+    timestamp = _filename_timestamp(report.timestamp)
+    file_path = out_dir / f"trace-{timestamp}-{run_id[:8]}.html"
     file_path.write_text(html, encoding="utf-8")
     logger.info("追踪 Dashboard 已写入: %s", file_path)
     return file_path
+
+
+def _filename_timestamp(timestamp: str) -> str:
+    """把报告 ISO 时间转换成适合 Windows 文件名的本地时间片段。"""
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+    except (TypeError, ValueError):
+        parsed = datetime.now()
+    return parsed.strftime("%Y%m%d-%H%M%S")

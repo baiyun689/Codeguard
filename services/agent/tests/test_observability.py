@@ -858,6 +858,26 @@ class TestDashboard:
             assert "test-file" in content
             assert "</html>" in content
 
+    def test_render_dashboard_file_includes_timestamp(self, tmp_path):
+        report = TraceReport(
+            run_id="abc12345",
+            timestamp="2026-07-09T20:30:45",
+        )
+
+        path = render_dashboard_file(
+            report,
+            str(tmp_path),
+            report.run_id,
+        )
+
+        assert path.name == "trace-20260709-203045-abc12345.html"
+
+    def test_template_displays_report_timestamp(self):
+        template = _dashboard_template()
+
+        assert "生成时间" in template
+        assert "DATA.timestamp" in template
+
 
 class TestEndToEnd:
     def test_orchestrator_passes_trace_max_llm_content(

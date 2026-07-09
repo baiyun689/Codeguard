@@ -193,6 +193,7 @@ function renderMeta(){
   var integrity=VIEW.integrity||{},status=integrity.status==="complete"?"":" warning";
   document.getElementById("metrics").innerHTML=
     '<span class="metric">Run <b>'+esc(String(DATA.run_id||"").slice(0,8))+'</b></span>'+
+    '<span class="metric">生成时间 <b>'+esc(DATA.timestamp||"unknown")+'</b></span>'+
     '<span class="metric">耗时 <b>'+formatMs(summary.total_duration_ms)+'</b></span>'+
     '<span class="metric">事件 <b>'+EVENTS.length+'</b></span>'+
     '<span class="metric">Token <b>'+Number(tokens).toLocaleString()+'</b></span>'+
