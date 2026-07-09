@@ -59,9 +59,15 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
         for step in node_steps_with_placeholders
         if _is_visible_node_step(step)
     ]
+    state_node_steps = _state_only_node_steps(
+        node_steps,
+        visible_node_steps,
+        events_by_sequence,
+    )
     review_council_step = _review_council_step(node_steps)
     steps = _index_steps(
         visible_node_steps
+        + state_node_steps
         + llm_steps
         + tool_steps
         + [review_council_step]
@@ -181,6 +187,32 @@ def _is_visible_node_step(step: dict[str, Any]) -> bool:
     if root in REVIEWERS:
         return code_name in {"prepare", "collect"}
     return code_name in _COORDINATION_NODES
+
+
+def _state_only_node_steps(
+    node_steps: list[dict[str, Any]],
+    visible_node_steps: list[dict[str, Any]],
+    events_by_sequence: dict[int, TraceEvent],
+) -> list[dict[str, Any]]:
+    """保留 hidden node 的状态写入索引,但不把它们塞进流程列表。
+
+    LangGraph 子图的 wrapper 节点（如 discover_*）可能不适合作为用户
+    主要流程步骤展示,但它们的 node_end output 仍是真实 State patch。
+    状态演进视图必须能索引这些 patch,否则 candidate_issues 等关键字段会消失。
+    """
+    visible_ids = {step["id"] for step in visible_node_steps}
+    result: list[dict[str, Any]] = []
+    for step in node_steps:
+        if step["id"] in visible_ids or step["end_sequence"] is None:
+            continue
+        event = events_by_sequence.get(step["end_sequence"])
+        output = event.detail.get("output") if event is not None else None
+        if not isinstance(output, dict) or not output:
+            continue
+        state_step = dict(step)
+        state_step["hidden"] = True
+        result.append(state_step)
+    return result
 
 
 def _index_steps(
@@ -307,6 +339,7 @@ def _reviewer_sections(
             step
             for step in steps.values()
             if str(step["node_path"]).split("/", 1)[0] == path_root
+            and not step.get("hidden")
         ]
         owned.sort(key=lambda item: item["sequence"])
         round_number = 0

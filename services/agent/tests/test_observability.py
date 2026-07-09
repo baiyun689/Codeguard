@@ -252,6 +252,42 @@ def test_trace_view_main_stages_resolve_without_copying_state_values():
     )
 
 
+def test_trace_view_indexes_state_writes_from_hidden_discover_nodes():
+    report = TraceReport(
+        run_id="discover-state-run",
+        timestamp="2026-07-10T00:00:00",
+        events=[
+            _flow_event(
+                1,
+                "node_start",
+                "discover_behavior",
+                "discover_behavior",
+                "discover-behavior-run",
+            ),
+            _flow_event(
+                2,
+                "node_end",
+                "discover_behavior",
+                "discover_behavior",
+                "discover-behavior-run",
+                detail={
+                    "output": {
+                        "candidate_issues": [{"type": "null-deref"}],
+                        "evidence_requests": [{"candidate_id": "c1"}],
+                    }
+                },
+            ),
+        ],
+    )
+
+    view = build_trace_view(report)
+
+    assert "candidate_issues" in view["state_writes"]
+    candidate_write = view["state_writes"]["candidate_issues"][0]
+    assert candidate_write["node_path"] == "discover_behavior"
+    assert candidate_write["step_id"] in view["steps"]
+
+
 def test_trace_view_reports_missing_and_unassociated_events():
     report = TraceReport(
         run_id="incomplete-run",
