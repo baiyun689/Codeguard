@@ -49,6 +49,7 @@ from codeguard_agent.models.tasks import (
     TaskSelection,
 )
 from codeguard_agent.pipeline import task_prep
+from codeguard_agent.pipeline.risk_routing import render_task_scope, routed_task_ids
 from codeguard_agent.pipeline.engines import (
     DirectEngine,
     GatheredContext,
@@ -474,14 +475,42 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
     subgraph = build_reviewer_subgraph(reviewer, checkpointer=checkpointer, llm=llm, tool_client=tool_client)
 
     def _node(state: ReviewState) -> dict:
+        tasks = state.get("review_tasks") or []
+        profiles = state.get("risk_profiles") or {}
+        selection = state.get("task_selection")
+        routed_ids = (
+            set(routed_task_ids(reviewer.source_agent, tasks, profiles, selection))
+            if selection is not None
+            else None
+        )
+        if routed_ids is not None and not routed_ids:
+            return {
+                "candidate_issues": [],
+                "evidence_requests": [],
+                "truncated_candidates": 0,
+                "truncated_evidence_requests": 0,
+                "council_trace": [
+                    CouncilTrace(
+                        node=reviewer.source_agent,
+                        event="no_tasks_routed",
+                        detail="selected tasks do not match reviewer risk tags",
+                    )
+                ],
+            }
+
         effective_tools = (
             state.get("enabled_tools")
             if state.get("enabled_tools") is not None
             else reviewer.tool_allowlist
         )
+        scoped_diff = (
+            render_task_scope(reviewer.source_agent, tasks, profiles, selection)
+            if selection is not None
+            else state.get("diff_text", "")
+        )
         result = subgraph.invoke(
             {
-                "diff_text": state.get("diff_text", ""),
+                "diff_text": scoped_diff,
                 "enabled_tools": effective_tools,
                 "max_retries": state.get("max_retries", 3),
                 "structured_method": state.get("structured_method", "function_calling"),
@@ -493,13 +522,12 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         issues = list(result.get("issues") or [])
         kept_issues = issues[:MAX_CANDIDATES_PER_AGENT]
         truncated_candidates = max(0, len(issues) - len(kept_issues))
-        tasks = state.get("review_tasks") or []
         # 只接纳 TaskRank 选中的任务；selection 缺席（直连节点测试等）时不设门槛。
-        selection = state.get("task_selection")
         selected_ids = set(selection.selected_task_ids) if selection is not None else None
         candidates: list[CandidateIssue] = []
         rejected_unmapped: list[str] = []
         rejected_unselected: list[str] = []
+        rejected_unrouted: list[str] = []
         accepted_count = 0
         for issue in kept_issues:
             task_id = task_prep.map_candidate_to_task(issue.file, issue.line, tasks)
@@ -509,6 +537,9 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             if selected_ids is not None and task_id not in selected_ids:
                 # 任务被 TaskRank 跳过（如 Phase 2 Top-K）→ 不进黑板，让预算真正生效。
                 rejected_unselected.append(f"{issue.file}:{issue.line} -> {task_id}")
+                continue
+            if routed_ids is not None and task_id not in routed_ids:
+                rejected_unrouted.append(f"{issue.file}:{issue.line} -> {task_id}")
                 continue
             accepted_count += 1
             candidates.append(
@@ -536,7 +567,8 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 detail=(
                     f"count={len(candidates)} truncated={truncated_candidates} "
                     f"rejected_unmapped={len(rejected_unmapped)} "
-                    f"rejected_unselected={len(rejected_unselected)}"
+                    f"rejected_unselected={len(rejected_unselected)} "
+                    f"rejected_unrouted={len(rejected_unrouted)}"
                 ),
             )
         )
@@ -554,6 +586,14 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     node=reviewer.source_agent,
                     event="candidate_rejected_unselected",
                     detail="; ".join(rejected_unselected),
+                )
+            )
+        if rejected_unrouted:
+            trace.append(
+                CouncilTrace(
+                    node=reviewer.source_agent,
+                    event="candidate_rejected_unrouted",
+                    detail="; ".join(rejected_unrouted),
                 )
             )
         out: dict = {

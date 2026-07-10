@@ -7,6 +7,7 @@ from pathlib import Path
 import codeguard_agent.pipeline.orchestrator as orchestrator_module
 from codeguard_agent.models.council import ContextBundle, ContextFact, EvidenceNote, Verdict
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
+from codeguard_agent.models.tasks import RiskSignal, RiskTag
 from codeguard_agent.pipeline import graph as G
 from codeguard_agent.pipeline.engines import GatheredContext, ReviewOutcome
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
@@ -1279,10 +1280,126 @@ def test_make_reviewer_node_rejects_unselected_task(monkeypatch):
     node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
     out = node({
         "diff_text": "diff --git a/A.java b/A.java\n+++ b/A.java\n@@ -1 +1,2 @@\n+x",
-        "review_tasks": [G.ReviewTask(id="A.java#h0", file="A.java", patch="", changed_lines=[1])],
+        "review_tasks": [
+            G.ReviewTask(id="A.java#h0", file="A.java", patch="", changed_lines=[1]),
+            G.ReviewTask(id="B.java#h0", file="B.java", patch=""),
+        ],
         # A.java#h0 映射得到，但只选中了 B.java#h0 → 该候选被跳过
         "task_selection": G.TaskSelection(selected_task_ids=["B.java#h0"]),
+        "risk_profiles": {
+            "B.java#h0": G.RiskProfile(
+                task_id="B.java#h0",
+                tag_scores={RiskTag.GENERAL_REVIEW: 1},
+                signals=[
+                    RiskSignal(
+                        tag=RiskTag.GENERAL_REVIEW,
+                        score=1,
+                        source="fallback:unclassified",
+                        reason="fallback",
+                    )
+                ],
+            )
+        },
     })
     assert out["candidate_issues"] == []
     events = {t.event for t in out["council_trace"]}
     assert "candidate_rejected_unselected" in events
+
+
+def test_make_reviewer_node_skips_reviewer_without_routed_tasks(monkeypatch):
+    calls = 0
+
+    class _ShouldNotRun:
+        def review(self, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            raise AssertionError("reviewer engine must not run without routed tasks")
+
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _ShouldNotRun())
+    node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
+    task = G.ReviewTask(id="A.java#h0", file="A.java", patch="+query", changed_lines=[1])
+    out = node(
+        {
+            "diff_text": "+query",
+            "review_tasks": [task],
+            "risk_profiles": {
+                task.id: G.RiskProfile(
+                    task_id=task.id,
+                    tag_scores={RiskTag.SQL_DATA_ACCESS: 1},
+                    signals=[
+                        RiskSignal(
+                            tag=RiskTag.SQL_DATA_ACCESS,
+                            score=1,
+                            source="text:added:sql_data_access",
+                            reason="query",
+                        )
+                    ],
+                )
+            },
+            "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
+        }
+    )
+
+    assert calls == 0
+    assert out["candidate_issues"] == []
+    assert any(trace.event == "no_tasks_routed" for trace in out["council_trace"])
+
+
+def test_make_reviewer_node_passes_only_routed_scope_and_rejects_unrouted_candidate(monkeypatch):
+    seen_prompt = ""
+
+    class _Engine:
+        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
+                   max_retries, structured_method, enable_hitl=False):
+            nonlocal seen_prompt
+            seen_prompt = user_prompt
+            issue = Issue(
+                severity=Severity.WARNING, file="B.java", line=1, type="t", message="m",
+            )
+            return ReviewOutcome(ReviewResult(summary="s", issues=[issue]))
+
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _Engine())
+    node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[1], llm=_FakeLLM())
+    tasks = [
+        G.ReviewTask(id="A.java#h0", file="A.java", patch="+sql", changed_lines=[1]),
+        G.ReviewTask(id="B.java#h0", file="B.java", patch="+auth", changed_lines=[1]),
+    ]
+    out = node(
+        {
+            "diff_text": "+sql\n+auth",
+            "review_tasks": tasks,
+            "risk_profiles": {
+                "A.java#h0": G.RiskProfile(
+                    task_id="A.java#h0",
+                    tag_scores={RiskTag.SQL_DATA_ACCESS: 1},
+                    signals=[
+                        RiskSignal(
+                            tag=RiskTag.SQL_DATA_ACCESS,
+                            score=1,
+                            source="text:added:sql_data_access",
+                            reason="query",
+                        )
+                    ],
+                ),
+                "B.java#h0": G.RiskProfile(
+                    task_id="B.java#h0",
+                    tag_scores={RiskTag.CONFIG_SECURITY: 1},
+                    signals=[
+                        RiskSignal(
+                            tag=RiskTag.CONFIG_SECURITY,
+                            score=1,
+                            source="text:added:config_security",
+                            reason="auth",
+                        )
+                    ],
+                ),
+            },
+            "task_selection": G.TaskSelection(selected_task_ids=["A.java#h0", "B.java#h0"]),
+        }
+    )
+
+    assert 'id="A.java#h0"' in seen_prompt
+    assert '+sql' in seen_prompt
+    assert 'id="B.java#h0"' not in seen_prompt
+    assert out["candidate_issues"] == []
+    assert any(trace.event == "candidate_rejected_unrouted" for trace in out["council_trace"])
