@@ -211,7 +211,6 @@ class ReviewState(TypedDict, total=False):
     council_verdicts: list  # council_judge 产出，供 coordinator 路由判断（非 Annotated，每轮覆盖）
     council_trace: Annotated[list[CouncilTrace], operator.add]
     evidence_round: int
-    council_route: str
     truncated_candidates: Annotated[int, operator.add]
     truncated_evidence_requests: Annotated[int, operator.add]
 
@@ -543,41 +542,26 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
 
 
 def _coordinator_node():
+    """三路发现者的显式 fan-in barrier：只在三路结束后运行一次。
+
+    只记录本轮候选/证据请求批次统计，固定转入 EvidenceAgent；
+    不承担"是否跳过首次补证"的路由决策，也不解析自然语言（spec §4.7）。
+    """
+
     def _node(state: ReviewState) -> dict:
         candidates = state.get("candidate_issues") or []
-        route = _route_after_coordinator(state)
+        pending = state.get("evidence_requests") or []
         return {
-            "council_route": route,
             "council_trace": [
                 CouncilTrace(
                     node="council_coordinator",
-                    event="route",
-                    detail=f"{route}; candidates={len(candidates)}; evidence_round={state.get('evidence_round', 0)}",
+                    event="fan_in",
+                    detail=f"candidates={len(candidates)} evidence_requests={len(pending)}",
                 )
             ],
         }
 
     return _node
-
-
-def _route_after_coordinator(state: ReviewState) -> str:
-    """从 discover 节点或 evidence_agent 返回后，决定下一步。
-
-    仅 evidence_round==0 时自动进 evidence_agent——后续补证
-    只能由 _route_after_council_judge 触发，避免 evidence_requests
-    因 reducer 累积导致反复路由。
-    """
-    candidates = state.get("candidate_issues") or []
-    if not candidates:
-        return "council_judge"
-
-    evidence_round = state.get("evidence_round", 0)
-    if evidence_round == 0:
-        pending = state.get("evidence_requests") or []
-        if pending:
-            return "evidence_agent"
-
-    return "council_judge"
 
 
 def _route_after_council_judge(state: ReviewState) -> str:
@@ -592,10 +576,6 @@ def _route_after_council_judge(state: ReviewState) -> str:
     if has_needs_more and evidence_round < max_rounds:
         return "evidence_agent"
     return "END"
-
-
-def _conditional_route(state: ReviewState) -> str:
-    return state.get("council_route") or _route_after_coordinator(state)
 
 
 def _evidence_agent_node(tool_client=None, judge_llm=None):
@@ -1213,14 +1193,13 @@ def _council_judge_node(llm, judge_llm=None):
 
 
 def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=None, fp_verify_llm=None, tool_client=None):
-    """编译 ADR-032 审查状态图。
+    """编译 ADR-032 审查状态图（风险路由 Phase 1）。
 
     目标拓扑:
-        discover_* ─→ coordinator ─→ evidence_agent ─┐
-                        ↑       ↑                     │
-                        │   council_judge ←───────────┘
-                        │       │
-                        └── END (otherwise)
+        summary? → diff_task_builder → risk_triage → task_rank → context_provider
+          → discover_*(×3) → council_coordinator(fan-in 一次)
+          → evidence_agent(必经一次) → council_judge
+          → [evidence_agent(needs_more 且轮次未超) | END]
     """
     from langgraph.graph import END, START, StateGraph
 
@@ -1253,15 +1232,10 @@ def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=No
         g.add_edge("context_provider", node_name)
         g.add_edge(node_name, "council_coordinator")
 
-    g.add_conditional_edges(
-        "council_coordinator",
-        _conditional_route,
-        {
-            "evidence_agent": "evidence_agent",
-            "council_judge": "council_judge",
-        },
-    )
-    g.add_edge("evidence_agent", "council_coordinator")
+    # 三路 fan-in 后固定进一次 EvidenceAgent，再进 CouncilJudge。
+    g.add_edge("council_coordinator", "evidence_agent")
+    g.add_edge("evidence_agent", "council_judge")
+    # Judge 仅在 needs_more 且轮次未超时回环补证，否则 END。
     g.add_conditional_edges(
         "council_judge",
         _route_after_council_judge,

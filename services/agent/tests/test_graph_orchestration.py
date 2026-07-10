@@ -109,30 +109,6 @@ def _candidate(*, confidence=0.9):
     )
 
 
-def test_coordinator_skips_evidence_and_judge_when_no_candidates():
-    """无候选 → 直接进 council_judge。"""
-    assert G._route_after_coordinator(_base_state()) == "council_judge"
-
-
-def test_coordinator_routes_to_evidence_on_first_round():
-    """第一轮有 evidence_requests → 进 evidence_agent。"""
-    c = _candidate()
-    req = G.EvidenceRequest(candidate_id=c.id, target="A.java", preferred_tools=["get_file_content"])
-    assert G._route_after_coordinator(_base_state(candidate_issues=[c], evidence_requests=[req])) == "evidence_agent"
-
-
-def test_coordinator_routes_to_council_judge_when_no_evidence_needed():
-    """无证据请求 → 直接进 council_judge。"""
-    c = _candidate()
-    assert G._route_after_coordinator(_base_state(candidate_issues=[c])) == "council_judge"
-
-
-def test_coordinator_after_evidence_round_goes_to_council_judge():
-    """evidence_round>0 时不再自动进 evidence_agent。"""
-    c = _candidate()
-    assert G._route_after_coordinator(_base_state(candidate_issues=[c], evidence_round=1)) == "council_judge"
-
-
 def test_route_after_council_judge_needs_more_loop():
     """council_judge 有 needs_more_evidence + 轮次未超 → evidence_agent。"""
     v = Verdict(candidate_id="c1", action="needs_more_evidence", reason_code="test")
@@ -1192,3 +1168,28 @@ def test_review_state_has_task_chain_fields():
         "task_context_bundles",
     ):
         assert field in ann
+
+
+def test_review_state_excludes_council_route():
+    assert "council_route" not in G.ReviewState.__annotations__
+
+
+def test_coordinator_always_edges_to_evidence_agent():
+    graph = G.build_review_graph(enable_summary=False, llm=None)
+    edges = graph.get_graph().edges
+    pairs = {(e.source, e.target) for e in edges}
+    # coordinator → evidence_agent 是无条件边
+    assert ("council_coordinator", "evidence_agent") in pairs
+    # evidence_agent → council_judge 是无条件边
+    assert ("evidence_agent", "council_judge") in pairs
+    # 旧的 evidence → coordinator 回环已移除
+    assert ("evidence_agent", "council_coordinator") not in pairs
+
+
+def test_evidence_agent_runs_once_before_judge(monkeypatch):
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _FakeEngine())
+    orch = PipelineOrchestrator(enable_summary=False)
+    meta: dict = {}
+    orch.run(_FakeLLM(), _DIFF, metadata_sink=meta)
+    # 首次 Evidence 必经一次（即便无 evidence_requests 也 no-op 跑一轮）
+    assert meta["council"]["evidence_rounds"] >= 1
