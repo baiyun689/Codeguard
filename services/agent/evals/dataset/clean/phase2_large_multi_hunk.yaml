@@ -1,0 +1,21 @@
+id: phase2_large_multi_hunk
+category: clean-large-diff
+language: java
+description: 多 hunk 普通变更，用于验证 task 拆分、稳定排序和预算跳过诊断
+diff: |
+  diff --git a/src/main/java/com/demo/OrderService.java b/src/main/java/com/demo/OrderService.java
+  --- a/src/main/java/com/demo/OrderService.java
+  +++ b/src/main/java/com/demo/OrderService.java
+  @@ -10,1 +10,2 @@ public class OrderService {
+     public String status(long id) {
+  +    return "READY";
+     }
+  @@ -40,1 +41,2 @@ public class OrderService {
+     public int version() {
+  +    return 1;
+     }
+  @@ -70,1 +72,2 @@ public class OrderService {
+     public boolean enabled() {
+  +    return true;
+     }
+expected: []

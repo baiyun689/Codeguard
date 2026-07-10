@@ -1941,9 +1941,50 @@ ADR-032 的默认编排调度单位接近"整份 diff + 三路发现者"。大 d
 
 ### 给后续阶段的接缝（Phase 2-6 直接插这里，不得新增改主路由的 State）
 
-- **Phase 2（任务准备链）**：填充 `task_prep.triage_tasks`（建 `RiskRule` registry 产出 `RiskProfile.signals/tag_scores`）与 `rank_tasks`（按派生风险分数 + `ReviewBudget` 实现 Top-K/单文件上限/生产代码优先/跳过原因写 `TaskSelection.skipped_tasks`）。只加 rule，不改 State/图。
+- **Phase 2（任务准备链，已实现）**：`task_prep.triage_tasks` 已接入 23 个细粒度规则、固定 reviewer 映射、聚合/诊断和 `GENERAL_REVIEW` 兜底；`rank_tasks` 已按派生风险分数 + `ReviewBudget` 实现 Top-K/单文件上限/生产代码优先/跳过原因；`risk_routing.py` 和 `graph.py` 已将 selected task scope 派发给固定三路 reviewer。未改 State 字段，未引入 AST。
 - **Phase 3（风险感知上下文）**：`_context_provider_node` 目前对每个选中任务产出空 `TaskContextBundle`；改为按 `risk_profiles[task_id]` 的 RiskTag 走定向 context strategy 填 `facts`，经 Java Gateway 收集并记来源/截断。
-- **Phase 4（定向发现）**：reviewer 输入从整份 diff 改为 task + risk profile + task context；fan-out 与工具 allowlist 从已有 state 纯计算，**不引入 assignment 类 State**。收集节点的 `task_selection` 收口已就位。
+- **Phase 4（定向发现）**：在 Phase 2 已有 task-scoped reviewer 输入基础上，补充 task + risk profile + task context 的结构化提示和工具查询边界；fan-out 与工具 allowlist 继续从已有 state 纯计算，**不引入 assignment 类 State**。
 - **Phase 5（任务化证据/裁决）**：`evidence_agent` 通过 `candidate_id → task_id` 读风险/上下文按 RiskTag 分流补证；`council_judge` 把 task/risk/context/evidence 统一用于 keep/drop/downgrade/merge。首次 Evidence 必经已固定，额外补证仍只追加 `evidence_requests`。
 - **Phase 6（Trace/Eval 闭环）**：trace 已记 `tasks_built/profiled/selected/candidate_rejected_unmapped/candidate_rejected_unselected/fan_in`；Dashboard 展示任务/风险/选择跳过/证据链，并清理 `council_route` 恒空读取。
 - **后续需注意**：当前 task_id 只是回溯标签（ReviewCouncil 仍整份 diff 审查）；Phase 4 令其真正驱动 fan-out 时，需复核 `_candidate_dedup_reducer` 的邻行(±3)合并会否跨 task 合并候选。
+## ADR-039: Phase 2 风险标签、预算与 reviewer task scope 已落地
+
+**日期**: 2026-07-10
+**状态**: 已接受并实现
+**关联设计**: `docs/superpowers/specs/2026-07-10-risk-triage-phase2-design.md`
+
+### 决策
+
+1. 风险规则只使用文件路径和 diff 文本的变化方向信号：`path`、`text:added`、
+   `text:deleted`、`text:changed`。删除不是独立业务风险类别，而是保留为独立来源，
+   因为删除保护代码与新增/修改代码具有不同的路由含义。
+2. 规则覆盖 23 个细粒度 `RiskTag`，用 `RiskProfile.tag_scores` 聚合并限幅；路径信号
+   不能单独制造具体标签。没有具体文本命中时统一生成 `GENERAL_REVIEW`，固定分派给
+   ThreatModel、Behavior、Maintainability 三路。
+3. TaskRank 使用既有 `ReviewBudget` 和 `TaskSelection`，默认总预算 100、单文件 10。
+   排序分数只在节点内派生，不写入 State；跳过任务保留 `per_file_limit` 或 `total_limit`
+   以及派生风险分数。
+4. reviewer 分派由固定 catalog 从标签集合派生，不新增 `assigned_reviewers` State 字段。
+   reviewer 没有匹配 task 时空运行并记录 `no_tasks_routed`；候选收集继续执行 selected
+   gate 后再执行 routed gate，越界候选记录 `candidate_rejected_unrouted`。
+5. 三路发现者仍保留 Direct/ReAct 两种执行方式和既有工具 allowlist；Phase 2 只缩小输入
+   scope，不在规则节点引入 AST、Java Gateway 或 LLM 判断。
+
+### 为什么这样选
+
+- 将“是否值得审”与“是否真的有问题”分开，允许规则激进地保证召回，再由 ContextProvider、
+  reviewer、EvidenceAgent 和 CouncilJudge 进行事实补正。
+- 将路径、增加、删除、修改建模为信号来源/方向而不是最终标签，避免标签重叠和删除行为被
+  新增文本规则吞掉。
+- 把 reviewer 范围作为派生值，避免在 `RiskProfile` 和额外 assignment 字段之间维护两份事实，
+  也让后续上下文节点可以直接消费同一份画像。
+
+### 验证与边界
+
+本阶段新增确定性规则、TaskRank、配置、路由和图回归测试；产品 `ReviewResult` / `Issue`、
+`ReviewState` 字段形状和 Evidence 首次必经拓扑保持不变。AST 风险判断、RiskTag 感知的
+ContextProvider、任务化 Evidence/Judge 和专项 Dashboard 指标留给后续阶段。
+
+验证记录：全量 pytest `374 passed`，ruff/mypy clean；mock CLI EXIT=0；`pipeline-notools`
+mock eval 成功运行 28 个样本，报告写入 `services/agent/evals/reports/pipeline.md`。mock
+指标不代表审查质量，真实质量评测留待配置真实模型后执行。

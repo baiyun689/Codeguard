@@ -1,7 +1,7 @@
 # 风险路由驱动的 ReviewTask 编排设计
 
 **日期**: 2026-07-10  
-**状态**: 设计草案  
+**状态**: Phase 1、Phase 2 已落地；Phase 3-6 规划中
 **关联背景**: ADR-032 ReviewCouncil、ADR-036 ContextProvider AST 富化、当前 trace 可视化模块
 
 ---
@@ -237,7 +237,7 @@ AST 不产出风险标签，只作为后续 ContextProvider 的事实来源
 Phase 2 规则扩展接口:
 
 ```python
-RiskRule = Callable[[ReviewTask], list[RiskSignal]]
+RiskRule = Callable[[DiffFeatures], list[RiskSignal]]
 
 RISK_RULES = [
     authorization_rule,
@@ -497,7 +497,7 @@ Phase 2 起，每个阶段只能填充已有对象、替换节点内部策略或
 | 阶段 | 当前状态 | 已落地内容 | State 变更 | 验证证据 | 刻意未做 |
 |---|---|---|---|---|---|
 | Phase 1 | done | `models/tasks.py`(ReviewTask/RiskTag/RiskSignal/RiskProfile/ReviewBudget/SkippedTask/TaskSelection/TaskContextBundle)；`pipeline/task_prep.py`(build_tasks 按 hunk 解析，并为删除文件、纯重命名、二进制和仅 mode 变化补文件级 fallback task / triage_tasks 空画像 / rank_tasks 全选 / map_candidate_to_task 严格绑定：changed_lines→hunk 覆盖范围→文件级 fallback→否则 None，绝不落到"第一个"task)；`diff_collector.py` 将纯重命名、二进制和仅 mode 变化的当前文件同步纳入 `split_diff_by_file` 与工具白名单；`graph.py` 新增 diff_task_builder→risk_triage→task_rank 节点并前置于 context_provider；context_provider 产出空 task_context_bundles；`CandidateIssue.task_id` 字面必填 + 收集节点确定性映射，无法映射候选留 `candidate_rejected_unmapped`、映射到未选中任务留 `candidate_rejected_unselected`（按 task_selection 收口，使 Phase 2 预算真正生效）；orchestrator 写入 review_budget 初始 State；移除 council_route，改为 coordinator(fan-in 一次)→evidence(必经一次)→judge→[needs_more 回环\|END] | 新增 review_budget/review_tasks/risk_profiles/task_selection/task_context_bundles；删除 council_route | tests/test_tasks_models.py(7)、tests/test_task_prep.py(15，含严格绑定/上下文行归属/越界拒绝/删除文件/纯重命名/二进制与 mode 变化)、tests/test_diff_parse.py(无文本 diff 的当前文件与白名单)、tests/test_graph_orchestration.py(拓扑+映射+fan-in-once+拒绝未映射/未选中候选) 全绿；全套 278 passed；ruff/mypy clean；mock CLI 冒烟 EXIT=0；commits a2f97a6…0a59549 | 风险规则覆盖率/预算效果/上下文质量/定向发现（Phase 2-6）；ReviewCouncil 暂保持整份 diff 粒度；观测层 council_route 恒空读取的清理留 Phase 6 |
-| Phase 2 | planned | 无 | 禁止新增主路由 State | 无 | 见本阶段实现内容之外的规则 |
+| Phase 2 | done | `risk_rules/features.py` 提取 path/added/deleted/context；security/behavior/maintainability 三组规则覆盖 23 个具体标签；`catalog.py` 稳定注册、去重、按标签 capped 聚合、规则诊断和 `GENERAL_REVIEW` 兜底；`task_prep.rank_tasks` 实现风险排序、总预算/单文件预算和跳过原因；`risk_routing.py` 派生 reviewer 并集并渲染 task scope；`graph.py` 接入空路由、scope 输入和 unrouted 候选拒绝；Settings/CLI/orchestrator 接入默认 100/10 预算 | 无新增 State 字段；仍使用 `review_budget` / `review_tasks` / `risk_profiles` / `task_selection` | 全量 pytest 374 passed；ruff/mypy clean；mock CLI EXIT=0；pipeline-notools mock eval 28 cases 完成，报告 `services/agent/evals/reports/pipeline.md` | AST、Java Gateway、风险感知 ContextProvider、Evidence/Judge 任务化和 Dashboard 指标留后续阶段 |
 | Phase 3 | planned | 无 | 禁止新增主路由 State | 无 | 跨项目深挖以外的策略 |
 | Phase 4 | planned | 无 | 禁止新增主路由 State | 无 | Evidence/Judge 策略 |
 | Phase 5 | planned | 无 | 禁止新增主路由 State | 无 | Dashboard 与质量指标 |

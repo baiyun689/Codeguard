@@ -1,0 +1,22 @@
+id: phase2_repository_update
+category: transaction-and-data-access
+dimension: logic
+language: java
+description: 新增 repository.update 写入操作，需确认事务边界和条件
+capability: [diff-only]
+diff: |
+  diff --git a/src/main/java/com/demo/OrderService.java b/src/main/java/com/demo/OrderService.java
+  --- a/src/main/java/com/demo/OrderService.java
+  +++ b/src/main/java/com/demo/OrderService.java
+  @@ -10,1 +10,3 @@ public class OrderService {
+     public void cancel(long id) {
+  +    orderRepository.updateStatus(id, "CANCELLED");
+  +    auditRepository.insert(id, "cancel");
+     }
+expected:
+  - type_keywords: ["事务", "原子性", "transaction", "update"]
+    file: OrderService.java
+    line: 12
+    tolerance: 2
+    severity: WARNING
+    note: 多步写操作新增 update，需确认方法是否具备一致的事务边界

@@ -1,0 +1,15 @@
+id: phase2_plain_getter
+category: clean
+language: java
+description: 普通 getter 未命中具体风险规则，应走 GENERAL_REVIEW 兜底但不应产生产品问题
+diff: |
+  diff --git a/src/main/java/com/demo/Order.java b/src/main/java/com/demo/Order.java
+  --- a/src/main/java/com/demo/Order.java
+  +++ b/src/main/java/com/demo/Order.java
+  @@ -8,1 +8,5 @@ public class Order {
+     private String name;
+  +  public String getName() {
+  +    return name;
+  +  }
+   }
+expected: []

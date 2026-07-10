@@ -1,0 +1,21 @@
+id: phase2_delete_authorization
+category: authorization
+dimension: security
+language: java
+description: 删除 Controller 方法上的权限保护
+capability: [diff-only]
+diff: |
+  diff --git a/src/main/java/com/demo/OrderController.java b/src/main/java/com/demo/OrderController.java
+  --- a/src/main/java/com/demo/OrderController.java
+  +++ b/src/main/java/com/demo/OrderController.java
+  @@ -8,2 +8,1 @@ public class OrderController {
+  -  @PreAuthorize("hasRole('ADMIN')")
+     @DeleteMapping("/{id}")
+     public void delete(@PathVariable long id) { service.delete(id); }
+expected:
+  - type_keywords: ["权限", "授权", "authorization", "PreAuthorize"]
+    file: OrderController.java
+    line: 9
+    tolerance: 2
+    severity: CRITICAL
+    note: 删除了 ADMIN 权限保护，需审查删除接口是否仍受访问控制

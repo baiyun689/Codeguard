@@ -1,0 +1,26 @@
+id: phase2_shared_state_no_lock
+category: concurrency
+dimension: logic
+language: java
+description: 共享计数器新增无锁读改写
+capability: [diff-only]
+diff: |
+  diff --git a/src/main/java/com/demo/QuotaService.java b/src/main/java/com/demo/QuotaService.java
+  --- a/src/main/java/com/demo/QuotaService.java
+  +++ b/src/main/java/com/demo/QuotaService.java
+  @@ -4,1 +4,5 @@ public class QuotaService {
+     private int used;
+  +  public boolean consume() {
+  +    if (used < 100) {
+  +      used = used + 1;
+  +      return true;
+  +    }
+  +    return false;
+     }
+expected:
+  - type_keywords: ["并发", "竞争", "race", "consistency", "共享状态"]
+    file: QuotaService.java
+    line: 7
+    tolerance: 3
+    severity: WARNING
+    note: used 是共享可变状态，检查并发调用下的丢失更新和超额消费
