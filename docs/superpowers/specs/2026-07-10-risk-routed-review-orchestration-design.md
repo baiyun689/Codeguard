@@ -221,20 +221,16 @@ evidence_notes: list[EvidenceNote(candidate_id=...)]
 - 规则优先，LLM 辅助留到后续。
 - 解释每个风险标签来自哪些 `RiskSignal`。
 
-Phase 2 优先标签:
+Phase 2 标签词典与 reviewer 映射见独立设计稿
+[Phase 2 风险标签规则与任务排序设计](./2026-07-10-risk-triage-phase2-design.md)。本总稿只保留
+职责边界；实现时不得再恢复宽泛的 `MAINTAINABILITY`，也不得把 AST 判断提前塞进 RiskTriage。
+
+Phase 2 的核心边界:
 
 ```text
-AUTHORIZATION
-INPUT_VALIDATION
-SQL_DATA_ACCESS
-TRANSACTION
-IDEMPOTENCY
-CACHE_CONSISTENCY
-MESSAGE_QUEUE
-ERROR_HANDLING
-NULL_SAFETY
-CONFIG_SECURITY
-MAINTAINABILITY
+高召回规则 → RiskProfile → TaskSelection
+AST 不产出风险标签，只作为后续 ContextProvider 的事实来源
+无具体命中 → GENERAL_REVIEW(T + B + M)
 ```
 
 Phase 2 规则扩展接口:
@@ -424,15 +420,15 @@ Phase 2 起，每个阶段只能填充已有对象、替换节点内部策略或
 实现内容:
 
 - 完善 unified diff 到 hunk/fallback task 的解析与稳定 ID。
-- 建立 `RiskRule` registry，逐步填充 AUTHORIZATION、INPUT_VALIDATION、SQL_DATA_ACCESS、
-  TRANSACTION、IDEMPOTENCY、CACHE_CONSISTENCY、MESSAGE_QUEUE、ERROR_HANDLING、
-  NULL_SAFETY、CONFIG_SECURITY、MAINTAINABILITY 等规则。
+- 按[Phase 2 独立设计稿](./2026-07-10-risk-triage-phase2-design.md)建立 `RiskRule` registry，
+  填充细粒度风险标签、三类审查员映射和 `GENERAL_REVIEW` 降级规则。
 - 启用 ReviewBudget 的默认策略，实现 Top-K、单文件上限、生产代码优先与明确的跳过原因。
 
 完成条件:
 
 - 新风险规则只新增 rule，不修改 State、图或下游接口。
 - TaskRank 的每个选择和跳过都能由 RiskProfile 与 ReviewBudget 解释。
+- 风险规则不调用 AST；后续 ContextProvider 可基于同一 RiskTag 选择 AST 事实补充策略。
 
 ### Phase 3: 完成风险感知上下文链
 
