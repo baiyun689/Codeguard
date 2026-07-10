@@ -92,6 +92,19 @@ RULE_SPECS: tuple[RiskRuleSpec, ...] = (
     RiskRuleSpec("observability_testability", RiskTag.OBSERVABILITY_TESTABILITY, frozenset({_MAINTAINABILITY}), detect_observability_testability),
 )
 
+# Keep routing metadata beside the detector catalog. GENERAL_REVIEW is not a
+# detector rule, but its fallback path must still have an explicit destination.
+ALL_REVIEWERS = frozenset({_THREAT_MODEL, _BEHAVIOR, _MAINTAINABILITY})
+RISK_TAG_REVIEWERS: dict[RiskTag, frozenset[str]] = {
+    spec.tag: spec.reviewers for spec in RULE_SPECS
+}
+RISK_TAG_REVIEWERS[RiskTag.GENERAL_REVIEW] = ALL_REVIEWERS
+
+
+def reviewers_for_tag(tag: RiskTag) -> frozenset[str]:
+    """Return the fixed reviewer set for a classified risk tag."""
+    return RISK_TAG_REVIEWERS[tag]
+
 
 def _is_concrete_signal(signal: RiskSignal) -> bool:
     return signal.source.startswith(("text:added:", "text:deleted:", "text:changed:"))

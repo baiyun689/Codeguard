@@ -308,6 +308,38 @@ def test_registry_covers_every_concrete_tag_once_and_maps_reviewers():
     assert {spec.tag: set(spec.reviewers) for spec in catalog.RULE_SPECS} == expected_reviewers
 
 
+def test_general_review_routes_to_all_reviewers():
+    assert catalog.reviewers_for_tag(RiskTag.GENERAL_REVIEW) == frozenset(
+        {"ThreatModelAgent", "BehaviorAgent", "MaintainabilityAgent"}
+    )
+
+
+def test_path_signal_is_retained_when_concrete_signal_has_same_tag():
+    profile = catalog._profile(
+        "t",
+        [
+            RiskSignal(
+                tag=RiskTag.AUTHORIZATION,
+                score=1,
+                source="text:added:authorization_guard",
+                reason="text match",
+            ),
+            RiskSignal(
+                tag=RiskTag.AUTHORIZATION,
+                score=1,
+                source="path:controller",
+                reason="path match",
+            ),
+        ],
+    )
+
+    assert [signal.source for signal in profile.signals] == [
+        "text:added:authorization_guard",
+        "path:controller",
+    ]
+    assert profile.tag_scores == {RiskTag.AUTHORIZATION: 2}
+
+
 def test_classify_task_deduplicates_scores_and_caps_each_tag(monkeypatch):
     first_signal = RiskSignal(
         tag=RiskTag.AUTHORIZATION,
