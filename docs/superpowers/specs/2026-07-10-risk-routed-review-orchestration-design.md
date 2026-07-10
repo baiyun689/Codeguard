@@ -229,6 +229,7 @@ Phase 2 的核心边界:
 
 ```text
 高召回规则 → RiskProfile → TaskSelection
+RiskTag 路由注册表 → 为固定三路 reviewer 派发 task-scoped diff
 AST 不产出风险标签，只作为后续 ContextProvider 的事实来源
 无具体命中 → GENERAL_REVIEW(T + B + M)
 ```
@@ -252,6 +253,7 @@ RISK_RULES = [
 - 不决定是否审查任务。
 - 不生成问题结论。
 - 不改写 ReviewTask。
+- 不把 reviewer 分派结果重复写入 State；路由范围由标签和选中任务派生。
 
 ### 4.4 TaskRank
 
@@ -422,13 +424,17 @@ Phase 2 起，每个阶段只能填充已有对象、替换节点内部策略或
 - 完善 unified diff 到 hunk/fallback task 的解析与稳定 ID。
 - 按[Phase 2 独立设计稿](./2026-07-10-risk-triage-phase2-design.md)建立 `RiskRule` registry，
   填充细粒度风险标签、三类审查员映射和 `GENERAL_REVIEW` 降级规则。
-- 启用 ReviewBudget 的默认策略，实现 Top-K、单文件上限、生产代码优先与明确的跳过原因。
+- 启用 ReviewBudget 的默认策略，默认最多审查 100 个 task、单文件最多 10 个 task，
+  并保留 Top-K、生产代码优先与明确的跳过原因。
+- 根据 `RiskProfile.tag_scores` 直接计算 reviewer task scope；每个固定 reviewer 节点只接收
+  自己负责的 selected tasks，`GENERAL_REVIEW` 分派给三路。
 
 完成条件:
 
 - 新风险规则只新增 rule，不修改 State、图或下游接口。
 - TaskRank 的每个选择和跳过都能由 RiskProfile 与 ReviewBudget 解释。
 - 风险规则不调用 AST；后续 ContextProvider 可基于同一 RiskTag 选择 AST 事实补充策略。
+- reviewer 路由不增加动态节点或 `assigned_reviewers` State 字段，三路 fan-out/fan-in 拓扑保持不变。
 
 ### Phase 3: 完成风险感知上下文链
 
@@ -447,9 +453,11 @@ Phase 2 起，每个阶段只能填充已有对象、替换节点内部策略或
 
 实现内容:
 
-- Reviewer 输入改为 task + risk profile + task context，而不是整份 diff 的自由扫描。
-- reviewer fan-out 与工具 allowlist 从已有状态纯计算，不引入 `assignment` 类 State 字段。
-- 低风险任务可减少 reviewer，高风险任务可交叉审；CandidateIssue 直接携带来源 task_id。
+- 在 Phase 2 已有 task-scoped reviewer 输入的基础上，补齐 task + risk profile + task context
+  的结构化提示和工具查询边界。
+- 让 reviewer 使用风险标签选择更精准的审查问题和工具动作，不改变 Phase 2 已确定的
+  reviewer 分派结果。
+- CandidateIssue 直接携带来源 task_id，并保留风险信号和上下文来源的可追溯关系。
 
 完成条件:
 

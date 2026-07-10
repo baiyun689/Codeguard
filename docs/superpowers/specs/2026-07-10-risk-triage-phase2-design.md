@@ -7,8 +7,8 @@
 
 ## 1. 目标
 
-Phase 2 完成风险标签规则和大 diff 任务排序，让每个 `ReviewTask` 在进入 ReviewCouncil
-前拥有可解释的审查方向和优先级。
+Phase 2 完成风险标签规则、大 diff 任务排序，以及风险标签到审查员的实际路由，让每个
+`ReviewTask` 在进入 ReviewCouncil 前拥有可解释的审查方向、优先级和审查员范围。
 
 Phase 2 的风险标签是**高召回路由信号**，不是漏洞结论。规则只回答“这个任务值得从哪个
 角度审查”，不回答“这里一定存在问题”。真假判断由 ContextProvider、三路审查员、
@@ -21,7 +21,8 @@ ReviewTask
   → path/text/diff-deletion signals
   → RiskProfile
   → TaskSelection
-  → ContextProvider
+  → derive reviewer task scope from RiskTag
+  → ContextProvider → ReviewCouncil
 ```
 
 AST 风险信号不在 Phase 2 产生。后续 AST 作为 ContextProvider 的事实来源，补充完整方法、
@@ -33,8 +34,8 @@ AST 风险信号不在 Phase 2 产生。后续 AST 作为 ContextProvider 的事
 - 不读取完整仓库文件，不调用 Java AST 或调用图工具。
 - 不生成 `Issue`、`CandidateIssue` 或漏洞结论。
 - 不改变 `ReviewState`、`ReviewTask`、`RiskProfile`、`TaskSelection` 的字段形状。
-- 不在 Phase 2 让 reviewer 按风险标签改变 fan-out；路由元数据在本阶段固定，实际定向
-  fan-out 留给 Phase 4。
+- 不在 Phase 2 增加动态 LangGraph 节点或 `assigned_reviewers` State 字段；审查员范围由
+  `RiskProfile.tag_scores` 和固定的 RiskTag 路由注册表派生。
 
 ## 3. 规则引擎边界
 
@@ -70,8 +71,15 @@ text:<rule_id>             新增/修改代码中的典型结构或 API
 diff_deletion:<rule_id>    被删除的保护、校验、事务或错误处理
 ```
 
-删除行为不作为独立模块，但必须作为独立来源保留。因为同一段代码被新增、保留或删除
-具有不同的路由含义。
+这不是三个独立的业务模块，而是规则观察 diff 的三个方向:
+
+- `path`: 文件角色，例如 `controller/`、`mapper/`、`config/`。
+- `text`: 新增或修改后的代码中出现了什么结构、关键字或 API。
+- `diff_deletion`: 被删除的代码中原来有什么保护逻辑。
+
+`diff_deletion` 必须单独保留，因为只看新增行会漏掉“删除保护”的风险。例如删除
+`@PreAuthorize`、输入校验、事务注解或异常处理时，新增代码里根本不会出现这些内容，
+但删除本身就是需要审查的信号。
 
 ### 3.3 RiskSignal 语义
 
@@ -124,8 +132,9 @@ B = BehaviorAgent
 M = MaintainabilityAgent
 ```
 
-每个标签有一个 primary reviewer，可选 secondary reviewer。后续 Phase 4 根据标签集合
-取 reviewer 并集；Phase 2 只固定元数据，不改变当前三路执行图。
+每个标签维护一个 reviewer 集合。Phase 2 直接根据选中任务的标签集合计算 reviewer 并集，
+并把 task-scoped diff 交给对应审查员。这个集合是派生值，不写入 `RiskProfile`，避免在
+标签和 reviewer 字段之间维护两份事实。
 
 | RiskTag | 唯一审查问题 | 路由 |
 |---|---|---|
@@ -153,6 +162,16 @@ M = MaintainabilityAgent
 | `DUPLICATION_DESIGN` | 是否引入重复逻辑或不合理设计 | M |
 | `OBSERVABILITY_TESTABILITY` | 关键行为是否难以监控或测试 | M |
 | `GENERAL_REVIEW` | 未命中已知规则，需要通用审查 | T + B + M |
+
+路由规则:
+
+- 一个 task 命中多个标签时，审查员取这些标签对应集合的并集。
+- 一个审查员只接收自己被分派的 selected tasks，不再对整个 diff 做无关扫描。
+- selected tasks 中没有某审查员负责的标签时，该审查员节点记录 `no_tasks_routed` 并
+  正常结束；三路 fan-out/fan-in 拓扑不变。
+- `GENERAL_REVIEW` 固定分派给 T、B、M 三路，保证未知变化不会因为规则漏命中而无人审查。
+- 路由只减少无关审查，不把标签当作最终结论；EvidenceAgent 和 CouncilJudge 仍可根据
+  证据修正审查结果。
 
 标签之间的边界:
 
@@ -208,16 +227,20 @@ ERROR_HANDLING
 Phase 2 默认预算:
 
 ```text
-max_tasks_to_review = 30
-max_tasks_per_file = 5
+max_tasks_to_review = 100
+max_tasks_per_file = 10
 ```
 
 默认配置应通过 Settings/环境变量进入初始 `review_budget`；State 字段不变。建议配置名:
 
 ```text
-CODEGUARD_MAX_REVIEW_TASKS=30
-CODEGUARD_MAX_TASKS_PER_FILE=5
+CODEGUARD_MAX_REVIEW_TASKS=100
+CODEGUARD_MAX_TASKS_PER_FILE=10
 ```
+
+预算按 task 计算，不按命中的标签数量计算。一个 task 即使命中多个标签，也只占一个
+task 配额；它会把对应 reviewer 集合取并集。这样激进的高召回标签不会因为标签数量多而
+额外放大预算消耗。
 
 排序使用稳定的确定性键:
 
@@ -233,11 +256,11 @@ CODEGUARD_MAX_TASKS_PER_FILE=5
 选择规则:
 
 - 任务数不超过预算时全选。
-- 超过总预算时按排序取前 30 个。
-- 同一文件最多选 5 个，其余记录 `per_file_limit`。
+- 超过总预算时按排序取前 100 个。
+- 同一文件最多选 10 个，其余记录 `per_file_limit`。
 - 所有被跳过任务都写入 `TaskSelection.skipped_tasks`，带原因和派生风险分数。
-- `GENERAL_REVIEW` 任务属于低优先级，但仍参与剩余预算竞争；一旦被选中，Phase 4
-  必须启动三路审查员。
+- `GENERAL_REVIEW` 任务属于低优先级，但仍参与剩余预算竞争；一旦被选中，Phase 2
+  的路由逻辑直接分派给三路审查员。
 
 ## 7. 观测与错误处理
 
@@ -250,12 +273,13 @@ CODEGUARD_MAX_TASKS_PER_FILE=5
 
 ## 8. 验收标准
 
-- 23 个具体路由标签和 `GENERAL_REVIEW` 的枚举、规则元数据、reviewer 映射确定。
+- 23 个具体路由标签和 `GENERAL_REVIEW` 的枚举、规则元数据、reviewer 映射确定并生效。
 - 每个具体标签至少有一个可复现的 Java/Spring fixture。
 - 规则能区分新增/修改与删除行为，`source` 和 `reason` 稳定可解释。
 - 无信号 task 自动进入 `GENERAL_REVIEW`，且不与具体标签重复。
-- 默认预算为 30 个 task、单文件最多 5 个；跳过原因可追溯。
+- 默认预算为 100 个 task、单文件最多 10 个；跳过原因可追溯。
+- ReviewCouncil 按 RiskTag 路由到对应审查员；没有匹配任务的审查员可空运行，未知任务
+  通过 `GENERAL_REVIEW` 进入三路。
 - State、图拓扑、`Issue` 和 `CandidateIssue` 契约不变。
 - AST 不参与 Phase 2 风险标签判断，后续只能作为 ContextProvider 的事实增强来源。
 - 现有测试、mock 审查、ruff 和 mypy 全部通过。
-
