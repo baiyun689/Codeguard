@@ -1899,3 +1899,51 @@ LLM 审查输出的 `line` 是源文件绝对行号，GitHub PR review comment A
 
 - Java 4 文件改动（ReviewJob / JobRepository / ReviewExecutorImpl / ResultFeedback）
 - 1 个新单测文件（6 条）
+
+---
+
+## ADR-038: 风险路由驱动的 ReviewTask 编排（Phase 1：冻结状态契约与最终拓扑）
+
+**日期**：2026-07-10
+**状态**：已实现（Phase 1）
+**关联**：ADR-032 ReviewCouncil、ADR-036 ContextProvider AST 富化
+**设计文档**：`docs/superpowers/specs/2026-07-10-risk-routed-review-orchestration-design.md`（含 6 阶段实施台账）
+**实施计划**：`docs/superpowers/plans/2026-07-10-risk-routed-review-orchestration-phase1.md`
+
+### 背景
+
+ADR-032 的默认编排调度单位接近"整份 diff + 三路发现者"。大 diff 下缺少任务级目标、缺少风险路由信号、缺少统一预算入口，且 trace 无法解释"为什么审这个 hunk、不审那个"。目标是引入 `ReviewTask + RiskProfile + TaskContextBundle` 中间链路，把"整份 diff 审查"升级为"风险路由驱动的任务审查"。Phase 1 只做一件事：**一次性冻结完整状态主干与最终拓扑**，后续阶段只填充节点内部策略、不再新增改变主路由的业务 State 字段。
+
+### 决策
+
+- **一次性引入 5 个规范化 State 字段**（`review_budget` / `review_tasks` / `risk_profiles` / `task_selection` / `task_context_bundles`），承载不变链路 `ReviewTask → RiskProfile → TaskSelection → TaskContextBundle → CandidateIssue(task_id) → EvidenceRequest → EvidenceNote → Verdict → ReviewResult`。模型放 `models/tasks.py`（`ContextFact` 复用自 `models/council.py`，单向依赖）。
+- **规范化而非胖对象**：`TaskContextBundle` 不复制 file/patch/RiskTag，`RiskProfile` 不保存 `total_score`（分数是 TaskRank 的派生计算）。事实源单一所有者，下游不回写上游；工作队列只追加。
+- **三个薄准备节点**：`diff_task_builder`（每 hunk 一个 `ReviewTask`，无 hunk 退化为文件级 fallback）→ `risk_triage`（Phase 1 空画像）→ `task_rank`（Phase 1 全选）→ 前置于 `context_provider`。均为纯函数（`pipeline/task_prep.py`），不判断风险、不读仓库、不调 LLM。
+- **`CandidateIssue.task_id` 字面必填**：收集节点用确定性映射 `map_candidate_to_task(file, line, tasks)` 回填。ReviewCouncil 仍吃整份 diff（Phase 1 非目标之一），task_id 由收集节点回填。
+- **候选映射严格绑定 changed 区域**（复审修正）：精度递减为 changed_lines 命中 → hunk 覆盖行范围（含上下文行，从 hunk_header 解析）→ 该文件的文件级 fallback → 否则 `None`。**绝不把无法绑定的候选归属到"第一个"task**——否则风险/上下文/证据会错挂到无关任务。无法映射留 `candidate_rejected_unmapped` trace。
+- **删除/纯重命名文件也生成 fallback task**（复审修正）：`split_diff_by_file` 只认 `+++ b/`，会漏掉删除（`+++ /dev/null`）与纯重命名（无 `+++`）。`build_tasks` 补扫这两类块（删除取旧路径、重命名取新路径），使"删掉鉴权/校验/事务代码"的候选不被丢弃。
+- **收集节点按 `task_selection` 收口**（复审修正）：候选映射到的任务不在 `selected_task_ids` 内 → 拒绝并留 `candidate_rejected_unselected`。Phase 1 全选下为 no-op，但契约已收口，Phase 2 启用 Top-K/预算即刻生效。`review_budget` 写入 orchestrator 初始 State。
+- **移除 `council_route`，固定主路由**：`discover_*(×3) → council_coordinator(fan-in 一次) → evidence_agent(必经一次，无请求则 no-op) → council_judge → [needs_more 且轮次未超 → evidence_agent | END]`。首次 Evidence 不再由条件路由决定；coordinator 退化为纯 fan-in barrier。
+
+### 放弃的方案
+
+- **胖 ReviewTask 对象**（`task.risk_profile/context_bundle/findings/verdict`）：改为按 `task_id` 关联的规范化 state，避免多份可变事实漂移。
+- **`task_id` 给默认值 + 边界校验**：改为字面必填，让契约由类型系统保证而非运行时约定。
+- **候选映射兜底到首个 hunk**：违反"无法绑定 changed line → drop"契约，会错挂风险/证据；改为严格绑定 + 拒绝。
+- **Phase 1 就做 hunk 级定向审查 / 风险规则 / 预算 Top-K / 定向上下文**：刻意推迟到 Phase 2-6，Phase 1 只冻结契约与拓扑。
+
+### 影响
+
+- 新增 Python：`models/tasks.py`、`pipeline/task_prep.py`；改动 `models/council.py`（task_id）、`pipeline/graph.py`（节点+拓扑）、`pipeline/orchestrator.py`（review_budget）。
+- 产品契约 `ReviewResult` / `Issue`（`models/schemas.py`）**零改动**——任务/风险/证据仅进 state/trace/eval。
+- 测试：`test_tasks_models.py`(7)、`test_task_prep.py`(14)、`test_graph_orchestration.py`（拓扑+映射+fan-in-once+两类拒绝）；全套 275 passed，ruff/mypy clean。
+- **观测层遗留**：`observability/collector.py` / `view_model.py` 仍防御式 `.get("council_route")`（恒空、不崩），清理留 Phase 6。
+
+### 给后续阶段的接缝（Phase 2-6 直接插这里，不得新增改主路由的 State）
+
+- **Phase 2（任务准备链）**：填充 `task_prep.triage_tasks`（建 `RiskRule` registry 产出 `RiskProfile.signals/tag_scores`）与 `rank_tasks`（按派生风险分数 + `ReviewBudget` 实现 Top-K/单文件上限/生产代码优先/跳过原因写 `TaskSelection.skipped_tasks`）。只加 rule，不改 State/图。
+- **Phase 3（风险感知上下文）**：`_context_provider_node` 目前对每个选中任务产出空 `TaskContextBundle`；改为按 `risk_profiles[task_id]` 的 RiskTag 走定向 context strategy 填 `facts`，经 Java Gateway 收集并记来源/截断。
+- **Phase 4（定向发现）**：reviewer 输入从整份 diff 改为 task + risk profile + task context；fan-out 与工具 allowlist 从已有 state 纯计算，**不引入 assignment 类 State**。收集节点的 `task_selection` 收口已就位。
+- **Phase 5（任务化证据/裁决）**：`evidence_agent` 通过 `candidate_id → task_id` 读风险/上下文按 RiskTag 分流补证；`council_judge` 把 task/risk/context/evidence 统一用于 keep/drop/downgrade/merge。首次 Evidence 必经已固定，额外补证仍只追加 `evidence_requests`。
+- **Phase 6（Trace/Eval 闭环）**：trace 已记 `tasks_built/profiled/selected/candidate_rejected_unmapped/candidate_rejected_unselected/fan_in`；Dashboard 展示任务/风险/选择跳过/证据链，并清理 `council_route` 恒空读取。
+- **后续需注意**：当前 task_id 只是回溯标签（ReviewCouncil 仍整份 diff 审查）；Phase 4 令其真正驱动 fan-out 时，需复核 `_candidate_dedup_reducer` 的邻行(±3)合并会否跨 task 合并候选。
