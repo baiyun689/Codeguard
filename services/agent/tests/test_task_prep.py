@@ -5,6 +5,7 @@ from __future__ import annotations
 from codeguard_agent.models.tasks import ReviewBudget, RiskProfile, RiskSignal, ReviewTask, RiskTag
 from codeguard_agent.pipeline.task_prep import (
     _changed_lines,
+    _is_production_path,
     build_tasks,
     map_candidate_to_task,
     rank_tasks,
@@ -134,6 +135,12 @@ def test_rank_tasks_prefers_concrete_risk_over_general_review():
     selection = rank_tasks(tasks, profiles, ReviewBudget(max_tasks_to_review=1, max_tasks_per_file=None))
 
     assert selection.selected_task_ids == ["specific#h0"]
+
+
+def test_generated_and_nested_test_paths_are_not_production():
+    assert _is_production_path("src/main/java/OrderService.java") is True
+    assert _is_production_path("src/main/generated/OrderDto.java") is False
+    assert _is_production_path("src/main/test/OrderServiceTest.java") is False
 
 
 def test_map_candidate_uses_changed_line_first():

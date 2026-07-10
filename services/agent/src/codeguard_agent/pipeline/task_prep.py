@@ -191,8 +191,6 @@ def triage_tasks(tasks: list[ReviewTask]) -> TriageResult:
 def _is_production_path(path: str) -> bool:
     """Prefer source files over tests, docs, generated and build output."""
     normalized = _norm(path)
-    if "src/main/" in normalized:
-        return True
     non_production_markers = (
         "/test/",
         "/tests/",
@@ -201,10 +199,12 @@ def _is_production_path(path: str) -> bool:
         "/build/",
         "/target/",
     )
-    return not (
+    if (
         normalized.startswith(("test/", "tests/", "docs/", "generated/"))
         or any(marker in normalized for marker in non_production_markers)
-    )
+    ):
+        return False
+    return True
 
 
 def rank_tasks(
