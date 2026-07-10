@@ -134,6 +134,7 @@ class CandidateIssue(BaseModel):
     """发现者 Agent 写入共享黑板的候选问题。"""
 
     id: str
+    task_id: str
     source_agent: str
     file: str
     line: int = 0
@@ -150,11 +151,13 @@ class CandidateIssue(BaseModel):
         *,
         index: int,
         source_agent: str,
+        task_id: str,
     ) -> "CandidateIssue":
-        """把现有 reviewer 输出转换为内部候选结构。"""
+        """把现有 reviewer 输出转换为内部候选结构。task_id 必填（spec §3.2）。"""
         cid = f"{source_agent}-{index}-{issue.file}:{issue.line}:{issue.type}"
         return cls(
             id=cid,
+            task_id=task_id,
             source_agent=source_agent,
             file=issue.file,
             line=issue.line,

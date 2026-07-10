@@ -484,14 +484,22 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         issues = list(result.get("issues") or [])
         kept_issues = issues[:MAX_CANDIDATES_PER_AGENT]
         truncated_candidates = max(0, len(issues) - len(kept_issues))
-        candidates = [
-            CandidateIssue.from_issue(
-                issue,
-                source_agent=reviewer.source_agent,
-                index=i + 1,
+        tasks = state.get("review_tasks") or []
+        candidates: list[CandidateIssue] = []
+        rejected: list[str] = []
+        for i, issue in enumerate(kept_issues):
+            task_id = task_prep.map_candidate_to_task(issue.file, issue.line, tasks)
+            if task_id is None:
+                rejected.append(f"{issue.file}:{issue.line}")
+                continue
+            candidates.append(
+                CandidateIssue.from_issue(
+                    issue,
+                    source_agent=reviewer.source_agent,
+                    index=i + 1,
+                    task_id=task_id,
+                )
             )
-            for i, issue in enumerate(kept_issues)
-        ]
         truncated_evidence_requests = 0
         requests: list[EvidenceRequest] = []
         for candidate in candidates:
@@ -511,9 +519,20 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 CouncilTrace(
                     node=reviewer.source_agent,
                     event="candidates_created",
-                    detail=f"count={len(candidates)} truncated={truncated_candidates}",
+                    detail=f"count={len(candidates)} truncated={truncated_candidates} rejected={len(rejected)}",
                 )
-            ],
+            ]
+            + (
+                [
+                    CouncilTrace(
+                        node=reviewer.source_agent,
+                        event="candidate_rejected_unmapped",
+                        detail="; ".join(rejected),
+                    )
+                ]
+                if rejected
+                else []
+            ),
         }
         for key in ("gathered_context", "review_summaries"):
             if result.get(key):

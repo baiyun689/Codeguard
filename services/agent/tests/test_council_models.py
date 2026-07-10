@@ -10,6 +10,17 @@ from codeguard_agent.models.council import (
 from codeguard_agent.models.schemas import Issue, Severity
 
 
+def test_candidate_requires_task_id():
+    issue = Issue(
+        severity=Severity.WARNING, file="A.java", line=1, type="t",
+        message="m", confidence=0.9,
+    )
+    candidate = CandidateIssue.from_issue(
+        issue, source_agent="threat_model", index=1, task_id="A.java#h0"
+    )
+    assert candidate.task_id == "A.java#h0"
+
+
 def test_candidate_contains_only_the_candidate_claim():
     issue = Issue(
         severity=Severity.WARNING,
@@ -21,11 +32,12 @@ def test_candidate_contains_only_the_candidate_claim():
     )
 
     candidate = CandidateIssue.from_issue(
-        issue, source_agent="threat_model", index=1
+        issue, source_agent="threat_model", index=1, task_id="src/UserService.java#h0"
     )
 
     assert set(candidate.model_dump()) == {
         "id",
+        "task_id",
         "source_agent",
         "file",
         "line",
@@ -78,7 +90,7 @@ def test_build_evidence_requests_dispatches_tools_by_source_agent():
 
     for source_agent, tools in expected.items():
         candidate = CandidateIssue.from_issue(
-            issue, source_agent=source_agent, index=1
+            issue, source_agent=source_agent, index=1, task_id="A.java#h0"
         )
         requests = build_evidence_requests(candidate)
         assert len(requests) == 1
@@ -95,6 +107,6 @@ def test_build_evidence_requests_skips_located_high_confidence_candidate():
         confidence=0.95,
     )
     candidate = CandidateIssue.from_issue(
-        issue, source_agent="threat_model", index=1
+        issue, source_agent="threat_model", index=1, task_id="A.java#h0"
     )
     assert build_evidence_requests(candidate) == []

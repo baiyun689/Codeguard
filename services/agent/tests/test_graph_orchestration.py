@@ -105,6 +105,7 @@ def _candidate(*, confidence=0.9):
         issue,
         source_agent="threat_model",
         index=1,
+        task_id="A.java#h0",
     )
 
 
@@ -245,7 +246,7 @@ def test_council_judge_rule_invalid_file_drop():
     """文件路径为空 → drop。"""
     c = G.CandidateIssue(
         id="c1", source_agent="threat_model", file="", line=1, type="t",
-        severity_proposal=Severity.WARNING, claim="m",
+        severity_proposal=Severity.WARNING, claim="m", task_id="#h0",
     )
     node = G._council_judge_node(llm=None)
     out = node({"candidate_issues": [c], "evidence_notes": [], "evidence_requests": [], "review_summaries": []})
@@ -257,7 +258,7 @@ def test_council_judge_rule_contradicted_drop():
     """有 contradicts + 低置信度 → drop。"""
     c = G.CandidateIssue(
         id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
-        severity_proposal=Severity.WARNING, claim="m", confidence=0.3,
+        severity_proposal=Severity.WARNING, claim="m", confidence=0.3, task_id="A.java#h0",
     )
     notes = [EvidenceNote(request_id="r1", candidate_id="c1", contradicts=["反证:已有校验"])]
     node = G._council_judge_node(llm=None)
@@ -273,7 +274,7 @@ def test_council_judge_rule_no_evidence_drop():
     """全部 insufficient + 低置信度 → drop。"""
     c = G.CandidateIssue(
         id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
-        severity_proposal=Severity.WARNING, claim="m", confidence=0.3,
+        severity_proposal=Severity.WARNING, claim="m", confidence=0.3, task_id="A.java#h0",
     )
     notes = [EvidenceNote(request_id="r1", candidate_id="c1", status="insufficient", unknowns=["x"])]
     node = G._council_judge_node(llm=None)
@@ -288,7 +289,7 @@ def test_council_judge_rule_critical_insufficient_downgrade():
     """CRITICAL + 全部 insufficient → downgrade 到 WARNING（并入 _rule_no_evidence）。"""
     c = G.CandidateIssue(
         id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
-        severity_proposal=Severity.CRITICAL, claim="m", confidence=0.9,
+        severity_proposal=Severity.CRITICAL, claim="m", confidence=0.9, task_id="A.java#h0",
     )
     notes = [EvidenceNote(request_id="r1", candidate_id="c1", status="insufficient", unknowns=["x"])]
     node = G._council_judge_node(llm=None)
@@ -304,7 +305,7 @@ def test_council_judge_rule_contradicted_by_status():
     """EvidenceNote.status=="contradicted" + 低置信度 → drop。"""
     c = G.CandidateIssue(
         id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
-        severity_proposal=Severity.WARNING, claim="m", confidence=0.3,
+        severity_proposal=Severity.WARNING, claim="m", confidence=0.3, task_id="A.java#h0",
     )
     notes = [EvidenceNote(request_id="r1", candidate_id="c1", status="contradicted", contradicts=["反证:已有判空"])]
     node = G._council_judge_node(llm=None)
@@ -320,7 +321,7 @@ def test_council_judge_rule_strong_support_fast_track():
     """高置信 + 全 supported + 零 contradicts → fast-track keep。"""
     c = G.CandidateIssue(
         id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
-        severity_proposal=Severity.CRITICAL, claim="m", confidence=0.95,
+        severity_proposal=Severity.CRITICAL, claim="m", confidence=0.95, task_id="A.java#h0",
     )
     notes = [EvidenceNote(request_id="r1", candidate_id="c1", status="supported", supports=["证据充分"])]
     node = G._council_judge_node(llm=None)
@@ -337,11 +338,11 @@ def test_council_judge_aggregation_dedup_same_file_line_type():
     """两段式去重：同文件同类型同行号 → 规则指纹去重，只保留一条。"""
     c1 = G.CandidateIssue(
         id="c1", source_agent="threat_model", file="A.java", line=10, type="sql_injection",
-        severity_proposal=Severity.WARNING, claim="可能注入",
+        severity_proposal=Severity.WARNING, claim="可能注入", task_id="A.java#h0",
     )
     c2 = G.CandidateIssue(
         id="c2", source_agent="behavior", file="A.java", line=10, type="sql_injection",
-        severity_proposal=Severity.WARNING, claim="拼接SQL",
+        severity_proposal=Severity.WARNING, claim="拼接SQL", task_id="A.java#h0",
     )
     node = G._council_judge_node(llm=None)
     out = node({
@@ -359,11 +360,11 @@ def test_council_judge_aggregation_keeps_different_lines():
     """不同行号 → 规则指纹去重不触发，两条都保留（llm=None 时）。"""
     c1 = G.CandidateIssue(
         id="c1", source_agent="threat_model", file="A.java", line=10, type="sql_injection",
-        severity_proposal=Severity.WARNING, claim="可能注入",
+        severity_proposal=Severity.WARNING, claim="可能注入", task_id="A.java#h0",
     )
     c2 = G.CandidateIssue(
         id="c2", source_agent="behavior", file="A.java", line=42, type="sql_injection",
-        severity_proposal=Severity.WARNING, claim="拼接SQL",
+        severity_proposal=Severity.WARNING, claim="拼接SQL", task_id="A.java#h0",
     )
     node = G._council_judge_node(llm=None)
     out = node({
@@ -378,7 +379,7 @@ def test_council_judge_rule_miss_conservative_keep():
     """规则全不命中 + llm=None → 保守 keep。"""
     c = G.CandidateIssue(
         id="c1", source_agent="threat_model", file="A.java", line=42, type="unusual_pattern",
-        severity_proposal=Severity.WARNING, claim="异常模式", confidence=0.85,
+        severity_proposal=Severity.WARNING, claim="异常模式", confidence=0.85, task_id="A.java#h0",
     )
     node = G._council_judge_node(llm=None)
     out = node({
@@ -393,7 +394,7 @@ def test_council_judge_needs_more_evidence_generates_request():
     """LLM 判 needs_more_evidence → 追加 EvidenceRequest 到 state。"""
     c = G.CandidateIssue(
         id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
-        severity_proposal=Severity.WARNING, claim="m", confidence=0.9,
+        severity_proposal=Severity.WARNING, claim="m", confidence=0.9, task_id="A.java#h0",
     )
 
     class _JudgeLLM:
@@ -432,6 +433,7 @@ def test_council_judge_emits_only_new_evidence_request_delta():
         severity_proposal=Severity.WARNING,
         claim="m",
         confidence=0.9,
+        task_id="A.java#h0",
     )
     existing = G.EvidenceRequest(
         candidate_id="c1",
@@ -482,6 +484,7 @@ def test_council_judge_omits_duplicate_generated_evidence_request():
         severity_proposal=Severity.WARNING,
         claim="m",
         confidence=0.9,
+        task_id="A.java#h0",
     )
     existing = G.EvidenceRequest(
         candidate_id="c1",
@@ -544,6 +547,7 @@ def test_council_judge_keep_does_not_emit_evidence_requests():
         severity_proposal=Severity.WARNING,
         claim="m",
         confidence=0.9,
+        task_id="A.java#h0",
     )
 
     class _JudgeLLM:
@@ -611,6 +615,7 @@ def test_council_judge_prompt_contains_state_evidence_notes():
         severity_proposal=Severity.WARNING,
         claim="可能空指针",
         confidence=0.8,
+        task_id="A.java#h0",
     )
     request = G.EvidenceRequest(
         candidate_id="c1",
@@ -711,9 +716,17 @@ def test_run_empty_diff_short_circuits():
 
 _DIFF = "diff --git a/A.java b/A.java\n--- a/A.java\n+++ b/A.java\n@@ -1 +1,2 @@\n+int x=1;\n"
 
+_MOCK_DIFF = (
+    "diff --git a/example/Demo.java b/example/Demo.java\n"
+    "--- a/example/Demo.java\n"
+    "+++ b/example/Demo.java\n"
+    "@@ -1 +1,2 @@\n"
+    "+int x=1;\n"
+)
+
 
 def test_adr032_mock_end_to_end():
-    result = PipelineOrchestrator(enable_summary=False).run(None, _DIFF)
+    result = PipelineOrchestrator(enable_summary=False).run(None, _MOCK_DIFF)
     assert isinstance(result, ReviewResult)
     assert len(result.issues) == 1
 
@@ -728,12 +741,16 @@ class _FakeLLM:
         return _Stub()
 
 
+_FAKE_LINE = {"ThreatModelAgent": 1, "BehaviorAgent": 5, "MaintainabilityAgent": 9}
+
+
 class _FakeEngine:
     def review(self, llm, *, system_prompt, user_prompt, reviewer_name, max_retries, structured_method, enable_hitl=False):
+        line = _FAKE_LINE.get(reviewer_name, 1)
         issue = Issue(
             severity=Severity.WARNING,
-            file=f"{reviewer_name}.java",
-            line=1,
+            file="A.java",
+            line=line,
             type=reviewer_name,
             message="m",
         )
@@ -783,11 +800,12 @@ def test_build_graph_default_nodes_are_adr032():
 def test_candidate_and_evidence_request_limits_are_enforced(monkeypatch):
     original_from_issue = G.CandidateIssue.from_issue
 
-    def _many_candidates_from_issue(issue, *, source_agent, index):
+    def _many_candidates_from_issue(issue, *, source_agent, index, task_id):
         return original_from_issue(
             issue,
             source_agent=source_agent,
             index=index,
+            task_id=task_id,
         )
 
     def _many_evidence_requests(candidate):
@@ -829,7 +847,16 @@ def test_candidate_and_evidence_request_limits_are_enforced(monkeypatch):
     monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _ManyIssueEngine())
     orch = PipelineOrchestrator(enable_summary=False)
     meta: dict = {}
-    result = orch.run(_FakeLLM(), _DIFF, metadata_sink=meta)
+    files = [
+        f"{name}-{i}.java"
+        for name in ("ThreatModelAgent", "BehaviorAgent", "MaintainabilityAgent")
+        for i in range(8)
+    ]
+    limits_diff = "".join(
+        f"diff --git a/{f} b/{f}\n--- a/{f}\n+++ b/{f}\n@@ -1 +1,2 @@\n+int x=1;\n"
+        for f in files
+    )
+    result = orch.run(_FakeLLM(), limits_diff, metadata_sink=meta)
 
     # MAX_CANDIDATES_PER_AGENT=10, 每 agent 造 8 条 → 3×8=24 条全部通过不截断
     assert len(result.issues) == 24
@@ -853,7 +880,7 @@ def test_checkpointer_factory_empty_returns_none():
 
 def test_orchestrator_with_memory_checkpointer_produces_same_result():
     orch = PipelineOrchestrator(enable_summary=False, checkpoint_backend="memory")
-    result = orch.run(None, _DIFF, thread_id="adr032-same-result")
+    result = orch.run(None, _MOCK_DIFF, thread_id="adr032-same-result")
     assert len(result.issues) >= 1
 
 
@@ -862,7 +889,7 @@ def test_hitl_is_ignored_in_adr032_default_path():
         enable_summary=False,
         checkpoint_backend="memory",
     )
-    result = orch.run(None, _DIFF, thread_id="hitl-ignored")
+    result = orch.run(None, _MOCK_DIFF, thread_id="hitl-ignored")
     assert len(result.issues) >= 1
 
 
@@ -941,6 +968,7 @@ def test_evidence_agent_skips_request_with_existing_note():
                 type="t",
                 severity_proposal=Severity.WARNING,
                 claim="m",
+                task_id="A.java#h0",
             )
         ],
         "evidence_requests": [request],
@@ -969,6 +997,7 @@ def test_evidence_agent_routes_find_callers_by_preferred_tools():
         type="t",
         severity_proposal=Severity.WARNING,
         claim="m",
+        task_id="A.java#h0",
     )
     node = G._evidence_agent_node(tool_client=mock)
     out = node({
@@ -999,6 +1028,7 @@ def test_evidence_agent_routes_find_sensitive_apis_by_preferred_tools():
         type="t",
         severity_proposal=Severity.WARNING,
         claim="m",
+        task_id="A.java#h0",
     )
     node = G._evidence_agent_node(tool_client=mock)
     out = node({
@@ -1033,6 +1063,7 @@ def test_evidence_agent_dedups_same_file_tool():
         type="t",
         severity_proposal=Severity.WARNING,
         claim="m",
+        task_id="A.java#h0",
     )
     node = G._evidence_agent_node(tool_client=mock)
     out = node({
@@ -1040,6 +1071,7 @@ def test_evidence_agent_dedups_same_file_tool():
         "candidate_issues": [candidate, G.CandidateIssue(
             id="c2", source_agent="maintainability", file="A.java", line=2,
             type="t", severity_proposal=Severity.WARNING, claim="m2",
+            task_id="A.java#h0",
         )],
         "evidence_round": 0,
     })
@@ -1073,6 +1105,7 @@ def test_evidence_agent_fallback_context_bundle_when_no_tool_client():
             G.CandidateIssue(
                 id="c1", source_agent="threat_model", file="UserService.java",
                 line=1, type="t", severity_proposal=Severity.WARNING, claim="m",
+                task_id="UserService.java#h0",
             )
         ],
         "context_bundle": bundle,
@@ -1100,6 +1133,7 @@ def test_evidence_agent_marks_tool_failure_as_unknown():
     candidate = G.CandidateIssue(
         id="c1", source_agent="threat_model", file="Ghost.java",
         line=1, type="t", severity_proposal=Severity.WARNING, claim="m",
+        task_id="Ghost.java#h0",
     )
     node = G._evidence_agent_node(tool_client=mock)
     out = node({
@@ -1121,6 +1155,7 @@ def test_evidence_agent_increments_evidence_round():
     candidate = G.CandidateIssue(
         id="c1", source_agent="behavior", file="A.java", line=1,
         type="t", severity_proposal=Severity.WARNING, claim="m",
+        task_id="A.java#h0",
     )
     node = G._evidence_agent_node(tool_client=mock)
     out = node({
