@@ -49,6 +49,10 @@ python -m codeguard_agent review
 
 环境变量见 [`.env.example`](.env.example)。
 
+大 diff 可通过 `CODEGUARD_MAX_REVIEW_TASKS`（总任务数，默认 100）和
+`CODEGUARD_MAX_TASKS_PER_FILE`（单文件任务数，默认 10）限制深审范围；限制只作用于
+TaskRank，不会删除或改写已生成的风险画像。
+
 ---
 
 ## 目录结构

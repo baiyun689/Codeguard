@@ -65,6 +65,7 @@ class PipelineOrchestrator:
         self,
         enable_summary: bool = True,
         max_evidence_rounds: int = DEFAULT_MAX_EVIDENCE_ROUNDS,
+        review_budget: ReviewBudget | None = None,
         recursion_limit: int = DEFAULT_RECURSION_LIMIT,
         checkpoint_backend: str = "",
         checkpoint_db: str = "codeguard_checkpoints.db",
@@ -72,6 +73,7 @@ class PipelineOrchestrator:
     ) -> None:
         self._enable_summary = enable_summary
         self._max_evidence_rounds = max_evidence_rounds
+        self._review_budget = review_budget if review_budget is not None else ReviewBudget()
         self._recursion_limit = recursion_limit
         self._checkpointer = _create_checkpointer(checkpoint_backend, checkpoint_db)
         self._react_recursion_limit = react_recursion_limit
@@ -121,7 +123,7 @@ class PipelineOrchestrator:
             "structured_method": structured_method,
             "react_recursion_limit": self._react_recursion_limit,
             "max_evidence_rounds": self._max_evidence_rounds,
-            "review_budget": ReviewBudget(),
+            "review_budget": self._review_budget,
         }
         invoke_config: dict = {"recursion_limit": self._recursion_limit}
         if self._checkpointer is not None:

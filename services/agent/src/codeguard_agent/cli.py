@@ -21,6 +21,7 @@ from codeguard_agent.config import Settings
 from codeguard_agent.git.diff_collector import collect_diff, parse_changed_files
 from codeguard_agent.llm.client import build_llm
 from codeguard_agent.models.schemas import ReviewResult, Severity
+from codeguard_agent.models.tasks import ReviewBudget
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
 from codeguard_agent.tools.tool_client import create_tool_session, destroy_tool_session
 
@@ -123,6 +124,10 @@ def main(argv: list[str] | None = None) -> int:
         orch = PipelineOrchestrator(
             enable_summary=settings.enable_summary,
             max_evidence_rounds=settings.max_evidence_rounds,
+            review_budget=ReviewBudget(
+                max_tasks_to_review=settings.max_review_tasks,
+                max_tasks_per_file=settings.max_tasks_per_file,
+            ),
             checkpoint_backend=settings.checkpoint_backend,
             checkpoint_db=settings.checkpoint_db,
             react_recursion_limit=settings.react_recursion_limit,

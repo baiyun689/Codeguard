@@ -17,6 +17,17 @@ _DEFAULT_MODELS = {
 }
 
 
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer, got {raw!r}") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer, got {raw!r}")
+    return value
+
+
 def _load_dotenv() -> None:
     """从项目里就近向上查找并加载 .env 文件。
 
@@ -49,6 +60,9 @@ class Settings:
     enable_summary: bool = True
     # ReviewCouncil 证据补充轮次上限。
     max_evidence_rounds: int = 1
+    # Phase 2 风险任务预算。
+    max_review_tasks: int = 100
+    max_tasks_per_file: int = 10
     # checkpoint 后端: "sqlite" | "memory" | 空=不启用(默认空)。
     checkpoint_backend: str = ""
     # SqliteSaver 数据库文件路径(仅 checkpoint_backend="sqlite" 时生效)
@@ -99,6 +113,8 @@ class Settings:
             "CODEGUARD_ENABLE_SUMMARY", "true"
         ).strip().lower() not in ("0", "false", "no", "off")
         max_evidence_rounds = int(os.environ.get("CODEGUARD_MAX_EVIDENCE_ROUNDS", "1"))
+        max_review_tasks = _positive_int_env("CODEGUARD_MAX_REVIEW_TASKS", 100)
+        max_tasks_per_file = _positive_int_env("CODEGUARD_MAX_TASKS_PER_FILE", 10)
         checkpoint_backend = os.environ.get("CODEGUARD_CHECKPOINT_BACKEND", "").strip().lower()
         checkpoint_db = os.environ.get("CODEGUARD_CHECKPOINT_DB", "codeguard_checkpoints.db").strip()
         react_recursion_limit = int(os.environ.get("CODEGUARD_REACT_RECURSION_LIMIT", "48"))
@@ -122,6 +138,8 @@ class Settings:
             tool_server_url=os.environ.get("CODEGUARD_TOOL_SERVER_URL", "").strip(),
             enable_summary=enable_summary,
             max_evidence_rounds=max_evidence_rounds,
+            max_review_tasks=max_review_tasks,
+            max_tasks_per_file=max_tasks_per_file,
             checkpoint_backend=checkpoint_backend,
             checkpoint_db=checkpoint_db,
             react_recursion_limit=react_recursion_limit,
