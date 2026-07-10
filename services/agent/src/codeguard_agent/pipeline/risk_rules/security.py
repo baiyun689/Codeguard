@@ -134,7 +134,7 @@ def detect_web_security_config(features: DiffFeatures) -> list[RiskSignal]:
         added_score=1,
         changed_score=2,
     )
-    return weakening + config
+    return weakening or config
 
 
 def detect_input_validation(features: DiffFeatures) -> list[RiskSignal]:
