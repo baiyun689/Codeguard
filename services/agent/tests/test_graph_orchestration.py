@@ -1193,3 +1193,30 @@ def test_evidence_agent_runs_once_before_judge(monkeypatch):
     orch.run(_FakeLLM(), _DIFF, metadata_sink=meta)
     # 首次 Evidence 必经一次（即便无 evidence_requests 也 no-op 跑一轮）
     assert meta["council"]["evidence_rounds"] >= 1
+
+
+def test_make_reviewer_node_rejects_unmapped_candidate(monkeypatch):
+    """收集节点：候选文件不在任何任务中 → 不进黑板 + 留 candidate_rejected_unmapped trace。"""
+
+    class _OutOfDiffEngine:
+        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
+                   max_retries, structured_method, enable_hitl=False):
+            issue = Issue(
+                severity=Severity.WARNING,
+                file="NotInDiff.java",
+                line=7,
+                type="t",
+                message="m",
+            )
+            return ReviewOutcome(ReviewResult(summary="s", issues=[issue]))
+
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _OutOfDiffEngine())
+    node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
+    out = node({
+        "diff_text": "diff --git a/A.java b/A.java\n+++ b/A.java\n@@ -1 +1 @@\n+x",
+        "review_tasks": [G.ReviewTask(id="A.java#h0", file="A.java", patch="")],
+    })
+    # 候选指向 NotInDiff.java，不在 review_tasks 中 → 被拒绝
+    assert out["candidate_issues"] == []
+    events = {t.event for t in out["council_trace"]}
+    assert "candidate_rejected_unmapped" in events
