@@ -18,16 +18,29 @@ class RiskTag(str, Enum):
     """路由信号标签——只说明"应从哪些角度审"，不代表"这里已有问题"。"""
 
     AUTHORIZATION = "AUTHORIZATION"
+    AUTHENTICATION_SESSION = "AUTHENTICATION_SESSION"
+    WEB_SECURITY_CONFIG = "WEB_SECURITY_CONFIG"
     INPUT_VALIDATION = "INPUT_VALIDATION"
+    INJECTION = "INJECTION"
     SQL_DATA_ACCESS = "SQL_DATA_ACCESS"
-    TRANSACTION = "TRANSACTION"
-    IDEMPOTENCY = "IDEMPOTENCY"
-    CACHE_CONSISTENCY = "CACHE_CONSISTENCY"
-    MESSAGE_QUEUE = "MESSAGE_QUEUE"
-    ERROR_HANDLING = "ERROR_HANDLING"
-    NULL_SAFETY = "NULL_SAFETY"
+    FILE_PATH_IO = "FILE_PATH_IO"
+    SSRF_OUTBOUND = "SSRF_OUTBOUND"
     CONFIG_SECURITY = "CONFIG_SECURITY"
-    MAINTAINABILITY = "MAINTAINABILITY"
+    DATA_EXPOSURE = "DATA_EXPOSURE"
+    TRANSACTION_ATOMICITY = "TRANSACTION_ATOMICITY"
+    CONCURRENCY_CONSISTENCY = "CONCURRENCY_CONSISTENCY"
+    IDEMPOTENCY_RETRY = "IDEMPOTENCY_RETRY"
+    CACHE_CONSISTENCY = "CACHE_CONSISTENCY"
+    MESSAGE_DELIVERY = "MESSAGE_DELIVERY"
+    ERROR_HANDLING = "ERROR_HANDLING"
+    NULL_STATE_SAFETY = "NULL_STATE_SAFETY"
+    RESOURCE_LIFECYCLE = "RESOURCE_LIFECYCLE"
+    API_CONTRACT = "API_CONTRACT"
+    PERFORMANCE = "PERFORMANCE"
+    COMPLEXITY_CONTROL_FLOW = "COMPLEXITY_CONTROL_FLOW"
+    DUPLICATION_DESIGN = "DUPLICATION_DESIGN"
+    OBSERVABILITY_TESTABILITY = "OBSERVABILITY_TESTABILITY"
+    GENERAL_REVIEW = "GENERAL_REVIEW"
 
 
 class ReviewTask(BaseModel):
@@ -61,10 +74,10 @@ class RiskProfile(BaseModel):
 class ReviewBudget(BaseModel):
     """预算入口。None 表示当前策略不施加该项限制；Phase 1 基线为全选。"""
 
-    max_tasks_to_review: int | None = None
-    max_tasks_per_file: int | None = None
-    max_context_chars_per_task: int | None = None
-    max_final_issues: int | None = None
+    max_tasks_to_review: int | None = Field(default=100, gt=0)
+    max_tasks_per_file: int | None = Field(default=10, gt=0)
+    max_context_chars_per_task: int | None = Field(default=None, gt=0)
+    max_final_issues: int | None = Field(default=None, gt=0)
 
 
 class SkippedTask(BaseModel):

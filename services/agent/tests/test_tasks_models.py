@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from codeguard_agent.models.council import ContextFact
 from codeguard_agent.models.tasks import (
     ReviewBudget,
@@ -27,16 +30,61 @@ def test_risk_profile_defaults_empty():
     assert profile.signals == []
 
 
+def test_risk_tag_has_exact_phase_2_values():
+    assert {tag.value for tag in RiskTag} == {
+        "AUTHORIZATION",
+        "AUTHENTICATION_SESSION",
+        "WEB_SECURITY_CONFIG",
+        "INPUT_VALIDATION",
+        "INJECTION",
+        "SQL_DATA_ACCESS",
+        "FILE_PATH_IO",
+        "SSRF_OUTBOUND",
+        "CONFIG_SECURITY",
+        "DATA_EXPOSURE",
+        "TRANSACTION_ATOMICITY",
+        "CONCURRENCY_CONSISTENCY",
+        "IDEMPOTENCY_RETRY",
+        "CACHE_CONSISTENCY",
+        "MESSAGE_DELIVERY",
+        "ERROR_HANDLING",
+        "NULL_STATE_SAFETY",
+        "RESOURCE_LIFECYCLE",
+        "API_CONTRACT",
+        "PERFORMANCE",
+        "COMPLEXITY_CONTROL_FLOW",
+        "DUPLICATION_DESIGN",
+        "OBSERVABILITY_TESTABILITY",
+        "GENERAL_REVIEW",
+    }
+
+
 def test_risk_signal_carries_source_and_reason():
     sig = RiskSignal(tag=RiskTag.AUTHORIZATION, score=3, source="rule:auth", reason="Controller 无权限注解")
     assert sig.line is None
     assert sig.tag == RiskTag.AUTHORIZATION
 
 
-def test_review_budget_defaults_to_no_limit():
+def test_review_budget_has_phase_2_defaults():
     budget = ReviewBudget()
-    assert budget.max_tasks_to_review is None
+    assert budget.max_tasks_to_review == 100
+    assert budget.max_tasks_per_file == 10
     assert budget.max_final_issues is None
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_tasks_to_review",
+        "max_tasks_per_file",
+        "max_context_chars_per_task",
+        "max_final_issues",
+    ],
+)
+@pytest.mark.parametrize("value", [0, -1])
+def test_review_budget_rejects_non_positive_values(field, value):
+    with pytest.raises(ValidationError):
+        ReviewBudget(**{field: value})
 
 
 def test_task_selection_records_skips():
@@ -59,6 +107,5 @@ def test_task_context_bundle_does_not_duplicate_task_facts():
     assert "patch" not in keys
 
 
-def test_profile_has_no_total_score_field():
-    # total_score 是 TaskRank 的派生计算，不得成为第二份可变事实（spec §3.2）。
-    assert "total_score" not in RiskProfile.model_fields
+def test_profile_has_only_task_id_scores_and_signals_fields():
+    assert set(RiskProfile.model_fields) == {"task_id", "tag_scores", "signals"}
