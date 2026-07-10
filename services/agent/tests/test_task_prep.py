@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from codeguard_agent.models.tasks import ReviewBudget, ReviewTask
 from codeguard_agent.pipeline.task_prep import (
+    _changed_lines,
     build_tasks,
     map_candidate_to_task,
     rank_tasks,
@@ -83,3 +84,28 @@ def test_map_candidate_matches_by_basename():
 def test_map_candidate_returns_none_when_file_absent():
     tasks = build_tasks(_TWO_HUNK_DIFF)
     assert map_candidate_to_task("Ghost.java", 1, tasks) is None
+
+
+def test_changed_lines_ignores_no_newline_marker():
+    # `\ No newline at end of file` 是 diff 级标记，不占新文件行号。
+    hunk = (
+        "@@ -1,3 +1,4 @@\n"
+        " context\n"
+        "-old\n"
+        "+new\n"
+        "\\ No newline at end of file\n"
+        "+extra\n"
+        " final"
+    )
+    # 新文件: context(1) / new(2) / extra(3) / final(4) → 新增行号 [2, 3]
+    assert _changed_lines(hunk, 1) == [2, 3]
+
+
+def test_map_candidate_prefers_full_path_over_basename_collision():
+    # 同 basename 不同目录：候选给出全路径时应精确命中，不被另一个同名文件抢走。
+    tasks = [
+        ReviewTask(id="src/Foo.java#h0", file="src/Foo.java", patch=""),
+        ReviewTask(id="test/Foo.java#h0", file="test/Foo.java", patch=""),
+    ]
+    assert map_candidate_to_task("test/Foo.java", 1, tasks) == "test/Foo.java#h0"
+    assert map_candidate_to_task("src/Foo.java", 1, tasks) == "src/Foo.java#h0"

@@ -24,8 +24,13 @@ from codeguard_agent.models.tasks import (
 _HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
+def _norm(path: str) -> str:
+    """整条路径归一化（正斜杠 + 小写），用于全路径精确匹配。"""
+    return (path or "").replace("\\", "/").lower()
+
+
 def _basename(path: str) -> str:
-    return (path or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return _norm(path).rsplit("/", 1)[-1]
 
 
 def _split_hunks(section: str) -> list[tuple[str, str, int]]:
@@ -54,7 +59,12 @@ def _changed_lines(hunk_body: str, new_start: int) -> list[int]:
     changed: list[int] = []
     line_no = new_start
     for line in hunk_body.splitlines():
-        if line.startswith("@@") or line.startswith("+++") or line.startswith("---"):
+        if (
+            line.startswith("@@")
+            or line.startswith("+++")
+            or line.startswith("---")
+            or line.startswith("\\ ")  # `\ No newline at end of file` 非文件行，不占行号
+        ):
             continue
         if line.startswith("+"):
             changed.append(line_no)
@@ -106,10 +116,12 @@ def rank_tasks(
 def map_candidate_to_task(file: str, line: int, tasks: list[ReviewTask]) -> str | None:
     """候选(file, line) → task_id。命中 changed_lines 优先，否则落到该文件首个 task。
 
-    文件不在任何任务中 → None（调用方应拒绝该候选并留 trace）。
+    文件匹配：全路径精确匹配优先（消解同 basename 不同目录的歧义，如
+    src/Foo.java vs test/Foo.java）；无全路径命中再退化到 basename 匹配，容忍
+    LLM 只给文件名的情况。文件不在任何任务中 → None（调用方应拒绝该候选并留 trace）。
     """
-    target = _basename(file)
-    file_tasks = [t for t in tasks if _basename(t.file) == target]
+    exact = [t for t in tasks if _norm(t.file) == _norm(file)]
+    file_tasks = exact or [t for t in tasks if _basename(t.file) == _basename(file)]
     if not file_tasks:
         return None
     for t in file_tasks:
