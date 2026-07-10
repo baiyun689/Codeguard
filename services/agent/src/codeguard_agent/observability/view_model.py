@@ -30,7 +30,6 @@ _NODE_TITLES: dict[str, str] = {
     "context_provider": "上下文构建",
     "prepare": "准备审查",
     "collect": "汇总候选问题",
-    "self_checker": "最终裁决",
     "council_coordinator": "委员会协调",
     "evidence_agent": "证据补充",
     "council_judge": "委员会裁决",
@@ -65,17 +64,20 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
         events_by_sequence,
     )
     review_council_step = _review_council_step(node_steps)
+    coordination_loop_step = _coordination_loop_step(node_steps, report.events)
     steps = _index_steps(
         visible_node_steps
         + state_node_steps
         + llm_steps
         + tool_steps
         + [review_council_step]
+        + [coordination_loop_step]
     )
     return {
         "main_stages": _main_stages(
             node_steps_with_placeholders,
             review_council_step,
+            coordination_loop_step,
         ),
         "reviewer_sections": _reviewer_sections(steps),
         "coordination_steps": _coordination_steps(steps),
@@ -179,7 +181,7 @@ def _tool_event_steps(
 
 def _is_visible_node_step(step: dict[str, Any]) -> bool:
     code_name = step["code_name"]
-    if code_name in {"summary", "context_provider", "self_checker"}:
+    if code_name in {"summary", "context_provider", "council_judge"}:
         return True
     if code_name in {"review", "model", "tools"}:
         return False
@@ -227,6 +229,7 @@ def _index_steps(
 def _main_stages(
     node_steps: list[dict[str, Any]],
     review_council_step: dict[str, Any],
+    coordination_loop_step: dict[str, Any],
 ) -> list[dict[str, Any]]:
     by_name: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for step in node_steps:
@@ -248,10 +251,19 @@ def _main_stages(
         "sequence": review_council_step["sequence"],
         "summary": review_council_step["summary"],
     })
+    stages.append({
+        "id": "main:coordination_loop",
+        "title": "协调与证据",
+        "code_name": "coordination_loop",
+        "status": coordination_loop_step["status"],
+        "step_id": coordination_loop_step["id"],
+        "sequence": coordination_loop_step["sequence"],
+        "summary": coordination_loop_step["summary"],
+    })
     stages.append(_main_stage(
-        "self_checker",
-        "最终裁决",
-        by_name.get("self_checker"),
+        "council_judge",
+        "委员会裁决",
+        by_name.get("council_judge"),
     ))
     return stages
 
@@ -284,13 +296,68 @@ def _review_council_step(
     }
 
 
+def _coordination_loop_step(
+    node_steps: list[dict[str, Any]],
+    events: Iterable[TraceEvent],
+) -> dict[str, Any]:
+    coordination = [
+        step
+        for step in node_steps
+        if step["code_name"] in {"council_coordinator", "evidence_agent"}
+    ]
+    route_count = sum(
+        1
+        for event in events
+        if event.event_type == "route_decision"
+    )
+    if route_count == 0:
+        route_count = sum(
+            1
+            for event in events
+            if event.event_type == "node_end"
+            and isinstance(event.detail.get("output"), dict)
+            and event.detail["output"].get("council_route")
+        )
+    coordinator_count = sum(
+        1
+        for step in coordination
+        if step["code_name"] == "council_coordinator"
+    )
+    evidence_count = sum(
+        1
+        for step in coordination
+        if step["code_name"] == "evidence_agent"
+    )
+    return {
+        "id": "group:coordination_loop",
+        "sequence": min(
+            (step["sequence"] for step in coordination),
+            default=0,
+        ),
+        "kind": "group",
+        "title": "协调与证据闭环",
+        "code_name": "coordination_loop",
+        "node_path": "coordination_loop",
+        "invocation_id": "",
+        "pair_id": "",
+        "start_sequence": None,
+        "end_sequence": None,
+        "duration_ms": sum(step["duration_ms"] for step in coordination),
+        "status": "complete" if coordination else "missing",
+        "summary": (
+            f"协调 {coordinator_count} 次，证据补充 {evidence_count} 次，"
+            f"路由 {route_count} 次"
+        ),
+    }
+
+
 def _missing_main_steps(
     node_steps: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     present = {step["code_name"] for step in node_steps}
     placeholders: list[dict[str, Any]] = []
     for index, code_name in enumerate(
-        ("summary", "context_provider", "self_checker"),
+        ("summary", "context_provider", "council_judge"),
         start=1,
     ):
         if code_name in present:

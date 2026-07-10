@@ -171,17 +171,62 @@ def _flow_report_fixture() -> TraceReport:
         _flow_event(
             15,
             "node_start",
-            "self_checker",
-            "self_checker",
-            "self-run",
+            "council_coordinator",
+            "council_coordinator",
+            "coordinator-run",
         ),
         _flow_event(
             16,
             "node_end",
-            "self_checker",
-            "self_checker",
-            "self-run",
-            detail={"output": {"final_issues": []}},
+            "council_coordinator",
+            "council_coordinator",
+            "coordinator-run",
+            detail={"output": {"council_route": "evidence_agent"}},
+        ),
+        _flow_event(
+            17,
+            "node_start",
+            "evidence_agent",
+            "evidence_agent",
+            "evidence-run",
+        ),
+        _flow_event(
+            18,
+            "node_end",
+            "evidence_agent",
+            "evidence_agent",
+            "evidence-run",
+            detail={"output": {"evidence_notes": [{"status": "supported"}]}},
+        ),
+        _flow_event(
+            19,
+            "node_start",
+            "council_coordinator",
+            "council_coordinator",
+            "coordinator-run-2",
+        ),
+        _flow_event(
+            20,
+            "node_end",
+            "council_coordinator",
+            "council_coordinator",
+            "coordinator-run-2",
+            detail={"output": {"council_route": "council_judge"}},
+        ),
+        _flow_event(
+            21,
+            "node_start",
+            "council_judge",
+            "council_judge",
+            "judge-run",
+        ),
+        _flow_event(
+            22,
+            "node_end",
+            "council_judge",
+            "council_judge",
+            "judge-run",
+            detail={"output": {"final_issues": [], "summary": "done"}},
         ),
     ]
     return TraceReport(
@@ -219,8 +264,12 @@ def test_trace_view_groups_reviewer_react_steps_and_state_writes():
         "summary",
         "context_provider",
         "review_council",
-        "self_checker",
+        "coordination_loop",
+        "council_judge",
     ]
+    assert view["main_stages"][3]["summary"] == (
+        "协调 2 次，证据补充 1 次，路由 2 次"
+    )
     threat = next(
         item
         for item in view["reviewer_sections"]
@@ -242,7 +291,7 @@ def test_trace_view_main_stages_resolve_without_copying_state_values():
         for stage in view["main_stages"]
     )
     assert view["steps"]["group:review_council"]["kind"] == "group"
-    assert {"diff_summary", "context_bundle", "final_issues"} <= set(
+    assert {"diff_summary", "context_bundle", "evidence_notes", "final_issues"} <= set(
         view["state_writes"]
     )
     assert all(
@@ -326,7 +375,7 @@ def test_trace_view_reports_missing_and_unassociated_events():
         stage["step_id"] in view["steps"]
         for stage in view["main_stages"]
     )
-    assert view["steps"]["placeholder:self_checker"]["status"] == "missing"
+    assert view["steps"]["placeholder:council_judge"]["status"] == "missing"
 
 
 def test_dashboard_payload_keeps_raw_report_and_adds_flow_view():
@@ -913,6 +962,88 @@ class TestDashboard:
 
         assert "生成时间" in template
         assert "DATA.timestamp" in template
+
+
+class TestCliTraceConfig:
+    def test_review_uses_trace_setting_when_cli_flag_is_omitted(
+        self,
+        monkeypatch,
+    ):
+        from codeguard_agent import cli
+        from codeguard_agent.config import Settings
+        from codeguard_agent.models.schemas import ReviewResult
+
+        observed = {}
+
+        class FakeOrchestrator:
+            def __init__(self, **kwargs):
+                pass
+
+            def run(self, *args, **kwargs):
+                observed["trace_enabled"] = kwargs["trace_enabled"]
+                return ReviewResult(summary="done")
+
+        monkeypatch.setattr(
+            cli.Settings,
+            "from_env",
+            lambda: Settings(
+                provider="mock",
+                model="",
+                api_key="",
+                api_base_url="",
+                max_retries=1,
+                structured_method="function_calling",
+                disable_thinking=False,
+                trace_enabled=False,
+            ),
+        )
+        monkeypatch.setattr(cli, "collect_diff", lambda repo, base: "diff --git a/Foo.java b/Foo.java\n+x\n")
+        monkeypatch.setattr(cli, "build_llm", lambda settings, temperature=None: None)
+        monkeypatch.setattr(cli, "PipelineOrchestrator", FakeOrchestrator)
+
+        assert cli.main(["review", "--repo", "."]) == 0
+
+        assert observed["trace_enabled"] is False
+
+    def test_review_trace_flag_overrides_environment_setting(
+        self,
+        monkeypatch,
+    ):
+        from codeguard_agent import cli
+        from codeguard_agent.config import Settings
+        from codeguard_agent.models.schemas import ReviewResult
+
+        observed = {}
+
+        class FakeOrchestrator:
+            def __init__(self, **kwargs):
+                pass
+
+            def run(self, *args, **kwargs):
+                observed["trace_enabled"] = kwargs["trace_enabled"]
+                return ReviewResult(summary="done")
+
+        monkeypatch.setattr(
+            cli.Settings,
+            "from_env",
+            lambda: Settings(
+                provider="mock",
+                model="",
+                api_key="",
+                api_base_url="",
+                max_retries=1,
+                structured_method="function_calling",
+                disable_thinking=False,
+                trace_enabled=False,
+            ),
+        )
+        monkeypatch.setattr(cli, "collect_diff", lambda repo, base: "diff --git a/Foo.java b/Foo.java\n+x\n")
+        monkeypatch.setattr(cli, "build_llm", lambda settings, temperature=None: None)
+        monkeypatch.setattr(cli, "PipelineOrchestrator", FakeOrchestrator)
+
+        assert cli.main(["review", "--repo", ".", "--trace"]) == 0
+
+        assert observed["trace_enabled"] is True
 
 
 class TestEndToEnd:

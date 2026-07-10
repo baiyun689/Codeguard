@@ -74,8 +74,8 @@ def main(argv: list[str] | None = None) -> int:
         help="检查点线程标识(需配 CODEGUARD_CHECKPOINT_BACKEND)。",
     )
     review_parser.add_argument(
-        "--trace", action=argparse.BooleanOptionalAction, default=True,
-        help="开启审查追踪，产出可视化 Dashboard HTML 文件（默认开），--no-trace 关闭",
+        "--trace", action=argparse.BooleanOptionalAction, default=None,
+        help="开启审查追踪，产出可视化 Dashboard HTML 文件；默认读取 CODEGUARD_TRACE_ENABLED",
     )
 
     args = parser.parse_args(argv)
@@ -129,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         effective_thread_id = args.thread_id or str(uuid.uuid4())
+        trace_enabled = settings.trace_enabled if args.trace is None else args.trace
 
         try:
             result = orch.run(
@@ -141,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
                 allowed_files=allowed_files,
                 tool_client=tool_client,
                 thread_id=effective_thread_id,
-                trace_enabled=args.trace,
+                trace_enabled=trace_enabled,
                 trace_dir=settings.trace_dir,
                 trace_max_llm_content=settings.trace_max_llm_content,
             )
