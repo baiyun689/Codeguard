@@ -89,3 +89,40 @@ def test_excludes_diff_metadata_from_all_text_collections():
     assert features.added_lines == ((1, "new"),)
     assert features.deleted_lines == ("old",)
     assert features.context_lines == ()
+
+
+def test_extracts_deleted_protection_lines_from_no_hunk_fallback():
+    task = ReviewTask(
+        id="Auth.java#file",
+        file="Auth.java",
+        patch=(
+            "diff --git a/Auth.java b/Auth.java\n"
+            "deleted file mode 100644\n"
+            "--- a/Auth.java\n"
+            "+++ /dev/null\n"
+            "-if (isAdmin) allow();\n"
+            "-checkPermission();\n"
+        ),
+    )
+
+    features = extract_features(task)
+
+    assert features.deleted_lines == ("if (isAdmin) allow();", "checkPermission();")
+    assert features.has_deleted is True
+    assert features.has_added is False
+
+
+def test_fallback_tracks_deletion_context_and_addition_without_hunk_header():
+    task = ReviewTask(
+        id="Auth.java#file",
+        file="Auth.java",
+        patch="--- a/Auth.java\n+++ b/Auth.java\n-old\n context\n+new\n",
+        changed_lines=[11],
+    )
+
+    features = extract_features(task)
+
+    assert features.deleted_lines == ("old",)
+    assert features.context_lines == ("context",)
+    assert features.added_lines == ((11, "new"),)
+    assert features.has_changed is True

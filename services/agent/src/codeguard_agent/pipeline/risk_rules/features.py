@@ -29,12 +29,15 @@ def extract_features(task: ReviewTask) -> DiffFeatures:
     context: list[str] = []
     header_match = _HUNK_HEADER.match(task.hunk_header)
     new_line = int(header_match.group(1)) if header_match else 0
-    in_hunk = header_match is not None
+    fallback = header_match is None
+    in_hunk = True
+    changed_line_index = 0
     for line in task.patch.splitlines():
         match = _HUNK_HEADER.match(line)
         if match:
             new_line = int(match.group(1))
             in_hunk = True
+            fallback = False
             continue
         if not in_hunk:
             continue
@@ -43,6 +46,9 @@ def extract_features(task: ReviewTask) -> DiffFeatures:
         if line.startswith("\\ No newline at end of file"):
             continue
         if line.startswith("+"):
+            if fallback and changed_line_index < len(task.changed_lines):
+                new_line = task.changed_lines[changed_line_index]
+            changed_line_index += 1
             added.append((new_line, line[1:]))
             new_line += 1
         elif line.startswith("-"):
