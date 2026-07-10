@@ -1129,3 +1129,31 @@ def test_evidence_agent_increments_evidence_round():
         "evidence_round": 0,
     })
     assert out["evidence_round"] == 1
+
+
+def test_build_graph_has_task_prep_nodes():
+    graph = G.build_review_graph(enable_summary=True, llm=None)
+    names = set(graph.get_graph().nodes)
+    assert {"diff_task_builder", "risk_triage", "task_rank"} <= names
+
+
+def test_task_prep_nodes_populate_state():
+    from codeguard_agent.pipeline import task_prep
+
+    tasks = task_prep.build_tasks(_DIFF)
+    assert [t.id for t in tasks] == ["A.java#h0"]
+    profiles = task_prep.triage_tasks(tasks)
+    sel = task_prep.rank_tasks(tasks, profiles, G.ReviewBudget())
+    assert sel.selected_task_ids == ["A.java#h0"]
+
+
+def test_review_state_has_task_chain_fields():
+    ann = G.ReviewState.__annotations__
+    for field in (
+        "review_budget",
+        "review_tasks",
+        "risk_profiles",
+        "task_selection",
+        "task_context_bundles",
+    ):
+        assert field in ann

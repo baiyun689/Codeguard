@@ -39,6 +39,14 @@ from codeguard_agent.models.council import (
     build_evidence_requests,
 )
 from codeguard_agent.models.schemas import ReviewResult, Severity
+from codeguard_agent.models.tasks import (
+    ReviewBudget,
+    ReviewTask,
+    RiskProfile,
+    TaskContextBundle,
+    TaskSelection,
+)
+from codeguard_agent.pipeline import task_prep
 from codeguard_agent.pipeline.engines import (
     DirectEngine,
     GatheredContext,
@@ -189,6 +197,12 @@ class ReviewState(TypedDict, total=False):
 
     diff_summary: str
 
+    review_budget: ReviewBudget
+    review_tasks: list[ReviewTask]
+    risk_profiles: dict[str, RiskProfile]
+    task_selection: TaskSelection
+    task_context_bundles: dict[str, TaskContextBundle]
+
     context_bundle: ContextBundle
     candidate_issues: Annotated[list[CandidateIssue], _candidate_dedup_reducer]
     evidence_requests: Annotated[list[EvidenceRequest], capped_evidence_request_reducer]
@@ -263,18 +277,85 @@ def _summary_node(llm, tool_client):
     return _node
 
 
+def _diff_task_builder_node():
+    """DiffTaskBuilder：解析 diff → ReviewTask。不判断风险、不读仓库、不调 LLM。"""
+
+    def _node(state: ReviewState) -> dict:
+        tasks = task_prep.build_tasks(state.get("diff_text", ""))
+        return {
+            "review_tasks": tasks,
+            "council_trace": [
+                CouncilTrace(
+                    node="diff_task_builder",
+                    event="tasks_built",
+                    detail=f"tasks={len(tasks)}",
+                )
+            ],
+        }
+
+    return _node
+
+
+def _risk_triage_node():
+    """RiskTriage：为每个任务产出 RiskProfile（Phase 1 为空画像）。"""
+
+    def _node(state: ReviewState) -> dict:
+        tasks = state.get("review_tasks") or []
+        profiles = task_prep.triage_tasks(tasks)
+        return {
+            "risk_profiles": profiles,
+            "council_trace": [
+                CouncilTrace(
+                    node="risk_triage",
+                    event="profiled",
+                    detail=f"profiles={len(profiles)}",
+                )
+            ],
+        }
+
+    return _node
+
+
+def _task_rank_node():
+    """TaskRank：根据画像与预算选择进入深审的任务（Phase 1 全选）。"""
+
+    def _node(state: ReviewState) -> dict:
+        tasks = state.get("review_tasks") or []
+        profiles = state.get("risk_profiles") or {}
+        budget = state.get("review_budget") or ReviewBudget()
+        selection = task_prep.rank_tasks(tasks, profiles, budget)
+        return {
+            "task_selection": selection,
+            "council_trace": [
+                CouncilTrace(
+                    node="task_rank",
+                    event="selected",
+                    detail=f"selected={len(selection.selected_task_ids)} skipped={len(selection.skipped_tasks)}",
+                )
+            ],
+        }
+
+    return _node
+
+
 def _context_provider_node(tool_client):
     def _node(state: ReviewState) -> dict:
         ctx = _state_to_context(state, tool_client=tool_client)
         ContextProviderStage().execute(ctx)
+        selection = state.get("task_selection")
+        selected_ids = selection.selected_task_ids if selection is not None else []
+        # Phase 1：为每个选中任务建立空 TaskContextBundle，确立所有权；
+        # 按 RiskTag 定向填充留到 Phase 3。
+        task_bundles = {tid: TaskContextBundle(task_id=tid) for tid in selected_ids}
         return {
             "context_bundle": ctx.context_bundle,
             "gathered_context": list(ctx.gathered_context),
+            "task_context_bundles": task_bundles,
             "council_trace": [
                 CouncilTrace(
                     node="context_provider",
                     event="bundle_created",
-                    detail=f"facts={len(ctx.context_bundle.facts)}",
+                    detail=f"facts={len(ctx.context_bundle.facts)} task_bundles={len(task_bundles)}",
                 )
             ],
         }
@@ -1125,6 +1206,9 @@ def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=No
 
     g = StateGraph(ReviewState)
     g.add_node("context_provider", _context_provider_node(tool_client))
+    g.add_node("diff_task_builder", _diff_task_builder_node())
+    g.add_node("risk_triage", _risk_triage_node())
+    g.add_node("task_rank", _task_rank_node())
     for reviewer in DEFAULT_REVIEWERS:
         g.add_node(
             _discover_node_name(reviewer),
@@ -1137,9 +1221,12 @@ def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=No
     if enable_summary:
         g.add_node("summary", _summary_node(llm, tool_client))
         g.add_edge(START, "summary")
-        g.add_edge("summary", "context_provider")
+        g.add_edge("summary", "diff_task_builder")
     else:
-        g.add_edge(START, "context_provider")
+        g.add_edge(START, "diff_task_builder")
+    g.add_edge("diff_task_builder", "risk_triage")
+    g.add_edge("risk_triage", "task_rank")
+    g.add_edge("task_rank", "context_provider")
 
     for reviewer in DEFAULT_REVIEWERS:
         node_name = _discover_node_name(reviewer)
