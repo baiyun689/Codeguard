@@ -61,7 +61,7 @@ def _repeated_statement(lines: tuple[str, ...] | tuple[tuple[int, str], ...]):
     counts = Counter(statement for _, _, statement in statements)
     for line, text, statement in statements:
         if counts[statement] > 1:
-            return line, text, statement[:40]
+            return line, text, statement, statement[:40]
     return None
 
 
@@ -69,13 +69,13 @@ def detect_duplication_design(features: DiffFeatures) -> list[RiskSignal]:
     added = _repeated_statement(features.added_lines)
     deleted = _repeated_statement(features.deleted_lines)
     if added and deleted and added[2] == deleted[2] and added[1] != deleted[1]:
-        return [RiskSignal(tag=RiskTag.DUPLICATION_DESIGN, score=1, source="text:changed:duplication_design", reason=f"重复设计或调用块变化：命中 {added[2]}，需审查", line=added[0])]
+        return [RiskSignal(tag=RiskTag.DUPLICATION_DESIGN, score=1, source="text:changed:duplication_design", reason=f"重复设计或调用块变化：命中 {added[3]}，需审查", line=added[0])]
 
     signals: list[RiskSignal] = []
     if added:
-        signals.append(RiskSignal(tag=RiskTag.DUPLICATION_DESIGN, score=1, source="text:added:duplication_design", reason=f"重复设计或调用块变化：命中 {added[2]}，需审查", line=added[0]))
+        signals.append(RiskSignal(tag=RiskTag.DUPLICATION_DESIGN, score=1, source="text:added:duplication_design", reason=f"重复设计或调用块变化：命中 {added[3]}，需审查", line=added[0]))
     if deleted:
-        signals.append(RiskSignal(tag=RiskTag.DUPLICATION_DESIGN, score=1, source="text:deleted:duplication_design", reason=f"重复设计或调用块变化：命中 {deleted[2]}，需审查", line=None))
+        signals.append(RiskSignal(tag=RiskTag.DUPLICATION_DESIGN, score=1, source="text:deleted:duplication_design", reason=f"重复设计或调用块变化：命中 {deleted[3]}，需审查", line=None))
     return signals
 
 
@@ -93,4 +93,4 @@ def detect_observability_testability(features: DiffFeatures) -> list[RiskSignal]
         _rule("observability_side_effect", r"\b\w*(Service|Repository|Client)\s*\.\s*\w+", r"\b(send|publish|save|delete|update)\s*\("),
         "新增副作用需关注可观测性",
     )
-    return protection or side_effect
+    return protection + side_effect

@@ -211,6 +211,63 @@ def test_same_behavior_token_with_different_text_is_a_changed_signal():
     assert signal.line == 10
 
 
+def test_duplication_long_statements_with_same_display_prefix_keep_directional_signals():
+    added_statement = "service.save(order, customer, address, payment, addedValue)"
+    deleted_statement = "service.save(order, customer, address, payment, removedValue)"
+
+    signals = detect_duplication_design(
+        features(
+            f"{added_statement}; {added_statement};",
+            deleted=(f"{deleted_statement}; {deleted_statement};",),
+        )
+    )
+
+    assert {signal.source for signal in signals} == {
+        "text:added:duplication_design",
+        "text:deleted:duplication_design",
+    }
+
+
+def test_identical_duplicated_statements_keep_directional_signals():
+    statement = "service.save(order)"
+
+    signals = detect_duplication_design(features(f"{statement}; {statement};", deleted=(f"{statement}; {statement};",)))
+
+    assert {signal.source for signal in signals} == {
+        "text:added:duplication_design",
+        "text:deleted:duplication_design",
+    }
+
+
+@pytest.mark.parametrize(
+    "query_line",
+    ["repository.findById(orderId);", "Files.readString(path);"],
+)
+def test_performance_detects_query_or_io_after_iteration_in_same_task(query_line):
+    signal = detect_performance(features("for (Order order : orders) {", query_line))[0]
+
+    assert signal.source == "text:added:performance"
+    assert signal.line == 11
+
+
+def test_null_state_safety_detects_ordinary_chained_dereference():
+    signal = detect_null_state_safety(features("order.customer().address();"))[0]
+
+    assert signal.source == "text:added:null_state_safety"
+    assert signal.reason.endswith("命中 customer().address，需审查")
+
+
+def test_observability_side_effect_is_not_suppressed_by_unrelated_logger():
+    signals = detect_observability_testability(
+        features('logger.info("starting");', "orderRepository.save(order);")
+    )
+
+    assert {signal.source for signal in signals} == {
+        "text:added:observability_protection",
+        "text:added:observability_side_effect",
+    }
+
+
 def test_path_only_does_not_emit_a_concrete_behavior_or_maintainability_signal():
     path_features = features(path="src/web/OrderController.java")
 

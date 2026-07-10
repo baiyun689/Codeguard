@@ -146,7 +146,7 @@ def detect_null_state_safety(features: DiffFeatures) -> list[RiskSignal]:
     return _detect(
         features,
         RiskTag.NULL_STATE_SAFETY,
-        _rule("null_state_safety", r"\bnull\b", r"\bOptional\b", r"Objects\.requireNonNull\b", r"\borElse\b", r"\bget\s*\(\s*\)"),
+        _rule("null_state_safety", r"\bnull\b", r"\bOptional\b", r"Objects\.requireNonNull\b", r"\borElse\b", r"\bget\s*\(\s*\)", r"(?P<token>\b\w+\s*\(\s*\)\s*\.\s*\w+)\s*\("),
         "空值或状态安全变化",
     )
 
@@ -172,9 +172,23 @@ def detect_api_contract(features: DiffFeatures) -> list[RiskSignal]:
 
 
 def detect_performance(features: DiffFeatures) -> list[RiskSignal]:
-    return _detect(
+    direct = _detect(
         features,
         RiskTag.PERFORMANCE,
         _rule("performance", r"(?=.*(?P<token>\bfindAll\b))", r"\bselect\s+\*\b", r"\bN\+1\b", r"\b(stream|parallelStream)\s*\(", r"\bThread\.sleep\b", r"\b(for|while)\b[^\n]*(?:find|select|read|write|fetch)"),
         "循环中的查询、I/O 或重复计算变化",
     )
+    if direct:
+        return direct
+
+    loop = re.compile(r"\b(for|while|forEach)\b|\b(stream|parallelStream)\s*\(", re.IGNORECASE)
+    access = re.compile(r"\b(?:find\w*|select\w*|read\w*|write\w*|fetch\w*)\b", re.IGNORECASE)
+    seen_iteration = False
+    for line, text in features.added_lines:
+        if seen_iteration:
+            match = access.search(text)
+            if match:
+                token = match.group(0)
+                return [RiskSignal(tag=RiskTag.PERFORMANCE, score=2, source="text:added:performance", reason=f"循环后的查询、I/O 或重复计算变化：命中 {token}，需审查", line=line)]
+        seen_iteration = seen_iteration or bool(loop.search(text))
+    return []
