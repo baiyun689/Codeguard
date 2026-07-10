@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from codeguard_agent.models.tasks import ReviewBudget, ReviewTask
+from codeguard_agent.models.tasks import ReviewBudget, ReviewTask, RiskTag
 from codeguard_agent.pipeline.task_prep import (
     _changed_lines,
     build_tasks,
@@ -48,16 +48,16 @@ def test_build_tasks_falls_back_to_file_level_when_no_hunk():
     assert tasks[0].changed_lines == []
 
 
-def test_triage_tasks_returns_empty_profile_per_task():
+def test_triage_tasks_returns_profile_per_task():
     tasks = build_tasks(_TWO_HUNK_DIFF)
-    profiles = triage_tasks(tasks)
+    profiles = triage_tasks(tasks).profiles
     assert set(profiles) == {"A.java#h0", "A.java#h1"}
-    assert profiles["A.java#h0"].tag_scores == {}
+    assert profiles["A.java#h0"].tag_scores == {RiskTag.GENERAL_REVIEW: 1}
 
 
 def test_rank_tasks_selects_all_by_default():
     tasks = build_tasks(_TWO_HUNK_DIFF)
-    profiles = triage_tasks(tasks)
+    profiles = triage_tasks(tasks).profiles
     sel = rank_tasks(tasks, profiles, ReviewBudget())
     assert sel.selected_task_ids == ["A.java#h0", "A.java#h1"]
     assert sel.skipped_tasks == []

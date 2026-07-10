@@ -3,7 +3,7 @@
 职责边界（spec §4.2/§4.3/§4.4）：
 - build_tasks：解析 unified diff → 每 hunk 一个 ReviewTask；无 hunk（含删除文件、
   纯重命名）退化为文件级 fallback task。不判断风险、不读仓库文件、不调 LLM。
-- triage_tasks：Phase 1 为每个任务产出空 RiskProfile（规则留到 Phase 2）。
+- triage_tasks：调用 Phase 2 风险规则目录，产出画像和规则诊断。
 - rank_tasks：Phase 1 默认全选（预算生效留到 Phase 2）。
 - map_candidate_to_task：候选(file, line) → task_id 的确定性映射。必须能绑定到具体
   changed 区域（命中 changed line、落在 hunk 覆盖范围、或该文件的明确文件级 fallback），
@@ -22,6 +22,7 @@ from codeguard_agent.models.tasks import (
     RiskProfile,
     TaskSelection,
 )
+from codeguard_agent.pipeline.risk_rules.catalog import TriageResult, triage_tasks as _triage_tasks
 
 # @@ -oldStart[,oldLen] +newStart[,newLen] @@ [section heading]
 _HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -180,9 +181,9 @@ def build_tasks(diff_text: str) -> list[ReviewTask]:
     return tasks
 
 
-def triage_tasks(tasks: list[ReviewTask]) -> dict[str, RiskProfile]:
-    """Phase 1：每个任务产出空 RiskProfile。"""
-    return {t.id: RiskProfile(task_id=t.id) for t in tasks}
+def triage_tasks(tasks: list[ReviewTask]) -> TriageResult:
+    """Phase 2：按注册表聚合风险信号并保留规则失败诊断。"""
+    return _triage_tasks(tasks)
 
 
 def rank_tasks(

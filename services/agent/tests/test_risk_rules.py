@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from codeguard_agent.models.tasks import RiskTag
+from codeguard_agent.models.tasks import RiskSignal, RiskTag, ReviewTask
+from codeguard_agent.pipeline.risk_rules import catalog
 from codeguard_agent.pipeline.risk_rules.features import DiffFeatures
 from codeguard_agent.pipeline.risk_rules.security import (
     detect_authentication_session,
@@ -273,3 +274,121 @@ def test_path_only_does_not_emit_a_concrete_behavior_or_maintainability_signal()
 
     assert detect_api_contract(path_features) == []
     assert detect_complexity_control_flow(path_features) == []
+
+
+def test_registry_covers_every_concrete_tag_once_and_maps_reviewers():
+    expected_reviewers = {
+        RiskTag.AUTHORIZATION: {"ThreatModelAgent", "BehaviorAgent"},
+        RiskTag.AUTHENTICATION_SESSION: {"ThreatModelAgent", "BehaviorAgent"},
+        RiskTag.WEB_SECURITY_CONFIG: {"ThreatModelAgent"},
+        RiskTag.INPUT_VALIDATION: {"ThreatModelAgent", "BehaviorAgent"},
+        RiskTag.INJECTION: {"ThreatModelAgent", "BehaviorAgent"},
+        RiskTag.SQL_DATA_ACCESS: {"BehaviorAgent"},
+        RiskTag.FILE_PATH_IO: {"ThreatModelAgent", "BehaviorAgent"},
+        RiskTag.SSRF_OUTBOUND: {"ThreatModelAgent", "BehaviorAgent"},
+        RiskTag.CONFIG_SECURITY: {"ThreatModelAgent"},
+        RiskTag.DATA_EXPOSURE: {"ThreatModelAgent", "BehaviorAgent"},
+        RiskTag.TRANSACTION_ATOMICITY: {"BehaviorAgent"},
+        RiskTag.CONCURRENCY_CONSISTENCY: {"BehaviorAgent"},
+        RiskTag.IDEMPOTENCY_RETRY: {"BehaviorAgent"},
+        RiskTag.CACHE_CONSISTENCY: {"BehaviorAgent"},
+        RiskTag.MESSAGE_DELIVERY: {"BehaviorAgent"},
+        RiskTag.ERROR_HANDLING: {"BehaviorAgent"},
+        RiskTag.NULL_STATE_SAFETY: {"BehaviorAgent"},
+        RiskTag.RESOURCE_LIFECYCLE: {"BehaviorAgent", "MaintainabilityAgent"},
+        RiskTag.API_CONTRACT: {"BehaviorAgent", "MaintainabilityAgent"},
+        RiskTag.PERFORMANCE: {"BehaviorAgent", "MaintainabilityAgent"},
+        RiskTag.COMPLEXITY_CONTROL_FLOW: {"MaintainabilityAgent"},
+        RiskTag.DUPLICATION_DESIGN: {"MaintainabilityAgent"},
+        RiskTag.OBSERVABILITY_TESTABILITY: {"MaintainabilityAgent"},
+    }
+
+    assert [spec.tag for spec in catalog.RULE_SPECS] == list(expected_reviewers)
+    assert {spec.tag for spec in catalog.RULE_SPECS} == set(RiskTag) - {RiskTag.GENERAL_REVIEW}
+    assert {spec.tag: set(spec.reviewers) for spec in catalog.RULE_SPECS} == expected_reviewers
+
+
+def test_classify_task_deduplicates_scores_and_caps_each_tag(monkeypatch):
+    first_signal = RiskSignal(
+        tag=RiskTag.AUTHORIZATION,
+        score=3,
+        source="text:added:test",
+        reason="r",
+        line=7,
+    )
+    second_signal = RiskSignal(
+        tag=RiskTag.AUTHORIZATION,
+        score=3,
+        source="text:deleted:test",
+        reason="r",
+    )
+    rule = catalog.RiskRuleSpec(
+        rule_id="test",
+        tag=RiskTag.AUTHORIZATION,
+        reviewers=frozenset({"ThreatModelAgent"}),
+        detect=lambda _features: [first_signal, first_signal, second_signal],
+    )
+    monkeypatch.setattr(catalog, "RULE_SPECS", (rule,))
+
+    profile = catalog.classify_task(ReviewTask(id="t", file="A.java", patch="+x"))
+
+    assert profile.tag_scores == {RiskTag.AUTHORIZATION: 5}
+    assert profile.signals == [first_signal, second_signal]
+
+
+def test_classify_task_falls_back_when_only_path_signal_exists(monkeypatch):
+    path_signal = RiskSignal(
+        tag=RiskTag.API_CONTRACT,
+        score=2,
+        source="path:controller",
+        reason="path match",
+    )
+    rule = catalog.RiskRuleSpec(
+        rule_id="path_only",
+        tag=RiskTag.API_CONTRACT,
+        reviewers=frozenset({"BehaviorAgent"}),
+        detect=lambda _features: [path_signal],
+    )
+    monkeypatch.setattr(catalog, "RULE_SPECS", (rule,))
+
+    profile = catalog.classify_task(ReviewTask(id="t", file="A.java", patch="+x"))
+
+    assert profile.tag_scores == {RiskTag.GENERAL_REVIEW: 1}
+    assert profile.signals == [
+        RiskSignal(
+            tag=RiskTag.GENERAL_REVIEW,
+            score=1,
+            source="fallback:unclassified",
+            reason="未命中已有风险规则，执行通用审查",
+        )
+    ]
+
+
+def test_triage_tasks_records_rule_failure_and_continues(monkeypatch):
+    def broken(_features):
+        raise RuntimeError("broken detector")
+
+    good_signal = RiskSignal(
+        tag=RiskTag.PERFORMANCE,
+        score=2,
+        source="text:added:performance",
+        reason="performance",
+        line=1,
+    )
+    monkeypatch.setattr(
+        catalog,
+        "RULE_SPECS",
+        (
+            catalog.RiskRuleSpec("broken", RiskTag.API_CONTRACT, frozenset(), broken),
+            catalog.RiskRuleSpec(
+                "good", RiskTag.PERFORMANCE, frozenset(), lambda _features: [good_signal]
+            ),
+        ),
+    )
+
+    result = catalog.triage_tasks([ReviewTask(id="t", file="A.java", patch="+x")])
+
+    assert result.profiles["t"].signals == [good_signal]
+    assert result.diagnostics == (
+        catalog.RuleDiagnostic(task_id="t", rule_id="broken", detail="broken detector"),
+    )

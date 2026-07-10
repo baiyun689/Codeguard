@@ -1165,9 +1165,39 @@ def test_task_prep_nodes_populate_state():
 
     tasks = task_prep.build_tasks(_DIFF)
     assert [t.id for t in tasks] == ["A.java#h0"]
-    profiles = task_prep.triage_tasks(tasks)
+    profiles = task_prep.triage_tasks(tasks).profiles
     sel = task_prep.rank_tasks(tasks, profiles, G.ReviewBudget())
     assert sel.selected_task_ids == ["A.java#h0"]
+
+
+def test_risk_triage_node_emits_profile_and_rule_failure_trace(monkeypatch):
+    from codeguard_agent.pipeline import task_prep
+    from codeguard_agent.pipeline.risk_rules.catalog import (
+        RuleDiagnostic,
+        TriageResult,
+    )
+
+    profile = G.RiskProfile(task_id="A.java#h0")
+    monkeypatch.setattr(
+        task_prep,
+        "triage_tasks",
+        lambda _tasks: TriageResult(
+            profiles={"A.java#h0": profile},
+            diagnostics=(
+                RuleDiagnostic(
+                    task_id="A.java#h0", rule_id="broken", detail="detector error"
+                ),
+            ),
+        ),
+    )
+
+    out = G._risk_triage_node()({"review_tasks": [G.ReviewTask(id="A.java#h0", file="A.java", patch="+x")]})
+
+    assert out["risk_profiles"] == {"A.java#h0": profile}
+    assert [(trace.event, trace.detail) for trace in out["council_trace"]] == [
+        ("profiled", "profiles=1"),
+        ("rule_failed", "detector error"),
+    ]
 
 
 def test_review_state_has_task_chain_fields():

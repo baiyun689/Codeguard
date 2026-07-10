@@ -298,20 +298,29 @@ def _diff_task_builder_node():
 
 
 def _risk_triage_node():
-    """RiskTriage：为每个任务产出 RiskProfile（Phase 1 为空画像）。"""
+    """RiskTriage：为每个任务产出 RiskProfile 和规则失败 trace。"""
 
     def _node(state: ReviewState) -> dict:
         tasks = state.get("review_tasks") or []
-        profiles = task_prep.triage_tasks(tasks)
+        result = task_prep.triage_tasks(tasks)
+        trace = [
+            CouncilTrace(
+                node="risk_triage",
+                event="profiled",
+                detail=f"profiles={len(result.profiles)}",
+            )
+        ]
+        trace.extend(
+            CouncilTrace(
+                node="risk_triage",
+                event="rule_failed",
+                detail=diagnostic.detail,
+            )
+            for diagnostic in result.diagnostics
+        )
         return {
-            "risk_profiles": profiles,
-            "council_trace": [
-                CouncilTrace(
-                    node="risk_triage",
-                    event="profiled",
-                    detail=f"profiles={len(profiles)}",
-                )
-            ],
+            "risk_profiles": result.profiles,
+            "council_trace": trace,
         }
 
     return _node
