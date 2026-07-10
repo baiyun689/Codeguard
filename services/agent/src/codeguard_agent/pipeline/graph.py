@@ -3,11 +3,12 @@
 默认拓扑:
 
     START → [summary] → diff_task_builder → risk_triage → task_rank
-              → context_provider → discover_* → council_coordinator
-                                                ↑             │
-                                                └ evidence/council_judge loop
-                                                              │
-                                                            END
+              → context_provider → discover_* → council_coordinator(fan-in)
+              → evidence_agent → council_judge
+                    ↑                   │
+                    └──(needs_more)──────┤
+                                         │
+                                        END
 
 旧 LLM Supervisor 图已迁移到 `services/agent/legacy/supervisor_graph/graph.py`,
 仅作历史参考,不再作为主编排运行回退。
@@ -208,7 +209,7 @@ class ReviewState(TypedDict, total=False):
     candidate_issues: Annotated[list[CandidateIssue], _candidate_dedup_reducer]
     evidence_requests: Annotated[list[EvidenceRequest], capped_evidence_request_reducer]
     evidence_notes: Annotated[list[EvidenceNote], operator.add]
-    council_verdicts: list  # council_judge 产出，供 coordinator 路由判断（非 Annotated，每轮覆盖）
+    council_verdicts: list  # council_judge 产出，_route_after_council_judge 读取（非 Annotated，每轮覆盖）
     council_trace: Annotated[list[CouncilTrace], operator.add]
     evidence_round: int
     truncated_candidates: Annotated[int, operator.add]
