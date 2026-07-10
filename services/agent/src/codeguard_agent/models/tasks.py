@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictInt
 
 from codeguard_agent.models.council import ContextFact
 
@@ -74,10 +74,10 @@ class RiskProfile(BaseModel):
 class ReviewBudget(BaseModel):
     """预算入口。None 表示当前策略不施加该项限制；Phase 1 基线为全选。"""
 
-    max_tasks_to_review: int | None = Field(default=100, gt=0)
-    max_tasks_per_file: int | None = Field(default=10, gt=0)
-    max_context_chars_per_task: int | None = Field(default=None, gt=0)
-    max_final_issues: int | None = Field(default=None, gt=0)
+    max_tasks_to_review: StrictInt | None = Field(default=100, gt=0)
+    max_tasks_per_file: StrictInt | None = Field(default=10, gt=0)
+    max_context_chars_per_task: StrictInt | None = Field(default=None, gt=0)
+    max_final_issues: StrictInt | None = Field(default=None, gt=0)
 
 
 class SkippedTask(BaseModel):

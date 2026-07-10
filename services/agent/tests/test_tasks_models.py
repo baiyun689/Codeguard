@@ -87,6 +87,34 @@ def test_review_budget_rejects_non_positive_values(field, value):
         ReviewBudget(**{field: value})
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_tasks_to_review",
+        "max_tasks_per_file",
+        "max_context_chars_per_task",
+        "max_final_issues",
+    ],
+)
+@pytest.mark.parametrize("value", [True, "1"])
+def test_review_budget_rejects_non_strict_integer_values(field, value):
+    with pytest.raises(ValidationError):
+        ReviewBudget(**{field: value})
+
+
+def test_review_budget_accepts_positive_integer_values():
+    budget = ReviewBudget(
+        max_tasks_to_review=1,
+        max_tasks_per_file=2,
+        max_context_chars_per_task=3,
+        max_final_issues=4,
+    )
+    assert budget.max_tasks_to_review == 1
+    assert budget.max_tasks_per_file == 2
+    assert budget.max_context_chars_per_task == 3
+    assert budget.max_final_issues == 4
+
+
 def test_task_selection_records_skips():
     sel = TaskSelection(
         selected_task_ids=["A.java#h0"],
