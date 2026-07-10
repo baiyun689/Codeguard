@@ -17,6 +17,24 @@ from codeguard_agent.pipeline.risk_rules.security import (
     detect_ssrf_outbound,
     detect_web_security_config,
 )
+from codeguard_agent.pipeline.risk_rules.behavior import (
+    detect_api_contract,
+    detect_cache_consistency,
+    detect_concurrency_consistency,
+    detect_error_handling,
+    detect_idempotency_retry,
+    detect_message_delivery,
+    detect_null_state_safety,
+    detect_performance,
+    detect_resource_lifecycle,
+    detect_sql_data_access,
+    detect_transaction_atomicity,
+)
+from codeguard_agent.pipeline.risk_rules.maintainability import (
+    detect_complexity_control_flow,
+    detect_duplication_design,
+    detect_observability_testability,
+)
 
 
 def features(*added: str, deleted: tuple[str, ...] = (), path: str = "src/App.java") -> DiffFeatures:
@@ -130,3 +148,71 @@ def test_injection_detects_concatenated_command_text():
 
 def test_path_only_does_not_emit_a_concrete_security_signal():
     assert detect_authorization(features(path="src/security/AuthController.java")) == []
+
+
+@pytest.mark.parametrize(
+    ("detector", "tag", "line", "rule_id", "token", "score"),
+    [
+        (detect_sql_data_access, RiskTag.SQL_DATA_ACCESS, '@Query("SELECT * FROM orders")', "sql_data_access", "@Query", 2),
+        (detect_transaction_atomicity, RiskTag.TRANSACTION_ATOMICITY, "@Transactional", "transaction_atomicity", "@Transactional", 2),
+        (detect_concurrency_consistency, RiskTag.CONCURRENCY_CONSISTENCY, "synchronized (lock) { update(); }", "concurrency_consistency", "synchronized", 2),
+        (detect_idempotency_retry, RiskTag.IDEMPOTENCY_RETRY, "@Retryable", "idempotency_retry", "@Retryable", 2),
+        (detect_cache_consistency, RiskTag.CACHE_CONSISTENCY, "@CacheEvict(cacheNames = \"orders\")", "cache_consistency", "@CacheEvict", 2),
+        (detect_message_delivery, RiskTag.MESSAGE_DELIVERY, "@KafkaListener(topics = \"orders\")", "message_delivery", "@KafkaListener", 2),
+        (detect_error_handling, RiskTag.ERROR_HANDLING, "catch (IOException exception) { }", "error_handling", "catch", 2),
+        (detect_null_state_safety, RiskTag.NULL_STATE_SAFETY, "Objects.requireNonNull(order)", "null_state_safety", "Objects.requireNonNull", 2),
+        (detect_resource_lifecycle, RiskTag.RESOURCE_LIFECYCLE, "try (InputStream stream = source.openStream()) {", "resource_lifecycle", "InputStream", 2),
+        (detect_api_contract, RiskTag.API_CONTRACT, "@RequestMapping(\"/orders\")", "api_contract", "@RequestMapping", 2),
+        (detect_performance, RiskTag.PERFORMANCE, "for (Order order : orders) { repository.findAll(); }", "performance", "findAll", 2),
+        (detect_complexity_control_flow, RiskTag.COMPLEXITY_CONTROL_FLOW, "if (ready && valid && permitted) {", "complexity_control_flow", "if", 1),
+        (detect_duplication_design, RiskTag.DUPLICATION_DESIGN, "service.save(order);\nservice.save(order);", "duplication_design", "service.save(order)", 1),
+        (detect_observability_testability, RiskTag.OBSERVABILITY_TESTABILITY, "auditService.record(order);", "observability_side_effect", "auditService.record", 1),
+    ],
+)
+def test_behavior_and_maintainability_detectors_emit_canonical_added_signal(
+    detector, tag, line, rule_id, token, score
+):
+    signal = detector(features(line))[0]
+
+    assert signal.tag is tag
+    assert signal.score == score
+    assert signal.source == f"text:added:{rule_id}"
+    assert signal.line == 10
+    assert signal.reason.endswith(f"命中 {token}，需审查")
+
+
+@pytest.mark.parametrize(
+    ("detector", "tag", "line", "rule_id", "token", "score"),
+    [
+        (detect_transaction_atomicity, RiskTag.TRANSACTION_ATOMICITY, "@Transactional", "transaction_atomicity", "@Transactional", 3),
+        (detect_error_handling, RiskTag.ERROR_HANDLING, "catch (Exception ignored) { }", "error_handling", "catch", 3),
+        (detect_resource_lifecycle, RiskTag.RESOURCE_LIFECYCLE, "executor.shutdown();", "resource_lifecycle", "executor.shutdown", 3),
+        (detect_observability_testability, RiskTag.OBSERVABILITY_TESTABILITY, "logger.info(\"saved\")", "observability_protection", "logger.info", 3),
+    ],
+)
+def test_deleted_behavior_and_maintainability_protections_are_high_score(
+    detector, tag, line, rule_id, token, score
+):
+    signal = detector(features(deleted=(line,)))[0]
+
+    assert signal.tag is tag
+    assert signal.score == score
+    assert signal.source == f"text:deleted:{rule_id}"
+    assert signal.line is None
+    assert signal.reason.endswith(f"命中 {token}，需审查")
+
+
+def test_same_behavior_token_with_different_text_is_a_changed_signal():
+    signal = detect_sql_data_access(
+        features('@Query("SELECT * FROM orders")', deleted=('@Query("SELECT * FROM users")',))
+    )[0]
+
+    assert signal.source == "text:changed:sql_data_access"
+    assert signal.line == 10
+
+
+def test_path_only_does_not_emit_a_concrete_behavior_or_maintainability_signal():
+    path_features = features(path="src/web/OrderController.java")
+
+    assert detect_api_contract(path_features) == []
+    assert detect_complexity_control_flow(path_features) == []
