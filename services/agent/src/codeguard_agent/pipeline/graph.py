@@ -487,16 +487,18 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         tasks = state.get("review_tasks") or []
         candidates: list[CandidateIssue] = []
         rejected: list[str] = []
-        for i, issue in enumerate(kept_issues):
+        accepted_count = 0
+        for issue in kept_issues:
             task_id = task_prep.map_candidate_to_task(issue.file, issue.line, tasks)
             if task_id is None:
                 rejected.append(f"{issue.file}:{issue.line}")
                 continue
+            accepted_count += 1
             candidates.append(
                 CandidateIssue.from_issue(
                     issue,
                     source_agent=reviewer.source_agent,
-                    index=i + 1,
+                    index=accepted_count,
                     task_id=task_id,
                 )
             )
@@ -509,30 +511,28 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 0,
                 len(candidate_requests) - MAX_EVIDENCE_REQUESTS_PER_CANDIDATE,
             )
+        trace: list[CouncilTrace] = list(result.get("council_trace") or [])
+        trace.append(
+            CouncilTrace(
+                node=reviewer.source_agent,
+                event="candidates_created",
+                detail=f"count={len(candidates)} truncated={truncated_candidates} rejected={len(rejected)}",
+            )
+        )
+        if rejected:
+            trace.append(
+                CouncilTrace(
+                    node=reviewer.source_agent,
+                    event="candidate_rejected_unmapped",
+                    detail="; ".join(rejected),
+                )
+            )
         out: dict = {
             "candidate_issues": candidates,
             "evidence_requests": requests,
             "truncated_candidates": truncated_candidates,
             "truncated_evidence_requests": truncated_evidence_requests,
-            "council_trace": list(result.get("council_trace") or [])
-            + [
-                CouncilTrace(
-                    node=reviewer.source_agent,
-                    event="candidates_created",
-                    detail=f"count={len(candidates)} truncated={truncated_candidates} rejected={len(rejected)}",
-                )
-            ]
-            + (
-                [
-                    CouncilTrace(
-                        node=reviewer.source_agent,
-                        event="candidate_rejected_unmapped",
-                        detail="; ".join(rejected),
-                    )
-                ]
-                if rejected
-                else []
-            ),
+            "council_trace": trace,
         }
         for key in ("gathered_context", "review_summaries"):
             if result.get(key):
