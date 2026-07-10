@@ -2,7 +2,8 @@
 
 默认拓扑:
 
-    START → [summary] → context_provider → discover_* → council_coordinator
+    START → [summary] → diff_task_builder → risk_triage → task_rank
+              → context_provider → discover_* → council_coordinator
                                                 ↑             │
                                                 └ evidence/council_judge loop
                                                               │
