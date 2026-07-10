@@ -485,13 +485,21 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         kept_issues = issues[:MAX_CANDIDATES_PER_AGENT]
         truncated_candidates = max(0, len(issues) - len(kept_issues))
         tasks = state.get("review_tasks") or []
+        # 只接纳 TaskRank 选中的任务；selection 缺席（直连节点测试等）时不设门槛。
+        selection = state.get("task_selection")
+        selected_ids = set(selection.selected_task_ids) if selection is not None else None
         candidates: list[CandidateIssue] = []
-        rejected: list[str] = []
+        rejected_unmapped: list[str] = []
+        rejected_unselected: list[str] = []
         accepted_count = 0
         for issue in kept_issues:
             task_id = task_prep.map_candidate_to_task(issue.file, issue.line, tasks)
             if task_id is None:
-                rejected.append(f"{issue.file}:{issue.line}")
+                rejected_unmapped.append(f"{issue.file}:{issue.line}")
+                continue
+            if selected_ids is not None and task_id not in selected_ids:
+                # 任务被 TaskRank 跳过（如 Phase 2 Top-K）→ 不进黑板，让预算真正生效。
+                rejected_unselected.append(f"{issue.file}:{issue.line} -> {task_id}")
                 continue
             accepted_count += 1
             candidates.append(
@@ -516,15 +524,27 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             CouncilTrace(
                 node=reviewer.source_agent,
                 event="candidates_created",
-                detail=f"count={len(candidates)} truncated={truncated_candidates} rejected={len(rejected)}",
+                detail=(
+                    f"count={len(candidates)} truncated={truncated_candidates} "
+                    f"rejected_unmapped={len(rejected_unmapped)} "
+                    f"rejected_unselected={len(rejected_unselected)}"
+                ),
             )
         )
-        if rejected:
+        if rejected_unmapped:
             trace.append(
                 CouncilTrace(
                     node=reviewer.source_agent,
                     event="candidate_rejected_unmapped",
-                    detail="; ".join(rejected),
+                    detail="; ".join(rejected_unmapped),
+                )
+            )
+        if rejected_unselected:
+            trace.append(
+                CouncilTrace(
+                    node=reviewer.source_agent,
+                    event="candidate_rejected_unselected",
+                    detail="; ".join(rejected_unselected),
                 )
             )
         out: dict = {

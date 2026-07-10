@@ -696,8 +696,8 @@ _MOCK_DIFF = (
     "diff --git a/example/Demo.java b/example/Demo.java\n"
     "--- a/example/Demo.java\n"
     "+++ b/example/Demo.java\n"
-    "@@ -1 +1,2 @@\n"
-    "+int x=1;\n"
+    "@@ -42,0 +42,1 @@\n"
+    "+int injected = 1;\n"
 )
 
 
@@ -717,15 +717,26 @@ class _FakeLLM:
         return _Stub()
 
 
-_FAKE_LINE = {"ThreatModelAgent": 1, "BehaviorAgent": 5, "MaintainabilityAgent": 9}
+# 三路各发到自己的文件 line 1（都在各自 hunk 的 changed_lines，可绑定）；
+# 不同文件天然不触发同文件邻行合并，三条候选独立存活。
+_FAKE_TARGET = {
+    "ThreatModelAgent": ("A.java", 1),
+    "BehaviorAgent": ("B.java", 1),
+    "MaintainabilityAgent": ("C.java", 1),
+}
+
+_FANIN_DIFF = "".join(
+    f"diff --git a/{f} b/{f}\n--- a/{f}\n+++ b/{f}\n@@ -1 +1,2 @@\n+int x=1;\n"
+    for f in ("A.java", "B.java", "C.java")
+)
 
 
 class _FakeEngine:
     def review(self, llm, *, system_prompt, user_prompt, reviewer_name, max_retries, structured_method, enable_hitl=False):
-        line = _FAKE_LINE.get(reviewer_name, 1)
+        file, line = _FAKE_TARGET.get(reviewer_name, ("A.java", 1))
         issue = Issue(
             severity=Severity.WARNING,
-            file="A.java",
+            file=file,
             line=line,
             type=reviewer_name,
             message="m",
@@ -739,7 +750,7 @@ def test_graph_fanin_three_discoverers(monkeypatch):
     orch = PipelineOrchestrator(enable_summary=False)
     trace: list = []
     meta: dict = {}
-    result = orch.run(_FakeLLM(), _DIFF, trace_sink=trace, metadata_sink=meta)
+    result = orch.run(_FakeLLM(), _FANIN_DIFF, trace_sink=trace, metadata_sink=meta)
     assert {i.type for i in result.issues} == {
         "ThreatModelAgent",
         "BehaviorAgent",
@@ -829,7 +840,8 @@ def test_candidate_and_evidence_request_limits_are_enforced(monkeypatch):
         for i in range(8)
     ]
     limits_diff = "".join(
-        f"diff --git a/{f} b/{f}\n--- a/{f}\n+++ b/{f}\n@@ -1 +1,2 @@\n+int x=1;\n"
+        f"diff --git a/{f} b/{f}\n--- a/{f}\n+++ b/{f}\n@@ -0,0 +1,8 @@\n"
+        + "".join(f"+l{n}\n" for n in range(1, 9))
         for f in files
     )
     result = orch.run(_FakeLLM(), limits_diff, metadata_sink=meta)
@@ -1220,3 +1232,27 @@ def test_make_reviewer_node_rejects_unmapped_candidate(monkeypatch):
     assert out["candidate_issues"] == []
     events = {t.event for t in out["council_trace"]}
     assert "candidate_rejected_unmapped" in events
+
+
+def test_make_reviewer_node_rejects_unselected_task(monkeypatch):
+    """收集节点：候选映射到的任务未被 TaskRank 选中 → 拒绝 + candidate_rejected_unselected。"""
+
+    class _InDiffEngine:
+        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
+                   max_retries, structured_method, enable_hitl=False):
+            issue = Issue(
+                severity=Severity.WARNING, file="A.java", line=1, type="t", message="m",
+            )
+            return ReviewOutcome(ReviewResult(summary="s", issues=[issue]))
+
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _InDiffEngine())
+    node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
+    out = node({
+        "diff_text": "diff --git a/A.java b/A.java\n+++ b/A.java\n@@ -1 +1,2 @@\n+x",
+        "review_tasks": [G.ReviewTask(id="A.java#h0", file="A.java", patch="", changed_lines=[1])],
+        # A.java#h0 映射得到，但只选中了 B.java#h0 → 该候选被跳过
+        "task_selection": G.TaskSelection(selected_task_ids=["B.java#h0"]),
+    })
+    assert out["candidate_issues"] == []
+    events = {t.event for t in out["council_trace"]}
+    assert "candidate_rejected_unselected" in events

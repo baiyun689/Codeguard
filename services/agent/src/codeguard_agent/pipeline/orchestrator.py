@@ -12,6 +12,7 @@ from typing import Any
 import uuid
 
 from codeguard_agent.models.schemas import ReviewResult
+from codeguard_agent.models.tasks import ReviewBudget
 from codeguard_agent.pipeline.graph import (
     DEFAULT_MAX_EVIDENCE_ROUNDS,
     DEFAULT_RECURSION_LIMIT,
@@ -120,6 +121,7 @@ class PipelineOrchestrator:
             "structured_method": structured_method,
             "react_recursion_limit": self._react_recursion_limit,
             "max_evidence_rounds": self._max_evidence_rounds,
+            "review_budget": ReviewBudget(),
         }
         invoke_config: dict = {"recursion_limit": self._recursion_limit}
         if self._checkpointer is not None:

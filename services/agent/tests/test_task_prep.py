@@ -69,21 +69,61 @@ def test_map_candidate_uses_changed_line_first():
     assert map_candidate_to_task("A.java", 12, tasks) == "A.java#h1"
 
 
-def test_map_candidate_falls_back_to_first_file_task():
+def test_map_candidate_binds_context_line_to_containing_hunk():
     tasks = build_tasks(_TWO_HUNK_DIFF)
-    # 行 999 不在任何 changed_lines → 落到该文件第一个 task
-    assert map_candidate_to_task("A.java", 999, tasks) == "A.java#h0"
+    # 行 11 是 hunk1 的上下文行（不在 changed_lines[12]，但落在 hunk1 范围 [11,12]）
+    # → 归属正确的 hunk1，绝不落到"第一个"hunk0
+    assert map_candidate_to_task("A.java", 11, tasks) == "A.java#h1"
+    # 行 3 落在 hunk0 范围 [1,3] → hunk0
+    assert map_candidate_to_task("A.java", 3, tasks) == "A.java#h0"
+
+
+def test_map_candidate_rejects_line_outside_all_hunks():
+    tasks = build_tasks(_TWO_HUNK_DIFF)
+    # 行 999 不在任何 changed_lines、不落在任何 hunk 范围、无文件级 fallback → 拒绝
+    assert map_candidate_to_task("A.java", 999, tasks) is None
 
 
 def test_map_candidate_matches_by_basename():
-    tasks = [ReviewTask(id="src/A.java#h0", file="src/A.java", patch="")]
-    # LLM 常只给 basename
-    assert map_candidate_to_task("A.java", 0, tasks) == "src/A.java#h0"
+    # LLM 常只给 basename；文件级 fallback task 对任意行都可绑定
+    tasks = [ReviewTask(id="src/A.java#file", file="src/A.java", patch="")]
+    assert map_candidate_to_task("A.java", 0, tasks) == "src/A.java#file"
 
 
 def test_map_candidate_returns_none_when_file_absent():
     tasks = build_tasks(_TWO_HUNK_DIFF)
     assert map_candidate_to_task("Ghost.java", 1, tasks) is None
+
+
+def test_build_tasks_creates_fallback_for_deleted_file():
+    # 删除文件（+++ /dev/null）：split_diff_by_file 会漏掉，需补文件级 fallback 取旧路径
+    diff = (
+        "diff --git a/Auth.java b/Auth.java\n"
+        "deleted file mode 100644\n"
+        "index a81d7c2..0000000\n"
+        "--- a/Auth.java\n"
+        "+++ /dev/null\n"
+        "@@ -1,2 +0,0 @@\n"
+        "-class Auth {}\n"
+        "-void check() {}\n"
+    )
+    tasks = build_tasks(diff)
+    assert [t.id for t in tasks] == ["Auth.java#file"]
+    assert tasks[0].file == "Auth.java"
+    # 删除文件仍能被候选绑定（reviewer 发现"删了鉴权"时不会被丢弃）
+    assert map_candidate_to_task("Auth.java", 1, tasks) == "Auth.java#file"
+
+
+def test_build_tasks_creates_fallback_for_pure_rename():
+    # 纯重命名（100% 相似、无 +++）：取新路径建文件级 fallback
+    diff = (
+        "diff --git a/Old.java b/New.java\n"
+        "similarity index 100%\n"
+        "rename from Old.java\n"
+        "rename to New.java\n"
+    )
+    tasks = build_tasks(diff)
+    assert [t.id for t in tasks] == ["New.java#file"]
 
 
 def test_changed_lines_ignores_no_newline_marker():
@@ -104,8 +144,8 @@ def test_changed_lines_ignores_no_newline_marker():
 def test_map_candidate_prefers_full_path_over_basename_collision():
     # 同 basename 不同目录：候选给出全路径时应精确命中，不被另一个同名文件抢走。
     tasks = [
-        ReviewTask(id="src/Foo.java#h0", file="src/Foo.java", patch=""),
-        ReviewTask(id="test/Foo.java#h0", file="test/Foo.java", patch=""),
+        ReviewTask(id="src/Foo.java#h0", file="src/Foo.java", patch="", changed_lines=[1]),
+        ReviewTask(id="test/Foo.java#h0", file="test/Foo.java", patch="", changed_lines=[1]),
     ]
     assert map_candidate_to_task("test/Foo.java", 1, tasks) == "test/Foo.java#h0"
     assert map_candidate_to_task("src/Foo.java", 1, tasks) == "src/Foo.java#h0"
