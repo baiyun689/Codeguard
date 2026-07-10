@@ -1,4 +1,4 @@
-# 风险路由驱动的 ReviewTask 编排设计大纲
+# 风险路由驱动的 ReviewTask 编排设计
 
 **日期**: 2026-07-10  
 **状态**: 设计草案  
@@ -21,7 +21,7 @@
 
 ## 2. 总体目标
 
-目标形态:
+最终拓扑（Phase 1 即固定，后续阶段不再改变主路由）:
 
 ```text
 git diff
@@ -30,10 +30,11 @@ git diff
   → RiskTriage
   → TaskRank
   → ContextProvider
-  → ReviewCouncil
-  → CouncilCoordinator
-  → EvidenceAgent
+  → [ThreatModelAgent | BehaviorAgent | MaintainabilityAgent]
+  → CouncilCoordinator（显式 fan-in，只在三路完成后运行一次）
+  → EvidenceAgent（固定运行一次；没有请求时记录 no-op）
   → CouncilJudge
+  → EvidenceAgent（仅 Judge 明确要求补证且未超轮次时回环）
   → ReviewResult
 ```
 
@@ -42,7 +43,8 @@ git diff
 - **ReviewTask 是最小调度单位**: 一个任务通常对应一个 hunk 或一个紧密相关的变更片段。
 - **RiskTag 是路由信号，不是问题结论**: 风险标签只说明“应该从哪些角度审”，不说明“这里已经有问题”。
 - **ContextBundle 按风险构建**: 上下文构建由 RiskProfile 驱动，而不是盲目读取全项目。
-- **State 先稳定，节点内部后增强**: 第一阶段先打通纵向最小闭环，后续只扩充规则、工具和 prompt。
+- **State 先稳定，节点内部后增强**: Phase 1 一次定义完整状态主干和稳定 ID；Phase 2 起不得新增改变主路由的业务 State 字段。
+- **Evidence 必经一次**: 三路发现完成并汇合后，必须进入一次 EvidenceAgent；EvidenceAgent 可以 no-op，但不能被路由跳过。
 - **产品输出保持不变**: 最终仍输出 `ReviewResult` / `Issue`，任务、风险、证据等中间态只进入 trace / eval。
 
 ---
@@ -68,8 +70,7 @@ class ReviewState(TypedDict, total=False):
     review_budget: ReviewBudget
     review_tasks: list[ReviewTask]
     risk_profiles: dict[str, RiskProfile]
-    selected_task_ids: list[str]
-    skipped_tasks: list[SkippedTask]
+    task_selection: TaskSelection
     task_context_bundles: dict[str, TaskContextBundle]
 
     # 现有 ReviewCouncil 裁决链路
@@ -78,7 +79,6 @@ class ReviewState(TypedDict, total=False):
     evidence_notes: Annotated[list[EvidenceNote], operator.add]
     council_verdicts: list[Verdict]
     evidence_round: int
-    council_route: str
 
     # 输出与诊断
     gathered_context: Annotated[list, dedup_gathered_reducer]
@@ -94,18 +94,15 @@ class ReviewState(TypedDict, total=False):
 class ReviewTask(BaseModel):
     id: str
     file: str
-    hunk_header: str
+    hunk_header: str = ""
     patch: str
     changed_lines: list[int]
-    start_line: int
-    end_line: int
 
 
 class RiskProfile(BaseModel):
     task_id: str
-    tag_scores: dict[RiskTag, int]
-    signals: list[RiskSignal]
-    total_score: int
+    tag_scores: dict[RiskTag, int] = Field(default_factory=dict)
+    signals: list[RiskSignal] = Field(default_factory=list)
 
 
 class RiskSignal(BaseModel):
@@ -117,10 +114,11 @@ class RiskSignal(BaseModel):
 
 
 class ReviewBudget(BaseModel):
-    max_tasks_to_review: int = 30
-    max_tasks_per_file: int = 5
-    max_context_chars_per_task: int = 4000
-    max_final_issues: int = 10
+    # None 表示当前策略不施加该项限制；Phase 1 的基线是全选。
+    max_tasks_to_review: int | None = None
+    max_tasks_per_file: int | None = None
+    max_context_chars_per_task: int | None = None
+    max_final_issues: int | None = None
 
 
 class SkippedTask(BaseModel):
@@ -129,28 +127,41 @@ class SkippedTask(BaseModel):
     risk_score: int = 0
 
 
+class TaskSelection(BaseModel):
+    selected_task_ids: list[str]
+    skipped_tasks: list[SkippedTask] = Field(default_factory=list)
+
+
 class TaskContextBundle(BaseModel):
     task_id: str
-    file: str
-    changed_hunk: str
-    risk_tags: list[RiskTag]
-    facts: list[ContextFact]
+    facts: list[ContextFact] = Field(default_factory=list)
     truncated: bool = False
 ```
 
+`TaskContextBundle` 不重复保存 file、patch 或 RiskTag。这些是 `ReviewTask` 和
+`RiskProfile` 的唯一事实源；消费者通过 `task_id` 关联读取，避免多份状态漂移。
+
+`RiskProfile` 不保存 `total_score`。分数是 `TaskRank` 基于 `tag_scores` 和当前
+`ReviewBudget` 派生的临时计算结果，不应成为第二份可变事实。
+
+`CandidateIssue.task_id` 在 Phase 1 即为必填字段。对仍以整份 diff 作为输入的
+发现者，由收集节点以 `file + changed line` 映射到任务；DiffTaskBuilder 必须为每个
+变更文件提供可映射的 fallback task。无法映射的候选不得进入共享黑板，并在 trace
+中记录拒绝原因。
+
 ### 3.3 状态写入边界
 
-每个字段只能有一个主写节点。下游节点不得回写上游事实。
+事实类字段只能有一个所有者；下游节点不得回写上游事实。追加式工作队列可以有多个
+列明的生产者，但只允许追加新条目，不允许修改或覆盖已有条目。
 
 | 字段 | 主写节点 | 其他节点 |
 |---|---|---|
 | `review_tasks` | `DiffTaskBuilder` | 只读 |
 | `risk_profiles` | `RiskTriage` | 只读 |
-| `selected_task_ids` | `TaskRank` | 只读 |
-| `skipped_tasks` | `TaskRank` | 只读 |
+| `task_selection` | `TaskRank` | 只读 |
 | `task_context_bundles` | `ContextProvider` | 只读 |
 | `candidate_issues` | `ReviewCouncil` | Evidence / Judge 只读 |
-| `evidence_requests` | `ReviewCouncil` / `CouncilJudge` | Coordinator / Evidence 只读 |
+| `evidence_requests` | `ReviewCouncil` / `CouncilJudge`（追加） | Coordinator / Evidence 只读 |
 | `evidence_notes` | `EvidenceAgent` | Judge 只读 |
 | `council_verdicts` | `CouncilJudge` | 只读 |
 | `final_issues` | `CouncilJudge` | CLI / eval 只读 |
@@ -171,7 +182,7 @@ ReviewTask.verdict
 review_tasks: list[ReviewTask]
 risk_profiles: dict[task_id, RiskProfile]
 task_context_bundles: dict[task_id, TaskContextBundle]
-candidate_issues: list[CandidateIssue(task_id=...)]
+candidate_issues: list[CandidateIssue(task_id=...)]  # task_id 必填
 evidence_notes: list[EvidenceNote(candidate_id=...)]
 ```
 
@@ -200,7 +211,7 @@ evidence_notes: list[EvidenceNote(candidate_id=...)]
 第一版薄实现:
 
 - 每个 hunk 一个 `ReviewTask`。
-- 如果无法解析行号，仍生成任务，但在 trace 中标记。
+- 如果无法解析 hunk 行号，生成文件级 fallback task，并在 trace 中标记。
 
 ### 4.3 RiskTriage
 
@@ -210,7 +221,7 @@ evidence_notes: list[EvidenceNote(candidate_id=...)]
 - 规则优先，LLM 辅助留到后续。
 - 解释每个风险标签来自哪些 `RiskSignal`。
 
-第一版优先标签:
+Phase 2 优先标签:
 
 ```text
 AUTHORIZATION
@@ -226,7 +237,7 @@ CONFIG_SECURITY
 MAINTAINABILITY
 ```
 
-规则扩展接口:
+Phase 2 规则扩展接口:
 
 ```python
 RiskRule = Callable[[ReviewTask], list[RiskSignal]]
@@ -251,10 +262,10 @@ RISK_RULES = [
 职责:
 
 - 根据 `RiskProfile` 和 `ReviewBudget` 选择进入深审的任务。
-- 输出 `selected_task_ids` 和 `skipped_tasks`。
+- 输出唯一的 `TaskSelection` 决策。
 - 集中处理大 diff 降级策略。
 
-排序依据:
+Phase 2 排序依据:
 
 ```text
 risk_score
@@ -265,16 +276,16 @@ risk_score
 每个文件任务数限制
 ```
 
-第一版薄实现:
+Phase 1 基线:
 
 - 默认全选。
-- 超过 `max_tasks_to_review` 时按 `total_score` 取 Top-K。
+- 不启用预算限制；Phase 2 再按派生风险分数和预算启用 Top-K。
 
 ### 4.5 ContextProvider
 
 职责:
 
-- 根据 `selected_task_ids + risk_profiles` 构建 `TaskContextBundle`。
+- 根据 `task_selection.selected_task_ids + risk_profiles` 构建 `TaskContextBundle`。
 - 将上下文来源和截断情况写清楚。
 - 工具调用仍走 Java Gateway 沙箱。
 
@@ -300,26 +311,28 @@ CACHE_CONSISTENCY
   → cache key、删除/更新时机、DB 更新逻辑
 ```
 
-第一版薄实现:
+Phase 1 基线:
 
 - 无工具时: `changed_hunk + diff_summary + existing ContextBundle`。
 - 有工具时: 读取当前文件或已有 AST fact，不做跨文件深挖。
+
+Phase 3 才按 RiskTag 替换为定向 context strategy。
 
 ### 4.6 ReviewCouncil
 
 职责:
 
-- 消费 `selected_task_ids + risk_profiles + task_context_bundles`。
+- 消费 `task_selection + risk_profiles + task_context_bundles`。
 - 产出 `CandidateIssue` 和 `EvidenceRequest`。
 - 保留 ThreatModel / Behavior / Maintainability 三路发现者。
 
-第一版策略:
+Phase 1 基线:
 
 - 三路审查员仍保留 ReAct 架构。
-- 输入从整份 diff 改为 task-aware 审查材料。
+- 输入仍是整份 diff；收集节点为每个 CandidateIssue 回填必填 task_id。
 - 工具 allowlist 暂时沿用当前发现者配置。
 
-后续策略:
+Phase 4 策略:
 
 ```text
 AUTHORIZATION / CONFIG_SECURITY
@@ -339,21 +352,9 @@ MAINTAINABILITY / PERFORMANCE / ERROR_HANDLING
 
 职责:
 
-- 根据结构化字段决定进入 EvidenceAgent 还是 CouncilJudge。
-- 不解析自然语言。
-
-路由:
-
-```text
-无 candidate_issues
-  → council_judge
-
-有 evidence_requests 且 evidence_round == 0
-  → evidence_agent
-
-否则
-  → council_judge
-```
+- 作为三路发现者的显式 fan-in barrier，只在所有发现者结束后运行一次。
+- 记录本轮候选和证据请求的批次统计。
+- 固定转入 EvidenceAgent；不承担“是否跳过首次补证”的路由决策，也不解析自然语言。
 
 ### 4.8 EvidenceAgent
 
@@ -363,7 +364,7 @@ MAINTAINABILITY / PERFORMANCE / ERROR_HANDLING
 - 证据关联 `candidate_id`，间接关联 `task_id`。
 - 不直接生成最终 Issue。
 
-后续增强:
+Phase 5 增强:
 
 - 证据策略按 RiskTag 分流。
 - 对 AUTHORIZATION 查上游鉴权。
@@ -390,172 +391,116 @@ MAINTAINABILITY / PERFORMANCE / ERROR_HANDLING
 
 ---
 
-## 5. 分阶段实施目标
+## 5. 分阶段实施计划
 
-### Phase 1: 状态契约与纵向骨架
+阶段不是独立产品版本，而是对同一最终编排的连续构建层。Phase 1 建立完整骨架；从
+Phase 2 起，每个阶段只能填充已有对象、替换节点内部策略或增强派生观测，不能新增改变
+业务路由的 State 字段。
 
-目标:
-
-先打通 `ReviewTask → RiskProfile → selected_task_ids → TaskContextBundle → CandidateIssue → ReviewResult` 的最小闭环。
+### Phase 1: 冻结状态契约与最终拓扑
 
 实现内容:
 
-- 新增核心模型和 State 字段。
-- 新增 `diff_task_builder`、`risk_triage`、`task_rank` 节点。
-- 调整 `context_provider` 和 `review_council` 读取 task-aware state。
-- Trace Dashboard 展示 task 数量、risk tags、selected / skipped、context bundle 状态。
+- 一次引入 `ReviewBudget`、`ReviewTask`、`RiskProfile`、`TaskSelection`、`TaskContextBundle`。
+- 将 `CandidateIssue.task_id` 设为必填，完成候选到任务的确定性映射与 fallback task。
+- 新增 DiffTaskBuilder、RiskTriage、TaskRank 节点的最小实现；全量任务默认选中，RiskProfile 可为空。
+- 采用显式三路 fan-in；三路发现后固定进入一次 EvidenceAgent，再进入 CouncilJudge。
+- 移除仅为条件跳转服务的 `council_route` 状态；首次 Evidence 不再由条件路由决定。
 
 非目标:
 
-- 不追求风险规则完整。
-- 不追求上下文质量显著提升。
-- 不改变最终 `Issue` 产品契约。
+- 不追求风险规则覆盖率、预算效果或上下文质量。
+- ReviewCouncil 暂保持整份 diff 的审查粒度，task_id 由收集节点回填。
+- 不改变 `ReviewResult` / `Issue` 产品契约。
 
-验收:
+完成条件:
 
-```text
-mock 审查通过
-现有单测通过
-trace 能看到任务化状态流转
-最终仍输出 ReviewResult
-```
+- 图结构测试证明 coordinator 在三路发现结束后只运行一次，EvidenceAgent 首次必经。
+- 所有候选均有 task_id，或被显式拒绝并留下 trace。
+- 新旧 mock 路径仍能返回 `ReviewResult`。
 
-### Phase 2: 风险标签规则体系
-
-目标:
-
-把 `RiskTriage` 从薄实现升级为可扩展规则引擎。
+### Phase 2: 完成任务准备链
 
 实现内容:
 
-- 建立 `RiskRule` registry。
-- 为优先 RiskTag 添加确定性规则。
-- 每个 `RiskSignal` 必须有 `source` 和 `reason`。
+- 完善 unified diff 到 hunk/fallback task 的解析与稳定 ID。
+- 建立 `RiskRule` registry，逐步填充 AUTHORIZATION、INPUT_VALIDATION、SQL_DATA_ACCESS、
+  TRANSACTION、IDEMPOTENCY、CACHE_CONSISTENCY、MESSAGE_QUEUE、ERROR_HANDLING、
+  NULL_SAFETY、CONFIG_SECURITY、MAINTAINABILITY 等规则。
+- 启用 ReviewBudget 的默认策略，实现 Top-K、单文件上限、生产代码优先与明确的跳过原因。
 
-验收:
+完成条件:
 
-```text
-新增风险规则不需要改 State 和图
-每个 RiskTag 有确定性单测
-trace 能解释 tag 来源
-```
+- 新风险规则只新增 rule，不修改 State、图或下游接口。
+- TaskRank 的每个选择和跳过都能由 RiskProfile 与 ReviewBudget 解释。
 
-### Phase 3: TaskRank 与大 diff 预算控制
-
-目标:
-
-让大 diff 进入可控降级模式。
+### Phase 3: 完成风险感知上下文链
 
 实现内容:
 
-- 引入默认 `ReviewBudget`。
-- 实现 Top-K 选择、单文件任务数限制、高风险任务优先。
-- 将跳过原因写入 `skipped_tasks`。
+- 建立 RiskTag 到 context strategy 的注册表。
+- ContextProvider 只为 `task_selection.selected_task_ids` 构建 TaskContextBundle。
+- 按策略经 Java Gateway 收集事实，并在 bundle 中记录来源和截断；不把 task 或风险事实复制进去。
 
-验收:
+完成条件:
 
-```text
-大 diff 不会全量进入 LLM
-skipped_tasks 有明确原因
-summary / trace 能说明审查范围
-```
+- 不同标签选择不同的补查策略，且工具调用受 task 预算限制。
+- ContextProvider 不改变 ReviewTask、RiskProfile 或 TaskSelection。
 
-### Phase 4: ContextProvider 风险感知上下文
-
-目标:
-
-上下文构建从通用上下文升级为按 RiskTag 定向补上下文。
+### Phase 4: 完成定向发现链
 
 实现内容:
 
-- 建立 tag 到 context strategy 的映射。
-- 优先复用已有 `get_diff_ast`、`get_file_content`、`find_callers` 等工具。
-- 每个 `TaskContextBundle` 记录来源与截断。
+- Reviewer 输入改为 task + risk profile + task context，而不是整份 diff 的自由扫描。
+- reviewer fan-out 与工具 allowlist 从已有状态纯计算，不引入 `assignment` 类 State 字段。
+- 低风险任务可减少 reviewer，高风险任务可交叉审；CandidateIssue 直接携带来源 task_id。
 
-验收:
+完成条件:
 
-```text
-ContextProvider 不盲目读全项目
-不同 RiskTag 触发不同上下文策略
-ContextBundle 可以被 trace 清楚解释
-```
+- 每个候选可回溯到 task、风险信号和上下文来源。
+- 审查员分派变化不影响 Evidence/Judge 的输入契约。
 
-### Phase 5: ReviewCouncil 定向审查
-
-目标:
-
-三路审查员从全量扫 diff 变成按 task/risk 定向审查。
+### Phase 5: 完成任务化证据与裁决链
 
 实现内容:
 
-- Prompt 明确 task、risk tags、context。
-- `CandidateIssue` 关联 `task_id`。
-- 工具 allowlist 可由 RiskTag 收窄。
-- 后续按 RiskTag 控制 reviewer fan-out。
+- EvidenceAgent 通过 `candidate_id → task_id` 读取风险和任务上下文，按 RiskTag 选择补证策略。
+- CouncilJudge 将 task、risk、context、evidence 统一用于 keep/drop/downgrade/merge 决策。
+- 保留 Judge 发起额外补证的有限回环；任何额外请求仍只追加到既有 `evidence_requests` 队列。
 
-验收:
+完成条件:
 
-```text
-低风险任务可以少跑 reviewer
-高风险任务可以多 reviewer 交叉审
-候选问题能追溯到 task 和 risk profile
-```
+- 首次 Evidence 始终存在，额外 Evidence 只由 Judge 的结构化 verdict 触发。
+- 最终 Issue 不暴露内部 RiskTag，且 Judge 不回写上游事实。
 
-### Phase 6: Evidence / Judge 任务化裁决
-
-目标:
-
-证据校验和最终裁决按 `candidate_id / task_id` 做可解释判断。
+### Phase 6: 完成 Trace 与 Eval 闭环
 
 实现内容:
 
-- EvidenceAgent 读取 task context 和 risk profile。
-- CouncilJudge 使用 task/risk/evidence 做最终裁决。
-- 去重、合并、降级逻辑保留在 Judge。
+- Trace Dashboard 展示任务、风险信号、选择/跳过、上下文来源、reviewer fan-out、
+  Evidence/Judge 链路。
+- 增加 RiskTag 命中率、高风险任务召回、选择覆盖率、大 diff 降级、证据覆盖率等评测指标。
 
-验收:
+完成条件:
 
-```text
-最终 Issue 不暴露内部 risk tag
-裁决理由可在 trace 中解释
-误报过滤不回写上游 State
-```
+- 一次审查能回答“为什么审这个任务、为什么跳过那个任务、证据如何影响裁决”。
+- 能对比 task-aware 改造前后的质量和成本行为。
 
-### Phase 7: Eval 与 Trace 闭环
+### 实施台账
 
-目标:
+每次完成一个阶段，必须在本节更新事实，不以设计文字替代实施记录：
 
-让新架构的效果可观察、可量化。
+| 阶段 | 当前状态 | 已落地内容 | State 变更 | 验证证据 | 刻意未做 |
+|---|---|---|---|---|---|
+| Phase 1 | planned | 无 | 未开始 | 无 | 见本阶段非目标 |
+| Phase 2 | planned | 无 | 禁止新增主路由 State | 无 | 见本阶段实现内容之外的规则 |
+| Phase 3 | planned | 无 | 禁止新增主路由 State | 无 | 跨项目深挖以外的策略 |
+| Phase 4 | planned | 无 | 禁止新增主路由 State | 无 | Evidence/Judge 策略 |
+| Phase 5 | planned | 无 | 禁止新增主路由 State | 无 | Dashboard 与质量指标 |
+| Phase 6 | planned | 无 | 仅派生观测，不加业务 State | 无 | 无 |
 
-Trace 展示:
-
-```text
-Task 列表
-RiskProfile
-TaskRank selected/skipped
-ContextBundle 来源
-Reviewer fan-out
-Evidence/Judge 裁决链路
-```
-
-Eval 指标:
-
-```text
-RiskTag 命中率
-高风险任务召回率
-selected/skipped 覆盖率
-大 diff 降级行为
-每类 RiskTag 的 precision / recall
-证据覆盖率
-```
-
-验收:
-
-```text
-一次审查能解释为什么审这个、不审那个
-eval 能对比 task-aware 改造前后效果
-trace 能帮助调风险规则和上下文策略
-```
+台账的“已落地内容”必须写入具体节点/模型/配置；“验证证据”必须写入测试、评测或 trace
+样本及对应 commit。没有这些证据时只能保持 `planned` 或 `in_progress`，不得标记完成。
 
 ---
 
@@ -628,30 +573,21 @@ MAINTAINABILITY
 
 ---
 
-## 8. 推荐实施顺序
-
-不要按“单节点完整实现”推进，而是按纵向切片推进:
-
-```text
-1. 状态契约 + 最小全链路
-2. 风险规则扩充
-3. budget / 大 diff
-4. context 策略
-5. reviewer 路由
-6. evidence / judge 强化
-7. eval / trace 完善
-```
-
-第一阶段成功的标志不是审查更准，而是这条链路稳定跑通:
+## 8. 实施不变量
 
 ```text
 ReviewTask
   → RiskProfile
-  → selected_task_ids
+  → TaskSelection
   → TaskContextBundle
-  → CandidateIssue
-  → Evidence / Judge
+  → CandidateIssue(task_id)
+  → EvidenceRequest(candidate_id)
+  → EvidenceNote(candidate_id)
+  → Verdict(candidate_id)
   → ReviewResult
 ```
 
-后续所有增强都应挂在这条链路上，而不是重新设计 State。
+- Phase 1 后，任何新增能力必须说明它消费和填充这条链路的哪一项；不能创建平行状态。
+- reviewer 分派、工具 allowlist、上下文策略、风险分数和评测指标均为已有状态的派生物。
+- 工作队列只追加；事实源只由其所有者写入；下游不得改写上游事实。
+- 每个阶段结束先更新实施台账，再讨论下一阶段；台账是后续工作的唯一实施事实来源。
