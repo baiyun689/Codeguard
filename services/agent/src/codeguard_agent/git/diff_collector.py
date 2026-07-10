@@ -12,6 +12,7 @@ import subprocess
 # 匹配 unified diff 的新文件头:`+++ b/path/to/file`(可带时间戳后缀,以 TAB 分隔)。
 # 删除的文件是 `+++ /dev/null`,不会被这条捕获(正是我们想要的:没有"现文件"可读)。
 _PLUS_HEADER = re.compile(r"^\+\+\+ b/(.+?)(?:\t.*)?$", re.MULTILINE)
+_DIFF_HEADER = re.compile(r"^diff --git a/(.+?) b/(.+)$")
 
 
 def collect_diff(repo_path: str = ".", base: str = "HEAD") -> str:
@@ -69,7 +70,10 @@ def parse_changed_files(diff_text: str) -> list[str]:
     """
     if not diff_text:
         return []
-    files = {m.group(1).strip() for m in _PLUS_HEADER.finditer(diff_text)}
+    # 常规文本 diff 走 +++ b/；纯重命名、二进制和仅 mode 变更没有该头，
+    # 需要复用 split_diff_by_file 从 diff --git 目标路径识别当前可读文件。
+    files = set(split_diff_by_file(diff_text))
+    files.update(m.group(1).strip() for m in _PLUS_HEADER.finditer(diff_text))
     files.discard("")
     return sorted(files)
 
@@ -82,7 +86,8 @@ def split_diff_by_file(diff_text: str) -> dict[str, str]:
 
     设计要点:
     - 以 `diff --git ` 行为分段边界,每段保留完整的文件头与 hunk。
-    - 段的 key 取该段内 `+++ b/<path>` 头(与 parse_changed_files 同口径)。
+    - 段的 key 优先取 `+++ b/<path>`，没有该头时退化到 `diff --git` 的新路径。
+      因而纯重命名、二进制和仅 mode 变更也可作为当前文件进入工具白名单。
     - 删除文件的新文件头是 `+++ /dev/null`,没有"现文件"路径,跳过。
     - 确定性纯函数,可独立单测、不触发 IO;空 diff / 无法解析 → 返回空 dict。
     """
@@ -102,13 +107,18 @@ def split_diff_by_file(diff_text: str) -> dict[str, str]:
     if current is not None:
         blocks.append(current)
 
-    sections: dict[str, str] = {}
-    for block in blocks:
-        path: str | None = None
+    def _current_path(block: list[str]) -> str | None:
+        if any(line == "+++ /dev/null" or line.startswith("deleted file mode") for line in block):
+            return None
         for line in block:
             if line.startswith("+++ b/"):
-                path = line[len("+++ b/"):].split("\t", 1)[0].strip()
-                break
+                return line[len("+++ b/"):].split("\t", 1)[0].strip()
+        match = _DIFF_HEADER.match(block[0]) if block else None
+        return match.group(2).strip() if match else None
+
+    sections: dict[str, str] = {}
+    for block in blocks:
+        path = _current_path(block)
         if path:
             sections[path] = "\n".join(block)
     return sections

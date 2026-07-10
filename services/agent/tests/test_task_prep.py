@@ -126,6 +126,19 @@ def test_build_tasks_creates_fallback_for_pure_rename():
     assert [t.id for t in tasks] == ["New.java#file"]
 
 
+def test_build_tasks_creates_fallback_for_binary_and_mode_only_changes():
+    diff = (
+        "diff --git a/logo.png b/logo.png\n"
+        "index 111..222 100644\n"
+        "Binary files a/logo.png and b/logo.png differ\n"
+        "diff --git a/script.sh b/script.sh\n"
+        "old mode 100644\n"
+        "new mode 100755\n"
+    )
+    tasks = build_tasks(diff)
+    assert [task.id for task in tasks] == ["logo.png#file", "script.sh#file"]
+
+
 def test_changed_lines_ignores_no_newline_marker():
     # `\ No newline at end of file` 是 diff 级标记，不占新文件行号。
     hunk = (

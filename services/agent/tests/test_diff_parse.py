@@ -47,6 +47,22 @@ def test_删除文件_不计入因为没有现文件可读():
     assert parse_changed_files(diff) == []
 
 
+def test_纯重命名和无文本hunk的现文件仍进入工具白名单():
+    diff = (
+        "diff --git a/Old.java b/New.java\n"
+        "similarity index 100%\n"
+        "rename from Old.java\n"
+        "rename to New.java\n"
+        "diff --git a/logo.png b/logo.png\n"
+        "index 111..222 100644\n"
+        "Binary files a/logo.png and b/logo.png differ\n"
+        "diff --git a/script.sh b/script.sh\n"
+        "old mode 100644\n"
+        "new mode 100755\n"
+    )
+    assert parse_changed_files(diff) == ["New.java", "logo.png", "script.sh"]
+
+
 def test_去重且排序():
     diff = (
         "+++ b/z.java\n"
@@ -102,3 +118,14 @@ def test_split_删除文件无现文件路径_跳过():
         "-bye\n"
     )
     assert split_diff_by_file(diff) == {}
+
+
+def test_split_无文本hunk的现文件仍保留完整diff块():
+    diff = (
+        "diff --git a/logo.png b/logo.png\n"
+        "index 111..222 100644\n"
+        "Binary files a/logo.png and b/logo.png differ\n"
+    )
+    sections = split_diff_by_file(diff)
+    assert set(sections) == {"logo.png"}
+    assert "Binary files" in sections["logo.png"]
