@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from codeguard_agent.models.tasks import ReviewBudget, ReviewTask, RiskTag
+from codeguard_agent.models.tasks import ReviewBudget, RiskProfile, RiskSignal, ReviewTask, RiskTag
 from codeguard_agent.pipeline.task_prep import (
     _changed_lines,
     build_tasks,
@@ -61,6 +61,79 @@ def test_rank_tasks_selects_all_by_default():
     sel = rank_tasks(tasks, profiles, ReviewBudget())
     assert sel.selected_task_ids == ["A.java#h0", "A.java#h1"]
     assert sel.skipped_tasks == []
+
+
+def _rank_task(task_id: str, file: str) -> ReviewTask:
+    return ReviewTask(id=task_id, file=file, patch="+changed")
+
+
+def _rank_profile(task_id: str, tag: RiskTag, score: int = 1, *, deleted: bool = False) -> RiskProfile:
+    source = "text:deleted:test" if deleted else "text:added:test"
+    return RiskProfile(
+        task_id=task_id,
+        tag_scores={tag: score},
+        signals=[RiskSignal(tag=tag, score=score, source=source, reason="test")],
+    )
+
+
+def test_rank_tasks_applies_total_budget_and_keeps_highest_risk_first():
+    tasks = [_rank_task(f"A.java#h{i}", "src/main/A.java") for i in range(3)]
+    profiles = {
+        tasks[0].id: _rank_profile(tasks[0].id, RiskTag.PERFORMANCE, 1),
+        tasks[1].id: _rank_profile(tasks[1].id, RiskTag.INJECTION, 3),
+        tasks[2].id: _rank_profile(tasks[2].id, RiskTag.TRANSACTION_ATOMICITY, 2),
+    }
+
+    selection = rank_tasks(tasks, profiles, ReviewBudget(max_tasks_to_review=2, max_tasks_per_file=None))
+
+    assert selection.selected_task_ids == ["A.java#h1", "A.java#h2"]
+    assert [(item.task_id, item.reason, item.risk_score) for item in selection.skipped_tasks] == [
+        ("A.java#h0", "total_limit", 1)
+    ]
+
+
+def test_rank_tasks_applies_per_file_budget_before_moving_to_next_file():
+    tasks = [
+        _rank_task("A.java#h0", "src/main/A.java"),
+        _rank_task("A.java#h1", "src/main/A.java"),
+        _rank_task("B.java#h0", "src/main/B.java"),
+    ]
+    profiles = {task.id: _rank_profile(task.id, RiskTag.PERFORMANCE, 1) for task in tasks}
+
+    selection = rank_tasks(tasks, profiles, ReviewBudget(max_tasks_to_review=None, max_tasks_per_file=1))
+
+    assert selection.selected_task_ids == ["A.java#h0", "B.java#h0"]
+    assert [(item.task_id, item.reason) for item in selection.skipped_tasks] == [
+        ("A.java#h1", "per_file_limit")
+    ]
+
+
+def test_rank_tasks_none_budget_limits_and_task_id_breaks_ties():
+    tasks = [
+        _rank_task("z#h0", "test/z.java"),
+        _rank_task("a#h0", "test/a.java"),
+    ]
+    profiles = {task.id: _rank_profile(task.id, RiskTag.GENERAL_REVIEW, 1) for task in tasks}
+
+    selection = rank_tasks(tasks, profiles, ReviewBudget(max_tasks_to_review=None, max_tasks_per_file=None))
+
+    assert selection.selected_task_ids == ["a#h0", "z#h0"]
+    assert selection.skipped_tasks == []
+
+
+def test_rank_tasks_prefers_concrete_risk_over_general_review():
+    tasks = [
+        _rank_task("general#h0", "src/main/General.java"),
+        _rank_task("specific#h0", "src/main/Specific.java"),
+    ]
+    profiles = {
+        "general#h0": _rank_profile("general#h0", RiskTag.GENERAL_REVIEW, 1),
+        "specific#h0": _rank_profile("specific#h0", RiskTag.INJECTION, 1),
+    }
+
+    selection = rank_tasks(tasks, profiles, ReviewBudget(max_tasks_to_review=1, max_tasks_per_file=None))
+
+    assert selection.selected_task_ids == ["specific#h0"]
 
 
 def test_map_candidate_uses_changed_line_first():

@@ -4,7 +4,7 @@
 - build_tasks：解析 unified diff → 每 hunk 一个 ReviewTask；无 hunk（含删除文件、
   纯重命名）退化为文件级 fallback task。不判断风险、不读仓库文件、不调 LLM。
 - triage_tasks：调用 Phase 2 风险规则目录，产出画像和规则诊断。
-- rank_tasks：Phase 1 默认全选（预算生效留到 Phase 2）。
+- rank_tasks：按 RiskProfile 派生排序分数，并应用 Phase 2 预算。
 - map_candidate_to_task：候选(file, line) → task_id 的确定性映射。必须能绑定到具体
   changed 区域（命中 changed line、落在 hunk 覆盖范围、或该文件的明确文件级 fallback），
   否则返回 None（spec §3.2「无法映射的候选不得进入共享黑板」/§4.9「无法绑定 changed
@@ -20,6 +20,8 @@ from codeguard_agent.models.tasks import (
     ReviewBudget,
     ReviewTask,
     RiskProfile,
+    RiskTag,
+    SkippedTask,
     TaskSelection,
 )
 from codeguard_agent.pipeline.risk_rules.catalog import TriageResult, triage_tasks as _triage_tasks
@@ -186,13 +188,84 @@ def triage_tasks(tasks: list[ReviewTask]) -> TriageResult:
     return _triage_tasks(tasks)
 
 
+def _is_production_path(path: str) -> bool:
+    """Prefer source files over tests, docs, generated and build output."""
+    normalized = _norm(path)
+    if "src/main/" in normalized:
+        return True
+    non_production_markers = (
+        "/test/",
+        "/tests/",
+        "/docs/",
+        "/generated/",
+        "/build/",
+        "/target/",
+    )
+    return not (
+        normalized.startswith(("test/", "tests/", "docs/", "generated/"))
+        or any(marker in normalized for marker in non_production_markers)
+    )
+
+
 def rank_tasks(
     tasks: list[ReviewTask],
     profiles: dict[str, RiskProfile],
     budget: ReviewBudget,
 ) -> TaskSelection:
-    """Phase 1：默认全选，不施加预算限制。"""
-    return TaskSelection(selected_task_ids=[t.id for t in tasks], skipped_tasks=[])
+    """按确定性风险优先级选择任务，不把排序分数写回共享状态。"""
+
+    def rank_key(task: ReviewTask) -> tuple[int, int, int, int, int, int, str]:
+        profile = profiles.get(task.id)
+        tag_scores = profile.tag_scores if profile is not None else {}
+        signals = profile.signals if profile is not None else []
+        has_concrete_tag = any(tag is not RiskTag.GENERAL_REVIEW for tag in tag_scores)
+        has_high_risk_signal = any(signal.score == 3 for signal in signals)
+        has_deleted_evidence = any(
+            signal.source.startswith("text:deleted:") for signal in signals
+        )
+        return (
+            -max(tag_scores.values(), default=0),
+            -sum(tag_scores.values()),
+            -int(has_concrete_tag),
+            -int(has_high_risk_signal),
+            -int(has_deleted_evidence),
+            -int(_is_production_path(task.file)),
+            task.id,
+        )
+
+    ranked = sorted(tasks, key=rank_key)
+    selected: list[str] = []
+    skipped: list[tuple[ReviewTask, str]] = []
+    selected_per_file: dict[str, int] = {}
+
+    for task in ranked:
+        if budget.max_tasks_to_review is not None and len(selected) >= budget.max_tasks_to_review:
+            skipped.append((task, "total_limit"))
+            continue
+        file_key = _norm(task.file)
+        if (
+            budget.max_tasks_per_file is not None
+            and selected_per_file.get(file_key, 0) >= budget.max_tasks_per_file
+        ):
+            skipped.append((task, "per_file_limit"))
+            continue
+        selected.append(task.id)
+        selected_per_file[file_key] = selected_per_file.get(file_key, 0) + 1
+
+    return TaskSelection(
+        selected_task_ids=selected,
+        skipped_tasks=[
+            SkippedTask(
+                task_id=task.id,
+                reason=reason,
+                risk_score=max(
+                    profiles.get(task.id, RiskProfile(task_id=task.id)).tag_scores.values(),
+                    default=0,
+                ),
+            )
+            for task, reason in skipped
+        ],
+    )
 
 
 def map_candidate_to_task(file: str, line: int, tasks: list[ReviewTask]) -> str | None:
