@@ -25,6 +25,7 @@ from codeguard_agent.llm.client import mock_review_result
 from codeguard_agent.models.council import (
     CandidateIssue,
     ContextBundle,
+    ContextFact,
     CouncilRunStats,
     CouncilTrace,
     DEFAULT_MAX_EVIDENCE_ROUNDS as COUNCIL_DEFAULT_MAX_EVIDENCE_ROUNDS,
@@ -48,7 +49,8 @@ from codeguard_agent.models.tasks import (
     TaskContextBundle,
     TaskSelection,
 )
-from codeguard_agent.pipeline import task_prep
+from codeguard_agent.pipeline import context_rules, task_prep
+from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.risk_routing import render_task_scope, routed_task_ids
 from codeguard_agent.pipeline.engines import (
     DirectEngine,
@@ -349,26 +351,149 @@ def _task_rank_node():
     return _node
 
 
+def _execute_level1_call(
+    call: context_rules.Level1Call, tool_client,
+) -> tuple[context_rules.Level1Call, str | None, str]:
+    """执行单个 Level1 调用，拒绝将失败信封作为事实返回。"""
+    try:
+        response = (
+            tool_client.find_callers(call.key)
+            if call.level is context_rules.ContextLevel.FIND_CALLERS
+            else tool_client.get_code_metrics(call.key)
+        )
+    except Exception as exc:  # noqa: BLE001
+        return call, None, f"{type(exc).__name__}: {exc}"
+    if not getattr(response, "success", False):
+        return call, None, str(getattr(response, "error", "tool_failed"))
+    content = response.as_tool_output().strip()
+    return call, (content or None), ""
+
+
 def _context_provider_node(tool_client):
+    """为选中任务装配 Level0 切片和按风险定向的 Level1 事实。"""
+
     def _node(state: ReviewState) -> dict:
         ctx = _state_to_context(state, tool_client=tool_client)
         ContextProviderStage().execute(ctx)
+        bundle = ctx.context_bundle
+
         selection = state.get("task_selection")
-        selected_ids = selection.selected_task_ids if selection is not None else []
-        # Phase 1：为每个选中任务建立空 TaskContextBundle，确立所有权；
-        # 按 RiskTag 定向填充留到 Phase 3。
-        task_bundles = {tid: TaskContextBundle(task_id=tid) for tid in selected_ids}
-        return {
-            "context_bundle": ctx.context_bundle,
-            "gathered_context": list(ctx.gathered_context),
-            "task_context_bundles": task_bundles,
-            "council_trace": [
+        selected_ids = set(selection.selected_task_ids) if selection is not None else set()
+        all_tasks: list[ReviewTask] = state.get("review_tasks") or []
+        tasks = [task for task in all_tasks if task.id in selected_ids]
+        risk_profiles: dict[str, RiskProfile] = state.get("risk_profiles") or {}
+        budget = state.get("review_budget") or ReviewBudget()
+
+        ast_text = "\n".join(
+            fact.content for fact in bundle.facts if fact.source == "tool:get_diff_ast"
+        )
+        sensitive_text = "\n".join(
+            fact.content for fact in bundle.facts if fact.source == "tool:find_sensitive_apis"
+        )
+        ast_blocks: dict[str, str] = {}
+        for task in tasks:
+            key = context_rules.normalize_path(task.file)
+            if key in ast_blocks:
+                continue
+            block = context_rules.ast_block_for_file(ast_text, task.file)
+            if block is not None:
+                ast_blocks[key] = block
+
+        plan = context_rules.plan_context_calls(tasks, risk_profiles, ast_blocks)
+        level1_content: dict[tuple[context_rules.ContextLevel, str], str] = {}
+        failed_level1: dict[tuple[context_rules.ContextLevel, str], str] = {}
+        gathered = list(ctx.gathered_context)
+        if tool_client is not None and plan.level1_calls:
+            outcomes = run_bounded_parallel(
+                list(plan.level1_calls),
+                lambda call: _execute_level1_call(call, tool_client),
+                max_workers=8,
+            )
+            for outcome in outcomes:
+                if outcome is None:
+                    continue
+                call, content, error = outcome
+                if content is None:
+                    failed_level1[(call.level, call.key)] = error or "tool_failed"
+                    continue
+                level1_content[(call.level, call.key)] = content
+                gathered.append(GatheredContext(call.level.value, call.key, content))
+
+        task_bundles: dict[str, TaskContextBundle] = {}
+        trace: list[CouncilTrace] = [
+            CouncilTrace(
+                node="context_provider",
+                event="bundle_created",
+                detail=f"facts={len(bundle.facts)} tasks={len(tasks)}",
+            )
+        ]
+        for task in tasks:
+            facts: list[ContextFact] = []
+            ast_block = ast_blocks.get(context_rules.normalize_path(task.file))
+            if ast_block:
+                facts.append(
+                    ContextFact(
+                        source="tool:get_diff_ast",
+                        kind="ast_structure",
+                        content=ast_block,
+                    )
+                )
+            sensitive_rows = context_rules.sensitive_api_rows_for_task(sensitive_text, task)
+            if sensitive_rows:
+                facts.append(
+                    ContextFact(
+                        source="tool:find_sensitive_apis",
+                        kind="sensitive_api",
+                        content="\n".join(sensitive_rows),
+                    )
+                )
+
+            level1_labels: list[str] = []
+            for call in plan.level1_calls:
+                if task.id not in call.task_ids:
+                    continue
+                content = level1_content.get((call.level, call.key))
+                if content is None:
+                    continue
+                facts.append(
+                    ContextFact(
+                        source=f"tool:{call.level.value}",
+                        kind=call.level.value,
+                        content=content,
+                    )
+                )
+                level1_labels.append(f"{call.level.value}({call.key})")
+
+            facts, truncated = context_rules.truncate_task_facts(
+                facts, budget.max_context_chars_per_task
+            )
+            task_bundles[task.id] = TaskContextBundle(
+                task_id=task.id,
+                facts=facts,
+                truncated=truncated,
+            )
+            skip_reasons = [skip.reason for skip in plan.skips if skip.task_id == task.id]
+            failure_reasons = [
+                failed_level1[(call.level, call.key)]
+                for call in plan.level1_calls
+                if task.id in call.task_ids and (call.level, call.key) in failed_level1
+            ]
+            trace.append(
                 CouncilTrace(
                     node="context_provider",
-                    event="bundle_created",
-                    detail=f"facts={len(ctx.context_bundle.facts)} task_bundles={len(task_bundles)}",
+                    event="task_bundle_filled",
+                    detail=(
+                        f"task={task.id} facts={len(facts)} level1={level1_labels} "
+                        f"skips={skip_reasons} failed={failure_reasons} truncated={truncated}"
+                    ),
                 )
-            ],
+            )
+
+        return {
+            "context_bundle": bundle,
+            "gathered_context": gathered,
+            "task_context_bundles": task_bundles,
+            "council_trace": trace,
         }
 
     return _node

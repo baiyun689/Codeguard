@@ -911,7 +911,21 @@ class _MockToolClient:
 
     def find_sensitive_apis(self) -> _MockToolResponse:
         self.calls.append(("find_sensitive_apis", {}))
-        return _MockToolResponse(True, result="SQL injection at line 5")
+        return _MockToolResponse(
+            True,
+            result="| 🔴 HIGH | `Statement.execute` | A.java:12 | `sql` |",
+        )
+
+    def get_diff_ast(self, diff_text: str = "") -> _MockToolResponse:
+        self.calls.append(("get_diff_ast", {"query": diff_text}))
+        return _MockToolResponse(
+            True,
+            result=(
+                "AST for: A.java\n"
+                "  class: A\n"
+                "    public void save(Order order) [L12-L18]\n"
+            ),
+        )
 
     def find_callers(self, query: str = "") -> _MockToolResponse:
         self.calls.append(("find_callers", {"query": query}))
@@ -1403,3 +1417,133 @@ def test_make_reviewer_node_passes_only_routed_scope_and_rejects_unrouted_candid
     assert 'id="B.java#h0"' not in seen_prompt
     assert out["candidate_issues"] == []
     assert any(trace.event == "candidate_rejected_unrouted" for trace in out["council_trace"])
+
+
+def test_context_provider_node_fills_level0_and_level1_facts_per_task():
+    task = G.ReviewTask(
+        id="A.java#h0",
+        file="A.java",
+        hunk_header="@@ -12,2 +12,2 @@",
+        patch="+x",
+        changed_lines=[12],
+    )
+    tool_client = _MockToolClient()
+
+    out = G._context_provider_node(tool_client)(
+        {
+            "diff_text": (
+                "diff --git a/A.java b/A.java\n--- a/A.java\n+++ b/A.java\n"
+                "@@ -12,2 +12,2 @@\n+order.save();\n"
+            ),
+            "review_tasks": [task],
+            "risk_profiles": {
+                task.id: G.RiskProfile(
+                    task_id=task.id,
+                    tag_scores={RiskTag.RESOURCE_LIFECYCLE: 2},
+                )
+            },
+            "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
+            "review_budget": G.ReviewBudget(),
+        }
+    )
+
+    bundle = out["task_context_bundles"][task.id]
+    assert {fact.source for fact in bundle.facts} >= {
+        "tool:get_diff_ast",
+        "tool:find_callers",
+    }
+    assert ("find_callers", {"query": "A.java#save"}) in tool_client.calls
+    assert any(
+        trace.event == "task_bundle_filled" and f"task={task.id}" in trace.detail
+        for trace in out["council_trace"]
+    )
+
+
+def test_context_provider_node_records_skip_when_method_unresolved():
+    task = G.ReviewTask(
+        id="B.java#h0",
+        file="B.java",
+        hunk_header="@@ -1,1 +1,1 @@",
+        patch="+x",
+        changed_lines=[1],
+    )
+    tool_client = _MockToolClient()
+
+    out = G._context_provider_node(tool_client)(
+        {
+            "diff_text": "diff --git a/B.java b/B.java\n--- a/B.java\n+++ b/B.java\n@@ -1 +1 @@\n+x\n",
+            "review_tasks": [task],
+            "risk_profiles": {
+                task.id: G.RiskProfile(
+                    task_id=task.id,
+                    tag_scores={RiskTag.API_CONTRACT: 2},
+                )
+            },
+            "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
+            "review_budget": G.ReviewBudget(),
+        }
+    )
+
+    assert not any(call[0] == "find_callers" for call in tool_client.calls)
+    assert any("no_method_resolved" in trace.detail for trace in out["council_trace"])
+
+
+def test_context_provider_node_general_review_gets_no_level1_call():
+    task = G.ReviewTask(
+        id="C.java#h0",
+        file="C.java",
+        hunk_header="@@ -1,1 +1,1 @@",
+        patch="+x",
+        changed_lines=[1],
+    )
+    tool_client = _MockToolClient()
+
+    G._context_provider_node(tool_client)(
+        {
+            "diff_text": "diff --git a/C.java b/C.java\n--- a/C.java\n+++ b/C.java\n@@ -1 +1 @@\n+x\n",
+            "review_tasks": [task],
+            "risk_profiles": {
+                task.id: G.RiskProfile(
+                    task_id=task.id,
+                    tag_scores={RiskTag.GENERAL_REVIEW: 1},
+                )
+            },
+            "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
+            "review_budget": G.ReviewBudget(),
+        }
+    )
+
+    assert not any(call[0] in ("find_callers", "get_code_metrics") for call in tool_client.calls)
+
+
+def test_context_provider_node_does_not_store_failed_level1_response_as_fact():
+    class _FailingCallersClient(_MockToolClient):
+        def find_callers(self, query: str = "") -> _MockToolResponse:
+            self.calls.append(("find_callers", {"query": query}))
+            return _MockToolResponse(False, error="gateway timeout")
+
+    task = G.ReviewTask(
+        id="A.java#h0",
+        file="A.java",
+        hunk_header="@@ -12,1 +12,1 @@",
+        patch="+x",
+        changed_lines=[12],
+    )
+    out = G._context_provider_node(_FailingCallersClient())(
+        {
+            "diff_text": "diff --git a/A.java b/A.java\n+++ b/A.java\n@@ -12 +12 @@\n+x\n",
+            "review_tasks": [task],
+            "risk_profiles": {
+                task.id: G.RiskProfile(
+                    task_id=task.id,
+                    tag_scores={RiskTag.RESOURCE_LIFECYCLE: 2},
+                )
+            },
+            "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
+            "review_budget": G.ReviewBudget(),
+        }
+    )
+
+    facts = out["task_context_bundles"][task.id].facts
+    assert all("gateway timeout" not in fact.content for fact in facts)
+    assert any("gateway timeout" in trace.detail for trace in out["council_trace"])
