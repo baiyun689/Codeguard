@@ -1,0 +1,20 @@
+## 消息投递（生产、消费、确认和失败处理是否保持事件语义）
+
+### 典型模式
+```java
+orderRepo.save(order);
+kafkaTemplate.send("orders", order.getId());
+```
+数据库提交后未可靠发消息，消费者先确认再处理，异常被吞导致 offset 提交，重试/DLQ 丢失原始 key 或重复执行业务动作。
+
+### 判定要点
+确认生产端采用 outbox/事务消息或可恢复补偿；消费端处理成功后再确认，并以 eventId 幂等。检查重试上限、死信路由、顺序要求和 poison message 的可观测性。
+
+### 严重级别参考
+CRITICAL：订单、支付等关键事件可永久丢失或重复产生不可逆副作用。WARNING：失败消息难以恢复、顺序错乱或重复处理低风险事件。INFO：只缺少指标、告警或更清晰的 header。
+
+### 已知误报判例
+框架 transactional outbox 自动发布；Kafka listener 使用手动 ack 且异常会重投；消费者已按业务事件 ID 去重；事件为可再计算的缓存失效通知。
+
+### 排除项
+HTTP 重试属于 SSRF_OUTBOUND；请求重复属于 IDEMPOTENCY_RETRY；跨表写入回滚属于 TRANSACTION_ATOMICITY。

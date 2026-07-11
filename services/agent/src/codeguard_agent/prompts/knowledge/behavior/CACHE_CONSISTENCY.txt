@@ -1,0 +1,20 @@
+## 缓存一致性（缓存读写、失效和键空间是否与真实状态一致）
+
+### 典型模式
+```java
+@Cacheable(cacheNames = "product", key = "#id")
+Product get(Long id) { return repo.findById(id).orElseThrow(); }
+```
+更新后不 `@CacheEvict`，缓存 key 忽略 tenant/locale/权限维度；事务尚未提交就刷新缓存；本地缓存与多实例之间没有失效传播。
+
+### 判定要点
+确认每种写路径都会失效或更新对应 key，读 key 包含影响结果的维度；检查缓存操作是否在事务提交后执行、TTL 是否可接受、null/未命中是否会把短暂状态固化。
+
+### 严重级别参考
+CRITICAL：错误缓存会展示/执行另一租户数据或关键价格、权限状态。WARNING：用户持续看到旧状态、库存或配置。INFO：仅为命中率、TTL 或命名改进。
+
+### 已知误报判例
+统一 repository decorator 在提交后发布失效事件；数据允许明确的最终一致窗口；缓存是纯公共只读配置且 key 已版本化。
+
+### 排除项
+并发修改同一行属于 CONCURRENCY_CONSISTENCY；数据库事务边界属于 TRANSACTION_ATOMICITY；响应字段泄露属于 DATA_EXPOSURE。

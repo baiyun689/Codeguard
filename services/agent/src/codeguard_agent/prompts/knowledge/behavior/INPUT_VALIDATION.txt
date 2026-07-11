@@ -1,0 +1,20 @@
+## 输入校验行为（业务边界、格式和范围是否在正确位置被拒绝）
+
+### 典型模式
+```java
+record TransferRequest(BigDecimal amount, Long targetId) {}
+service.transfer(request.amount(), request.targetId());
+```
+DTO 缺少 `@Valid`、金额允许零/负数、分页大小无上限，或 Controller 校验后 Service 被其他入口直接调用而绕过校验；字符串枚举通过 `valueOf` 直接抛出 500。
+
+### 判定要点
+确认校验覆盖格式、范围、相互关系和业务前置条件，并位于所有入口都会经过的边界。还要确认归一化（trim、时区、货币精度）不会在校验之后改变含义。
+
+### 严重级别参考
+CRITICAL：未校验输入可导致资金、库存或权限状态被错误改变。WARNING：非法值造成异常、越界查询或错误业务结果。INFO：可由更友好错误信息或更严限制改善。
+
+### 已知误报判例
+请求对象在 Web 层使用 `@Validated`，且 Service 是私有实现；数据库约束和领域值对象已保证同一不变量；上游网关契约明确限制范围并受测试覆盖。
+
+### 排除项
+将输入拼进 SQL/命令属于 INJECTION；文件名路径边界属于 FILE_PATH_IO；缺失 null 防御属于 NULL_STATE_SAFETY。

@@ -1,0 +1,22 @@
+## 授权业务逻辑（业务动作是否在正确的主体、资源和状态下执行）
+
+### 典型模式
+```java
+void approve(Long orderId, User operator) {
+    Order order = repo.findById(orderId).orElseThrow();
+    order.approve();
+}
+```
+审批、退款、转账或租户数据操作只传入资源 ID，却未把当前操作者、其组织和业务角色交给领域服务判断；批量操作只验证第一条记录也是常见错误。
+
+### 判定要点
+确认领域规则是否要求所有权、同租户、岗位或状态机权限，并追踪调用链是否已由可信上下文完成等价校验。不能把请求中的 `userId` 当作当前主体，也不能用“已登录”替代操作权限。
+
+### 严重级别参考
+CRITICAL：可错误批准、退款、转账或跨租户修改高价值数据。WARNING：单一业务动作遗漏角色/状态校验但仍有外围限制。INFO：只是不一致的校验位置或命名，且行为没有变化。
+
+### 已知误报判例
+服务入口已调用 `permissionService.check(operator, order)`；命令只能由受限的内部工作流投递且消费者再次校验；类级安全和领域服务共同保证资源归属。
+
+### 排除项
+登录态建立、Token 校验属于 AUTHENTICATION_SESSION；接口公开配置属于 WEB_SECURITY_CONFIG；敏感字段返回过多属于 DATA_EXPOSURE。

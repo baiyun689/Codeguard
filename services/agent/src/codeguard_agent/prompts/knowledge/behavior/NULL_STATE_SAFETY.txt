@@ -1,0 +1,20 @@
+## 空值与状态安全（缺失值、可选状态和状态迁移是否被明确处理）
+
+### 典型模式
+```java
+Order order = repo.findById(id).orElse(null);
+return order.getItems().stream().map(Item::getSku).toList();
+```
+把可选查询转为 `null` 后继续解引用，集合/嵌套字段可能为空，枚举状态未覆盖新增值；用 boolean 组合表达多阶段流程导致非法状态可以出现。
+
+### 判定要点
+区分“未找到”“尚未初始化”“允许为空”和“数据损坏”，在边界转换为明确错误或空对象；检查状态迁移是否穷尽且持久化数据兼容，不能用 catch `NullPointerException` 掩盖问题。
+
+### 严重级别参考
+CRITICAL：空/非法状态会绕过关键流程或把业务标为成功。WARNING：常见请求可 500、错误跳过处理或产生不完整数据。INFO：仅可改进 Optional/注解和防御性表达。
+
+### 已知误报判例
+字段由数据库 `NOT NULL`、构造器和 Bean Validation 共同保证；API 明确允许空且调用方已分支；使用 sealed enum/switch 的默认分支会安全拒绝未知值。
+
+### 排除项
+请求字段格式/范围问题属于 INPUT_VALIDATION；异常被吞属于 ERROR_HANDLING；并发导致状态变化属于 CONCURRENCY_CONSISTENCY。

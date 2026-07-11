@@ -1,0 +1,22 @@
+## 并发一致性（同时执行时是否保持业务不变量）
+
+### 典型模式
+```java
+if (account.getBalance().compareTo(amount) >= 0) {
+    account.setBalance(account.getBalance().subtract(amount));
+    repo.save(account);
+}
+```
+先读后写余额、库存或配额，缺少版本检查/条件更新；共享集合、缓存值或单例字段在多线程请求中修改；异步执行依赖 ThreadLocal 安全上下文。
+
+### 判定要点
+构造两个请求交错执行的时间线，确认数据库唯一约束、乐观锁、悲观锁或原子 compare-and-set 是否覆盖不变量；检查重试是否重新读取状态，线程上下文是否显式传递。
+
+### 严重级别参考
+CRITICAL：可超卖、重复扣款、突破额度或导致不可逆账实不符。WARNING：偶发重复、丢失更新或状态可见性错误。INFO：仅为提升锁粒度/日志可诊断性。
+
+### 已知误报判例
+SQL 使用带条件的原子 `update ... where version=?` 并检查行数；数据库唯一约束是最终裁决；队列按业务键顺序消费；对象不是跨请求共享的。
+
+### 排除项
+单请求内多写入不原子属于 TRANSACTION_ATOMICITY；重复提交属于 IDEMPOTENCY_RETRY；缓存失效顺序属于 CACHE_CONSISTENCY。

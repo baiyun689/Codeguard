@@ -1,0 +1,24 @@
+## 错误处理（失败是否被正确分类、传播、回滚和反馈）
+
+### 典型模式
+```java
+try {
+    service.reserve(item);
+} catch (Exception e) {
+    log.warn("reserve failed", e);
+}
+return ResponseEntity.ok().build();
+```
+捕获宽泛异常后仍返回成功，错误被转换为错误的 4xx/5xx，异步 future 未观察异常，或重试把不可恢复业务错误当瞬态故障。
+
+### 判定要点
+确认异常是否保留原因并映射到调用者能处理的语义；检查事务是否会回滚、是否产生补偿/告警，以及客户端是否收到与实际结果一致的状态。区分预期业务拒绝和系统故障。
+
+### 严重级别参考
+CRITICAL：失败被报告成功，导致资金、库存或外部状态被错误继续处理。WARNING：错误丢失、错误分类或不可诊断重试。INFO：仅建议统一异常类型/日志上下文。
+
+### 已知误报判例
+catch 块明确记录失败并排队补偿，接口返回 202 表示异步结果；全局 `@ControllerAdvice` 统一映射领域异常；可选查询用空结果表达预期缺失。
+
+### 排除项
+null 解引用属于 NULL_STATE_SAFETY；资源关闭属于 RESOURCE_LIFECYCLE；输入格式不合法属于 INPUT_VALIDATION。

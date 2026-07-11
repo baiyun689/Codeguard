@@ -1,0 +1,22 @@
+## 幂等与重试（同一意图被重复执行时结果是否可控）
+
+### 典型模式
+```java
+@PostMapping("/payments")
+Payment pay(@RequestBody PayRequest request) {
+    return paymentService.create(request);
+}
+```
+客户端超时重发、消费者重投、定时任务重跑或 HTTP 重试会再次创建订单/扣款；幂等键只读不写、未按租户隔离，或失败后状态永久卡在处理中。
+
+### 判定要点
+确定“同一意图”的键和有效期，检查它与业务记录的唯一约束/状态机是否原子绑定；区分安全重试和已执行但响应丢失，确认重复调用返回一致结果而不是再产生副作用。
+
+### 严重级别参考
+CRITICAL：重试会重复扣款、发货、发券或执行不可逆命令。WARNING：重复创建低价值记录、处理状态无法恢复。INFO：仅缺少幂等响应缓存而后端已去重。
+
+### 已知误报判例
+支付渠道和本地表以同一 idempotency key 加唯一索引；消息消费者按 eventId 去重；操作本身是覆盖式 PUT/条件更新，无额外副作用。
+
+### 排除项
+并行请求竞争属于 CONCURRENCY_CONSISTENCY；事务回滚属于 TRANSACTION_ATOMICITY；消息至少一次投递属于 MESSAGE_DELIVERY。

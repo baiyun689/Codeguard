@@ -1,0 +1,21 @@
+## SQL 数据访问（查询、更新和映射是否保持正确的数据语义）
+
+### 典型模式
+```java
+@Modifying
+@Query("update Order o set o.status=:status where o.id=:id")
+int updateStatus(Long id, Status status);
+```
+更新缺少租户/版本条件，分页没有稳定排序，`join fetch` 造成重复聚合，或 native SQL 参数、列名和实体映射不一致。批量 update 后继续使用过期的 persistence context 也会产生错误结果。
+
+### 判定要点
+检查 WHERE 是否包含业务范围与乐观锁条件、返回行数是否被验证、排序是否确定；确认事务内缓存会被清理或刷新，并对空结果、重复行和 N+1 行为分别判断。
+
+### 严重级别参考
+CRITICAL：条件遗漏导致跨租户/跨资源批量写错。WARNING：丢失更新、错误分页、映射错列或陈旧实体导致业务结果错误。INFO：可优化索引、投影或可读性但结果正确。
+
+### 已知误报判例
+租户过滤由 Hibernate filter/数据库 RLS 强制；版本列由 ORM 自动加入；只读后台报表允许无稳定分页；bulk update 后明确 `clearAutomatically = true`。
+
+### 排除项
+字符串拼 SQL 的可控输入属于 INJECTION；事务边界属于 TRANSACTION_ATOMICITY；查询耗时属于 PERFORMANCE。

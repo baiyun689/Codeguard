@@ -1,0 +1,21 @@
+## 认证与会话行为（身份状态是否被正确建立、续期和失效）
+
+### 典型模式
+```java
+if (passwordEncoder.matches(raw, user.getPassword())) {
+    return tokenService.issue(user.getId());
+}
+```
+密码修改、禁用账户、登出或权限变更后仍可复用旧 refresh token；登录失败计数未原子更新；从 session/JWT 读取身份后没有处理已撤销、过期或匿名状态。
+
+### 判定要点
+检查身份来源是否可信，账号状态、租户和会话版本是否参与校验；确认登出、改密、锁定等状态转换会使旧会话失效，并确认续期不会绕过最大有效期。
+
+### 严重级别参考
+CRITICAL：禁用或改密后仍能长期以原身份执行敏感业务。WARNING：会话失效窗口、失败计数或续期逻辑不正确。INFO：仅为改善审计字段或失败提示。
+
+### 已知误报判例
+JWT 无状态但网关/认证服务校验 `tokenVersion`；短期 access token 的剩余有效期是明确接受的窗口；失败计数由认证提供方统一维护。
+
+### 排除项
+资源级操作资格属于 AUTHORIZATION；CORS、CSRF 配置属于 WEB_SECURITY_CONFIG；把密码散列写入日志属于 DATA_EXPOSURE。

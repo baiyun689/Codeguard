@@ -1,0 +1,19 @@
+## 外部请求行为（调用目标、重试和响应是否符合业务约束）
+
+### 典型模式
+```java
+return restTemplate.getForObject(request.callbackUrl(), CallbackResult.class);
+```
+回调、图片抓取、Webhook 或第三方同步直接使用配置/请求 URL；重试把非幂等 POST 重复发送；未验证响应状态便把远端返回当作成功。
+
+### 判定要点
+确认目标来自白名单或可信配置，重定向/DNS 解析后的地址仍受限制；检查超时、重试次数、幂等键和失败补偿是否匹配业务。不要只因使用 HTTP 客户端就报告。
+
+### 严重级别参考
+CRITICAL：错误目标可触发内部管理操作或错误支付/回调。WARNING：超时、重试或响应处理使外部状态与本地状态分歧。INFO：仅缺少指标或更细错误分类。
+
+### 已知误报判例
+URL 由受管配置中心提供并在网关白名单校验；客户端统一禁用危险重定向并限制 CIDR；供应商 API 的幂等键覆盖重复投递。
+
+### 排除项
+出站凭据泄露属于 DATA_EXPOSURE；消息投递语义属于 MESSAGE_DELIVERY；连接关闭问题属于 RESOURCE_LIFECYCLE。

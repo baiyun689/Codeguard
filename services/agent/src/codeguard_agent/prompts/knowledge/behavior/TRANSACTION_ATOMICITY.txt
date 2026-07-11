@@ -1,0 +1,22 @@
+## 事务原子性（一个业务操作的状态变更是否整体提交或整体回滚）
+
+### 典型模式
+```java
+public void place(Order order) {
+    orderRepo.save(order);
+    inventoryService.reserve(order);
+}
+```
+跨多个仓储更新却没有 `@Transactional`；在事务中捕获异常后继续返回成功；`@Transactional` 标注在 self-invocation 的私有/同类方法上而未生效；远程调用成功与本地提交顺序不一致。
+
+### 判定要点
+列出不变量涉及的写入，确认传播级别、rollback 规则和异常类型覆盖它们；确认代理实际生效，且外部副作用采用 outbox、补偿或明确的一致性策略，不能假设分布式调用会自动回滚。
+
+### 严重级别参考
+CRITICAL：扣款与订单、库存与预占等核心状态可长期半完成。WARNING：失败时残留可修复数据、错误 rollback 规则或事务代理失效。INFO：只建议缩短事务范围且一致性不受影响。
+
+### 已知误报判例
+操作是单条数据库语句的原子更新；上层应用服务已有事务边界；使用 outbox 并以补偿任务保证最终一致；异常被捕获后明确标记 `setRollbackOnly()`。
+
+### 排除项
+并发竞争属于 CONCURRENCY_CONSISTENCY；重复请求属于 IDEMPOTENCY_RETRY；消息确认属于 MESSAGE_DELIVERY。

@@ -1,0 +1,20 @@
+## 数据暴露行为（响应、日志和副作用是否泄露超出业务需要的数据）
+
+### 典型模式
+```java
+log.info("login failed for {} password={}", username, password);
+return ResponseEntity.ok(userEntity);
+```
+直接返回实体、异常信息或消息 payload；日志记录令牌、手机号、地址、完整 SQL 参数；缓存或事件携带比下游业务所需更多的字段。
+
+### 判定要点
+确认接收者角色和用途，只返回 DTO 的最小字段；检查脱敏是否覆盖日志、错误、审计、事件和缓存，而非仅 HTTP 响应。还要区分是否真实可被低权限主体读取。
+
+### 严重级别参考
+CRITICAL：凭据、令牌、财务/医疗等高敏感数据对非授权主体可见。WARNING：个人信息或内部实现细节被广泛记录/返回。INFO：低敏字段可进一步最小化。
+
+### 已知误报判例
+日志字段由安全日志 appender 自动脱敏且访问受限；内部事件 topic 有严格 ACL 和数据保留策略；管理员端 DTO 的字段与其职责相符。
+
+### 排除项
+资源访问权限遗漏属于 AUTHORIZATION；异常吞掉属于 ERROR_HANDLING；序列化 null 行为属于 NULL_STATE_SAFETY。

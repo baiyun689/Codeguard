@@ -1,0 +1,20 @@
+## 资源生命周期（连接、流、线程和事务外资源是否正确取得与释放）
+
+### 典型模式
+```java
+InputStream in = storage.open(key);
+return new InputStreamResource(in);
+```
+`InputStream`、JDBC `ResultSet`、HTTP response、文件句柄、线程池或 `ExecutorService` 没有在责任边界释放；响应式流订阅后取消路径未清理；共享 client 被错误地每请求关闭。
+
+### 判定要点
+确认资源所有者与关闭时机，异常、超时、取消和成功路径都要覆盖；使用 try-with-resources 时不要提前关闭要交给框架写回的流。检查线程池是否有有界队列、拒绝策略和应用停机钩子。
+
+### 严重级别参考
+CRITICAL：资源泄漏可耗尽连接/线程而使核心服务不可用。WARNING：长期运行退化、文件锁定、响应无法完整写出。INFO：仅为统一 client 复用或关闭风格。
+
+### 已知误报判例
+Spring MVC 会在响应完成后关闭 `Resource`；DataSource/HTTP client 是容器管理的单例；Reactor 使用 `usingWhen`；线程池由 Spring bean 生命周期关闭。
+
+### 排除项
+查询语义/行数属于 SQL_DATA_ACCESS；慢操作属于 PERFORMANCE；外部请求目标选择属于 SSRF_OUTBOUND。

@@ -1,0 +1,20 @@
+## 文件与路径 I/O（业务文件是否读写到预期对象与位置）
+
+### 典型模式
+```java
+Path target = uploadRoot.resolve(request.fileName());
+Files.copy(file.getInputStream(), target);
+```
+上传、导出、附件删除使用请求文件名或记录中的路径，未规范化并校验根目录；异步任务先删后读；下载记录与实际存储对象不一致。
+
+### 判定要点
+确认 `normalize()` 后仍以受控根目录开头，存储键是否由服务生成；检查覆盖、并发删除、临时文件清理和失败回滚。业务上还应确认文件归属与元数据状态同步。
+
+### 严重级别参考
+CRITICAL：可覆盖/删除任意业务文件或读取错误租户附件。WARNING：路径处理使任务失败、文件丢失或元数据与对象存储不一致。INFO：仅临时文件命名或日志改进。
+
+### 已知误报判例
+存储服务只接受 UUID object key；文件名只作展示且路径由仓储层生成；操作系统沙箱和根目录校验已经在统一 FileService 中完成。
+
+### 排除项
+外部 HTTP 地址访问属于 SSRF_OUTBOUND；资源流未关闭属于 RESOURCE_LIFECYCLE；附件权限属于 AUTHORIZATION。

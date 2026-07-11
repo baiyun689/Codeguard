@@ -1,0 +1,20 @@
+## 注入导致的业务行为偏差（不可信文本是否被解释为指令）
+
+### 典型模式
+```java
+String jpql = "select o from Order o where o.status='" + status + "'";
+return em.createQuery(jpql).getResultList();
+```
+业务筛选、排序、规则表达式、脚本或 SpEL 由请求参数拼接；即使不是直接安全攻击，也可能让查询条件、审批规则或导出范围偏离预期。
+
+### 判定要点
+确认值是否来自请求、消息或可编辑配置，最终是否进入具有语义解释的 API；优先检查参数绑定、白名单枚举或固定映射能否保持原业务语义。
+
+### 严重级别参考
+CRITICAL：构造条件可越权读取/篡改数据或执行命令。WARNING：动态表达式改变查询、排序或业务规则但影响受限。INFO：仅内部常量拼接且无外部可控来源。
+
+### 已知误报判例
+变量是编译期常量或经封闭 enum 映射；JPA 使用命名参数；模板引擎开启了正确转义且输入仅作为数据显示。
+
+### 排除项
+普通格式校验缺失属于 INPUT_VALIDATION；SQL 连接池资源泄漏属于 RESOURCE_LIFECYCLE；慢查询属于 PERFORMANCE。

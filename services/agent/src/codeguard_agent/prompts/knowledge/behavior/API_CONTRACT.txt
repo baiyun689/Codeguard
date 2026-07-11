@@ -1,0 +1,22 @@
+## API 契约（接口输入、输出、状态码和兼容性是否与调用方约定一致）
+
+### 典型模式
+```java
+@PutMapping("/users/{id}")
+UserDto update(@PathVariable Long id, @RequestBody UserDto body) {
+    return service.create(body);
+}
+```
+路径 ID 与 body ID 未比对，PUT 实际创建新资源，成功/失败状态码改变，分页字段、枚举值或 JSON null 行为与既有客户端契约不兼容。
+
+### 判定要点
+检查公开接口的语义、幂等性、错误码、字段可选性和版本兼容；追踪 DTO mapper 是否丢失/误写字段。对内部 RPC 也要确认消费者的 schema、默认值与回滚策略。
+
+### 严重级别参考
+CRITICAL：契约变化使调用方把失败当成功，或错误操作另一个资源。WARNING：生产客户端会解析失败、重复创建或得到错误字段。INFO：文档、命名或非破坏性扩展建议。
+
+### 已知误报判例
+这是新版本 endpoint 且旧版本仍保留；网关做了兼容转换；body ID 被明确忽略并在文档中声明；客户端由同一原子发布版本控制。
+
+### 排除项
+资源权限属于 AUTHORIZATION；字段敏感性属于 DATA_EXPOSURE；非法输入被拒绝的细节属于 INPUT_VALIDATION。
