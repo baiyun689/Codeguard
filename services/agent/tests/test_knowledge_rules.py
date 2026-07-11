@@ -57,3 +57,22 @@ def test_load_knowledge_uses_enum_order_deduplicates_and_skips_general_review(
     )
 
     assert result == "AUTH\n\nINJECTION"
+
+
+def test_knowledge_files_cover_every_concrete_tag_routed_to_each_domain() -> None:
+    """Every concrete Phase 2 route must have non-empty domain knowledge."""
+    from codeguard_agent.pipeline.knowledge_rules import _KNOWLEDGE_DIR
+    from codeguard_agent.pipeline.risk_routing import _REVIEWER_NAMES
+    from codeguard_agent.pipeline.risk_rules.catalog import reviewers_for_tag
+
+    domain_by_reviewer = {reviewer: domain for reviewer, domain in _REVIEWER_NAMES.items()}
+    missing: list[str] = []
+    for tag in RiskTag:
+        if tag is RiskTag.GENERAL_REVIEW:
+            continue
+        for reviewer in reviewers_for_tag(tag):
+            path = _KNOWLEDGE_DIR / domain_by_reviewer[reviewer] / f"{tag.value}.txt"
+            if not path.is_file() or not path.read_text(encoding="utf-8").strip():
+                missing.append(str(path))
+
+    assert not missing, f"Missing or empty knowledge files: {missing}"

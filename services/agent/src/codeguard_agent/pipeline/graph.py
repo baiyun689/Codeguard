@@ -51,6 +51,7 @@ from codeguard_agent.models.tasks import (
 )
 from codeguard_agent.pipeline import context_rules, task_prep
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
+from codeguard_agent.pipeline.knowledge_rules import load_knowledge
 from codeguard_agent.pipeline.risk_routing import (
     decide_tier,
     render_single_task_risk,
@@ -241,6 +242,7 @@ class ReviewerState(TypedDict, total=False):
     react_recursion_limit: int
     context_bundle: ContextBundle
     task_risk_context: str
+    task_knowledge: str
     tier: str
 
     issues: list
@@ -509,10 +511,15 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
     """把发现者 Agent 构造成 prepare → review → collect 子图。"""
     from langgraph.graph import END, START, StateGraph
 
+    def _system_prompt(state: ReviewerState) -> str:
+        base_prompt = _load_prompt(reviewer.prompt_file)
+        task_knowledge = state.get("task_knowledge") or ""
+        return f"{base_prompt}\n\n{task_knowledge}" if task_knowledge else base_prompt
+
     def _direct_fallback(state: ReviewerState) -> ReviewOutcome:
         return DirectEngine().review(
             llm,
-            system_prompt=_load_prompt(reviewer.prompt_file),
+            system_prompt=_system_prompt(state),
             user_prompt=state.get("user_prompt", ""),
             reviewer_name=reviewer.name,
             max_retries=state.get("max_retries", 3),
@@ -551,7 +558,7 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
         try:
             outcome = engine.review(
                 llm,
-                system_prompt=_load_prompt(reviewer.prompt_file),
+                system_prompt=_system_prompt(state),
                 user_prompt=state.get("user_prompt", ""),
                 reviewer_name=reviewer.name,
                 max_retries=state.get("max_retries", 3),
@@ -738,11 +745,14 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             bundle = task_context_bundles.get(task_id)
             bundle_text = bundle.render() if bundle is not None else ""
             task_risk_context = "\n\n".join(p for p in (risk_text, bundle_text) if p)
-            # 显式传 config/thread_id：run_bounded_parallel 把本调用派发到线程池的工作线程，
-            # LangGraph 通过 contextvar 向下传递的父级 config 不会跨线程自动传播；
-            # 若子图编译时带了 checkpointer，缺 config 会直接抛 ValueError。
-            # 每个 task 调用都是一次性、互不依赖的，给随机 thread_id 既满足 checkpointer
-            # 的硬性要求，也避免不同调用间误撞到旧的 checkpoint 记录。
+            active_tags = (
+                [tag for tag, score in profile.tag_scores.items() if score > 0]
+                if profile is not None
+                else []
+            )
+            task_knowledge = load_knowledge(reviewer.source_agent, active_tags)
+            # 子图未挂 checkpointer（见 make_reviewer_node），因此线程池中的每次 task
+            # invoke 都不需要也不应创建独立 thread_id；审查级恢复仍由外层图承担。
             result = subgraph.invoke(
                 {
                     "diff_text": task.patch,
@@ -752,6 +762,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     "diff_summary": state.get("diff_summary", ""),
                     "react_recursion_limit": state.get("react_recursion_limit", 24),
                     "task_risk_context": task_risk_context,
+                    "task_knowledge": task_knowledge,
                     "tier": tier,
                 },
             )

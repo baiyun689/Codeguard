@@ -1583,6 +1583,39 @@ def test_make_reviewer_node_invokes_tasks_concurrently_with_correct_tier(monkeyp
     assert seen_tiers["+weak"] == "direct"
 
 
+def test_make_reviewer_node_injects_matched_tag_knowledge_into_system_prompt(monkeypatch):
+    captured: dict[str, str] = {}
+
+    class _CapturingEngine:
+        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
+                   max_retries, structured_method, enable_hitl=False):
+            captured["system_prompt"] = system_prompt
+            captured["user_prompt"] = user_prompt
+            return ReviewOutcome(ReviewResult(summary="s"))
+
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _CapturingEngine())
+    monkeypatch.setattr(
+        G, "load_knowledge", lambda domain, tags: "KNOWLEDGE_MARKER" if tags else ""
+    )
+    node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[1], llm=_FakeLLM())
+    task = G.ReviewTask(id="A.java#h0", file="A.java", patch="+lock", changed_lines=[1])
+
+    node({
+        "diff_text": "+lock",
+        "review_tasks": [task],
+        "risk_profiles": {
+            task.id: G.RiskProfile(
+                task_id=task.id,
+                tag_scores={RiskTag.CONCURRENCY_CONSISTENCY: 1},
+            )
+        },
+        "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
+    })
+
+    assert "KNOWLEDGE_MARKER" in captured["system_prompt"]
+    assert "KNOWLEDGE_MARKER" not in captured["user_prompt"]
+
+
 def test_make_reviewer_node_fanout_survives_real_memory_checkpointer(monkeypatch):
     """回归钉子：per-task fan-out 必须显式传 config/thread_id，否则线程池里的
     subgraph.invoke() 在真实 MemorySaver checkpointer 下会因缺 thread_id 抛
