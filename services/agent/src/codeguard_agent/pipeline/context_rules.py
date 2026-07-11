@@ -73,6 +73,27 @@ def normalize_path(path: str) -> str:
     return (path or "").replace("\\", "/").lower()
 
 
+_AST_HEADER = re.compile(r"^AST for:\s*(.+)$")
+
+
+def _split_ast_blocks(text: str) -> list[str]:
+    """按 Gateway 的 ``AST for:`` 头拆分全局 AST 文本。"""
+    if not text.strip():
+        return []
+    return [block.strip() for block in re.split(r"\n(?=AST for:)", text.strip()) if block.strip()]
+
+
+def ast_block_for_file(ast_text: str, file: str) -> str | None:
+    """从全局 get_diff_ast 结果文本切出 ``file`` 对应的单文件 AST 块。"""
+    target = normalize_path(file)
+    for block in _split_ast_blocks(ast_text):
+        first_line = block.splitlines()[0] if block else ""
+        header_match = _AST_HEADER.match(first_line)
+        if header_match and normalize_path(header_match.group(1).strip()) == target:
+            return block
+    return None
+
+
 _METHOD_LINE_SUFFIX = re.compile(r"\[L(\d+)-L(\d+)\]\s*$")
 _METHOD_NAME_BEFORE_PARENS = re.compile(r"(\w+)\([^)]*\)\s*$")
 
@@ -154,3 +175,24 @@ def plan_context_calls(
         for (level, key), task_ids in by_key.items()
     )
     return ContextPlan(level1_calls=calls, skips=tuple(skips))
+
+
+_SENSITIVE_ROW = re.compile(r"^\|[^|]*\|[^|]*\|\s*([^:|]+):(\d+)\s*\|")
+
+
+def sensitive_api_rows_for_task(sensitive_api_text: str, task: ReviewTask) -> list[str]:
+    """筛选全局敏感 API 扫描中属于 task 文件和范围的 Gateway Markdown 行。"""
+    target = normalize_path(task.file)
+    span = _task_span(task)
+    rows: list[str] = []
+    for line in sensitive_api_text.splitlines():
+        match = _SENSITIVE_ROW.match(line)
+        if not match:
+            continue
+        file, line_no = match.group(1).strip(), int(match.group(2))
+        if normalize_path(file) != target:
+            continue
+        if span is not None and not (span[0] <= line_no <= span[1]):
+            continue
+        rows.append(line)
+    return rows

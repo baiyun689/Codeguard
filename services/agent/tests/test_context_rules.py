@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from codeguard_agent.models.tasks import ReviewTask, RiskProfile, RiskTag
-from codeguard_agent.pipeline.context_rules import ContextLevel, plan_context_calls
+from codeguard_agent.pipeline.context_rules import (
+    ContextLevel,
+    ast_block_for_file,
+    plan_context_calls,
+    sensitive_api_rows_for_task,
+)
 
 
 def _profile(task_id: str, *tags: RiskTag) -> RiskProfile:
@@ -130,3 +135,60 @@ def test_task_without_risk_profile_is_skipped_silently():
     plan = plan_context_calls([task], {}, ast_facts_by_file={})
     assert plan.level1_calls == ()
     assert plan.skips == ()
+
+
+def test_ast_block_for_file_matches_by_normalized_path():
+    ast_text = (
+        "AST for: A.java\n"
+        "  class: A\n"
+        "    public void save() [L10-L12]\n"
+        "AST for: B.java\n"
+        "  class: B\n"
+    )
+
+    block = ast_block_for_file(ast_text, "a.java")
+
+    assert block is not None
+    assert block.startswith("AST for: A.java")
+    assert "B.java" not in block
+
+
+def test_ast_block_for_file_returns_none_when_no_match():
+    assert ast_block_for_file("AST for: A.java\n  class: A\n", "C.java") is None
+
+
+def test_sensitive_api_rows_for_task_filters_by_file_and_hunk_range():
+    sensitive_text = (
+        "# 敏感 API 扫描\n"
+        "扫描 1 个文件, 跳过 0 个不可解析文件, 发现 2 处敏感 API 调用\n\n"
+        "| 危险等级 | API | 文件 | 行号 | 调用参数 |\n"
+        "|---------|-----|------|------|----------|\n"
+        "| 🔴 HIGH | `Statement.execute` | A.java:12 | `sql` |\n"
+        "| 🟡 MEDIUM | `Files.copy` | A.java:99 | `p1, p2` |\n"
+    )
+    task = ReviewTask(
+        id="A.java#h0",
+        file="A.java",
+        hunk_header="@@ -10,5 +10,5 @@",
+        patch="+x",
+        changed_lines=[12],
+    )
+
+    rows = sensitive_api_rows_for_task(sensitive_text, task)
+
+    assert len(rows) == 1
+    assert "Statement.execute" in rows[0]
+    assert "Files.copy" not in "\n".join(rows)
+
+
+def test_sensitive_api_rows_for_task_accepts_whole_file_for_fallback_task():
+    sensitive_text = (
+        "| 危险等级 | API | 文件 | 行号 | 调用参数 |\n"
+        "|---------|-----|------|------|----------|\n"
+        "| 🔴 HIGH | `Statement.execute` | A.java:500 | `sql` |\n"
+    )
+    task = ReviewTask(id="A.java#file", file="A.java", patch="+x", changed_lines=[])
+
+    rows = sensitive_api_rows_for_task(sensitive_text, task)
+
+    assert len(rows) == 1
