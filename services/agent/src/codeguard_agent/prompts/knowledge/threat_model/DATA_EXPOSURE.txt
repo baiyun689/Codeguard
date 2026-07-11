@@ -1,0 +1,21 @@
+## 数据暴露（响应、日志、异常和存储是否泄漏凭证、PII 或内部细节）
+
+### 典型模式
+```java
+log.info("login request={}", request);
+return ResponseEntity.ok(userEntity); // 含 passwordHash, refreshToken
+throw new RuntimeException("db password=" + password, ex);
+```
+直接序列化 Entity、打印完整请求/响应、把 token/密码/身份证/银行卡写入日志；错误处理向客户端返回堆栈、SQL、内部地址；cookie 未设 `HttpOnly`/`Secure`；敏感字段明文持久化或跨系统传输。
+
+### 判定要点
+确认字段确实敏感且日志/响应对非必要受众可见，检查 Jackson `@JsonIgnore`、DTO 映射、日志脱敏器与集中异常处理。`userId`、订单号等普通业务标识通常不等于 PII 泄漏；异常信息必须确认会离开可信边界。
+
+### 严重级别参考
+CRITICAL：生产凭证、私钥、完整支付/身份数据可被未授权请求读取或写入可访问日志。WARNING：内部栈、token 或 PII 可能被记录/返回但访问范围需确认。INFO：低敏感版本号或可选的字段最小化建议。
+
+### 已知误报判例
+DTO 已排除秘密字段；日志框架的 masking converter 对指定字段脱敏；异常只进入受访问控制的审计库；测试 fixture 中的假 token/邮箱不代表生产泄漏。
+
+### 排除项
+资源所有权未校验属于 AUTHORIZATION；硬编码密钥及 TLS/算法选择属于 CONFIG_SECURITY；未验证输入本身属于 INPUT_VALIDATION。

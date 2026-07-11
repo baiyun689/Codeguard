@@ -1,0 +1,21 @@
+## Web 安全配置（Spring Security、CORS、CSRF 与管理端点的边界是否被放宽）
+
+### 典型模式
+```java
+http.csrf(csrf -> csrf.disable())
+    .authorizeHttpRequests(a -> a.requestMatchers("/api/**").permitAll());
+registry.addMapping("/**").allowedOrigins("*").allowCredentials(true);
+```
+变更 `SecurityFilterChain`、`WebSecurityConfigurer`、CORS 配置、CSRF 忽略列表或 Actuator exposure；将通配路径、调试端点、上传端点加入匿名访问，或对携带 cookie 的跨域请求允许任意 Origin。
+
+### 判定要点
+确认 matcher 的真实覆盖范围和顺序，特别是 `/**`、`/api/**` 与静态资源规则；判断服务是 cookie 会话还是 bearer-token API，后者禁 CSRF 可能合理。核实 Actuator 是否还有网络隔离与角色限制，CORS 是否反射受控 Origin。
+
+### 严重级别参考
+CRITICAL：受保护业务或 `/actuator/env`、heapdump 等敏感端点向匿名开放；cookie 会话应用全局关闭 CSRF 且存在可写操作。WARNING：宽泛 CORS、过宽忽略路径，利用条件依赖部署。INFO：缺少推荐安全响应头但无可利用路径。
+
+### 已知误报判例
+`csrf.disable()` 仅用于严格 bearer token 的无状态 API；`permitAll` 只覆盖登录、健康检查或公开静态资源；Actuator 只绑定 loopback 或由独立网关鉴权。
+
+### 排除项
+单个业务资源的所有权校验属于 AUTHORIZATION；配置文件中的密钥或 TLS 开关属于 CONFIG_SECURITY；用户控制 URL 发起请求属于 SSRF_OUTBOUND。

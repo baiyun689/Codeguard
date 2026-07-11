@@ -1,0 +1,20 @@
+## 输入校验（不可信请求、上传和外部消息是否在进入敏感业务前被约束）
+
+### 典型模式
+```java
+@PostMapping("/transfer")
+void transfer(@RequestBody TransferRequest req) { service.transfer(req); }
+```
+DTO 没有 `@Valid`、金额/数量/枚举/分页参数没有边界约束；`MultipartFile` 仅信任文件名或 Content-Type；Webhook、MQ 消息和 header 直接进入业务逻辑，未校验签名、长度或允许值。
+
+### 判定要点
+确认字段是否实际来自不可信边界，校验是否在使用前执行且失败会终止流程；校验应符合业务语义（正数、上限、状态迁移），而非只做非空。若输入随后进入 SQL、命令、路径或 URL，还须检查对应 sink 的专门防护。
+
+### 严重级别参考
+CRITICAL：缺失校验直接形成越权、任意文件、注入或资金/权限篡改路径。WARNING：可造成异常状态、超大请求或绕过业务规则，但完整安全影响需额外条件。INFO：仅是可读性或防御性约束建议。
+
+### 已知误报判例
+全局 `@ControllerAdvice`、Bean Validation group 或 API gateway 已强制 schema；字段是服务端生成的枚举/ID；下游 domain service 对每个值做了更严格的校验。
+
+### 排除项
+参数化 SQL、路径规范化、URL host 白名单分别属于 INJECTION、FILE_PATH_IO、SSRF_OUTBOUND；普通 null 防御属于 NULL_STATE_SAFETY。

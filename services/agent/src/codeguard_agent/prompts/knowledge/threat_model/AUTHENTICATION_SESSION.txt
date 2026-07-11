@@ -1,0 +1,20 @@
+## 认证与会话（身份验证、令牌和会话生命周期是否可被绕过或劫持）
+
+### 典型模式
+```java
+if (token == null || token.isBlank()) return authenticatedUser();
+jwtParser.parseClaimsJws(token); // 未校验签名、issuer、audience 或过期
+```
+修改登录、JWT 过滤器、OAuth 回调、刷新令牌或 cookie 设置；把受保护路径加入 `permitAll`；登录后不轮换 session id；把 token 放在未设 `HttpOnly`/`Secure` 的 cookie，或错误接受任意 issuer/audience。
+
+### 判定要点
+确认身份是否由签名验证后的 token 得出，是否验证算法、issuer、audience、过期和撤销策略；确认刷新与登出是否使旧凭证失效。区分“认证入口”与“授权决定”：认证成功后仍需资源授权。检查测试/开发 profile 是否会进入生产路径。
+
+### 严重级别参考
+CRITICAL：可伪造或跳过认证、接受未签名 token、固定会话导致会话固定攻击。WARNING：cookie 缺少安全属性、撤销窗口过长、校验缺少某一纵深字段但核心签名和过期仍有效。INFO：仅是非生产调试登录提示。
+
+### 已知误报判例
+网关已完成 OIDC 验证并向后端传递受 mTLS 保护的身份头；无状态 API 故意不创建 HTTP session；`SameSite` 由统一 cookie 配置设置，局部代码不显式出现。
+
+### 排除项
+用户对某笔订单是否有操作权属于 AUTHORIZATION；CORS/CSRF 规则属于 WEB_SECURITY_CONFIG；明文记录 token 属于 DATA_EXPOSURE。

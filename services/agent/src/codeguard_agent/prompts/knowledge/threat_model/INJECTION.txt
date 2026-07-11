@@ -1,0 +1,21 @@
+## 注入（不可信数据是否以代码、查询或解释器语法的一部分执行）
+
+### 典型模式
+```java
+jdbcTemplate.query("select * from user where name='" + name + "'", mapper);
+runtime.exec("grep " + request.getPattern());
+mapper.find("${sort}");
+```
+还包括 `ProcessBuilder`、SpEL/OGNL/Groovy `eval`、`ObjectInputStream.readObject`、未禁 DTD 的 XML 解析；共同点是外部输入到可解释 sink 时没有类型化参数、白名单或安全配置。
+
+### 判定要点
+追踪值是否可由 HTTP、消息、上传或租户配置控制，确认中间转换没有消除语法含义。SQL 必须判断是否使用 `PreparedStatement`/JPA 命名参数/MyBatis `#{}`；命令参数即使使用数组也要验证可控参数不会改变程序语义。仅“关键字出现”不足以报告。
+
+### 严重级别参考
+CRITICAL：外部输入可执行 SQL、系统命令、脚本、反序列化 gadget 或 XXE。WARNING：存在动态表达式/解析器危险配置但输入可信性或可利用性未完全确认。INFO：受限的内部管理脚本且有强访问控制时仅提示加固。
+
+### 已知误报判例
+`PreparedStatement`、JPA `:name`、MyBatis `#{name}` 参数绑定；排序字段通过固定 enum 映射；MD5 仅用于非安全去重不属于注入；XML 工厂明确禁用了 DOCTYPE 和外部实体。
+
+### 排除项
+用户控制文件位置归 FILE_PATH_IO，控制 HTTP 主机归 SSRF_OUTBOUND；日志 CRLF 通常不单独作为注入漏洞，除非能证明造成安全后果。

@@ -1,0 +1,23 @@
+## 安全配置与密钥（部署配置是否关闭防护、暴露凭证或使用不安全密码学）
+
+### 典型模式
+```yaml
+management:
+  endpoints.web.exposure.include: "*"
+security:
+  jwt-secret: "prod-secret"
+server.ssl.enabled: false
+```
+在 `application*.yml`、Docker/K8s 清单、Spring `@Value` 或代码常量中写入真实密码/API key；关闭 TLS、CSRF、证书校验；使用 MD5/SHA-1 做密码哈希、DES/ECB、固定 IV/salt、`Random` 生成安全 token。
+
+### 判定要点
+区分占位符/环境变量名与真实秘密值，确认 profile 是否会用于生产。加密算法要结合用途：非安全 checksum 不等于弱密码学漏洞。检查密钥是否轮换、权限是否最小化、debug/management 配置是否有外围访问控制。
+
+### 严重级别参考
+CRITICAL：生产密钥/口令提交到代码，或禁用认证/TLS 导致敏感流量可直接被窃取。WARNING：弱算法用于安全用途、固定 IV、过宽管理暴露或开发开关可能进入生产。INFO：可改进的 cipher 参数但无秘密/攻击路径。
+
+### 已知误报判例
+`${DB_PASSWORD}`、`System.getenv("API_KEY")` 是外部化引用；示例配置使用明显假值且不打包部署；SHA-256 仅做文件完整性校验；mTLS 在上游终止但链路有受控私网。
+
+### 排除项
+Controller 的匿名访问规则归 WEB_SECURITY_CONFIG；日志或响应泄露字段归 DATA_EXPOSURE；会话 token 校验归 AUTHENTICATION_SESSION。

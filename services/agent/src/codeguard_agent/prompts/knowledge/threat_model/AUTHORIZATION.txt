@@ -1,0 +1,20 @@
+## 授权控制（访问主体是否只能操作其被允许的资源与动作）
+
+### 典型模式
+```java
+@GetMapping("/orders/{id}")
+OrderDto get(@PathVariable Long id) { return service.find(id); }
+```
+新增或修改 Controller、Service 的按 ID 查询、下载、审批、删除接口，却没有把当前主体传给服务层校验；或把 `@PreAuthorize("hasRole('ADMIN')")` 改成 `permitAll()`、`hasAuthority` 改为更宽的表达式。典型 BOLA/IDOR 是用户只替换 `id` 就读取或修改其他租户/用户的数据。
+
+### 判定要点
+确认资源是否属于当前用户或租户、类级安全配置是否已覆盖、以及服务层是否用可信的 `Authentication`/tenant 上下文而非请求传入的 `userId` 作比对。仅有“已登录”不等于有该资源权限；批量接口还要逐项校验，不能只校验请求中的第一个 ID。
+
+### 严重级别参考
+CRITICAL：未授权用户可读取、修改、删除跨租户数据，或敏感管理动作可直接执行。WARNING：缺少显式校验但可能由网关/服务层补齐，或影响范围局限于低敏感资源。INFO：仅建议统一注解风格、没有可达越权路径。
+
+### 已知误报判例
+方法已由类级 `@PreAuthorize`、全局 `SecurityFilterChain` 或服务层 `assertOwner(order, principal)` 保护；内部任务端点只接受 mTLS 身份且不对终端用户暴露；管理员导出接口在调用链中已强制 `ROLE_ADMIN`。
+
+### 排除项
+密码是否校验、Token 是否过期属于 AUTHENTICATION_SESSION；返回字段过多属于 DATA_EXPOSURE；SQL 拼接不是授权问题。不要仅因 Controller 没有注解就报告，先确认其他边界的授权事实。

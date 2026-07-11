@@ -1,0 +1,20 @@
+## 服务端请求伪造（外部输入是否决定服务端可访问的主机、协议或重定向目标）
+
+### 典型模式
+```java
+webClient.get().uri(request.getCallbackUrl()).retrieve().bodyToMono(String.class);
+restTemplate.getForObject(url, String.class);
+```
+回调、图片抓取、导入 URL、Webhook 转发或重定向跟随把请求参数直接传给 `WebClient`、`RestTemplate`、Apache HttpClient、Feign；只校验字符串前缀、只阻止 `localhost`，但不解析 DNS/IP、协议和重定向。
+
+### 判定要点
+必须确认攻击者能影响 scheme 或 host；仅路径/query 可控通常不是 SSRF。检查 allowlist 是否基于规范化 URI 主机，DNS 解析后是否阻断 loopback/link-local/private IP、是否限制协议和重定向，以及是否存在代理绕过。
+
+### 严重级别参考
+CRITICAL：外部用户可请求云 metadata、localhost 管理接口或任意内网，并能读取响应/触发写操作。WARNING：host 可控但网络隔离、响应不可见或 allowlist 细节未知。INFO：仅建议为可信合作方 URL 增加超时/审计。
+
+### 已知误报判例
+URL 由数据库中管理员维护的固定合作方域名生成；客户端只接受相对路径并固定 base URL；出站代理强制 host allowlist；测试代码调用 localhost。
+
+### 排除项
+远程调用失败重试属于 MESSAGE_DELIVERY/IDEMPOTENCY_RETRY；用户控制本地文件路径属于 FILE_PATH_IO；普通 CORS 配置不是 SSRF。
