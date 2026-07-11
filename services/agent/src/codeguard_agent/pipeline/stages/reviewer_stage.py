@@ -38,19 +38,19 @@ class Reviewer:
 DEFAULT_REVIEWERS: tuple[Reviewer, ...] = (
     Reviewer(
         "ThreatModelAgent",
-        "threat-model.txt",
+        "threat-model-base.txt",
         source_agent="threat_model",
         tool_allowlist=["get_file_content", "find_sensitive_apis"],
     ),
     Reviewer(
         "BehaviorAgent",
-        "behavior.txt",
+        "behavior-base.txt",
         source_agent="behavior",
         tool_allowlist=["get_file_content", "find_callers"],
     ),
     Reviewer(
         "MaintainabilityAgent",
-        "maintainability.txt",
+        "maintainability-base.txt",
         source_agent="maintainability",
         tool_allowlist=["get_file_content", "get_code_metrics"],
     ),

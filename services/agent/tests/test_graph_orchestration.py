@@ -311,7 +311,11 @@ def test_review_legacy_no_tier_empty_result_still_retries_direct_fallback(monkey
 
 def test_discoverer_prompts_do_not_reference_retired_routing():
     prompt_dir = Path(__file__).resolve().parents[1] / "src" / "codeguard_agent" / "prompts"
-    for filename in ("threat-model.txt", "behavior.txt", "maintainability.txt"):
+    for filename in (
+        "threat-model-base.txt",
+        "behavior-base.txt",
+        "maintainability-base.txt",
+    ):
         text = (prompt_dir / filename).read_text(encoding="utf-8")
         for obsolete in ("file_groups", "file_focus", "focus_notes", "Supervisor"):
             assert obsolete not in text
@@ -338,7 +342,7 @@ def test_reviewer_subgraph_mock_only_threat_model_returns_issues():
     sec = G.build_reviewer_subgraph(
         G.Reviewer(
             "ThreatModelAgent",
-            "threat-model.txt",
+            "threat-model-base.txt",
             source_agent="threat_model",
         ),
         llm=None,
@@ -346,7 +350,7 @@ def test_reviewer_subgraph_mock_only_threat_model_returns_issues():
     other = G.build_reviewer_subgraph(
         G.Reviewer(
             "BehaviorAgent",
-            "behavior.txt",
+            "behavior-base.txt",
             source_agent="behavior",
         ),
         llm=None,
