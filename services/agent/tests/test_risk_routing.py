@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from codeguard_agent.models.tasks import RiskProfile, RiskSignal, RiskTag, ReviewTask, TaskSelection
 from codeguard_agent.pipeline.risk_routing import (
+    decide_tier,
     render_task_scope,
     reviewers_for_profile,
     routed_task_ids,
@@ -81,3 +82,39 @@ def test_render_task_scope_contains_only_routed_selected_tasks_and_is_stable():
     threat_scope = render_task_scope("threat_model", tasks, profiles, selection)
     assert 'id="auth"' in threat_scope
     assert 'id="sql"' not in threat_scope
+
+
+def test_decide_tier_react_when_any_tag_score_at_least_two():
+    profile = RiskProfile(
+        task_id="t1",
+        tag_scores={RiskTag.RESOURCE_LIFECYCLE: 2},
+    )
+    assert decide_tier(profile) == "react"
+
+
+def test_decide_tier_direct_when_only_weak_signal():
+    profile = RiskProfile(
+        task_id="t1",
+        tag_scores={RiskTag.SQL_DATA_ACCESS: 1},
+    )
+    assert decide_tier(profile) == "direct"
+
+
+def test_decide_tier_direct_for_general_review():
+    profile = RiskProfile(
+        task_id="t1",
+        tag_scores={RiskTag.GENERAL_REVIEW: 1},
+    )
+    assert decide_tier(profile) == "direct"
+
+
+def test_decide_tier_react_when_strong_signal_present():
+    profile = RiskProfile(
+        task_id="t1",
+        tag_scores={RiskTag.AUTHORIZATION: 3},
+    )
+    assert decide_tier(profile) == "react"
+
+
+def test_decide_tier_direct_when_profile_missing():
+    assert decide_tier(None) == "direct"

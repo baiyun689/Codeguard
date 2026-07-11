@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Literal
 
 from codeguard_agent.models.tasks import RiskProfile, ReviewTask, TaskSelection
 from codeguard_agent.pipeline.risk_rules.catalog import reviewers_for_tag
@@ -84,3 +85,17 @@ def render_task_scope(
         )
     parts.append("</review_scope>")
     return "\n".join(parts)
+
+
+def decide_tier(profile: RiskProfile | None) -> Literal["react", "direct"]:
+    """按 task 的 RiskProfile 强度决定发现引擎:score>=2(含强信号)进 ReAct,
+    否则(纯弱信号或 GENERAL_REVIEW)降级为无工具单次调用。
+
+    分层理由见 spec:score=2 已涵盖控制流/数据流/资源生命周期/一致性类问题
+    (如 RESOURCE_LIFECYCLE/TRANSACTION_ATOMICITY),这类问题往往需要工具核实,
+    阈值定得比"只有 score=3"更保守，避免因分层误伤这类中危问题。
+    """
+    if profile is None:
+        return "direct"
+    max_score = max(profile.tag_scores.values(), default=0)
+    return "react" if max_score >= 2 else "direct"
