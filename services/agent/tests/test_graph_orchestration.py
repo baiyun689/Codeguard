@@ -235,6 +235,80 @@ def test_reviewer_review_uses_direct_engine_when_tier_is_direct(monkeypatch):
     assert "tool_agent" not in calls
 
 
+def test_review_tier_direct_empty_result_does_not_retry(monkeypatch):
+    """tier=="direct" 时空结果是"确实没问题"的正确结论,不应二次调用兜底。"""
+    calls = {"engine": 0, "fallback": 0}
+
+    class _EmptyEngine:
+        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
+                    max_retries, structured_method, enable_hitl=False):
+            calls["engine"] += 1
+            return ReviewOutcome(ReviewResult(summary="", issues=[]))
+
+    class _FallbackDirectEngine:
+        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
+                    max_retries, structured_method, enable_hitl=False):
+            calls["fallback"] += 1
+            return ReviewOutcome(ReviewResult(summary="", issues=[]))
+
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _EmptyEngine())
+    monkeypatch.setattr(G, "DirectEngine", _FallbackDirectEngine)
+    sub = G.build_reviewer_subgraph(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
+    sub.invoke({"diff_text": "+x", "tier": "direct"})
+    assert calls["engine"] == 1
+    assert calls["fallback"] == 0
+
+
+def test_review_tier_react_empty_result_still_retries_direct_fallback(monkeypatch):
+    """tier=="react" 时保留原有的空结果降级复审(ReAct 偶发空响应的兜底)。"""
+    calls = {"engine": 0, "fallback": 0}
+
+    class _EmptyEngine:
+        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
+                    max_retries, structured_method, enable_hitl=False):
+            calls["engine"] += 1
+            return ReviewOutcome(ReviewResult(summary="", issues=[]))
+
+    class _FallbackDirectEngine:
+        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
+                    max_retries, structured_method, enable_hitl=False):
+            calls["fallback"] += 1
+            return ReviewOutcome(ReviewResult(summary="fallback-summary", issues=[]))
+
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _EmptyEngine())
+    monkeypatch.setattr(G, "DirectEngine", _FallbackDirectEngine)
+    sub = G.build_reviewer_subgraph(
+        G.DEFAULT_REVIEWERS[0], llm=_FakeLLM(), tool_client=object()
+    )
+    sub.invoke({"diff_text": "+x", "tier": "react"})
+    assert calls["engine"] == 1
+    assert calls["fallback"] == 1
+
+
+def test_review_legacy_no_tier_empty_result_still_retries_direct_fallback(monkeypatch):
+    """selection is None 的旧兼容路径不设置 tier,空结果的降级复审行为必须保持不变。"""
+    calls = {"engine": 0, "fallback": 0}
+
+    class _EmptyEngine:
+        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
+                    max_retries, structured_method, enable_hitl=False):
+            calls["engine"] += 1
+            return ReviewOutcome(ReviewResult(summary="", issues=[]))
+
+    class _FallbackDirectEngine:
+        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
+                    max_retries, structured_method, enable_hitl=False):
+            calls["fallback"] += 1
+            return ReviewOutcome(ReviewResult(summary="fallback-summary", issues=[]))
+
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _EmptyEngine())
+    monkeypatch.setattr(G, "DirectEngine", _FallbackDirectEngine)
+    sub = G.build_reviewer_subgraph(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
+    sub.invoke({"diff_text": "+x"})  # 无 tier key -> 旧兼容路径
+    assert calls["engine"] == 1
+    assert calls["fallback"] == 1
+
+
 def test_discoverer_prompts_do_not_reference_retired_routing():
     prompt_dir = Path(__file__).resolve().parents[1] / "src" / "codeguard_agent" / "prompts"
     for filename in ("threat-model.txt", "behavior.txt", "maintainability.txt"):

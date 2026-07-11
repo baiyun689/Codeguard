@@ -576,7 +576,11 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
 
         # ReAct 跑完但未产出任何 issue → LLM 偶发空响应（DeepSeek 已知问题），
         # 降级为 DirectEngine 直连复审以保住该域覆盖率。
-        if not outcome.result.issues:
+        # tier=="direct" 时空结果是低风险任务的正确结论（不是故障），且本就已经是
+        # DirectEngine 跑的，同引擎重跑一次不会改变结果，只会白白翻倍成本——跳过降级。
+        # tier is None（selection is None 的旧兼容路径不设置 tier）保持历史行为不变：
+        # 无条件降级复审，与 Phase4 之前完全一致。
+        if tier != "direct" and not outcome.result.issues:
             logger.warning(
                 "[%s] ReAct 未产出 issue,降级直连复审以保住该域覆盖", reviewer.name
             )
