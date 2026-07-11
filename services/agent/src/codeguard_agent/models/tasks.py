@@ -101,3 +101,16 @@ class TaskContextBundle(BaseModel):
     task_id: str
     facts: list[ContextFact] = Field(default_factory=list)
     truncated: bool = False
+
+    def render(self, budget: int = 4000) -> str:
+        """渲染为 prompt 可读文本，并按字符预算截断。"""
+        if not self.facts:
+            return "(无任务上下文事实)"
+        lines = ["任务上下文事实:"]
+        for fact in self.facts:
+            flag = " (已截断)" if fact.truncated else ""
+            lines.append(f"- [{fact.source}/{fact.kind}]{flag} {fact.content}")
+        text = "\n".join(lines).strip()
+        if len(text) <= budget:
+            return text
+        return text[:budget] + "\n...(TaskContextBundle 已达预算上限,后续省略)"

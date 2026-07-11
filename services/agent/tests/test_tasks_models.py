@@ -142,3 +142,34 @@ def test_task_context_bundle_does_not_duplicate_task_facts():
 
 def test_profile_has_only_task_id_scores_and_signals_fields():
     assert set(RiskProfile.model_fields) == {"task_id", "tag_scores", "signals"}
+
+
+def test_task_context_bundle_render_empty_facts():
+    bundle = TaskContextBundle(task_id="A.java#h0")
+    assert bundle.render() == "(无任务上下文事实)"
+
+
+def test_task_context_bundle_render_lists_facts_with_truncation_flag():
+    bundle = TaskContextBundle(
+        task_id="A.java#h0",
+        facts=[
+            ContextFact(source="diff", kind="sensitive_api", content="Runtime.exec"),
+            ContextFact(
+                source="tool:find_callers", kind="callers", content="X.java:10",
+                truncated=True,
+            ),
+        ],
+    )
+    rendered = bundle.render()
+    assert "Runtime.exec" in rendered
+    assert "(已截断)" in rendered
+
+
+def test_task_context_bundle_render_respects_budget():
+    bundle = TaskContextBundle(
+        task_id="A.java#h0",
+        facts=[ContextFact(source="diff", kind="x", content="A" * 100)],
+    )
+    rendered = bundle.render(budget=10)
+    assert len(rendered) <= 10 + len("\n...(TaskContextBundle 已达预算上限,后续省略)")
+    assert rendered.endswith("...(TaskContextBundle 已达预算上限,后续省略)")
