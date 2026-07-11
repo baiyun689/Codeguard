@@ -1,7 +1,7 @@
 # 知识图谱按 RiskTag 拆分注入设计
 
 **日期**: 2026-07-11
-**状态**: 已批准,待实施(紧接 [Phase 4 定向发现链设计](./2026-07-11-risk-routed-discovery-phase4-design.md) 之后的子阶段,本次只出设计和实施计划,不在本轮实施)
+**状态**: 已实现
 **前置阶段**: Phase 1-3(风险路由链路)已完成;Phase 4(task 级并发 + 引擎分层)设计已批准
 **关联**: ADR-032(ReviewCouncil)、ADR-038、
 [Phase 2 风险标签规则与任务排序设计](./2026-07-10-risk-triage-phase2-design.md)(RiskTag→reviewer 路由表)
@@ -185,4 +185,4 @@ system_prompt = base_prompt + "\n\n" + load_knowledge(domain, active_tags)
 
 | 阶段 | 当前状态 | 已落地内容 | 验证证据 | 刻意未做 |
 |---|---|---|---|---|
-| 知识图谱按标签拆分 | planned | — | — | RiskTag 收窄工具白名单(仍留待更后续) |
+| 知识图谱按标签拆分 | done | 三个 `*-base.txt` 替代旧全量 prompt；33 个 domain/tag 知识片段；`knowledge_rules.load_knowledge()` 按枚举顺序去重加载并忽略 GENERAL_REVIEW；任务知识仅拼入 reviewer system prompt，递归降级路径同样保留 | pytest 430 passed；ruff/mypy clean；提交 95fa54f、d894965、92a364d、6e0c74e、dd8a091、f646fe3 | RiskTag 收窄工具白名单(仍留待更后续) |
