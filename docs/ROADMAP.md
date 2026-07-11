@@ -134,7 +134,7 @@ TaskContextBundle` 接缝逐阶段增强:
 |---|---|---|
 | Phase 1 | ✅ | 冻结五个任务链 State 字段、hunk/fallback task、严格候选映射和 Evidence 首次必经拓扑 |
 | Phase 2 | ✅ | 23 个具体 RiskTag + `GENERAL_REVIEW`、path/text 方向规则、TaskRank 默认 100/10 预算、RiskTag 到三路 reviewer 的 task scope 路由 |
-| Phase 3 | ⬜ | ContextProvider 按 RiskTag 构建上下文，AST 只作为事实来源，不产出风险标签 |
+| Phase 3 | ✅ | ContextProvider 按 RiskTag 构建上下文，AST 只作为事实来源，不产出风险标签 |
 | Phase 4 | ⬜ | 在已有 task scope 上增强三路审查员的风险感知提示和工具策略 |
 | Phase 5 | ⬜ | Evidence/Judge 消费 task、risk、context、evidence，保持既有候选和裁决契约 |
 | Phase 6 | ⬜ | Trace Dashboard 与 eval 展示命中、路由、预算跳过和证据闭环 |
