@@ -1,0 +1,23 @@
+## 资源生命周期（资源的获取、释放和所有权是否清晰且易于长期维护）
+
+### 典型模式
+Java/Spring 中在 Controller、Service 或工具类直接获取资源却把关闭责任留给调用链：
+
+```java
+InputStream in = storageClient.open(key);
+return mapper.readValue(in, Payload.class); // mapper 抛异常时 in 未关闭
+```
+
+也包括手工 `ExecutorService`、HTTP response、JDBC `Connection/Statement/ResultSet`、临时文件、监听器和 `ThreadLocal` 的创建与释放分散在多个分支；应优先使用 try-with-resources、Spring 管理的 bean 或清晰的 `close()` 边界。
+
+### 判定要点
+确认资源是否由框架托管，谁拥有关闭责任，以及所有正常、异常、提前 return 和重试分支是否都能释放。重点报告会使后续修改者无法判断所有权、会在长生命周期服务中累积泄漏，或关闭顺序影响复用/事务的代码；不要仅因出现 `close()` 或流 API 就断定问题。
+
+### 严重级别参考
+持续泄漏连接、线程、文件句柄且可耗尽共享资源可为 WARNING；会在请求路径上稳定造成服务不可用或数据损坏时为 CRITICAL。局部、一次性且影响有限的释放不清晰通常为 INFO 或 WARNING，取决于调用频率与资源成本。
+
+### 已知误报判例
+`@Bean(destroyMethod = "close")` 创建的客户端、Spring 注入的 `DataSource`、Web 框架负责关闭的请求流，以及明确将 `InputStream` 所有权转交给返回对象并在其 `close()` 中释放的实现，不应报为泄漏。try-with-resources 包住的资源也无需要求额外关闭。
+
+### 排除项
+这里关注可维护的资源所有权和释放边界；并发竞争导致的资源正确性问题属于 `CONCURRENCY_CONSISTENCY`，事务提交/回滚语义属于 `TRANSACTION_ATOMICITY`，单纯慢查询或热点循环属于 `PERFORMANCE`。
