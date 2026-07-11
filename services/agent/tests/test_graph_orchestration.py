@@ -1437,7 +1437,7 @@ def test_make_reviewer_node_only_invokes_routed_and_selected_tasks(monkeypatch):
 
     monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _RecordingEngine())
     node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
-    out = node({
+    node({
         "diff_text": "+x\n+y",
         "review_tasks": [
             G.ReviewTask(id="A.java#h0", file="A.java", patch="+x", changed_lines=[1]),

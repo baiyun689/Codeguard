@@ -46,7 +46,9 @@ def routed_task_ids(
         if task_id not in task_by_id:
             continue
         profile = profiles.get(task_id)
-        if profile is not None and reviewer in reviewers_for_profile(profile):
+        # 风险画像缺失是上游不变量破坏；保守地让三路发现者都审一次，
+        # 由 decide_tier(None) 降级 Direct，避免静默漏审。
+        if profile is None or reviewer in reviewers_for_profile(profile):
             routed.append(task_id)
     return tuple(routed)
 

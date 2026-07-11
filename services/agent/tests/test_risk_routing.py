@@ -121,6 +121,14 @@ def test_decide_tier_direct_when_profile_missing():
     assert decide_tier(None) == "direct"
 
 
+def test_routed_task_ids_routes_missing_profile_to_all_reviewers():
+    task = ReviewTask(id="A.java#h0", file="A.java", patch="+x")
+    selection = TaskSelection(selected_task_ids=[task.id])
+
+    for reviewer in ("threat_model", "behavior", "maintainability"):
+        assert routed_task_ids(reviewer, [task], {}, selection) == (task.id,)
+
+
 def test_render_single_task_risk_includes_tags_and_signals():
     task = ReviewTask(id="A.java#h0", file="A.java", patch="+x")
     profile = RiskProfile(

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 import operator
-import uuid
 from typing import Annotated, Any, TypedDict
 
 from codeguard_agent.llm.client import mock_review_result
@@ -620,7 +619,10 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
 
 def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_client=None):
     """发现者节点:运行旧 reviewer 能力,再转换为 CandidateIssue。"""
-    subgraph = build_reviewer_subgraph(reviewer, checkpointer=checkpointer, llm=llm, tool_client=tool_client)
+    # task 级 fan-out 会在线程池中并发 invoke；任务子图不持久化，避免复用外层
+    # SQLite saver 的线程绑定连接。外层 ReviewState 仍由 build_review_graph 的
+    # checkpointer 持久化，足以恢复整次审查。
+    subgraph = build_reviewer_subgraph(reviewer, checkpointer=None, llm=llm, tool_client=tool_client)
 
     def _node(state: ReviewState) -> dict:
         tasks = state.get("review_tasks") or []
@@ -741,7 +743,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             # 若子图编译时带了 checkpointer，缺 config 会直接抛 ValueError。
             # 每个 task 调用都是一次性、互不依赖的，给随机 thread_id 既满足 checkpointer
             # 的硬性要求，也避免不同调用间误撞到旧的 checkpoint 记录。
-            return subgraph.invoke(
+            result = subgraph.invoke(
                 {
                     "diff_text": task.patch,
                     "enabled_tools": effective_tools,
@@ -752,8 +754,18 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     "task_risk_context": task_risk_context,
                     "tier": tier,
                 },
-                config={"configurable": {"thread_id": str(uuid.uuid4())}},
             )
+            if profile is None:
+                traces = list(result.get("council_trace") or [])
+                traces.append(
+                    CouncilTrace(
+                        node=reviewer.source_agent,
+                        event="missing_risk_profile",
+                        detail=f"task={task_id} tier=direct",
+                    )
+                )
+                result["council_trace"] = traces
+            return result
 
         task_results = run_bounded_parallel(ordered_ids, _invoke_one, max_workers=8)
 
