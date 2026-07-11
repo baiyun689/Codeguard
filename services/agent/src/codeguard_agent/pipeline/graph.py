@@ -536,6 +536,9 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                 return {"outcome": ReviewOutcome(mock_review_result())}
             return {"outcome": ReviewOutcome(ReviewResult(summary=""))}
         tier = state.get("tier")
+        # tool_client=None 时 _make_engine 恒返回 DirectEngine，故意走同一工厂函数而不是
+        # 直接 DirectEngine()，是为了保留 _make_engine 作为唯一的引擎选择入口
+        # (可测试/可 monkeypatch 的 seam)，不是遗留笔误。
         engine = (
             _make_engine(state, tool_client=None)
             if tier == "direct"
