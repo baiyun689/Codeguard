@@ -36,6 +36,9 @@ openspec/
 # 评测运行归档(每次跑生成的趋势数据,本地累积,不入库)
 services/agent/evals/runs/
 
+# 审查过程 trace(每次跑生成的 HTML 追踪文件,本地累积,不入库)
+services/agent/trace/
+
 # CI Gateway
 services/gateway/data/
 services/gateway/github-app.pem
