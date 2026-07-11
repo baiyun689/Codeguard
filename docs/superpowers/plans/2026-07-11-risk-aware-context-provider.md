@@ -204,7 +204,7 @@ def run_bounded_parallel(
     if not items:
         return []
     results: list[R | None] = [None] * len(items)
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as pool:
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(items), 8)) as pool:
         futures = {pool.submit(fn, item): idx for idx, item in enumerate(items)}
         for future in futures:
             idx = futures[future]
