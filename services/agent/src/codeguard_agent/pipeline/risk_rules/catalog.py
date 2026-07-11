@@ -25,6 +25,7 @@ from codeguard_agent.pipeline.risk_rules.maintainability import (
     detect_duplication_design,
     detect_observability_testability,
 )
+from codeguard_agent.pipeline.risk_rules.path import path_signals
 from codeguard_agent.pipeline.risk_rules.security import (
     detect_authentication_session,
     detect_authorization,
@@ -146,6 +147,10 @@ def _classify(task: ReviewTask) -> tuple[RiskProfile, tuple[RuleDiagnostic, ...]
                 seen.add(key)
                 signals.append(signal)
 
+    concrete_tags = {
+        signal.tag for signal in signals if _is_concrete_signal(signal)
+    }
+    signals.extend(path_signals(features, concrete_tags))
     return _profile(task.id, signals), tuple(diagnostics)
 
 

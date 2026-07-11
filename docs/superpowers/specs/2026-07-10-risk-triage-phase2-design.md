@@ -302,6 +302,9 @@ Phase 2 已按本设计落地，事实边界如下:
 - `pipeline/risk_rules/features.py` 只从 `ReviewTask` 派生变化方向特征；规则不读取 AST、完整仓库或 LLM。
 - `pipeline/risk_rules/security.py`、`behavior.py`、`maintainability.py` 以稳定注册顺序覆盖 23 个具体标签；
   `catalog.py` 负责单条规则异常诊断、信号去重、按标签最高 5 分聚合、path 信号并入和 `GENERAL_REVIEW` 兜底。
+  `risk_rules/path.py` 将 controller、repository/mapper、config、consumer/listener、service 映射为
+  弱路径证据；每条 `path:<role>` 信号固定为 1 分，只有对应文本风险已经命中时才并入该标签，
+  路径单独出现仍然只生成 `GENERAL_REVIEW`。
 - `task_prep.rank_tasks` 只派生临时排序键，使用默认总预算 100、单文件预算 10；预算跳过记录在既有
   `TaskSelection.skipped_tasks`，不增加 `ReviewState` 字段。
 - `pipeline/risk_routing.py` 从 `RiskProfile.tag_scores` 计算 reviewer 并集；`GENERAL_REVIEW` 固定进入三路。

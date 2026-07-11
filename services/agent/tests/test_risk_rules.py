@@ -314,6 +314,45 @@ def test_general_review_routes_to_all_reviewers():
     )
 
 
+def test_controller_path_adds_weak_weight_to_matching_risks():
+    profile = catalog.classify_task(
+        ReviewTask(
+            id="controller",
+            file="src/main/java/com/example/controller/UserController.java",
+            patch="@@ -1,1 +1,2 @@\n+@PreAuthorize(\"hasRole('ADMIN')\")\n+public void update(UserRequest request) {}",
+        )
+    )
+
+    assert profile.tag_scores[RiskTag.AUTHORIZATION] == 2
+    assert profile.tag_scores[RiskTag.API_CONTRACT] == 3
+    assert any(signal.source == "path:controller" for signal in profile.signals)
+
+
+def test_config_path_adds_weak_weight_to_security_risks():
+    profile = catalog.classify_task(
+        ReviewTask(
+            id="config",
+            file="src/main/resources/application.yml",
+            patch="@@ -1,1 +1,1 @@\n+password: ${DB_PASSWORD}",
+        )
+    )
+
+    assert profile.tag_scores[RiskTag.CONFIG_SECURITY] == 4
+    assert any(signal.source == "path:config" for signal in profile.signals)
+
+
+def test_repository_path_does_not_create_risk_without_matching_text_signal():
+    profile = catalog.classify_task(
+        ReviewTask(
+            id="repository",
+            file="src/main/java/com/example/repository/UserRepository.java",
+            patch="@@ -1,1 +1,1 @@\n+int value = 1;",
+        )
+    )
+
+    assert profile.tag_scores == {RiskTag.GENERAL_REVIEW: 1}
+
+
 def test_path_signal_is_retained_when_concrete_signal_has_same_tag():
     profile = catalog._profile(
         "t",
