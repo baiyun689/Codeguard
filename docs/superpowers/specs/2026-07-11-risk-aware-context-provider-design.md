@@ -1,7 +1,7 @@
 # 风险感知 ContextProvider(阶段 3)设计
 
 **日期**: 2026-07-11
-**状态**: 待实施
+**状态**: 已批准，待实施
 **前置阶段**: Phase 1(状态契约与拓扑)、Phase 2(风险标签规则与任务排序)已完成
 **关联**: ADR-038(风险路由驱动的 ReviewTask 编排)、Phase 2 设计文档
 `docs/superpowers/specs/2026-07-10-risk-triage-phase2-design.md`、ADR-036(ContextProvider AST 富化)
@@ -105,6 +105,9 @@ ADR-012 做 `get_repo_map` 时已经放弃过。真要做"完整调用图"性质
   facts 汇总后按此预算截断,标 `truncated=True`。
 - Level1 工具调用失败/超时:该项 fact 缺省,不阻断整条链路(沿用项目一贯的 None/异常
   防御风格)。
+- 工具客户端失败信封的 `as_tool_output()` 会渲染为 `Error: ...`，它不是代码事实；Level1
+  装配前必须先检查调用是否成功，失败文本不得进入 `TaskContextBundle.facts`。已有 Level0
+  收集逻辑保持本阶段边界不变。
 - 方法名解析不到:跳过 `find_callers`,只记 trace,不做正则猜测兜底。
 
 ## 6. 可观测性
@@ -147,3 +150,12 @@ ADR-012 做 `get_repo_map` 时已经放弃过。真要做"完整调用图"性质
   `task_context_bundles[task_id]`(任务级),并调整工具策略。
 - `run_bounded_parallel` 可能被阶段 4/5 复用,也可能被 async 方案替换,取决于届时的
   并发形状判断。
+
+## 10. 实施约束（方案 A）
+
+- `context_rules` 是纯规则模块；它暴露路径归一化、AST 块切片和事实截断等稳定 helper，
+  `graph.py` 不调用其以下划线开头的内部实现，也不反向依赖 `ContextProviderStage` 的私有
+  helper。
+- Level0 继续复用既有 Java Gateway 的文本协议，不更改 Java 工具、HTTP 协议或
+  `ReviewState`。解析测试必须使用 Gateway 当前实际输出格式：敏感 API 行的文件与行号
+  组合为 `file:line`。
