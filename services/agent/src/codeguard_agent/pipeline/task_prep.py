@@ -39,6 +39,15 @@ def _basename(path: str) -> str:
     return _norm(path).rsplit("/", 1)[-1]
 
 
+def file_matches_task(file: str, task: ReviewTask) -> bool:
+    """候选文件是否属于该 task 的文件（全路径精确匹配优先，退化到 basename）。
+
+    Phase4 单 task 调用不再做行号级映射（prompt 本来就只含这一个 task），但仍需要
+    这道最基本的一致性校验，防止模型报告了完全无关的文件却被直接绑定到该 task。
+    """
+    return _norm(file) == _norm(task.file) or _basename(file) == _basename(task.file)
+
+
 def _iter_diff_blocks(diff_text: str) -> list[list[str]]:
     """按 `diff --git ` 边界把 diff 切成块（每块是行列表）。"""
     blocks: list[list[str]] = []

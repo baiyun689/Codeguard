@@ -7,6 +7,7 @@ from codeguard_agent.pipeline.task_prep import (
     _changed_lines,
     _is_production_path,
     build_tasks,
+    file_matches_task,
     map_candidate_to_task,
     rank_tasks,
     triage_tasks,
@@ -242,3 +243,18 @@ def test_map_candidate_prefers_full_path_over_basename_collision():
     ]
     assert map_candidate_to_task("test/Foo.java", 1, tasks) == "test/Foo.java#h0"
     assert map_candidate_to_task("src/Foo.java", 1, tasks) == "src/Foo.java#h0"
+
+
+def test_file_matches_task_true_for_exact_path():
+    task = ReviewTask(id="a#h0", file="src/main/java/A.java", patch="")
+    assert file_matches_task("src/main/java/A.java", task) is True
+
+
+def test_file_matches_task_true_for_basename_fallback():
+    task = ReviewTask(id="a#h0", file="src/main/java/A.java", patch="")
+    assert file_matches_task("A.java", task) is True
+
+
+def test_file_matches_task_false_for_different_file():
+    task = ReviewTask(id="a#h0", file="src/main/java/A.java", patch="")
+    assert file_matches_task("B.java", task) is False
