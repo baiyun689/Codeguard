@@ -173,6 +173,68 @@ def test_reviewer_prompt_contains_summary_once(monkeypatch):
     assert captured["prompt"].count("唯一摘要标记-Task3") == 1
 
 
+def test_reviewer_prepare_injects_task_risk_context_instead_of_global_bundle(monkeypatch):
+    captured = {}
+
+    class _CapturingEngine:
+        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
+                   max_retries, structured_method, enable_hitl=False):
+            captured["user_prompt"] = user_prompt
+            return ReviewOutcome(ReviewResult(summary="s"))
+
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _CapturingEngine())
+    sub = G.build_reviewer_subgraph(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
+    sub.invoke(
+        {
+            "diff_text": "+risky",
+            "task_risk_context": "<task id=\"A.java#h0\">RISK_BLOCK</task>",
+            "tier": "direct",
+            "context_bundle": G.ContextBundle(facts=[
+                G.ContextFact(source="diff", kind="x", content="SHOULD_NOT_APPEAR"),
+            ]),
+        }
+    )
+    assert "RISK_BLOCK" in captured["user_prompt"]
+    assert "SHOULD_NOT_APPEAR" not in captured["user_prompt"]
+
+
+def test_reviewer_prepare_falls_back_to_global_bundle_without_task_risk_context(monkeypatch):
+    captured = {}
+
+    class _CapturingEngine:
+        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
+                   max_retries, structured_method, enable_hitl=False):
+            captured["user_prompt"] = user_prompt
+            return ReviewOutcome(ReviewResult(summary="s"))
+
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _CapturingEngine())
+    sub = G.build_reviewer_subgraph(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
+    sub.invoke(
+        {
+            "diff_text": "+risky",
+            "context_bundle": G.ContextBundle(facts=[
+                G.ContextFact(source="diff", kind="x", content="LEGACY_PATH"),
+            ]),
+        }
+    )
+    assert "LEGACY_PATH" in captured["user_prompt"]
+
+
+def test_reviewer_review_uses_direct_engine_when_tier_is_direct(monkeypatch):
+    calls = []
+
+    class _ShouldNotBeCalledToolEngine:
+        def __init__(self, *a, **k):
+            calls.append("tool_agent")
+
+    monkeypatch.setattr(G, "ToolAgentEngine", _ShouldNotBeCalledToolEngine)
+    sub = G.build_reviewer_subgraph(
+        G.DEFAULT_REVIEWERS[0], llm=_FakeLLM(), tool_client=object()
+    )
+    sub.invoke({"diff_text": "+x", "tier": "direct"})
+    assert "tool_agent" not in calls
+
+
 def test_discoverer_prompts_do_not_reference_retired_routing():
     prompt_dir = Path(__file__).resolve().parents[1] / "src" / "codeguard_agent" / "prompts"
     for filename in ("threat-model.txt", "behavior.txt", "maintainability.txt"):

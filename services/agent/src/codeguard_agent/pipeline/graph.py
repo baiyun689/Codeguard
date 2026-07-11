@@ -236,6 +236,8 @@ class ReviewerState(TypedDict, total=False):
     diff_summary: str
     react_recursion_limit: int
     context_bundle: ContextBundle
+    task_risk_context: str
+    tier: str
 
     issues: list
     gathered_context: list
@@ -519,9 +521,13 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
         user = _build_user_prompt(
             state["diff_text"], summary=state.get("diff_summary", "")
         )
-        bundle = state.get("context_bundle")
-        if bundle is not None:
-            user += "\n\n<shared_context>\n" + bundle.render() + "\n</shared_context>"
+        task_risk_context = state.get("task_risk_context")
+        if task_risk_context:
+            user += "\n\n" + task_risk_context
+        else:
+            bundle = state.get("context_bundle")
+            if bundle is not None:
+                user += "\n\n<shared_context>\n" + bundle.render() + "\n</shared_context>"
         return {"user_prompt": user}
 
     def _review(state: ReviewerState) -> dict:
@@ -529,7 +535,12 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
             if reviewer.source_agent == "threat_model":
                 return {"outcome": ReviewOutcome(mock_review_result())}
             return {"outcome": ReviewOutcome(ReviewResult(summary=""))}
-        engine = _make_engine(state, tool_client=tool_client)
+        tier = state.get("tier")
+        engine = (
+            _make_engine(state, tool_client=None)
+            if tier == "direct"
+            else _make_engine(state, tool_client=tool_client)
+        )
         try:
             outcome = engine.review(
                 llm,
