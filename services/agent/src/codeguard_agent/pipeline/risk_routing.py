@@ -51,6 +51,27 @@ def routed_task_ids(
     return tuple(routed)
 
 
+def render_single_task_risk(task: ReviewTask, profile: RiskProfile) -> str:
+    """渲染单个 task 的风险标签块(<task><risk_tags><risk_signals><patch>),
+    供 Phase4 单 task 调用和 render_task_scope 共用,避免两处重复实现。"""
+    tags = sorted(tag.value for tag, score in profile.tag_scores.items() if score > 0)
+    signals = [
+        f"{signal.source}:{signal.reason}"
+        for signal in profile.signals
+        if signal.tag in profile.tag_scores and profile.tag_scores[signal.tag] > 0
+    ]
+    parts = [
+        f'<task id="{task.id}" file="{task.file}">',
+        f"<risk_tags>{','.join(tags)}</risk_tags>",
+        f"<risk_signals>{'; '.join(signals)}</risk_signals>",
+        "<patch>",
+        task.patch,
+        "</patch>",
+        "</task>",
+    ]
+    return "\n".join(parts)
+
+
 def render_task_scope(
     reviewer_source_agent: str,
     tasks: list[ReviewTask],
@@ -64,25 +85,7 @@ def render_task_scope(
     for task_id in routed_task_ids(reviewer_source_agent, tasks, profiles, selection):
         task = task_by_id[task_id]
         profile = profiles[task_id]
-        tags = sorted(
-            tag.value for tag, score in profile.tag_scores.items() if score > 0
-        )
-        signals = [
-            f"{signal.source}:{signal.reason}"
-            for signal in profile.signals
-            if signal.tag in profile.tag_scores and profile.tag_scores[signal.tag] > 0
-        ]
-        parts.extend(
-            [
-                f'<task id="{task.id}" file="{task.file}">',
-                f"<risk_tags>{','.join(tags)}</risk_tags>",
-                f"<risk_signals>{'; '.join(signals)}</risk_signals>",
-                "<patch>",
-                task.patch,
-                "</patch>",
-                "</task>",
-            ]
-        )
+        parts.append(render_single_task_risk(task, profile))
     parts.append("</review_scope>")
     return "\n".join(parts)
 

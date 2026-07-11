@@ -5,6 +5,7 @@ from __future__ import annotations
 from codeguard_agent.models.tasks import RiskProfile, RiskSignal, RiskTag, ReviewTask, TaskSelection
 from codeguard_agent.pipeline.risk_routing import (
     decide_tier,
+    render_single_task_risk,
     render_task_scope,
     reviewers_for_profile,
     routed_task_ids,
@@ -118,3 +119,41 @@ def test_decide_tier_react_when_strong_signal_present():
 
 def test_decide_tier_direct_when_profile_missing():
     assert decide_tier(None) == "direct"
+
+
+def test_render_single_task_risk_includes_tags_and_signals():
+    task = ReviewTask(id="A.java#h0", file="A.java", patch="+x")
+    profile = RiskProfile(
+        task_id="A.java#h0",
+        tag_scores={RiskTag.AUTHORIZATION: 3},
+        signals=[
+            RiskSignal(
+                tag=RiskTag.AUTHORIZATION,
+                score=3,
+                source="text:deleted:authorization_guard_removed",
+                reason="删除 @PreAuthorize",
+            )
+        ],
+    )
+    rendered = render_single_task_risk(task, profile)
+    assert "AUTHORIZATION" in rendered
+    assert "删除 @PreAuthorize" in rendered
+    assert "+x" in rendered
+
+
+def test_render_single_task_risk_omits_zero_score_tags():
+    task = ReviewTask(id="A.java#h0", file="A.java", patch="+x")
+    profile = RiskProfile(
+        task_id="A.java#h0",
+        tag_scores={RiskTag.AUTHORIZATION: 3, RiskTag.PERFORMANCE: 0},
+        signals=[
+            RiskSignal(
+                tag=RiskTag.AUTHORIZATION,
+                score=3,
+                source="text:deleted:authorization_guard_removed",
+                reason="删除 @PreAuthorize",
+            )
+        ],
+    )
+    rendered = render_single_task_risk(task, profile)
+    assert "PERFORMANCE" not in rendered
