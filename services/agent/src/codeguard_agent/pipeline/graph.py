@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import operator
+import uuid
 from typing import Annotated, Any, TypedDict
 
 from codeguard_agent.llm.client import mock_review_result
@@ -51,7 +52,11 @@ from codeguard_agent.models.tasks import (
 )
 from codeguard_agent.pipeline import context_rules, task_prep
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
-from codeguard_agent.pipeline.risk_routing import render_task_scope, routed_task_ids
+from codeguard_agent.pipeline.risk_routing import (
+    decide_tier,
+    render_single_task_risk,
+    routed_task_ids,
+)
 from codeguard_agent.pipeline.engines import (
     DirectEngine,
     GatheredContext,
@@ -642,110 +647,193 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             if state.get("enabled_tools") is not None
             else reviewer.tool_allowlist
         )
-        scoped_diff = (
-            render_task_scope(reviewer.source_agent, tasks, profiles, selection)
-            if selection is not None
-            else state.get("diff_text", "")
-        )
-        result = subgraph.invoke(
-            {
-                "diff_text": scoped_diff,
-                "enabled_tools": effective_tools,
-                "max_retries": state.get("max_retries", 3),
-                "structured_method": state.get("structured_method", "function_calling"),
-                "diff_summary": state.get("diff_summary", ""),
-                "react_recursion_limit": state.get("react_recursion_limit", 24),
-                "context_bundle": state.get("context_bundle"),
+
+        if selection is None:
+            # 兼容路径：无任务化 State（测试 / 非任务化调用场景）——整份 diff 一次调用，
+            # 沿用 map_candidate_to_task 的按 file/line 猜测归属。
+            result = subgraph.invoke(
+                {
+                    "diff_text": state.get("diff_text", ""),
+                    "enabled_tools": effective_tools,
+                    "max_retries": state.get("max_retries", 3),
+                    "structured_method": state.get("structured_method", "function_calling"),
+                    "diff_summary": state.get("diff_summary", ""),
+                    "react_recursion_limit": state.get("react_recursion_limit", 24),
+                    "context_bundle": state.get("context_bundle"),
+                }
+            )
+            issues = list(result.get("issues") or [])
+            kept_issues = issues[:MAX_CANDIDATES_PER_AGENT]
+            truncated_candidates = max(0, len(issues) - len(kept_issues))
+            candidates: list[CandidateIssue] = []
+            rejected_unmapped: list[str] = []
+            accepted_count = 0
+            for issue in kept_issues:
+                task_id = task_prep.map_candidate_to_task(issue.file, issue.line, tasks)
+                if task_id is None:
+                    rejected_unmapped.append(f"{issue.file}:{issue.line}")
+                    continue
+                accepted_count += 1
+                candidates.append(
+                    CandidateIssue.from_issue(
+                        issue, source_agent=reviewer.source_agent,
+                        index=accepted_count, task_id=task_id,
+                    )
+                )
+            truncated_evidence_requests = 0
+            requests: list[EvidenceRequest] = []
+            for candidate in candidates:
+                candidate_requests = build_evidence_requests(candidate)
+                requests.extend(candidate_requests[:MAX_EVIDENCE_REQUESTS_PER_CANDIDATE])
+                truncated_evidence_requests += max(
+                    0, len(candidate_requests) - MAX_EVIDENCE_REQUESTS_PER_CANDIDATE,
+                )
+            trace: list[CouncilTrace] = list(result.get("council_trace") or [])
+            trace.append(
+                CouncilTrace(
+                    node=reviewer.source_agent,
+                    event="candidates_created",
+                    detail=(
+                        f"count={len(candidates)} truncated={truncated_candidates} "
+                        f"rejected_unmapped={len(rejected_unmapped)}"
+                    ),
+                )
+            )
+            if rejected_unmapped:
+                trace.append(
+                    CouncilTrace(
+                        node=reviewer.source_agent,
+                        event="candidate_rejected_unmapped",
+                        detail="; ".join(rejected_unmapped),
+                    )
+                )
+            out: dict = {
+                "candidate_issues": candidates,
+                "evidence_requests": requests[:MAX_TOTAL_EVIDENCE_REQUESTS],
+                "truncated_candidates": truncated_candidates,
+                "truncated_evidence_requests": truncated_evidence_requests,
+                "council_trace": trace,
             }
-        )
-        issues = list(result.get("issues") or [])
-        kept_issues = issues[:MAX_CANDIDATES_PER_AGENT]
-        truncated_candidates = max(0, len(issues) - len(kept_issues))
-        # 只接纳 TaskRank 选中的任务；selection 缺席（直连节点测试等）时不设门槛。
-        selected_ids = set(selection.selected_task_ids) if selection is not None else None
-        candidates: list[CandidateIssue] = []
-        rejected_unmapped: list[str] = []
-        rejected_unselected: list[str] = []
-        rejected_unrouted: list[str] = []
+            for key in ("gathered_context", "review_summaries"):
+                if result.get(key):
+                    out[key] = result[key]
+            return out
+
+        # Phase4：每个路由到的 task 独立调用，task 间并发派发。
+        task_by_id = {t.id: t for t in tasks}
+        task_context_bundles = state.get("task_context_bundles") or {}
+        ordered_ids = list(routed_task_ids(reviewer.source_agent, tasks, profiles, selection))
+
+        def _invoke_one(task_id: str) -> dict:
+            task = task_by_id[task_id]
+            profile = profiles.get(task_id)
+            tier = decide_tier(profile)
+            risk_text = render_single_task_risk(task, profile) if profile is not None else ""
+            bundle = task_context_bundles.get(task_id)
+            bundle_text = bundle.render() if bundle is not None else ""
+            task_risk_context = "\n\n".join(p for p in (risk_text, bundle_text) if p)
+            # 显式传 config/thread_id：run_bounded_parallel 把本调用派发到线程池的工作线程，
+            # LangGraph 通过 contextvar 向下传递的父级 config 不会跨线程自动传播；
+            # 若子图编译时带了 checkpointer，缺 config 会直接抛 ValueError。
+            # 每个 task 调用都是一次性、互不依赖的，给随机 thread_id 既满足 checkpointer
+            # 的硬性要求，也避免不同调用间误撞到旧的 checkpoint 记录。
+            return subgraph.invoke(
+                {
+                    "diff_text": task.patch,
+                    "enabled_tools": effective_tools,
+                    "max_retries": state.get("max_retries", 3),
+                    "structured_method": state.get("structured_method", "function_calling"),
+                    "diff_summary": state.get("diff_summary", ""),
+                    "react_recursion_limit": state.get("react_recursion_limit", 24),
+                    "task_risk_context": task_risk_context,
+                    "tier": tier,
+                },
+                config={"configurable": {"thread_id": str(uuid.uuid4())}},
+            )
+
+        task_results = run_bounded_parallel(ordered_ids, _invoke_one, max_workers=8)
+
+        per_task_issues: list[tuple[str, Any]] = []
+        trace = []
+        gathered_context: list = []
+        review_summaries: list = []
+        for task_id, result in zip(ordered_ids, task_results):
+            if result is None:
+                trace.append(
+                    CouncilTrace(
+                        node=reviewer.source_agent,
+                        event="task_review_failed",
+                        detail=task_id,
+                    )
+                )
+                continue
+            for issue in result.get("issues") or []:
+                per_task_issues.append((task_id, issue))
+            trace.extend(result.get("council_trace") or [])
+            if result.get("gathered_context"):
+                gathered_context.extend(result["gathered_context"])
+            if result.get("review_summaries"):
+                review_summaries.extend(result["review_summaries"])
+
+        kept_pairs = per_task_issues[:MAX_CANDIDATES_PER_AGENT]
+        truncated_candidates = max(0, len(per_task_issues) - len(kept_pairs))
+
+        candidates = []
+        rejected_mismatched: list[str] = []
         accepted_count = 0
-        for issue in kept_issues:
-            task_id = task_prep.map_candidate_to_task(issue.file, issue.line, tasks)
-            if task_id is None:
-                rejected_unmapped.append(f"{issue.file}:{issue.line}")
-                continue
-            if selected_ids is not None and task_id not in selected_ids:
-                # 任务被 TaskRank 跳过（如 Phase 2 Top-K）→ 不进黑板，让预算真正生效。
-                rejected_unselected.append(f"{issue.file}:{issue.line} -> {task_id}")
-                continue
-            if routed_ids is not None and task_id not in routed_ids:
-                rejected_unrouted.append(f"{issue.file}:{issue.line} -> {task_id}")
+        for task_id, issue in kept_pairs:
+            task = task_by_id[task_id]
+            if not task_prep.file_matches_task(issue.file, task):
+                rejected_mismatched.append(f"{issue.file}:{issue.line} -> {task_id}")
                 continue
             accepted_count += 1
             candidates.append(
                 CandidateIssue.from_issue(
-                    issue,
-                    source_agent=reviewer.source_agent,
-                    index=accepted_count,
-                    task_id=task_id,
+                    issue, source_agent=reviewer.source_agent,
+                    index=accepted_count, task_id=task_id,
                 )
             )
+
         truncated_evidence_requests = 0
-        requests: list[EvidenceRequest] = []
+        requests = []
         for candidate in candidates:
             candidate_requests = build_evidence_requests(candidate)
             requests.extend(candidate_requests[:MAX_EVIDENCE_REQUESTS_PER_CANDIDATE])
             truncated_evidence_requests += max(
-                0,
-                len(candidate_requests) - MAX_EVIDENCE_REQUESTS_PER_CANDIDATE,
+                0, len(candidate_requests) - MAX_EVIDENCE_REQUESTS_PER_CANDIDATE,
             )
-        trace: list[CouncilTrace] = list(result.get("council_trace") or [])
+
         trace.append(
             CouncilTrace(
                 node=reviewer.source_agent,
                 event="candidates_created",
                 detail=(
                     f"count={len(candidates)} truncated={truncated_candidates} "
-                    f"rejected_unmapped={len(rejected_unmapped)} "
-                    f"rejected_unselected={len(rejected_unselected)} "
-                    f"rejected_unrouted={len(rejected_unrouted)}"
+                    f"rejected_task_mismatch={len(rejected_mismatched)}"
                 ),
             )
         )
-        if rejected_unmapped:
+        if rejected_mismatched:
             trace.append(
                 CouncilTrace(
                     node=reviewer.source_agent,
-                    event="candidate_rejected_unmapped",
-                    detail="; ".join(rejected_unmapped),
+                    event="candidate_rejected_task_mismatch",
+                    detail="; ".join(rejected_mismatched),
                 )
             )
-        if rejected_unselected:
-            trace.append(
-                CouncilTrace(
-                    node=reviewer.source_agent,
-                    event="candidate_rejected_unselected",
-                    detail="; ".join(rejected_unselected),
-                )
-            )
-        if rejected_unrouted:
-            trace.append(
-                CouncilTrace(
-                    node=reviewer.source_agent,
-                    event="candidate_rejected_unrouted",
-                    detail="; ".join(rejected_unrouted),
-                )
-            )
-        out: dict = {
+
+        routed_out: dict = {
             "candidate_issues": candidates,
-            "evidence_requests": requests,
+            "evidence_requests": requests[:MAX_TOTAL_EVIDENCE_REQUESTS],
             "truncated_candidates": truncated_candidates,
             "truncated_evidence_requests": truncated_evidence_requests,
             "council_trace": trace,
         }
-        for key in ("gathered_context", "review_summaries"):
-            if result.get(key):
-                out[key] = result[key]
-        return out
+        if gathered_context:
+            routed_out["gathered_context"] = gathered_context
+        if review_summaries:
+            routed_out["review_summaries"] = review_summaries
+        return routed_out
 
     return _node
 

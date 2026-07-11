@@ -869,6 +869,13 @@ def test_candidate_and_evidence_request_limits_are_enforced(monkeypatch):
         ]
 
     class _ManyIssueEngine:
+        """Phase4 单 task 独立调用：每次调用只对应一个 task，按 user_prompt 里嵌入的
+        `file="..."` 属性(来自 render_single_task_risk)识别当前 task 归属哪个文件，
+        只在该文件命中"这是我(reviewer_name)自己的文件"时才产出 1 条候选——
+        这样 8 个匹配文件 × 3 个 reviewer = 24 条候选，与改造前"单次整体调用返回 8 条"
+        的候选总量保持一致，不因 fan-out 调用次数变化而改变测试期望的候选总数。
+        """
+
         def review(
             self,
             llm,
@@ -880,17 +887,20 @@ def test_candidate_and_evidence_request_limits_are_enforced(monkeypatch):
             structured_method,
             enable_hitl=False,
         ):
-            issues = [
-                Issue(
-                    severity=Severity.WARNING,
-                    file=f"{reviewer_name}-{i}.java",
-                    line=i + 1,
-                    type=reviewer_name,
-                    message="m",
-                )
-                for i in range(8)
-            ]
-            return ReviewOutcome(ReviewResult(summary=f"sum-{reviewer_name}", issues=issues))
+            import re
+
+            match = re.search(r'file="([^"]+)"', user_prompt)
+            current_file = match.group(1) if match else ""
+            if not current_file.startswith(f"{reviewer_name}-"):
+                return ReviewOutcome(ReviewResult(summary=f"sum-{reviewer_name}", issues=[]))
+            issue = Issue(
+                severity=Severity.WARNING,
+                file=current_file,
+                line=1,
+                type=reviewer_name,
+                message="m",
+            )
+            return ReviewOutcome(ReviewResult(summary=f"sum-{reviewer_name}", issues=[issue]))
 
     monkeypatch.setattr(G.CandidateIssue, "from_issue", _many_candidates_from_issue)
     monkeypatch.setattr(G, "build_evidence_requests", _many_evidence_requests)
@@ -1341,26 +1351,25 @@ def test_make_reviewer_node_rejects_unmapped_candidate(monkeypatch):
     assert "candidate_rejected_unmapped" in events
 
 
-def test_make_reviewer_node_rejects_unselected_task(monkeypatch):
-    """收集节点：候选映射到的任务未被 TaskRank 选中 → 拒绝 + candidate_rejected_unselected。"""
+def test_make_reviewer_node_only_invokes_routed_and_selected_tasks(monkeypatch):
+    """收集节点：未被 TaskRank 选中/未路由到本 reviewer 的 task 根本不会被调用。"""
+    invoked_task_files = []
 
-    class _InDiffEngine:
+    class _RecordingEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
                    max_retries, structured_method, enable_hitl=False):
-            issue = Issue(
-                severity=Severity.WARNING, file="A.java", line=1, type="t", message="m",
-            )
-            return ReviewOutcome(ReviewResult(summary="s", issues=[issue]))
+            invoked_task_files.append(user_prompt)
+            return ReviewOutcome(ReviewResult(summary="s"))
 
-    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _InDiffEngine())
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _RecordingEngine())
     node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
     out = node({
-        "diff_text": "diff --git a/A.java b/A.java\n+++ b/A.java\n@@ -1 +1,2 @@\n+x",
+        "diff_text": "+x\n+y",
         "review_tasks": [
-            G.ReviewTask(id="A.java#h0", file="A.java", patch="", changed_lines=[1]),
-            G.ReviewTask(id="B.java#h0", file="B.java", patch=""),
+            G.ReviewTask(id="A.java#h0", file="A.java", patch="+x", changed_lines=[1]),
+            G.ReviewTask(id="B.java#h0", file="B.java", patch="+y", changed_lines=[1]),
         ],
-        # A.java#h0 映射得到，但只选中了 B.java#h0 → 该候选被跳过
+        # 只选中 B.java#h0；A.java#h0 即使命中 ThreatModelAgent 的标签也不该被调用
         "task_selection": G.TaskSelection(selected_task_ids=["B.java#h0"]),
         "risk_profiles": {
             "B.java#h0": G.RiskProfile(
@@ -1368,18 +1377,16 @@ def test_make_reviewer_node_rejects_unselected_task(monkeypatch):
                 tag_scores={RiskTag.GENERAL_REVIEW: 1},
                 signals=[
                     RiskSignal(
-                        tag=RiskTag.GENERAL_REVIEW,
-                        score=1,
-                        source="fallback:unclassified",
-                        reason="fallback",
+                        tag=RiskTag.GENERAL_REVIEW, score=1,
+                        source="fallback:unclassified", reason="fallback",
                     )
                 ],
             )
         },
     })
-    assert out["candidate_issues"] == []
-    events = {t.event for t in out["council_trace"]}
-    assert "candidate_rejected_unselected" in events
+    assert len(invoked_task_files) == 1
+    assert "+y" in invoked_task_files[0]
+    assert "+x" not in invoked_task_files[0]
 
 
 def test_make_reviewer_node_skips_reviewer_without_routed_tasks(monkeypatch):
@@ -1421,64 +1428,81 @@ def test_make_reviewer_node_skips_reviewer_without_routed_tasks(monkeypatch):
     assert any(trace.event == "no_tasks_routed" for trace in out["council_trace"])
 
 
-def test_make_reviewer_node_passes_only_routed_scope_and_rejects_unrouted_candidate(monkeypatch):
-    seen_prompt = ""
+def test_make_reviewer_node_rejects_candidate_with_mismatched_file(monkeypatch):
+    """收集节点：某 task 调用返回的 issue.file 和被调用 task 的 file 对不上 → 拒绝。"""
 
-    class _Engine:
+    class _WrongFileEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
                    max_retries, structured_method, enable_hitl=False):
-            nonlocal seen_prompt
-            seen_prompt = user_prompt
             issue = Issue(
-                severity=Severity.WARNING, file="B.java", line=1, type="t", message="m",
+                severity=Severity.WARNING, file="Unrelated.java", line=1,
+                type="t", message="m",
             )
             return ReviewOutcome(ReviewResult(summary="s", issues=[issue]))
 
-    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _Engine())
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _WrongFileEngine())
+    node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[1], llm=_FakeLLM())
+    task = G.ReviewTask(id="A.java#h0", file="A.java", patch="+sql", changed_lines=[1])
+    out = node({
+        "diff_text": "+sql",
+        "review_tasks": [task],
+        "risk_profiles": {
+            task.id: G.RiskProfile(
+                task_id=task.id,
+                tag_scores={RiskTag.SQL_DATA_ACCESS: 1},
+                signals=[
+                    RiskSignal(
+                        tag=RiskTag.SQL_DATA_ACCESS, score=1,
+                        source="text:added:sql_data_access", reason="query",
+                    )
+                ],
+            )
+        },
+        "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
+    })
+    assert out["candidate_issues"] == []
+    events = {t.event for t in out["council_trace"]}
+    assert "candidate_rejected_task_mismatch" in events
+
+
+def test_make_reviewer_node_invokes_tasks_concurrently_with_correct_tier(monkeypatch):
+    seen_tiers = {}
+
+    def _fake_subgraph_invoke(payload, config=None):
+        # 实现按 task 并发派发时，每次 invoke 都显式带了 config/thread_id（见
+        # graph.py 里的注释：跨线程调用需要避开 checkpointer 对 ambient config 的依赖），
+        # 这里的 fake 必须接受该形参，否则会被当成签名不匹配的失败。
+        seen_tiers[payload["diff_text"]] = payload.get("tier")
+        return {"issues": [], "council_trace": []}
+
+    import types
+
+    fake_subgraph = types.SimpleNamespace(invoke=_fake_subgraph_invoke)
+    monkeypatch.setattr(
+        G, "build_reviewer_subgraph", lambda *a, **k: fake_subgraph
+    )
     node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[1], llm=_FakeLLM())
     tasks = [
-        G.ReviewTask(id="A.java#h0", file="A.java", patch="+sql", changed_lines=[1]),
-        G.ReviewTask(id="B.java#h0", file="B.java", patch="+auth", changed_lines=[1]),
+        G.ReviewTask(id="A.java#h0", file="A.java", patch="+strong", changed_lines=[1]),
+        G.ReviewTask(id="B.java#h0", file="B.java", patch="+weak", changed_lines=[1]),
     ]
-    out = node(
-        {
-            "diff_text": "+sql\n+auth",
-            "review_tasks": tasks,
-            "risk_profiles": {
-                "A.java#h0": G.RiskProfile(
-                    task_id="A.java#h0",
-                    tag_scores={RiskTag.SQL_DATA_ACCESS: 1},
-                    signals=[
-                        RiskSignal(
-                            tag=RiskTag.SQL_DATA_ACCESS,
-                            score=1,
-                            source="text:added:sql_data_access",
-                            reason="query",
-                        )
-                    ],
-                ),
-                "B.java#h0": G.RiskProfile(
-                    task_id="B.java#h0",
-                    tag_scores={RiskTag.CONFIG_SECURITY: 1},
-                    signals=[
-                        RiskSignal(
-                            tag=RiskTag.CONFIG_SECURITY,
-                            score=1,
-                            source="text:added:config_security",
-                            reason="auth",
-                        )
-                    ],
-                ),
-            },
-            "task_selection": G.TaskSelection(selected_task_ids=["A.java#h0", "B.java#h0"]),
-        }
-    )
-
-    assert 'id="A.java#h0"' in seen_prompt
-    assert '+sql' in seen_prompt
-    assert 'id="B.java#h0"' not in seen_prompt
-    assert out["candidate_issues"] == []
-    assert any(trace.event == "candidate_rejected_unrouted" for trace in out["council_trace"])
+    node({
+        "diff_text": "+strong\n+weak",
+        "review_tasks": tasks,
+        "risk_profiles": {
+            "A.java#h0": G.RiskProfile(
+                task_id="A.java#h0", tag_scores={RiskTag.CONCURRENCY_CONSISTENCY: 2},
+            ),
+            "B.java#h0": G.RiskProfile(
+                task_id="B.java#h0", tag_scores={RiskTag.SQL_DATA_ACCESS: 1},
+            ),
+        },
+        "task_selection": G.TaskSelection(
+            selected_task_ids=["A.java#h0", "B.java#h0"]
+        ),
+    })
+    assert seen_tiers["+strong"] == "react"
+    assert seen_tiers["+weak"] == "direct"
 
 
 def test_context_provider_node_fills_level0_and_level1_facts_per_task():
