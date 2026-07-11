@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from codeguard_agent.models.council import ContextFact
 from codeguard_agent.models.tasks import ReviewTask, RiskProfile, RiskTag
 from codeguard_agent.pipeline.task_prep import _hunk_span
 
@@ -196,3 +197,31 @@ def sensitive_api_rows_for_task(sensitive_api_text: str, task: ReviewTask) -> li
             continue
         rows.append(line)
     return rows
+
+
+def truncate_task_facts(
+    facts: list[ContextFact], max_chars: int | None
+) -> tuple[list[ContextFact], bool]:
+    """按每任务字符预算截断 facts 列表。max_chars 为 None 表示不限制。"""
+    if max_chars is None:
+        return facts, False
+
+    kept: list[ContextFact] = []
+    used = 0
+    for fact in facts:
+        remaining = max_chars - used
+        if remaining <= 0:
+            return kept, True
+        if len(fact.content) > remaining:
+            kept.append(
+                ContextFact(
+                    source=fact.source,
+                    kind=fact.kind,
+                    content=fact.content[:remaining] + "...(已截断)",
+                    truncated=True,
+                )
+            )
+            return kept, True
+        kept.append(fact)
+        used += len(fact.content)
+    return kept, False
