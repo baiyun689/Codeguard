@@ -72,6 +72,11 @@ def test_review_budget_has_phase_2_defaults():
     assert budget.max_final_issues is None
 
 
+def test_review_budget_defaults_context_chars_per_task_to_4000():
+    budget = ReviewBudget()
+    assert budget.max_context_chars_per_task == 4000
+
+
 @pytest.mark.parametrize(
     "field",
     [

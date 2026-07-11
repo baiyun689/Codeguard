@@ -76,7 +76,7 @@ class ReviewBudget(BaseModel):
 
     max_tasks_to_review: StrictInt | None = Field(default=100, gt=0)
     max_tasks_per_file: StrictInt | None = Field(default=10, gt=0)
-    max_context_chars_per_task: StrictInt | None = Field(default=None, gt=0)
+    max_context_chars_per_task: StrictInt | None = Field(default=4000, gt=0)
     max_final_issues: StrictInt | None = Field(default=None, gt=0)
 
 
