@@ -1505,6 +1505,61 @@ def test_make_reviewer_node_invokes_tasks_concurrently_with_correct_tier(monkeyp
     assert seen_tiers["+weak"] == "direct"
 
 
+def test_make_reviewer_node_fanout_survives_real_memory_checkpointer(monkeypatch):
+    """回归钉子：per-task fan-out 必须显式传 config/thread_id，否则线程池里的
+    subgraph.invoke() 在真实 MemorySaver checkpointer 下会因缺 thread_id 抛
+    ValueError，被 run_bounded_parallel 吞成 None → task_review_failed。
+    这里用真实 MemorySaver（不 mock），llm 不为 None（避免 _prepare/_review 因
+    llm is None 短路，从而绕过 tier/engine 选择逻辑），2 个 task 路由到同一
+    reviewer，真正走 selection is not None 的并发派发分支。
+    """
+    from langgraph.checkpoint.memory import MemorySaver
+
+    invoked_files: list[str] = []
+
+    class _RecordingEngine:
+        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
+                   max_retries, structured_method, enable_hitl=False):
+            import re
+
+            match = re.search(r'file="([^"]+)"', user_prompt)
+            file = match.group(1) if match else "unknown"
+            invoked_files.append(file)
+            issue = Issue(severity=Severity.WARNING, file=file, line=1, type="t", message="m")
+            return ReviewOutcome(ReviewResult(summary="s", issues=[issue]))
+
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _RecordingEngine())
+    node = G.make_reviewer_node(
+        G.DEFAULT_REVIEWERS[1], checkpointer=MemorySaver(), llm=_FakeLLM(),
+    )
+    tasks = [
+        G.ReviewTask(id="A.java#h0", file="A.java", patch="+sql", changed_lines=[1]),
+        G.ReviewTask(id="B.java#h0", file="B.java", patch="+auth", changed_lines=[1]),
+    ]
+    out = node({
+        "diff_text": "+sql\n+auth",
+        "review_tasks": tasks,
+        "risk_profiles": {
+            "A.java#h0": G.RiskProfile(
+                task_id="A.java#h0", tag_scores={RiskTag.SQL_DATA_ACCESS: 1},
+            ),
+            "B.java#h0": G.RiskProfile(
+                task_id="B.java#h0", tag_scores={RiskTag.CONCURRENCY_CONSISTENCY: 2},
+            ),
+        },
+        "task_selection": G.TaskSelection(selected_task_ids=["A.java#h0", "B.java#h0"]),
+    })
+
+    # 两个 task 都必须真正被调用到（证明 fan-out 分支在跑，而不是短路成兼容路径）。
+    assert set(invoked_files) == {"A.java", "B.java"}
+    # 去掉 uuid.uuid4() 的 config/thread_id 后，两次 invoke 都会在工作线程里因
+    # MemorySaver 缺 thread_id 抛异常，被 run_bounded_parallel 吞成 None，
+    # 产出 task_review_failed 而不是候选——这条断言就是钉住这个修复的关键。
+    events = [t.event for t in out["council_trace"]]
+    assert "task_review_failed" not in events
+    assert {c.file for c in out["candidate_issues"]} == {"A.java", "B.java"}
+
+
 def test_context_provider_node_fills_level0_and_level1_facts_per_task():
     task = G.ReviewTask(
         id="A.java#h0",
