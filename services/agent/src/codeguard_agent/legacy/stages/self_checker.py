@@ -51,7 +51,6 @@ class SelfCheckerStage(PipelineStage):
         evidence_rounds: int,
         evidence_request_count: int = 0,
         truncated_candidates: int = 0,
-        truncated_evidence_requests: int = 0,
     ) -> SelfCheckerOutcome:
         drop_ids = {c.candidate_id for c in challenges if c.verdict == "drop"}
         challenge_kept = [c for c in candidates if c.id not in drop_ids]
@@ -74,7 +73,6 @@ class SelfCheckerStage(PipelineStage):
             candidate_count_by_agent=by_agent,
             evidence_request_count=evidence_request_count,
             truncated_candidates=truncated_candidates,
-            truncated_evidence_requests=truncated_evidence_requests,
             evidence_rounds=evidence_rounds,
             challenge_count=len(challenges),
             removed_by_challenge=len(drop_ids),

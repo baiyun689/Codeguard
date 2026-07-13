@@ -15,7 +15,12 @@ from codeguard_agent.models.council import (
     Verdict,
 )
 from codeguard_agent.models.schemas import Severity
-from codeguard_agent.models.tasks import ReviewTask, RiskProfile, RiskTag
+from codeguard_agent.models.tasks import (
+    ReviewTask,
+    RiskProfile,
+    RiskTag,
+    TaskContextBundle,
+)
 from codeguard_agent.pipeline.evidence_planner import (
     CandidateDossier,
     plan_evidence,
@@ -335,7 +340,20 @@ def test_followup_only_handles_needs_more_and_reports_invalid_or_exhausted(monke
         target="src/Service9.java",
         question="already queued",
     )
-    orphan = EvidenceNote(request_id="orphan", candidate_id="candidate-9")
+    orphan = EvidenceNote(
+        request_id="orphan",
+        candidate_id="candidate-9",
+        findings=[
+            {
+                "evidence_id": "orphan-evidence",
+                "source": "test",
+                "observation": "",
+                "relation": "insufficient",
+                "strength": "contextual",
+                "limitation": "orphan",
+            }
+        ],
+    )
     dossiers = [
         _dossier(
             9,
@@ -505,3 +523,77 @@ def test_candidate_dossier_is_frozen():
 
     with pytest.raises(FrozenInstanceError):
         dossier.latest_verdict = None
+
+
+def test_assemble_dossiers_preserves_candidate_order_and_groups_state():
+    first = _dossier(21)
+    second = _dossier(22)
+    request = EvidenceRequest(
+        candidate_id=first.candidate.id,
+        strategy_id="authorization.counter",
+        purpose="counter",
+        target=first.task.file,
+        question=STRATEGIES_BY_ID["authorization.counter"].question_template,
+        preferred_tools=["get_file_content", "find_sensitive_apis"],
+    )
+    note = EvidenceNote(
+        request_id=request.id,
+        candidate_id=first.candidate.id,
+        findings=[
+            {
+                "evidence_id": "evidence-1",
+                "source": "task_patch",
+                "observation": "",
+                "relation": "insufficient",
+                "strength": "contextual",
+                "limitation": "not_analyzed",
+            }
+        ],
+    )
+    older = Verdict(first.candidate.id, "keep", "older")
+    latest = Verdict(first.candidate.id, "needs_more_evidence", "latest", requested_purpose="support")
+    bundle = TaskContextBundle(task_id=first.task.id)
+
+    assembly = evidence_planner.assemble_dossiers(
+        [second.candidate, first.candidate],
+        [first.task, second.task],
+        {first.task.id: first.risk_profile},
+        {first.task.id: bundle},
+        [request],
+        [note],
+        [older, latest],
+    )
+
+    assert [d.candidate.id for d in assembly.dossiers] == [
+        second.candidate.id,
+        first.candidate.id,
+    ]
+    bound = assembly.dossiers[1]
+    assert bound.requests == (request,)
+    assert bound.notes == (note,)
+    assert bound.latest_verdict is latest
+    assert bound.context_bundle is bundle
+
+
+def test_assemble_dossiers_reports_missing_task_and_file_mismatch():
+    valid = _dossier(23)
+    missing = valid.candidate.model_copy(update={"id": "missing", "task_id": "absent"})
+    mismatch = valid.candidate.model_copy(update={"id": "mismatch", "file": "src/Other.java"})
+
+    assembly = evidence_planner.assemble_dossiers(
+        [missing, mismatch],
+        [valid.task],
+        {},
+        {},
+        [],
+        [],
+        [],
+    )
+
+    assert assembly.dossiers == ()
+    assert [(failure.candidate.id, failure.reason) for failure in assembly.failures] == [
+        ("missing", "missing_task"),
+        ("mismatch", "file_mismatch"),
+    ]
+    details = [json.loads(detail) for _, detail in assembly.trace]
+    assert [detail["reason"] for detail in details] == ["missing_task", "file_mismatch"]

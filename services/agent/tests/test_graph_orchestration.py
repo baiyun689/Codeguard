@@ -1,3 +1,4 @@
+
 """ADR-032 ReviewCouncil 编排测试。"""
 
 from __future__ import annotations
@@ -5,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import codeguard_agent.pipeline.orchestrator as orchestrator_module
-from codeguard_agent.models.council import ContextBundle, ContextFact, EvidenceNote, Verdict
+from codeguard_agent.models.council import ContextBundle, ContextFact, Verdict
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
 from codeguard_agent.models.tasks import RiskSignal, RiskTag
 from codeguard_agent.pipeline import graph as G
@@ -98,6 +99,7 @@ def _candidate(*, confidence=0.9):
         severity=Severity.WARNING,
         file="A.java",
         line=1,
+
         type="t",
         message="m",
         confidence=confidence,
@@ -113,7 +115,7 @@ def _candidate(*, confidence=0.9):
 def test_route_after_council_judge_needs_more_loop():
     """council_judge 有 needs_more_evidence + 轮次未超 → evidence_agent。"""
     v = Verdict(candidate_id="c1", action="needs_more_evidence", reason_code="test")
-    assert G._route_after_council_judge(_base_state(council_verdicts=[v], evidence_round=1)) == "evidence_agent"
+    assert G._route_after_council_judge(_base_state(council_verdicts=[v], evidence_round=1)) == "evidence_planner"
 
 
 def test_route_after_council_judge_exhausted_rounds():
@@ -196,6 +198,7 @@ def test_reviewer_prepare_injects_task_risk_context_instead_of_global_bundle(mon
     )
     assert "RISK_BLOCK" in captured["user_prompt"]
     assert "SHOULD_NOT_APPEAR" not in captured["user_prompt"]
+
 
 
 def test_reviewer_prepare_falls_back_to_global_bundle_without_task_risk_context(monkeypatch):
@@ -298,6 +301,7 @@ def test_review_legacy_no_tier_empty_result_still_retries_direct_fallback(monkey
     class _FallbackDirectEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
                     max_retries, structured_method, enable_hitl=False):
+
             calls["fallback"] += 1
             return ReviewOutcome(ReviewResult(summary="fallback-summary", issues=[]))
 
@@ -359,404 +363,6 @@ def test_reviewer_subgraph_mock_only_threat_model_returns_issues():
     assert other.invoke({}).get("issues", []) == []
 
 
-def test_council_judge_rule_invalid_file_drop():
-    """文件路径为空 → drop。"""
-    c = G.CandidateIssue(
-        id="c1", source_agent="threat_model", file="", line=1, type="t",
-        severity_proposal=Severity.WARNING, claim="m", task_id="#h0",
-    )
-    node = G._council_judge_node(llm=None)
-    out = node({"candidate_issues": [c], "evidence_notes": [], "evidence_requests": [], "review_summaries": []})
-    assert len(out["final_issues"]) == 0
-    assert out["council_verdicts"][0].action == "drop"
-
-
-def test_council_judge_rule_contradicted_drop():
-    """有 contradicts + 低置信度 → drop。"""
-    c = G.CandidateIssue(
-        id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
-        severity_proposal=Severity.WARNING, claim="m", confidence=0.3, task_id="A.java#h0",
-    )
-    notes = [EvidenceNote(request_id="r1", candidate_id="c1", contradicts=["反证:已有校验"])]
-    node = G._council_judge_node(llm=None)
-    out = node({
-        "candidate_issues": [c], "evidence_notes": notes,
-        "evidence_requests": [], "review_summaries": [],
-    })
-    assert len(out["final_issues"]) == 0
-    assert out["council_verdicts"][0].action == "drop"
-
-
-def test_council_judge_rule_no_evidence_drop():
-    """全部 insufficient + 低置信度 → drop。"""
-    c = G.CandidateIssue(
-        id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
-        severity_proposal=Severity.WARNING, claim="m", confidence=0.3, task_id="A.java#h0",
-    )
-    notes = [EvidenceNote(request_id="r1", candidate_id="c1", status="insufficient", unknowns=["x"])]
-    node = G._council_judge_node(llm=None)
-    out = node({
-        "candidate_issues": [c], "evidence_notes": notes,
-        "evidence_requests": [], "review_summaries": [],
-    })
-    assert len(out["final_issues"]) == 0
-
-
-def test_council_judge_rule_critical_insufficient_downgrade():
-    """CRITICAL + 全部 insufficient → downgrade 到 WARNING（并入 _rule_no_evidence）。"""
-    c = G.CandidateIssue(
-        id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
-        severity_proposal=Severity.CRITICAL, claim="m", confidence=0.9, task_id="A.java#h0",
-    )
-    notes = [EvidenceNote(request_id="r1", candidate_id="c1", status="insufficient", unknowns=["x"])]
-    node = G._council_judge_node(llm=None)
-    out = node({
-        "candidate_issues": [c], "evidence_notes": notes,
-        "evidence_requests": [], "review_summaries": [],
-    })
-    assert out["council_verdicts"][0].action == "downgrade"
-    assert out["council_verdicts"][0].severity_override == Severity.WARNING
-
-
-def test_council_judge_rule_contradicted_by_status():
-    """EvidenceNote.status=="contradicted" + 低置信度 → drop。"""
-    c = G.CandidateIssue(
-        id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
-        severity_proposal=Severity.WARNING, claim="m", confidence=0.3, task_id="A.java#h0",
-    )
-    notes = [EvidenceNote(request_id="r1", candidate_id="c1", status="contradicted", contradicts=["反证:已有判空"])]
-    node = G._council_judge_node(llm=None)
-    out = node({
-        "candidate_issues": [c], "evidence_notes": notes,
-        "evidence_requests": [], "review_summaries": [],
-    })
-    assert len(out["final_issues"]) == 0
-    assert out["council_verdicts"][0].action == "drop"
-
-
-def test_council_judge_rule_strong_support_fast_track():
-    """高置信 + 全 supported + 零 contradicts → fast-track keep。"""
-    c = G.CandidateIssue(
-        id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
-        severity_proposal=Severity.CRITICAL, claim="m", confidence=0.95, task_id="A.java#h0",
-    )
-    notes = [EvidenceNote(request_id="r1", candidate_id="c1", status="supported", supports=["证据充分"])]
-    node = G._council_judge_node(llm=None)
-    out = node({
-        "candidate_issues": [c], "evidence_notes": notes,
-        "evidence_requests": [], "review_summaries": [],
-    })
-    keeps = [v for v in out["council_verdicts"] if v.action == "keep"]
-    assert len(keeps) == 1
-    assert keeps[0].reason_code == "strong_support"
-
-
-def test_council_judge_aggregation_dedup_same_file_line_type():
-    """两段式去重：同文件同类型同行号 → 规则指纹去重，只保留一条。"""
-    c1 = G.CandidateIssue(
-        id="c1", source_agent="threat_model", file="A.java", line=10, type="sql_injection",
-        severity_proposal=Severity.WARNING, claim="可能注入", task_id="A.java#h0",
-    )
-    c2 = G.CandidateIssue(
-        id="c2", source_agent="behavior", file="A.java", line=10, type="sql_injection",
-        severity_proposal=Severity.WARNING, claim="拼接SQL", task_id="A.java#h0",
-    )
-    node = G._council_judge_node(llm=None)
-    out = node({
-        "candidate_issues": [c1, c2], "evidence_notes": [],
-        "evidence_requests": [], "review_summaries": [],
-    })
-    # 规则指纹去重（同文件+同行号+同类型）→ 只保留一条
-    assert len(out["final_issues"]) == 1
-    # 被合并的 candidate 产生 merge verdict
-    actions = {v.action for v in out["council_verdicts"]}
-    assert "merge" in actions
-
-
-def test_council_judge_aggregation_keeps_different_lines():
-    """不同行号 → 规则指纹去重不触发，两条都保留（llm=None 时）。"""
-    c1 = G.CandidateIssue(
-        id="c1", source_agent="threat_model", file="A.java", line=10, type="sql_injection",
-        severity_proposal=Severity.WARNING, claim="可能注入", task_id="A.java#h0",
-    )
-    c2 = G.CandidateIssue(
-        id="c2", source_agent="behavior", file="A.java", line=42, type="sql_injection",
-        severity_proposal=Severity.WARNING, claim="拼接SQL", task_id="A.java#h0",
-    )
-    node = G._council_judge_node(llm=None)
-    out = node({
-        "candidate_issues": [c1, c2], "evidence_notes": [],
-        "evidence_requests": [], "review_summaries": [],
-    })
-    # 行号不同 → 规则去重不合并，两条保留
-    assert len(out["final_issues"]) == 2
-
-
-def test_council_judge_rule_miss_conservative_keep():
-    """规则全不命中 + llm=None → 保守 keep。"""
-    c = G.CandidateIssue(
-        id="c1", source_agent="threat_model", file="A.java", line=42, type="unusual_pattern",
-        severity_proposal=Severity.WARNING, claim="异常模式", confidence=0.85, task_id="A.java#h0",
-    )
-    node = G._council_judge_node(llm=None)
-    out = node({
-        "candidate_issues": [c], "evidence_notes": [],
-        "evidence_requests": [], "review_summaries": [],
-    })
-    assert len(out["final_issues"]) == 1
-    assert out["council_verdicts"][0].action == "keep"
-
-
-def test_council_judge_needs_more_evidence_generates_request():
-    """LLM 判 needs_more_evidence → 追加 EvidenceRequest 到 state。"""
-    c = G.CandidateIssue(
-        id="c1", source_agent="threat_model", file="A.java", line=1, type="t",
-        severity_proposal=Severity.WARNING, claim="m", confidence=0.9, task_id="A.java#h0",
-    )
-
-    class _JudgeLLM:
-        def with_structured_output(self, *a, **k):
-            class _Invoker:
-                def invoke(self, _msgs):
-                    return G.JudgeDecisions(decisions=[
-                        G.JudgeDecision(
-                            candidate_id="C001",  # 短别名，与 _build_llm_prompt 的映射一致
-                            action="needs_more_evidence",
-                            reason="证据不足，需要更多工具调用",
-                        )
-                    ])
-            return _Invoker()
-
-    node = G._council_judge_node(llm=_JudgeLLM())
-    out = node({
-        "candidate_issues": [c],
-        "evidence_notes": [],
-        "evidence_requests": [],
-        "review_summaries": [],
-    })
-    # needs_more_evidence → 产生新 EvidenceRequest
-    assert len(out.get("evidence_requests", [])) >= 1
-    # 候选保留在 final_issues 中（needs_more 不 drop）
-    assert len(out["final_issues"]) >= 1
-
-
-def test_council_judge_emits_only_new_evidence_request_delta():
-    candidate = G.CandidateIssue(
-        id="c1",
-        source_agent="threat_model",
-        file="A.java",
-        line=1,
-        type="t",
-        severity_proposal=Severity.WARNING,
-        claim="m",
-        confidence=0.9,
-        task_id="A.java#h0",
-    )
-    existing = G.EvidenceRequest(
-        candidate_id="c1",
-        target="A.java",
-        question="已有请求",
-    )
-
-    class _JudgeLLM:
-        def with_structured_output(self, *args, **kwargs):
-            class _Invoker:
-                def invoke(self, _messages):
-                    return G.JudgeDecisions(
-                        decisions=[
-                            G.JudgeDecision(
-                                candidate_id="C001",
-                                action="needs_more_evidence",
-                                reason="需要补充调用方证据",
-                            )
-                        ]
-                    )
-
-            return _Invoker()
-
-    node = G._council_judge_node(llm=_JudgeLLM())
-    out = node(
-        {
-            "candidate_issues": [candidate],
-            "evidence_notes": [],
-            "evidence_requests": [existing],
-            "review_summaries": [],
-        }
-    )
-
-    emitted = out["evidence_requests"]
-    assert len(emitted) == 1
-    assert emitted[0].id != existing.id
-    reduced = G.capped_evidence_request_reducer([existing], emitted)
-    assert [request.id for request in reduced] == [existing.id, emitted[0].id]
-
-
-def test_council_judge_omits_duplicate_generated_evidence_request():
-    candidate = G.CandidateIssue(
-        id="c1",
-        source_agent="threat_model",
-        file="A.java",
-        line=1,
-        type="t",
-        severity_proposal=Severity.WARNING,
-        claim="m",
-        confidence=0.9,
-        task_id="A.java#h0",
-    )
-    existing = G.EvidenceRequest(
-        candidate_id="c1",
-        target="A.java",
-        question="[council_judge] 需要补充相同证据",
-        preferred_tools=["get_file_content"],
-    )
-
-    class _JudgeLLM:
-        def with_structured_output(self, *args, **kwargs):
-            class _Invoker:
-                def invoke(self, _messages):
-                    return G.JudgeDecisions(
-                        decisions=[
-                            G.JudgeDecision(
-                                candidate_id="C001",
-                                action="needs_more_evidence",
-                                reason="需要补充相同证据",
-                                suggested_tools=["get_file_content"],
-                            )
-                        ]
-                    )
-
-            return _Invoker()
-
-    node = G._council_judge_node(llm=_JudgeLLM())
-    out = node(
-        {
-            "candidate_issues": [candidate],
-            "evidence_notes": [],
-            "evidence_requests": [existing],
-            "review_summaries": [],
-        }
-    )
-
-    assert "evidence_requests" not in out
-
-
-def test_evidence_request_reducer_dedups_by_stable_id():
-    request = G.EvidenceRequest(
-        candidate_id="c1",
-        target="A.java",
-        question="确认保护逻辑",
-        preferred_tools=["get_file_content"],
-    )
-    duplicate = request.model_copy()
-
-    merged = G.capped_evidence_request_reducer([request], [duplicate])
-
-    assert merged == [request]
-
-
-def test_council_judge_keep_does_not_emit_evidence_requests():
-    candidate = G.CandidateIssue(
-        id="c1",
-        source_agent="threat_model",
-        file="A.java",
-        line=1,
-        type="t",
-        severity_proposal=Severity.WARNING,
-        claim="m",
-        confidence=0.9,
-        task_id="A.java#h0",
-    )
-
-    class _JudgeLLM:
-        def with_structured_output(self, *args, **kwargs):
-            class _Invoker:
-                def invoke(self, _messages):
-                    return G.JudgeDecisions(
-                        decisions=[
-                            G.JudgeDecision(
-                                candidate_id="C001",
-                                action="keep",
-                                reason="证据足够",
-                            )
-                        ]
-                    )
-
-            return _Invoker()
-
-    node = G._council_judge_node(llm=_JudgeLLM())
-    out = node(
-        {
-            "candidate_issues": [candidate],
-            "evidence_notes": [],
-            "evidence_requests": [],
-            "review_summaries": [],
-        }
-    )
-
-    assert "evidence_requests" not in out
-
-
-class _CapturedJudge:
-    def __init__(self, captured):
-        self.captured = captured
-
-    def invoke(self, messages):
-        self.captured.extend(messages)
-        return G.JudgeDecisions(
-            decisions=[
-                G.JudgeDecision(
-                    candidate_id="C001",
-                    action="keep",
-                    reason="证据已核对",
-                )
-            ]
-        )
-
-
-class _CapturingJudgeLLM:
-    def __init__(self, captured):
-        self.captured = captured
-
-    def with_structured_output(self, *args, **kwargs):
-        return _CapturedJudge(self.captured)
-
-
-def test_council_judge_prompt_contains_state_evidence_notes():
-    captured: list = []
-    candidate = G.CandidateIssue(
-        id="c1",
-        source_agent="behavior",
-        file="A.java",
-        line=10,
-        type="null-deref",
-        severity_proposal=Severity.WARNING,
-        claim="可能空指针",
-        confidence=0.8,
-        task_id="A.java#h0",
-    )
-    request = G.EvidenceRequest(
-        candidate_id="c1",
-        target="A.java",
-        question="确认判空",
-        preferred_tools=["get_file_content"],
-    )
-    note = G.EvidenceNote(
-        request_id=request.id,
-        candidate_id="c1",
-        status="contradicted",
-        contradicts=["唯一反证标记-91ac"],
-    )
-    node = G._council_judge_node(llm=_CapturingJudgeLLM(captured))
-
-    node({
-        "candidate_issues": [candidate],
-        "evidence_notes": [note],
-        "structured_method": "function_calling",
-    })
-
-    assert "唯一反证标记-91ac" in str(captured)
-
-
 def test_run_routes_gathered_context_to_trace_sink_and_council_metadata(monkeypatch):
     gc = [GatheredContext("get_file_content", "X.java", "body")]
     issues = [Issue(severity=Severity.WARNING, file="X.java", line=1, type="t", message="m")]
@@ -798,6 +404,7 @@ def test_orchestrator_initial_state_omits_empty_runtime_outputs(monkeypatch):
     class _Graph:
         def invoke(self, initial, config=None):
             captured.update(initial)
+
             return {"summary": "", "final_issues": []}
 
     monkeypatch.setattr(
@@ -898,6 +505,7 @@ def test_graph_fanin_three_discoverers(monkeypatch):
         "MaintainabilityAgent",
     }
     assert len(trace) == 3
+
     assert meta["council"]["candidate_count"] == 3
     assert meta["council"]["challenge_count"] == 3
     assert meta["council"]["candidate_count_by_agent"] == {
@@ -923,85 +531,6 @@ def test_build_graph_default_nodes_are_adr032():
     assert "supervisor" not in names
     assert "aggregation" not in names
     assert "fp_filter" not in names
-
-
-def test_candidate_and_evidence_request_limits_are_enforced(monkeypatch):
-    original_from_issue = G.CandidateIssue.from_issue
-
-    def _many_candidates_from_issue(issue, *, source_agent, index, task_id):
-        return original_from_issue(
-            issue,
-            source_agent=source_agent,
-            index=index,
-            task_id=task_id,
-        )
-
-    def _many_evidence_requests(candidate):
-        return [
-            G.EvidenceRequest(
-                candidate_id=candidate.id,
-                target=f"{candidate.file}:{i}",
-                question=f"q{i}",
-            )
-            for i in range(3)
-        ]
-
-    class _ManyIssueEngine:
-        """Phase4 单 task 独立调用：每次调用只对应一个 task，按 user_prompt 里嵌入的
-        `file="..."` 属性(来自 render_single_task_risk)识别当前 task 归属哪个文件，
-        只在该文件命中"这是我(reviewer_name)自己的文件"时才产出 1 条候选——
-        这样 8 个匹配文件 × 3 个 reviewer = 24 条候选，与改造前"单次整体调用返回 8 条"
-        的候选总量保持一致，不因 fan-out 调用次数变化而改变测试期望的候选总数。
-        """
-
-        def review(
-            self,
-            llm,
-            *,
-            system_prompt,
-            user_prompt,
-            reviewer_name,
-            max_retries,
-            structured_method,
-            enable_hitl=False,
-        ):
-            import re
-
-            match = re.search(r'file="([^"]+)"', user_prompt)
-            current_file = match.group(1) if match else ""
-            if not current_file.startswith(f"{reviewer_name}-"):
-                return ReviewOutcome(ReviewResult(summary=f"sum-{reviewer_name}", issues=[]))
-            issue = Issue(
-                severity=Severity.WARNING,
-                file=current_file,
-                line=1,
-                type=reviewer_name,
-                message="m",
-            )
-            return ReviewOutcome(ReviewResult(summary=f"sum-{reviewer_name}", issues=[issue]))
-
-    monkeypatch.setattr(G.CandidateIssue, "from_issue", _many_candidates_from_issue)
-    monkeypatch.setattr(G, "build_evidence_requests", _many_evidence_requests)
-    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _ManyIssueEngine())
-    orch = PipelineOrchestrator(enable_summary=False)
-    meta: dict = {}
-    files = [
-        f"{name}-{i}.java"
-        for name in ("ThreatModelAgent", "BehaviorAgent", "MaintainabilityAgent")
-        for i in range(8)
-    ]
-    limits_diff = "".join(
-        f"diff --git a/{f} b/{f}\n--- a/{f}\n+++ b/{f}\n@@ -0,0 +1,8 @@\n"
-        + "".join(f"+l{n}\n" for n in range(1, 9))
-        for f in files
-    )
-    result = orch.run(_FakeLLM(), limits_diff, metadata_sink=meta)
-
-    # MAX_CANDIDATES_PER_AGENT=10, 每 agent 造 8 条 → 3×8=24 条全部通过不截断
-    assert len(result.issues) == 24
-    assert meta["council"]["candidate_count"] == 24
-    assert meta["council"]["evidence_request_count"] == 20  # capped at MAX_TOTAL_EVIDENCE_REQUESTS
-    assert meta["council"]["truncated_candidates"] == 0  # 8 < 10, 不触发截断
 
 
 def test_checkpointer_factory_memory_creates_MemorySaver():
@@ -1095,230 +624,6 @@ class _CountingToolClient:
         raise AssertionError("已处理请求不应再次调用工具")
 
 
-def test_evidence_agent_skips_request_with_existing_note():
-    request = G.EvidenceRequest(
-        candidate_id="c1",
-        target="A.java",
-        question="读取目标文件",
-        preferred_tools=["get_file_content"],
-    )
-    existing = G.EvidenceNote(
-        request_id=request.id,
-        candidate_id="c1",
-        status="supported",
-        supports=["已有证据"],
-    )
-    tool_client = _CountingToolClient()
-    node = G._evidence_agent_node(tool_client=tool_client)
-
-    out = node({
-        "candidate_issues": [
-            G.CandidateIssue(
-                id="c1",
-                source_agent="threat_model",
-                file="A.java",
-                line=1,
-                type="t",
-                severity_proposal=Severity.WARNING,
-                claim="m",
-                task_id="A.java#h0",
-            )
-        ],
-        "evidence_requests": [request],
-        "evidence_notes": [existing],
-        "evidence_round": 1,
-    })
-
-    assert tool_client.calls == []
-    assert out["evidence_notes"] == []
-    assert out["evidence_round"] == 2
-
-
-def test_evidence_agent_routes_find_callers_by_preferred_tools():
-    """preferred_tools 含 find_callers → 调 tool_client.find_callers()。"""
-    mock = _MockToolClient()
-    req = G.EvidenceRequest(
-        candidate_id="behavior-1-A.java:10:t",
-        target="A.java",
-        preferred_tools=["find_callers"],
-    )
-    candidate = G.CandidateIssue(
-        id="behavior-1-A.java:10:t",
-        source_agent="behavior",
-        file="A.java",
-        line=10,
-        type="t",
-        severity_proposal=Severity.WARNING,
-        claim="m",
-        task_id="A.java#h0",
-    )
-    node = G._evidence_agent_node(tool_client=mock)
-    out = node({
-        "evidence_requests": [req],
-        "candidate_issues": [candidate],
-        "evidence_round": 0,
-    })
-    assert len(out["evidence_notes"]) == 1
-    assert out["evidence_notes"][0].status == "supported"
-    assert any("find_callers" in s for s in out["evidence_notes"][0].supports)
-    called_tools = {c[0] for c in mock.calls}
-    assert "find_callers" in called_tools
-
-
-def test_evidence_agent_routes_find_sensitive_apis_by_preferred_tools():
-    """preferred_tools 含 find_sensitive_apis → 调 tool_client.find_sensitive_apis()。"""
-    mock = _MockToolClient()
-    req = G.EvidenceRequest(
-        candidate_id="threat_model-1-A.java:5:t",
-        target="A.java",
-        preferred_tools=["find_sensitive_apis"],
-    )
-    candidate = G.CandidateIssue(
-        id="threat_model-1-A.java:5:t",
-        source_agent="threat_model",
-        file="A.java",
-        line=5,
-        type="t",
-        severity_proposal=Severity.WARNING,
-        claim="m",
-        task_id="A.java#h0",
-    )
-    node = G._evidence_agent_node(tool_client=mock)
-    out = node({
-        "evidence_requests": [req],
-        "candidate_issues": [candidate],
-        "evidence_round": 0,
-    })
-    assert out["evidence_notes"][0].status == "supported"
-    assert any("find_sensitive_apis" in s for s in out["evidence_notes"][0].supports)
-    called_tools = {c[0] for c in mock.calls}
-    assert "find_sensitive_apis" in called_tools
-
-
-def test_evidence_agent_dedups_same_file_tool():
-    """同一文件+工具 → 只调一次。"""
-    mock = _MockToolClient()
-    req1 = G.EvidenceRequest(
-        candidate_id="c1",
-        target="A.java",
-        preferred_tools=["get_code_metrics"],
-    )
-    req2 = G.EvidenceRequest(
-        candidate_id="c2",
-        target="A.java",
-        preferred_tools=["get_code_metrics"],
-    )
-    candidate = G.CandidateIssue(
-        id="c1",
-        source_agent="maintainability",
-        file="A.java",
-        line=1,
-        type="t",
-        severity_proposal=Severity.WARNING,
-        claim="m",
-        task_id="A.java#h0",
-    )
-    node = G._evidence_agent_node(tool_client=mock)
-    out = node({
-        "evidence_requests": [req1, req2],
-        "candidate_issues": [candidate, G.CandidateIssue(
-            id="c2", source_agent="maintainability", file="A.java", line=2,
-            type="t", severity_proposal=Severity.WARNING, claim="m2",
-            task_id="A.java#h0",
-        )],
-        "evidence_round": 0,
-    })
-    # 两次请求，但只调一次 get_code_metrics
-    metrics_calls = [c for c in mock.calls if c[0] == "get_code_metrics"]
-    assert len(metrics_calls) == 1
-    assert len(out["evidence_notes"]) == 2
-
-
-def test_evidence_agent_fallback_context_bundle_when_no_tool_client():
-    """tool_client=None → 回退 ContextBundle 字符串搜索。"""
-    req = G.EvidenceRequest(
-        candidate_id="c1",
-        target="UserService.java",
-        preferred_tools=[],  # 空
-    )
-    bundle = G.ContextBundle(
-        changed_files=["UserService.java"],
-        facts=[
-            ContextFact(
-                source="tool:get_diff_ast",
-                kind="ast_structure",
-                content="UserService.java class UserService",
-            )
-        ],
-    )
-    node = G._evidence_agent_node(tool_client=None)
-    out = node({
-        "evidence_requests": [req],
-        "candidate_issues": [
-            G.CandidateIssue(
-                id="c1", source_agent="threat_model", file="UserService.java",
-                line=1, type="t", severity_proposal=Severity.WARNING, claim="m",
-                task_id="UserService.java#h0",
-            )
-        ],
-        "context_bundle": bundle,
-        "evidence_round": 0,
-    })
-    assert out["evidence_notes"][0].status == "supported"
-    assert any("ContextBundle" in s for s in out["evidence_notes"][0].supports)
-
-
-def test_evidence_agent_marks_tool_failure_as_unknown():
-    """工具返回失败 → unknowns + insufficient（无 supports 无 contradicts → insufficient）。"""
-    mock = _MockToolClient()
-
-    def _fail_get_file_content(file_path=""):
-        mock.calls.append(("get_file_content", {"file_path": file_path}))
-        return _MockToolResponse(False, error="file not found")
-
-    mock.get_file_content = _fail_get_file_content
-
-    req = G.EvidenceRequest(
-        candidate_id="c1",
-        target="Ghost.java",
-        preferred_tools=["get_file_content"],
-    )
-    candidate = G.CandidateIssue(
-        id="c1", source_agent="threat_model", file="Ghost.java",
-        line=1, type="t", severity_proposal=Severity.WARNING, claim="m",
-        task_id="Ghost.java#h0",
-    )
-    node = G._evidence_agent_node(tool_client=mock)
-    out = node({
-        "evidence_requests": [req],
-        "candidate_issues": [candidate],
-        "evidence_round": 0,
-    })
-    assert out["evidence_notes"][0].status == "insufficient"
-    assert len(out["evidence_notes"][0].unknowns) >= 1
-
-
-def test_evidence_agent_increments_evidence_round():
-    mock = _MockToolClient()
-    req = G.EvidenceRequest(
-        candidate_id="c1",
-        target="A.java",
-        preferred_tools=["get_file_content"],
-    )
-    candidate = G.CandidateIssue(
-        id="c1", source_agent="behavior", file="A.java", line=1,
-        type="t", severity_proposal=Severity.WARNING, claim="m",
-        task_id="A.java#h0",
-    )
-    node = G._evidence_agent_node(tool_client=mock)
-    out = node({
-        "evidence_requests": [req],
-        "candidate_issues": [candidate],
-        "evidence_round": 0,
-    })
-    assert out["evidence_round"] == 1
-
-
 def test_build_graph_has_task_prep_nodes():
     graph = G.build_review_graph(enable_summary=True, llm=None)
     names = set(graph.get_graph().nodes)
@@ -1381,12 +686,13 @@ def test_review_state_excludes_council_route():
     assert "council_route" not in G.ReviewState.__annotations__
 
 
-def test_coordinator_always_edges_to_evidence_agent():
+def test_coordinator_edges_through_planner_to_evidence_agent():
     graph = G.build_review_graph(enable_summary=False, llm=None)
     edges = graph.get_graph().edges
     pairs = {(e.source, e.target) for e in edges}
-    # coordinator → evidence_agent 是无条件边
-    assert ("council_coordinator", "evidence_agent") in pairs
+    # coordinator → planner → evidence_agent 是无条件边
+    assert ("council_coordinator", "evidence_planner") in pairs
+    assert ("evidence_planner", "evidence_agent") in pairs
     # evidence_agent → council_judge 是无条件边
     assert ("evidence_agent", "council_judge") in pairs
     # 旧的 evidence → coordinator 回环已移除
@@ -1398,6 +704,7 @@ def test_evidence_agent_runs_once_before_judge(monkeypatch):
     orch = PipelineOrchestrator(enable_summary=False)
     meta: dict = {}
     orch.run(_FakeLLM(), _DIFF, metadata_sink=meta)
+
     # 首次 Evidence 必经一次（即便无 evidence_requests 也 no-op 跑一轮）
     assert meta["council"]["evidence_rounds"] >= 1
 
@@ -1498,6 +805,7 @@ def test_make_reviewer_node_skips_reviewer_without_routed_tasks(monkeypatch):
                 )
             },
             "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
+
         }
     )
 
@@ -1598,6 +906,7 @@ def test_make_reviewer_node_injects_matched_tag_knowledge_into_system_prompt(mon
         G, "load_knowledge", lambda domain, tags: "KNOWLEDGE_MARKER" if tags else ""
     )
     node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[1], llm=_FakeLLM())
+
     task = G.ReviewTask(id="A.java#h0", file="A.java", patch="+lock", changed_lines=[1])
 
     node({
@@ -1699,6 +1008,7 @@ def test_context_provider_node_fills_level0_and_level1_facts_per_task():
         }
     )
 
+
     bundle = out["task_context_bundles"][task.id]
     assert {fact.source for fact in bundle.facts} >= {
         "tool:get_diff_ast",
@@ -1798,4 +1108,5 @@ def test_context_provider_node_does_not_store_failed_level1_response_as_fact():
 
     facts = out["task_context_bundles"][task.id].facts
     assert all("gateway timeout" not in fact.content for fact in facts)
+
     assert any("gateway timeout" in trace.detail for trace in out["council_trace"])

@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from hashlib import sha256
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from codeguard_agent.models.schemas import Issue, Severity
 
@@ -19,9 +19,8 @@ EvidencePurpose = Literal["support", "counter", "severity"]
 
 
 MAX_CANDIDATES_PER_AGENT = 10
-MAX_EVIDENCE_REQUESTS_PER_CANDIDATE = 2
-MAX_TOTAL_EVIDENCE_REQUESTS = 20
 DEFAULT_MAX_EVIDENCE_ROUNDS = 2
+NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 # ── CouncilJudge 裁决模型 ──
@@ -37,7 +36,6 @@ class Verdict:
     reason: str = ""
     suggested_target_id: str = ""  # merge 时指向被合并方
     severity_override: Severity | None = None  # downgrade 时建议新级别
-    suggested_tools: list[str] = field(default_factory=list)  # needs_more_evidence 时建议补证工具
     requested_purpose: EvidencePurpose | None = None
 
 
@@ -49,7 +47,6 @@ class JudgeDecision(BaseModel):
     reason: str = ""
     merge_target_id: str = ""  # merge 时指向被合并方
     adjusted_severity: Severity | None = None  # downgrade 时建议新级别
-    suggested_tools: list[str] = Field(default_factory=list)  # needs_more_evidence 时建议工具
     requested_purpose: EvidencePurpose | None = None
 
 
@@ -97,29 +94,15 @@ class ContextBundle(BaseModel):
         return text[:budget] + "\n...(ContextBundle 已达预算上限,后续省略)"
 
 
-EvidenceNoteStatus = Literal["supported", "contradicted", "mixed", "insufficient", "not_found", "unsupported"]
-
-# ── EvidenceAgent LLM 证据分析的结构化输出 ──
-
-
-class EvidenceJudgment(BaseModel):
-    """evidence_agent 的 LLM 对单条证据的语义分析结果。"""
-
-    judgment: Literal["SUPPORTS", "CONTRADICTS", "INSUFFICIENT"] = Field(
-        description="证据对候选主张意味着什么"
-    )
-    reasoning: str = Field(default="", description="推理依据")
-
-
 class EvidenceRequest(BaseModel):
     """候选 issue 对证据的结构化请求。"""
 
     id: str = ""
-    candidate_id: str
-    strategy_id: str = ""
-    purpose: EvidencePurpose = "counter"
-    target: str = ""
-    question: str = ""
+    candidate_id: NonBlankStr
+    strategy_id: NonBlankStr
+    purpose: EvidencePurpose
+    target: NonBlankStr
+    question: NonBlankStr
     preferred_tools: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -190,43 +173,34 @@ class CandidateIssue(BaseModel):
         )
 
 
-def build_evidence_requests(candidate: CandidateIssue) -> list[EvidenceRequest]:
-    if candidate.confidence >= 0.75 and candidate.line > 0:
-        return []
-    agent_tools = {
-        "threat_model": ["find_sensitive_apis", "get_file_content"],
-        "behavior": ["find_callers", "get_file_content"],
-        "maintainability": ["get_code_metrics", "get_file_content"],
-    }
-    return [
-        EvidenceRequest(
-            candidate_id=candidate.id,
-            target=candidate.file,
-            question=(
-                f"确认 {candidate.file} 中候选问题的相关代码片段"
-                "是否支持该主张"
-            ),
-            preferred_tools=list(
-                agent_tools.get(candidate.source_agent, ["get_file_content"])
-            ),
-        )
-    ]
+class EvidenceFinding(BaseModel):
+    """一项事实与候选主张之间的受约束关系。"""
+
+    evidence_id: NonBlankStr
+    source: NonBlankStr
+    observation: str
+    relation: Literal["supports", "contradicts", "insufficient"]
+    strength: Literal["direct", "contextual"]
+    limitation: str = ""
+
+    @model_validator(mode="after")
+    def validate_safe_relation(self) -> "EvidenceFinding":
+        if self.relation in {"supports", "contradicts"} and not self.observation.strip():
+            raise ValueError("supports/contradicts finding requires observation")
+        if self.relation == "insufficient":
+            if self.strength != "contextual":
+                raise ValueError("insufficient finding must be contextual")
+            if not self.limitation.strip():
+                raise ValueError("insufficient finding requires limitation")
+        return self
 
 
 class EvidenceNote(BaseModel):
-    """EvidenceAgent 写入的证据记录。
+    """一个请求对应的非空证据发现集合。"""
 
-    supports/contradicts/unknowns 每条条目包含推理依据（格式: "[工具名] 判定: 推理"）。
-    status 根据 supports/contradicts 分布自动计算。
-    """
-
-    request_id: str
-    candidate_id: str
-    status: EvidenceNoteStatus = "mixed"
-    supports: list[str] = Field(default_factory=list)
-    contradicts: list[str] = Field(default_factory=list)
-    unknowns: list[str] = Field(default_factory=list)
-    evidence_ids: list[str] = Field(default_factory=list)
+    request_id: NonBlankStr
+    candidate_id: NonBlankStr
+    findings: list[EvidenceFinding] = Field(min_length=1)
 
 
 class CouncilTrace(BaseModel):
@@ -244,7 +218,6 @@ class CouncilRunStats(BaseModel):
     candidate_count_by_agent: dict[str, int] = Field(default_factory=dict)
     evidence_request_count: int = 0
     truncated_candidates: int = 0
-    truncated_evidence_requests: int = 0
     evidence_rounds: int = 0
     challenge_count: int = 0
     removed_by_challenge: int = 0

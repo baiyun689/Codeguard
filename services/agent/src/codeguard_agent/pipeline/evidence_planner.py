@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -42,6 +42,23 @@ class CandidateDossier:
     latest_verdict: Verdict | None
 
 
+@dataclass(frozen=True)
+class CandidateBindingFailure:
+    """无法安全绑定到唯一 task 的候选。"""
+
+    candidate: CandidateIssue
+    reason: str
+
+
+@dataclass(frozen=True)
+class DossierAssembly:
+    """按候选稳定顺序组装的有效 dossier 与显式失败。"""
+
+    dossiers: tuple[CandidateDossier, ...]
+    failures: tuple[CandidateBindingFailure, ...]
+    trace: tuple[tuple[str, str], ...]
+
+
 @dataclass
 class EvidencePlan:
     """本轮新增请求与可机器解析的规划 trace。"""
@@ -52,6 +69,79 @@ class EvidencePlan:
 
 def _stable_json(detail: dict[str, object]) -> str:
     return json.dumps(detail, ensure_ascii=False, sort_keys=True)
+
+
+def assemble_dossiers(
+    candidates: Sequence[CandidateIssue],
+    tasks: Sequence[ReviewTask],
+    profiles: Mapping[str, RiskProfile | None],
+    bundles: Mapping[str, TaskContextBundle],
+    requests: Sequence[EvidenceRequest],
+    notes: Sequence[EvidenceNote],
+    verdicts: Sequence[Verdict],
+) -> DossierAssembly:
+    """把 graph state 关联为候选级只读快照，并显式保留绑定失败。"""
+    tasks_by_id: dict[str, list[ReviewTask]] = {}
+    for task in tasks:
+        tasks_by_id.setdefault(task.id, []).append(task)
+    requests_by_candidate: dict[str, list[EvidenceRequest]] = {}
+    for request in requests:
+        requests_by_candidate.setdefault(request.candidate_id, []).append(request)
+    notes_by_candidate: dict[str, list[EvidenceNote]] = {}
+    for note in notes:
+        notes_by_candidate.setdefault(note.candidate_id, []).append(note)
+    latest_verdicts = {verdict.candidate_id: verdict for verdict in verdicts}
+
+    dossiers: list[CandidateDossier] = []
+    failures: list[CandidateBindingFailure] = []
+    trace: list[tuple[str, str]] = []
+    for candidate in candidates:
+        matches = tasks_by_id.get(candidate.task_id, [])
+        if len(matches) != 1:
+            reason = "missing_task" if not matches else "ambiguous_task"
+            failures.append(CandidateBindingFailure(candidate, reason))
+            trace.append(
+                (
+                    "candidate_binding_failed",
+                    _stable_json(
+                        {
+                            "candidate_id": candidate.id,
+                            "task_id": candidate.task_id,
+                            "reason": reason,
+                        }
+                    ),
+                )
+            )
+            continue
+        task = matches[0]
+        if not task_prep.file_matches_task(candidate.file, task):
+            reason = "file_mismatch"
+            failures.append(CandidateBindingFailure(candidate, reason))
+            trace.append(
+                (
+                    "candidate_binding_failed",
+                    _stable_json(
+                        {
+                            "candidate_id": candidate.id,
+                            "task_id": candidate.task_id,
+                            "reason": reason,
+                        }
+                    ),
+                )
+            )
+            continue
+        dossiers.append(
+            CandidateDossier(
+                candidate=candidate,
+                task=task,
+                risk_profile=profiles.get(task.id),
+                context_bundle=bundles.get(task.id),
+                requests=tuple(requests_by_candidate.get(candidate.id, ())),
+                notes=tuple(notes_by_candidate.get(candidate.id, ())),
+                latest_verdict=latest_verdicts.get(candidate.id),
+            )
+        )
+    return DossierAssembly(tuple(dossiers), tuple(failures), tuple(trace))
 
 
 def _trace(plan: EvidencePlan, event: str, detail: dict[str, object]) -> None:
@@ -373,8 +463,11 @@ def plan_evidence(
 
 
 __all__ = [
+    "CandidateBindingFailure",
     "CandidateDossier",
+    "DossierAssembly",
     "EvidencePlan",
     "MAX_INITIAL_REQUESTS_PER_CANDIDATE",
+    "assemble_dossiers",
     "plan_evidence",
 ]
