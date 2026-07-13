@@ -7,6 +7,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from codeguard_agent.pipeline import evidence_planner
 from codeguard_agent.models.council import (
     CandidateIssue,
     EvidenceNote,
@@ -208,6 +209,46 @@ def test_initial_plan_does_not_repeat_queued_strategy(monkeypatch):
             "tag": "GENERAL_REVIEW",
         }
     ]
+
+
+def test_initial_plan_does_not_replace_queued_base_counter_with_upstream(
+    monkeypatch,
+):
+    _force_resolution(monkeypatch, _resolution(RiskTag.AUTHORIZATION))
+    queued = EvidenceRequest(
+        candidate_id="candidate-17",
+        strategy_id="authorization.counter",
+        purpose="counter",
+        target="src/Service17.java",
+        question="queued base counter",
+    )
+    dossier = _dossier(17, requests=(queued,))
+
+    plan = plan_evidence(
+        [dossier],
+        evidence_round=0,
+        classifier_llm=None,
+        structured_method="function_calling",
+    )
+
+    assert plan.requests == []
+    assert _trace_details(plan, "evidence_plan_skipped") == [
+        {
+            "candidate_id": "candidate-17",
+            "purpose": "counter",
+            "reason": "no_available_strategy",
+            "tag": "AUTHORIZATION",
+        }
+    ]
+
+
+def test_only_initial_round_exposes_an_explicit_per_candidate_cap():
+    assert evidence_planner.MAX_INITIAL_REQUESTS_PER_CANDIDATE == 2
+    assert not hasattr(
+        evidence_planner,
+        "MAX_FOLLOWUP_REQUESTS_PER_CANDIDATE",
+    )
+    assert "MAX_FOLLOWUP_REQUESTS_PER_CANDIDATE" not in evidence_planner.__all__
 
 
 @pytest.mark.parametrize(

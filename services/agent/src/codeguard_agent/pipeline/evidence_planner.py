@@ -27,7 +27,6 @@ from codeguard_agent.pipeline.risk_routing import decide_tier
 
 
 MAX_INITIAL_REQUESTS_PER_CANDIDATE = 2
-MAX_FOLLOWUP_REQUESTS_PER_CANDIDATE = 1
 
 
 @dataclass(frozen=True)
@@ -130,6 +129,23 @@ def _next_strategy(
             strategy
             for strategy in strategies_for(tag, purpose)
             if strategy.id not in excluded_strategy_ids
+        ),
+        None,
+    )
+
+
+def _initial_counter_strategy(
+    tag: RiskTag,
+    excluded_strategy_ids: set[str],
+) -> EvidenceStrategy | None:
+    base_strategy_id = f"{tag.value.lower()}.counter"
+    return next(
+        (
+            strategy
+            for strategy in strategies_for(tag, "counter")
+            if strategy.id == base_strategy_id
+            and strategy.priority == 10
+            and strategy.id not in excluded_strategy_ids
         ),
         None,
     )
@@ -238,7 +254,7 @@ def _plan_initial(
     for dossier, resolution, excluded in resolved:
         if request_counts[dossier.candidate.id] >= MAX_INITIAL_REQUESTS_PER_CANDIDATE:
             continue
-        strategy = _next_strategy(resolution.tag, "counter", excluded)
+        strategy = _initial_counter_strategy(resolution.tag, excluded)
         if strategy is None:
             _trace_no_initial_strategy(plan, dossier, resolution, "counter")
             continue
@@ -284,7 +300,6 @@ def _plan_followup(
 ) -> EvidencePlan:
     plan = EvidencePlan()
     for dossier in dossiers:
-        request_count = 0
         verdict = dossier.latest_verdict
         if verdict is None or verdict.action != "needs_more_evidence":
             continue
@@ -325,8 +340,6 @@ def _plan_followup(
                 },
             )
             continue
-        if request_count >= MAX_FOLLOWUP_REQUESTS_PER_CANDIDATE:
-            continue
         _append_request(
             plan,
             dossier,
@@ -334,7 +347,6 @@ def _plan_followup(
             evidence_round=evidence_round,
             reason="followup_requested_purpose",
         )
-        request_count += 1
     return plan
 
 
@@ -363,7 +375,6 @@ def plan_evidence(
 __all__ = [
     "CandidateDossier",
     "EvidencePlan",
-    "MAX_FOLLOWUP_REQUESTS_PER_CANDIDATE",
     "MAX_INITIAL_REQUESTS_PER_CANDIDATE",
     "plan_evidence",
 ]
