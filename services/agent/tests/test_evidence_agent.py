@@ -545,3 +545,185 @@ def test_finding_trace_has_stable_required_fields():
         "limitation",
         "observation",
     }
+
+
+class _GlobalSensitiveTools(_ToolClient):
+    def find_sensitive_apis(self) -> ToolResponse:
+        self.calls.append(("find_sensitive_apis", {}))
+        return ToolResponse(
+            success=True,
+            result=(
+                "| sink | call | src/A.java:10 |\n"
+                "| sink | call | src/B.java:20 |"
+            ),
+        )
+
+
+def test_sensitive_cache_keeps_global_raw_and_slices_per_task_request():
+    tasks = [
+        ReviewTask(
+            id="src/A.java#h0",
+            file="src/A.java",
+            hunk_header="@@ -10,1 +10,1 @@",
+            patch="+a();",
+            changed_lines=[10],
+        ),
+        ReviewTask(
+            id="src/B.java#h0",
+            file="src/B.java",
+            hunk_header="@@ -20,1 +20,1 @@",
+            patch="+b();",
+            changed_lines=[20],
+        ),
+        ReviewTask(
+            id="src/C.java#h0",
+            file="src/C.java",
+            hunk_header="@@ -30,1 +30,1 @@",
+            patch="+c();",
+            changed_lines=[30],
+        ),
+    ]
+    dossiers = [
+        _dossier(f"candidate-{index}", task=task)
+        for index, task in enumerate(tasks, 1)
+    ]
+    requests = [_request(dossier) for dossier in dossiers]
+    client = _GlobalSensitiveTools()
+    llm = _StructuredLLM(
+        {
+            "relation": "insufficient",
+            "strength": "contextual",
+            "observation": "",
+            "limitation": "not decisive",
+        }
+    )
+
+    batch = _collect_with_llm(dossiers, requests, llm, client=client)
+
+    assert client.calls.count(("find_sensitive_apis", {})) == 1
+    sensitive_prompts = [
+        call[1][1]
+        for call in llm.messages
+        if '"source":"tool:find_sensitive_apis"' in call[1][1]
+    ]
+    assert len(sensitive_prompts) == 2
+    assert "src/A.java:10" in sensitive_prompts[0]
+    assert "src/B.java:20" not in sensitive_prompts[0]
+    assert "src/B.java:20" in sensitive_prompts[1]
+    assert "src/A.java:10" not in sensitive_prompts[1]
+    sensitive_findings = [
+        next(
+            finding
+            for finding in note.findings
+            if finding.source == "tool:find_sensitive_apis"
+        )
+        for note in batch.notes
+    ]
+    assert sensitive_findings[0].evidence_id != sensitive_findings[1].evidence_id
+    assert sensitive_findings[2].limitation == "no_task_sensitive_api"
+
+
+def test_request_target_cannot_use_candidate_basename_to_bypass_task_path():
+    dossier = _dossier()
+    dossier = CandidateDossier(
+        candidate=dossier.candidate.model_copy(update={"file": "Service.java"}),
+        task=dossier.task,
+        risk_profile=dossier.risk_profile,
+        context_bundle=dossier.context_bundle,
+        requests=(),
+        notes=(),
+        latest_verdict=None,
+    )
+    request = _request(dossier).model_copy(update={"target": "Service.java"})
+    client = _ToolClient()
+
+    batch = _collect([dossier], [request], client=client)
+
+    assert client.calls == []
+    assert batch.notes[0].findings[0].limitation == "request_strategy_mismatch"
+
+
+def test_evidence_digest_has_unambiguous_part_boundaries():
+    module = importlib.import_module("codeguard_agent.pipeline.evidence_agent")
+
+    assert module._digest("ab", "c") != module._digest("a", "bc")
+
+
+def test_prior_empty_tool_finding_prevents_cross_round_repeat_call():
+    dossier = _dossier()
+    prior = EvidenceNote(
+        request_id="prior-request",
+        candidate_id=dossier.candidate.id,
+        findings=[
+            EvidenceFinding(
+                evidence_id="prior-empty-file",
+                source="tool:get_file_content",
+                observation="",
+                relation="insufficient",
+                strength="contextual",
+                limitation="tool_empty",
+            )
+        ],
+    )
+    dossier = CandidateDossier(
+        candidate=dossier.candidate,
+        task=dossier.task,
+        risk_profile=dossier.risk_profile,
+        context_bundle=dossier.context_bundle,
+        requests=(),
+        notes=(prior,),
+        latest_verdict=None,
+    )
+    client = _ToolClient()
+
+    batch = _collect([dossier], [_request(dossier)], client=client)
+
+    assert ("get_file_content", dossier.task.file) not in client.calls
+    assert len(batch.notes) == 1
+    reused = next(
+        finding
+        for finding in batch.notes[0].findings
+        if finding.evidence_id == "prior-empty-file"
+    )
+    assert reused.source == "prior:tool:get_file_content"
+    assert reused.limitation == "tool_empty"
+
+
+def test_overloaded_method_resolution_uses_task_matching_range_not_first_name():
+    task = ReviewTask(
+        id="src/Service.java#h0",
+        file="src/Service.java",
+        hunk_header="@@ -22,1 +22,1 @@",
+        patch="+update(42);",
+        changed_lines=[22],
+    )
+    context = TaskContextBundle(
+        task_id=task.id,
+        facts=[
+            ContextFact(
+                source="tool:get_diff_ast",
+                kind="ast_structure",
+                content=(
+                    "AST for: src/Service.java\n"
+                    "  class: Service\n"
+                    "    @PreAuthorize public void update(String value) [L2-L5]\n"
+                    "    public void update(int value) [L20-L25]"
+                ),
+            )
+        ],
+    )
+    dossier = _dossier(task=task, context=context)
+    client = _ToolClient(
+        "class Service {\n"
+        + "  @PreAuthorize void update(String value) {}\n"
+        + "\n" * 17
+        + "  void update(int value) {}\n"
+        + "}"
+    )
+
+    batch = _collect([dossier], [_request(dossier)], client=client)
+
+    assert not any(
+        finding.relation == "contradicts" and finding.strength == "direct"
+        for finding in batch.notes[0].findings
+    )

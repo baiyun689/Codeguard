@@ -19,6 +19,7 @@ from codeguard_agent.models.schemas import Issue, Severity
 from codeguard_agent.pipeline.evidence_planner import CandidateDossier, DossierAssembly
 from codeguard_agent.pipeline.stages.aggregation import (
     _MergePlan,
+    _dedup_key,
     _format_issues,
     deduplicate,
 )
@@ -259,6 +260,8 @@ def _llm_verdict(
     )
     if has_severity_contradiction and decision.action not in {"keep", "downgrade"}:
         return _fallback_verdict(dossier, findings)
+    if decision.action == "merge":
+        return _fallback_verdict(dossier, findings)
     if decision.action == "needs_more_evidence":
         if final_round or decision.requested_purpose is None:
             if dossier.candidate.severity_proposal is Severity.CRITICAL:
@@ -283,8 +286,18 @@ def _llm_verdict(
             requested_purpose=decision.requested_purpose,
         )
     severity_override = decision.adjusted_severity
-    if decision.action == "downgrade" and severity_override is None:
-        severity_override = _normalized_severity(dossier.candidate.severity_proposal)
+    if decision.action == "downgrade":
+        rank = {Severity.INFO: 1, Severity.WARNING: 2, Severity.CRITICAL: 3}
+        current = dossier.candidate.severity_proposal
+        if severity_override is None or rank[severity_override] >= rank[current]:
+            severity_override = _normalized_severity(current)
+        if severity_override is None:
+            return Verdict(
+                dossier.candidate.id,
+                "keep",
+                "invalid_downgrade_normalized",
+                "INFO 无法继续降级，保守保留",
+            )
     return Verdict(
         candidate_id=dossier.candidate.id,
         action=decision.action,
@@ -316,33 +329,42 @@ def _deduplicate_survivors(
             None,
         )
         if best is None:
+            key = _dedup_key(issue)
+            best = next(
+                (
+                    dossier
+                    for dossier in dossiers
+                    if dossier.candidate.id not in used
+                    and _dedup_key(dossier.candidate.to_issue()) == key
+                ),
+                None,
+            )
+        if best is None:
             continue
         survivors.append(best)
         used.add(best.candidate.id)
-        best_file = best.candidate.file.replace("\\", "/").lower()
-        for other in dossiers:
-            if other.candidate.id in used:
-                continue
-            other_file = other.candidate.file.replace("\\", "/").lower()
-            if (
-                other_file == best_file
-                and other.candidate.line == best.candidate.line
-                and other.candidate.type.lower() == best.candidate.type.lower()
-            ):
-                used.add(other.candidate.id)
-                merge_verdicts.append(
-                    Verdict(
-                        other.candidate.id,
-                        "merge",
-                        "aggregation_merge",
-                        f"与 {best.candidate.id} 指向同一底层问题",
-                        suggested_target_id=best.candidate.id,
-                    )
-                )
-    for dossier in dossiers:
-        if dossier.candidate.id not in used:
-            survivors.append(dossier)
-            used.add(dossier.candidate.id)
+    survivor_by_key = {
+        _dedup_key(dossier.candidate.to_issue()): dossier for dossier in survivors
+    }
+    for other in dossiers:
+        if other.candidate.id in used:
+            continue
+        target = survivor_by_key.get(_dedup_key(other.candidate.to_issue()))
+        if target is None:
+            survivors.append(other)
+            used.add(other.candidate.id)
+            survivor_by_key[_dedup_key(other.candidate.to_issue())] = other
+            continue
+        used.add(other.candidate.id)
+        merge_verdicts.append(
+            Verdict(
+                other.candidate.id,
+                "merge",
+                "aggregation_merge",
+                f"与 {target.candidate.id} 指向同一底层问题",
+                suggested_target_id=target.candidate.id,
+            )
+        )
     return survivors, merge_verdicts
 
 
@@ -496,6 +518,9 @@ def judge_candidates(
             kept_dossiers.append(dossier)
         if verdict.action == "downgrade" and verdict.severity_override is not None:
             severity_overrides[dossier.candidate.id] = verdict.severity_override
+
+    if any(verdict.action == "needs_more_evidence" for verdict in batch.verdicts):
+        return batch
 
     kept_dossiers, merge_verdicts = _deduplicate_survivors(
         kept_dossiers,

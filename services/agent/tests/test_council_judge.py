@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 import json
 
+import pytest
+
 from codeguard_agent.models.council import (
     CandidateIssue,
     EvidenceFinding,
@@ -19,6 +21,8 @@ from codeguard_agent.pipeline.evidence_planner import (
     CandidateBindingFailure,
     CandidateDossier,
     DossierAssembly,
+    assemble_dossiers,
+    plan_evidence,
 )
 
 
@@ -390,3 +394,135 @@ def test_global_semantic_aggregation_runs_after_candidate_verdicts():
 
     assert len(batch.final_issues) == 1
     assert any(verdict.reason_code == "aggregation_merge" for verdict in batch.verdicts)
+
+
+class _SequenceJudgeAndMergeLLM:
+    def __init__(self) -> None:
+        self.schema = None
+        self.judge_calls = 0
+
+    def with_structured_output(self, schema, method):
+        self.schema = schema
+        return self
+
+    def invoke(self, messages):
+        if self.schema is JudgeDecisions:
+            self.judge_calls += 1
+            if self.judge_calls == 1:
+                return JudgeDecisions(
+                    decisions=[JudgeDecision(candidate_id="C001", action="keep")]
+                )
+            return JudgeDecisions(
+                decisions=[
+                    JudgeDecision(
+                        candidate_id="C001",
+                        action="needs_more_evidence",
+                        requested_purpose="counter",
+                    )
+                ]
+            )
+        return self.schema.model_validate({"groups": [{"members": [1, 2]}]})
+
+
+def test_needs_more_round_skips_all_aggregation_and_planner_sees_latest_verdict():
+    first = _dossier("first")
+    second = _dossier("second")
+    llm = _SequenceJudgeAndMergeLLM()
+
+    batch = _judge([first, second], llm=llm, evidence_round=1, max_evidence_rounds=2)
+
+    assert any(
+        verdict.candidate_id == "second"
+        and verdict.action == "needs_more_evidence"
+        for verdict in batch.verdicts
+    )
+    assert not any(verdict.action == "merge" for verdict in batch.verdicts)
+    assert batch.final_issues == []
+
+    assembly = assemble_dossiers(
+        [first.candidate, second.candidate],
+        [first.task],
+        {},
+        {},
+        [],
+        [],
+        batch.verdicts,
+    )
+    latest = {dossier.candidate.id: dossier.latest_verdict for dossier in assembly.dossiers}
+    assert latest["second"] is not None
+    assert latest["second"].action == "needs_more_evidence"
+    plan = plan_evidence(
+        assembly.dossiers,
+        evidence_round=1,
+        classifier_llm=None,
+        structured_method="function_calling",
+    )
+    assert [request.candidate_id for request in plan.requests] == ["second"]
+
+
+@pytest.mark.parametrize(
+    ("current", "adjusted", "expected_action", "expected_severity"),
+    [
+        (Severity.CRITICAL, Severity.CRITICAL, "downgrade", Severity.WARNING),
+        (Severity.WARNING, Severity.CRITICAL, "downgrade", Severity.INFO),
+        (Severity.INFO, Severity.WARNING, "keep", None),
+    ],
+)
+def test_llm_downgrade_rejects_same_or_higher_adjusted_severity(
+    current,
+    adjusted,
+    expected_action,
+    expected_severity,
+):
+    dossier = _dossier(severity=current)
+    llm = _JudgeLLM(
+        JudgeDecision(
+            candidate_id="C001",
+            action="downgrade",
+            adjusted_severity=adjusted,
+        )
+    )
+
+    batch = _judge([dossier], llm=llm)
+
+    assert batch.verdicts[0].action == expected_action
+    assert batch.verdicts[0].severity_override is expected_severity
+    assert batch.final_issues[0].severity is (expected_severity or current)
+
+
+def test_single_candidate_llm_merge_is_rejected_without_dropping_candidate():
+    dossier = _dossier()
+    llm = _JudgeLLM(
+        JudgeDecision(
+            candidate_id="C001",
+            action="merge",
+            merge_target_id="C999",
+        )
+    )
+
+    batch = _judge([dossier], llm=llm)
+
+    assert batch.verdicts[0].action == "keep"
+    assert len(batch.final_issues) == 1
+
+
+def test_rule_dedup_maps_basename_fingerprint_without_readding_candidate():
+    nested = _dossier(
+        "nested",
+        file="src/a/User.java",
+        line=10,
+        issue_type="same",
+        claim="same root",
+    )
+    basename = _dossier(
+        "basename",
+        file="User.java",
+        line=10,
+        issue_type="same",
+        claim="same root",
+    )
+
+    batch = _judge([nested, basename])
+
+    assert len(batch.final_issues) == 1
+    assert any(verdict.action == "merge" for verdict in batch.verdicts)

@@ -54,7 +54,8 @@ def _stable_json(value: object) -> str:
 
 
 def _digest(*parts: str) -> str:
-    return f"evidence-{sha256(''.join(parts).encode('utf-8')).hexdigest()[:16]}"
+    payload = "\0".join(parts)
+    return f"evidence-{sha256(payload.encode('utf-8')).hexdigest()[:16]}"
 
 
 def _insufficient(request: EvidenceRequest, limitation: str, *, detail: str = "") -> EvidenceNote:
@@ -90,10 +91,7 @@ def _request_mismatch(
     if request.purpose != strategy.purpose:
         return "purpose"
     target = context_rules.normalize_path(request.target)
-    if target not in {
-        context_rules.normalize_path(dossier.task.file),
-        context_rules.normalize_path(dossier.candidate.file),
-    }:
+    if target != context_rules.normalize_path(dossier.task.file):
         return "target"
     if not request.question.strip() or request.question != strategy.question_template:
         return "question"
@@ -133,12 +131,13 @@ def _base_facts(dossier: CandidateDossier, request: EvidenceRequest) -> list[_Ra
     }
     for note in dossier.notes:
         for finding in note.findings:
-            if not finding.observation.strip():
-                continue
             is_relevant_tool = any(
                 tool_name in finding.source for tool_name in planned_tools
             )
-            if request.purpose != "severity" and not is_relevant_tool:
+            reusable_for_severity = (
+                request.purpose == "severity" and bool(finding.observation.strip())
+            )
+            if not is_relevant_tool and not reusable_for_severity:
                 continue
             facts.append(
                 _RawFact(
@@ -264,10 +263,16 @@ def _resolved_method(dossier: CandidateDossier) -> tuple[str, int, int, str] | N
         method_name = context_rules.resolve_method_name(context_fact.content, dossier.task)
         if method_name is None:
             continue
+        task_span = context_rules._task_span(dossier.task)
+        if task_span is None:
+            return None
         for line in context_fact.content.splitlines():
             match = _METHOD_RANGE.search(line.strip())
-            if match and match.group(1) == method_name:
-                return method_name, int(match.group(2)), int(match.group(3)), line.strip()
+            if not match or match.group(1) != method_name:
+                continue
+            start, end = int(match.group(2)), int(match.group(3))
+            if start <= task_span[1] and end >= task_span[0]:
+                return method_name, start, end, line.strip()
     return None
 
 
@@ -510,7 +515,7 @@ def collect_evidence(
     """执行已规划请求；每请求恰好生成一条非空 EvidenceNote。"""
     batch = EvidenceBatch()
     by_candidate = {dossier.candidate.id: dossier for dossier in dossiers}
-    cache: dict[tuple[str, str], tuple[str, str, str]] = {}
+    cache: dict[tuple[str, str], tuple[str, str]] = {}
 
     for request in pending_requests:
         dossier = by_candidate.get(request.candidate_id)
@@ -552,7 +557,24 @@ def collect_evidence(
             key = (call.tool_name, canonical_args)
             reused = key in cache
             if reused:
-                raw, limitation, evidence_id = cache[key]
+                raw, limitation = cache[key]
+            else:
+                raw, limitation = _call_tool(tool_client, call)
+                cache[key] = (raw, limitation)
+                batch.gathered_context.append(
+                    GatheredContext(call.tool_name, canonical_args, raw or limitation)
+                )
+            scoped_raw = raw
+            scoped_limitation = limitation
+            if call.tool_name == "find_sensitive_apis" and raw:
+                rows = context_rules.sensitive_api_rows_for_task(raw, dossier.task)
+                if rows:
+                    scoped_raw = "\n".join(rows)
+                else:
+                    scoped_raw = ""
+                    scoped_limitation = "no_task_sensitive_api"
+            evidence_id = _digest(call.tool_name, canonical_args, scoped_raw)
+            if reused:
                 batch.trace.append(
                     (
                         "evidence_tool_reused",
@@ -566,26 +588,12 @@ def collect_evidence(
                         ),
                     )
                 )
-            else:
-                raw, limitation = _call_tool(tool_client, call)
-                if call.tool_name == "find_sensitive_apis" and raw:
-                    rows = context_rules.sensitive_api_rows_for_task(raw, dossier.task)
-                    if rows:
-                        raw = "\n".join(rows)
-                    else:
-                        raw = ""
-                        limitation = "no_task_sensitive_api"
-                evidence_id = _digest(call.tool_name, canonical_args, raw)
-                cache[key] = (raw, limitation, evidence_id)
-                batch.gathered_context.append(
-                    GatheredContext(call.tool_name, canonical_args, raw or limitation)
-                )
             facts.append(
                 _RawFact(
                     evidence_id=evidence_id,
                     source=f"tool:{call.tool_name}",
-                    raw=raw,
-                    limitation=limitation,
+                    raw=scoped_raw,
+                    limitation=scoped_limitation,
                 )
             )
 
