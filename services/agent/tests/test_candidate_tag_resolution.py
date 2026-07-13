@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 from types import SimpleNamespace
@@ -98,6 +99,11 @@ class _BadRequestError(RuntimeError):
     status_code = 400
 
 
+class _StructuredOutputFailureLlm:
+    def with_structured_output(self, *_args, **_kwargs):
+        raise _BadRequestError("structured output unavailable")
+
+
 def test_exact_type_match_returns_high_confidence_rule_without_llm():
     result = resolve_candidate_evidence_tag(
         _dossier(candidate_type="ＮＵＬＬ＿ＰＯＩＮＴＥＲ"),
@@ -132,6 +138,39 @@ def test_unique_strong_claim_returns_rule_resolution():
     assert result.tag == RiskTag.AUTHORIZATION
     assert result.source == "rule"
     assert result.confidence == 0.85
+
+
+@pytest.mark.parametrize("claim", ["NoSQL storage concern", "fallback path changed"])
+def test_ascii_terms_inside_larger_words_do_not_bypass_general_fallback(claim: str):
+    result = resolve_candidate_evidence_tag(
+        _dossier(claim=claim),
+        None,
+        structured_method="function_calling",
+    )
+
+    assert result.tag == RiskTag.GENERAL_REVIEW
+    assert result.source == "general"
+
+
+@pytest.mark.parametrize(
+    ("claim", "expected_tag"),
+    [
+        ("SQL predicate is incomplete", RiskTag.SQL_DATA_ACCESS),
+        ("message ack is missing", RiskTag.MESSAGE_DELIVERY),
+    ],
+)
+def test_independent_ascii_terms_still_resolve_by_rule(
+    claim: str,
+    expected_tag: RiskTag,
+):
+    result = resolve_candidate_evidence_tag(
+        _dossier(claim=claim),
+        None,
+        structured_method="function_calling",
+    )
+
+    assert result.tag == expected_tag
+    assert result.source == "rule"
 
 
 def test_weak_only_claim_falls_back_to_general_without_llm():
@@ -248,8 +287,15 @@ def test_ambiguous_candidate_uses_constrained_llm_and_renders_context():
         _BadRequestError("classifier unavailable"),
         {"tag": "AUTHORIZATION", "confidence": 0.74, "reason": "low"},
         {"tag": "UNKNOWN_TOPIC", "confidence": 0.99, "reason": "unknown"},
+        {"tag": "AUTHORIZATION", "confidence": 0.99},
     ],
-    ids=["none", "exception", "low_confidence", "unknown_enum"],
+    ids=[
+        "none",
+        "exception",
+        "low_confidence",
+        "unknown_enum",
+        "missing_reason",
+    ],
 )
 def test_invalid_llm_result_falls_back_to_general(response):
     result = resolve_candidate_evidence_tag(
@@ -261,3 +307,48 @@ def test_invalid_llm_result_falls_back_to_general(response):
     assert result.tag == RiskTag.GENERAL_REVIEW
     assert result.source == "general"
     assert result.confidence == 0.5
+
+
+@pytest.mark.parametrize(
+    "llm",
+    [
+        _StructuredOutputFailureLlm(),
+        _ClassifierLlm(_BadRequestError("classifier unavailable")),
+    ],
+    ids=["with_structured_output", "invoke"],
+)
+def test_supplier_exception_falls_back_and_logs_warning(caplog, llm):
+    with caplog.at_level(logging.WARNING, logger="codeguard"):
+        result = resolve_candidate_evidence_tag(
+            _dossier(),
+            llm,
+            structured_method="function_calling",
+        )
+
+    assert result.tag == RiskTag.GENERAL_REVIEW
+    records = [
+        record
+        for record in caplog.records
+        if "候选证据主题 LLM 分类失败" in record.getMessage()
+    ]
+    assert len(records) == 1
+    assert records[0].exc_info is not None
+
+
+@pytest.mark.parametrize("reason", ["", "   \t"])
+def test_empty_llm_reason_is_invalid_and_has_explicit_fallback_reason(reason: str):
+    result = resolve_candidate_evidence_tag(
+        _dossier(),
+        _ClassifierLlm(
+            {
+                "tag": "AUTHORIZATION",
+                "confidence": 0.9,
+                "reason": reason,
+            }
+        ),
+        structured_method="function_calling",
+    )
+
+    assert result.tag == RiskTag.GENERAL_REVIEW
+    assert result.source == "general"
+    assert result.reason == "LLM 分类理由为空"

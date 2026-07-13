@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -14,6 +16,9 @@ from codeguard_agent.pipeline.evidence_rules.terms import (
 )
 
 
+logger = logging.getLogger("codeguard")
+
+
 class CandidateTagResolution(BaseModel):
     tag: RiskTag
     confidence: float = Field(ge=0.0, le=1.0)
@@ -24,7 +29,7 @@ class CandidateTagResolution(BaseModel):
 class _LlmTagResolution(BaseModel):
     tag: str
     confidence: float = Field(ge=0.0, le=1.0)
-    reason: str = ""
+    reason: str
 
 
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
@@ -35,7 +40,14 @@ def _load_prompt(name: str) -> str:
 
 
 def _contains_any(text: str, terms: frozenset[str]) -> bool:
-    return any(term in text for term in terms)
+    return any(_term_matches(text, term) for term in terms)
+
+
+def _term_matches(text: str, term: str) -> bool:
+    if re.search(r"[a-z0-9]", term):
+        pattern = rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])"
+        return re.search(pattern, text) is not None
+    return term in text
 
 
 def _score_candidate(dossier: Any) -> tuple[RiskTag | None, bool, str]:
@@ -113,19 +125,25 @@ def resolve_candidate_evidence_tag(
         ("human", user_prompt),
     ]
 
-    try:
-        from codeguard_agent.llm.client import invoke_with_retry
+    from codeguard_agent.llm.client import invoke_with_retry
 
+    try:
         structured_llm = classifier_llm.with_structured_output(
             _LlmTagResolution,
             method=structured_method,
         )
         result = invoke_with_retry(structured_llm, messages, max_retries=1)
     except Exception:  # noqa: BLE001 分类失败必须安全回退通用主题
+        logger.warning(
+            "候选证据主题 LLM 分类失败,回退 GENERAL_REVIEW",
+            exc_info=True,
+        )
         return _general_resolution("LLM 分类调用失败")
 
     if result is None or not isinstance(result, _LlmTagResolution):
         return _general_resolution("LLM 未返回有效结构化分类")
+    if not result.reason.strip():
+        return _general_resolution("LLM 分类理由为空")
     try:
         resolved_tag = RiskTag(result.tag)
     except ValueError:
