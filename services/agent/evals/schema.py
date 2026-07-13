@@ -192,19 +192,62 @@ class ToolUsage(BaseModel):
 
 
 class CouncilTraceStats(BaseModel):
-    """ADR-032 ReviewCouncil 过程统计(可观测性,不参与判分)。"""
+    """ADR-032/Phase 5 ReviewCouncil 过程统计(可观测性,不参与判分)。"""
 
     candidate_count: int = 0
     candidate_count_by_agent: dict[str, int] = Field(default_factory=dict)
-    evidence_request_count: int = 0
-    truncated_candidates: int = 0
-    truncated_evidence_requests: int = 0
-    evidence_rounds: int = 0
-    challenge_count: int = 0
-    removed_by_challenge: int = 0
-    removed_by_aggregation: int = 0
+    evidence_request_count: int = Field(default=0, description="累计有效/无效证据请求数")
+    truncated_candidates: int = Field(default=0, description="发现阶段因候选上限被截断的数量")
+    evidence_rounds: int = Field(default=0, description="EvidenceAgent 实际执行轮次")
+    verdict_count: int = Field(default=0, description="本轮 Judge 产生的候选裁决与合并裁决数")
+    removed_by_judge: int = Field(default=0, description="Judge 候选裁决为 drop 的数量")
+    removed_by_aggregation: int = Field(default=0, description="全局精确/语义聚合为 merge 的数量")
     removed_by_fp_rules: int = 0
     removed_by_fp_llm: int = 0
+    direct_counter_candidate_count: int = Field(
+        default=0, description="具备 counter+direct+contradicts finding 的候选数"
+    )
+    direct_counter_retained_count: int = Field(
+        default=0, description="上述直接反证候选中仍映射到最终 Issue 的数量"
+    )
+    direct_counter_retained_rate: float | None = Field(
+        default=None, description="直接反证候选保留率；无此类候选时为 None"
+    )
+    all_insufficient_candidate_count: int = Field(
+        default=0, description="关联 finding 非空且全部 insufficient 的候选数"
+    )
+    all_insufficient_retained_count: int = Field(
+        default=0, description="全 insufficient 候选中仍映射到最终 Issue 的数量"
+    )
+    all_insufficient_retained_rate: float | None = Field(
+        default=None, description="全 insufficient 候选保留率；无此类候选时为 None"
+    )
+    final_issue_count: int = Field(default=0, description="最终 Issue 对应的 survivor 候选数")
+    final_issue_strategy_covered_count: int = Field(
+        default=0, description="survivor 中至少关联一条有效 EvidenceRequest 的数量"
+    )
+    final_issue_strategy_coverage: float | None = Field(
+        default=None, description="最终 Issue 的有效策略覆盖率；无最终 Issue 时为 None"
+    )
+    final_issue_fact_covered_count: int = Field(
+        default=0, description="survivor 中至少有关联非 insufficient finding 的数量"
+    )
+    final_issue_fact_coverage: float | None = Field(
+        default=None, description="最终 Issue 的有效事实覆盖率；无最终 Issue 时为 None"
+    )
+    registry_risk_tag_covered_count: int = Field(
+        default=0, description="静态注册表同时具有 counter/support/severity 策略的 RiskTag 数"
+    )
+    registry_risk_tag_total: int = Field(default=0, description="当前 RiskTag 枚举值总数")
+    registry_risk_tag_coverage: float | None = Field(
+        default=None, description="静态注册表 RiskTag 三目的策略覆盖率"
+    )
+    actual_evidence_tool_calls: int = Field(
+        default=0, description="EvidenceAgent 实际发起的新工具调用数；缓存复用不计"
+    )
+    average_evidence_tool_calls: float = Field(
+        default=0.0, description="实际新证据工具调用数/候选数；无候选时为 0.0"
+    )
     trace_events: int = 0
 
 

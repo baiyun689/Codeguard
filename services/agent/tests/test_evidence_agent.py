@@ -156,6 +156,8 @@ def test_same_tool_call_is_cached_but_each_request_gets_its_own_note():
     assert client.calls.count(("get_file_content", "src/Service.java")) == 1
     assert client.calls.count(("find_sensitive_apis", {})) == 1
     assert len(batch.gathered_context) == 2
+    assert sum(event == "evidence_tool_called" for event, _ in batch.trace) == 2
+    assert sum(event == "evidence_tool_reused" for event, _ in batch.trace) == 2
     tool_ids = [
         {finding.evidence_id for finding in note.findings if finding.source.startswith("tool:")}
         for note in batch.notes

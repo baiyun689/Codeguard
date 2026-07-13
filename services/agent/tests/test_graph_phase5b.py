@@ -9,6 +9,8 @@ from codeguard_agent.models.council import CandidateIssue, EvidenceRequest, Verd
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import ReviewTask, TaskSelection
 from codeguard_agent.pipeline.stages.reviewer_stage import DEFAULT_REVIEWERS
+from codeguard_agent.pipeline.evidence_rules import STRATEGIES_BY_ID
+from codeguard_agent.tools.tool_client import ToolResponse
 
 
 def _request(index: int) -> EvidenceRequest:
@@ -159,3 +161,71 @@ def test_main_llm_is_effective_fallback_for_planner_agent_and_judge(monkeypatch)
     G.build_review_graph(enable_summary=False, llm=main_llm, fp_verify_llm=None)
 
     assert captured == {"planner": main_llm, "agent": main_llm, "judge": main_llm}
+
+
+def test_graph_stats_count_only_actual_evidence_tool_calls_after_cache_reuse():
+    first, task = _candidate_task()
+    second = first.model_copy(update={"id": "candidate-2"})
+    strategy = STRATEGIES_BY_ID["general_review.counter"]
+
+    def request(candidate: CandidateIssue) -> EvidenceRequest:
+        dossier = G._assemble_state_dossiers(
+            {
+                "candidate_issues": [candidate],
+                "review_tasks": [task],
+                "risk_profiles": {},
+                "task_context_bundles": {},
+                "evidence_requests": [],
+                "evidence_notes": [],
+                "council_verdicts": [],
+            }
+        ).dossiers[0]
+        calls = strategy.build_tool_calls(dossier)
+        return EvidenceRequest(
+            candidate_id=candidate.id,
+            strategy_id=strategy.id,
+            purpose=strategy.purpose,
+            target=task.file,
+            question=strategy.question_template,
+            preferred_tools=list(dict.fromkeys(call.tool_name for call in calls)),
+        )
+
+    class Client:
+        calls = 0
+
+        def get_file_content(self, file_path: str) -> ToolResponse:
+            assert file_path == task.file
+            self.calls += 1
+            return ToolResponse(success=True, result="class Service { void changed() {} }")
+
+    requests = [request(first), request(second)]
+    state = {
+        "candidate_issues": [first, second],
+        "review_tasks": [task],
+        "risk_profiles": {},
+        "task_context_bundles": {},
+        "evidence_requests": requests,
+        "evidence_notes": [],
+        "council_verdicts": [],
+        "evidence_round": 0,
+        "structured_method": "function_calling",
+    }
+    client = Client()
+
+    evidence_out = G._evidence_agent_node(tool_client=client, judge_llm=None)(state)
+    judge_state = {
+        **state,
+        "evidence_notes": evidence_out["evidence_notes"],
+        "evidence_round": evidence_out["evidence_round"],
+        "council_trace": evidence_out["council_trace"],
+    }
+    judge_out = G._council_judge_node(None)(judge_state)
+    stats = judge_out["council_stats"]
+
+    assert client.calls == 1
+    assert sum(
+        trace.event == "evidence_tool_reused"
+        for trace in evidence_out["council_trace"]
+    ) == 1
+    assert stats.actual_evidence_tool_calls == 1
+    assert stats.average_evidence_tool_calls == 0.5

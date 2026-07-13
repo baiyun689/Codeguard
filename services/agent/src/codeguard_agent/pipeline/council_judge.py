@@ -32,6 +32,7 @@ _PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts"
 class JudgeBatch:
     verdicts: list[Verdict] = field(default_factory=list)
     final_issues: list[Issue] = field(default_factory=list)
+    final_candidate_ids: list[str] = field(default_factory=list)
     trace: list[tuple[str, str]] = field(default_factory=list)
 
 
@@ -549,6 +550,7 @@ def judge_candidates(
         if override is not None:
             issue = issue.model_copy(update={"severity": override})
         batch.final_issues.append(issue)
+        batch.final_candidate_ids.append(dossier.candidate.id)
     return batch
 
 

@@ -369,7 +369,7 @@ def test_run_routes_gathered_context_to_trace_sink_and_council_metadata(monkeypa
 
     class _Stats:
         def model_dump(self):
-            return {"candidate_count": 1, "evidence_rounds": 0, "challenge_count": 1}
+            return {"candidate_count": 1, "evidence_rounds": 0, "verdict_count": 1}
 
     class _FakeGraph:
         def invoke(self, initial, config=None):
@@ -507,7 +507,7 @@ def test_graph_fanin_three_discoverers(monkeypatch):
     assert len(trace) == 3
 
     assert meta["council"]["candidate_count"] == 3
-    assert meta["council"]["challenge_count"] == 3
+    assert meta["council"]["verdict_count"] == 3
     assert meta["council"]["candidate_count_by_agent"] == {
         "threat_model": 1,
         "behavior": 1,

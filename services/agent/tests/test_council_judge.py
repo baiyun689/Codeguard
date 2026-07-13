@@ -132,6 +132,7 @@ def test_direct_counter_contradiction_always_drops_candidate():
     assert batch.verdicts[0].action == "drop"
     assert batch.verdicts[0].reason_code == "direct_counter_evidence"
     assert batch.final_issues == []
+    assert batch.final_candidate_ids == []
 
 
 def test_direct_severity_contradiction_downgrades_without_dropping():
@@ -393,6 +394,7 @@ def test_global_semantic_aggregation_runs_after_candidate_verdicts():
     batch = _judge([first, second], llm=_JudgeAndMergeLLM())
 
     assert len(batch.final_issues) == 1
+    assert batch.final_candidate_ids == ["first"]
     assert any(verdict.reason_code == "aggregation_merge" for verdict in batch.verdicts)
 
 

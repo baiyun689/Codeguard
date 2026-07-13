@@ -79,7 +79,7 @@ def _expected_tools(calls: list[ToolCallSpec]) -> list[str]:
     return list(dict.fromkeys(call.tool_name for call in calls))
 
 
-def _request_mismatch(
+def request_strategy_mismatch(
     request: EvidenceRequest,
     dossier: CandidateDossier | None,
 ) -> str | None:
@@ -519,7 +519,7 @@ def collect_evidence(
 
     for request in pending_requests:
         dossier = by_candidate.get(request.candidate_id)
-        mismatch = _request_mismatch(request, dossier)
+        mismatch = request_strategy_mismatch(request, dossier)
         if mismatch is not None:
             batch.notes.append(
                 _insufficient(request, "request_strategy_mismatch", detail=mismatch)
@@ -563,6 +563,20 @@ def collect_evidence(
                 cache[key] = (raw, limitation)
                 batch.gathered_context.append(
                     GatheredContext(call.tool_name, canonical_args, raw or limitation)
+                )
+                batch.trace.append(
+                    (
+                        "evidence_tool_called",
+                        _stable_json(
+                            {
+                                "request_id": request.id,
+                                "candidate_id": request.candidate_id,
+                                "tool": call.tool_name,
+                                "arguments": arguments,
+                                "limitation": limitation,
+                            }
+                        ),
+                    )
                 )
             scoped_raw = raw
             scoped_limitation = limitation
@@ -645,4 +659,4 @@ def collect_evidence(
     return batch
 
 
-__all__ = ["EvidenceBatch", "collect_evidence"]
+__all__ = ["EvidenceBatch", "collect_evidence", "request_strategy_mismatch"]

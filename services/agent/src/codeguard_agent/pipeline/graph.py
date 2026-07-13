@@ -59,6 +59,7 @@ from codeguard_agent.pipeline.engines import (
     ToolAgentEngine,
 )
 from codeguard_agent.pipeline.evidence_agent import collect_evidence
+from codeguard_agent.pipeline.council_metrics import compute_council_run_stats
 from codeguard_agent.pipeline.evidence_planner import assemble_dossiers, plan_evidence
 from codeguard_agent.pipeline.stages.base import PipelineContext
 from codeguard_agent.pipeline.stages.context_provider import ContextProviderStage
@@ -970,20 +971,15 @@ def _council_judge_node(llm, judge_llm=None):
             ),
             max_retries=state.get("max_retries", 2),
         )
-        candidates = state.get("candidate_issues") or []
-        by_agent: dict[str, int] = {}
-        for candidate in candidates:
-            by_agent[candidate.source_agent] = by_agent.get(candidate.source_agent, 0) + 1
-        stats = CouncilRunStats(
-            candidate_count=len(candidates),
-            candidate_count_by_agent=by_agent,
+        stats = compute_council_run_stats(
+            candidates=state.get("candidate_issues") or [],
+            assembly=assembly,
+            verdicts=batch.verdicts,
+            final_candidate_ids=batch.final_candidate_ids,
             evidence_request_count=len(state.get("evidence_requests") or []),
             truncated_candidates=state.get("truncated_candidates", 0),
             evidence_rounds=state.get("evidence_round", 0),
-            challenge_count=len(batch.verdicts),
-            removed_by_challenge=sum(
-                verdict.action in {"drop", "merge"} for verdict in batch.verdicts
-            ),
+            council_trace=state.get("council_trace") or [],
         )
         return {
 

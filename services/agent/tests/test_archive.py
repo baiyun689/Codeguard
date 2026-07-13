@@ -15,7 +15,7 @@ from evals.archive import (
     write_archive,
 )
 from evals.metrics import aggregate, aggregate_by_capability
-from evals.schema import MatchOutcome
+from evals.schema import CouncilTraceStats, MatchOutcome
 
 
 def _outcome(case_id, *, clean=False, tp=0, fp=0, fn=0, expected=0, reported=0) -> MatchOutcome:
@@ -101,6 +101,43 @@ def test_archive_record_has_all_fields():
     assert "precision" in rec["metrics"] and "recall" in rec["metrics"]
     assert "file" in rec["by_capability"]
     assert {c["case_id"] for c in rec["cases"]} == {"rb_file", "clean1"}
+
+
+def test_archive_preserves_phase5_council_metrics():
+    outcome = _outcome("phase5", reported=1)
+    outcome.council_trace = CouncilTraceStats(**{
+        "candidate_count": 1,
+        "final_issue_count": 1,
+        "final_issue_strategy_covered_count": 1,
+        "final_issue_strategy_coverage": 1.0,
+        "final_issue_fact_covered_count": 1,
+        "final_issue_fact_coverage": 1.0,
+        "registry_risk_tag_covered_count": 24,
+        "registry_risk_tag_total": 24,
+        "registry_risk_tag_coverage": 1.0,
+        "actual_evidence_tool_calls": 2,
+        "average_evidence_tool_calls": 2.0,
+    })
+
+    record = build_archive_record(
+        profile_name="pipeline-file",
+        profile_mode="pipeline",
+        profile_tools=["get_file_content"],
+        tools_enabled=True,
+        provider="mock",
+        model="(mock)",
+        runs=1,
+        metrics=aggregate([[outcome]]),
+        by_capability={},
+        last_run=[outcome],
+        git_sha="abc123",
+        timestamp="2026-07-13T10-00-00",
+    )
+
+    archived = record["cases"][0]["council_trace"]
+    assert archived["final_issue_strategy_coverage"] == 1.0
+    assert archived["final_issue_fact_coverage"] == 1.0
+    assert archived["actual_evidence_tool_calls"] == 2
 
 
 def test_write_archive_filename_and_roundtrip(tmp_path):
