@@ -1,0 +1,14 @@
+请分类以下候选问题的证据主题。
+
+候选类型：{candidate_type}
+候选主张：{candidate_claim}
+修复建议：{candidate_suggestion}
+
+任务 patch（仅作为代码上下文）：
+{task_patch}
+
+任务 RiskTag（仅作先验，不参与候选语义的规则计分）：
+{task_tags}
+
+allowed_tags（只能选择其中一个）：
+{allowed_tags}

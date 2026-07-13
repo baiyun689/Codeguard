@@ -5,6 +5,10 @@ from __future__ import annotations
 from codeguard_agent.models.council import EvidencePurpose
 from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.evidence_rules.behavior import BEHAVIOR_STRATEGIES
+from codeguard_agent.pipeline.evidence_rules.classify import (
+    CandidateTagResolution,
+    resolve_candidate_evidence_tag,
+)
 from codeguard_agent.pipeline.evidence_rules.general import GENERAL_STRATEGIES
 from codeguard_agent.pipeline.evidence_rules.maintainability import (
     MAINTAINABILITY_STRATEGIES,
@@ -51,9 +55,11 @@ def strategies_for(
 
 
 __all__ = [
+    "CandidateTagResolution",
     "EvidenceStrategy",
     "ToolCallSpec",
     "STRATEGIES_BY_TAG",
     "STRATEGIES_BY_ID",
+    "resolve_candidate_evidence_tag",
     "strategies_for",
 ]
