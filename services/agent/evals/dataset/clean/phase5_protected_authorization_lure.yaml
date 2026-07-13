@@ -1,0 +1,19 @@
+id: phase5_protected_authorization_lure
+category: clean-protected-authorization
+dimension: security
+language: java
+description: 当前方法明确限制 ADMIN 且按资源 ownerId 查询，敏感删除是受保护诱饵
+capability: [diff-only]
+diff: |
+  diff --git a/src/main/java/com/demo/AdminOrderController.java b/src/main/java/com/demo/AdminOrderController.java
+  --- a/src/main/java/com/demo/AdminOrderController.java
+  +++ b/src/main/java/com/demo/AdminOrderController.java
+  @@ -10,2 +10,8 @@ public class AdminOrderController {
+  +  @PreAuthorize("hasRole('ADMIN')")
+  +  @DeleteMapping("/owners/{ownerId}/orders/{orderId}")
+  +  public void delete(@PathVariable long ownerId, @PathVariable long orderId) {
+  +    Order order = orderRepository.requireByIdAndOwnerId(orderId, ownerId);
+  +    orderService.delete(order);
+  +  }
+   }
+expected: []

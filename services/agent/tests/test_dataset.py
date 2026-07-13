@@ -191,3 +191,16 @@ def test_distractor_经_yaml_加载(tmp_path):
     assert case.is_complex is True
     assert len(case.distractors) == 1
     assert case.distractors[0].type_keywords == ["硬编码"]
+
+
+def test_phase5_behavior_fixtures_are_present_and_schema_valid():
+    cases = load_cases()
+    by_id = {case.id: case for case in cases}
+
+    protected = by_id["phase5_protected_sensitive_with_exposure"]
+    transaction = by_id["phase5_multiwrite_transaction_unknown_upstream"]
+    clean = by_id["phase5_protected_authorization_lure"]
+    assert protected.expected and protected.distractors
+    assert "@PreAuthorize" in protected.diff
+    assert transaction.expected and "debit" in transaction.diff and "insert" in transaction.diff
+    assert clean.is_clean and "@PreAuthorize" in clean.diff

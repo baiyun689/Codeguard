@@ -1,0 +1,24 @@
+id: phase5_multiwrite_transaction_unknown_upstream
+category: transaction-atomicity
+dimension: logic
+language: java
+description: 同一路径新增两次持久化写入且当前 diff 无事务边界；无上游事实时必须保持 insufficient，不能虚构外层事务反证
+capability: [diff-only]
+diff: |
+  diff --git a/src/main/java/com/demo/TransferService.java b/src/main/java/com/demo/TransferService.java
+  --- a/src/main/java/com/demo/TransferService.java
+  +++ b/src/main/java/com/demo/TransferService.java
+  @@ -18,3 +18,7 @@ public class TransferService {
+     public void transfer(long fromId, long toId, BigDecimal amount) {
+  +    accountRepository.debit(fromId, amount);
+  +    transferAuditRepository.insert(fromId, toId, amount);
+  +    notificationClient.notifyTransfer(toId, amount);
+     }
+   }
+expected:
+  - type_keywords: ["事务", "原子性", "回滚", "transaction", "部分写入"]
+    file: TransferService.java
+    line: 20
+    tolerance: 3
+    severity: CRITICAL
+    note: 多次持久化写入与外部副作用可能部分成功；当前 diff 未提供事务或补偿事实

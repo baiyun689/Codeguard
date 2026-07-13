@@ -1,8 +1,8 @@
 # Codeguard 审查质量评测报告
 
-- 生成时间:2026-07-11 19:42:07
+- 生成时间:2026-07-13 13:28:32
 - Provider / Model:`mock` / `deepseek-v4-pro`
-- 数据集:28 条(漏洞 18 / 干净 10)
+- 数据集:31 条(漏洞 20 / 干净 11)
 - 重复跑测:1 次
 
 > 审查质量以固定的数据集 + 指标为统一标准;被测目标(mode / 工具 / 模型)由 profile 描述。
@@ -49,6 +49,9 @@
 | phase2_plain_getter | clean | 0 | 0 | 0 | 0 | 0 |
 | phase2_repository_update | vuln | 1 | 0 | 0 | 0 | 1 |
 | phase2_shared_state_no_lock | vuln | 1 | 0 | 0 | 0 | 1 |
+| phase5_multiwrite_transaction_unknown_upstream | vuln | 1 | 0 | 0 | 0 | 1 |
+| phase5_protected_authorization_lure | clean | 0 | 0 | 0 | 0 | 0 |
+| phase5_protected_sensitive_with_exposure | vuln | 1 | 0 | 0 | 0 | 1 |
 | repomap_npe_abstract_001 | vuln | 1 | 0 | 0 | 0 | 1 |
 | repomap_npe_caller_001 | vuln | 1 | 0 | 0 | 0 | 1 |
 | repomap_npe_crossfile_001 | vuln | 1 | 0 | 0 | 0 | 1 |
@@ -60,36 +63,78 @@
 
 ADR-032 中间态只用于 trace/eval,不进入最终 ReviewResult。
 
-| 用例 | 候选 | 角色候选分布 | 证据请求 | 证据轮次 | Challenge | SelfChecker 移除 | 截断 | Trace 事件 |
+| 用例 | 候选 | 角色候选分布 | 证据请求 | 证据轮次 | Judge 裁决 | 移除 | 候选截断 | Trace 事件 |
 |---|---|---|---|---|---|---|---|---|
-| clean_bounded_loop_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| clean_getter_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| clean_logged_exception_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| clean_logging_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 12 |
-| clean_prepared_stmt_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| clean_rename_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 12 |
-| clean_try_with_resources_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 15 |
-| clean_unit_test_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| complex_cache_004 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| complex_config_005 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| complex_discount_003 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| complex_file_download_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 15 |
-| complex_import_002 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 15 |
-| complex_report_006 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 15 |
-| file_missing_authz_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| file_npe_contract_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| file_path_traversal_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 15 |
-| phase2_delete_authorization | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 14 |
-| phase2_large_multi_hunk | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 16 |
-| phase2_plain_getter | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| phase2_repository_update | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| phase2_shared_state_no_lock | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| repomap_npe_abstract_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| repomap_npe_caller_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| repomap_npe_crossfile_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| repomap_npe_delegate_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| repomap_npe_iface_impl_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
-| repomap_npe_isolated_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (challenge=0, aggregation=0, fp_rules=0, fp_llm=0) | candidates=0, evidence_requests=0 | 13 |
+| clean_bounded_loop_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| clean_getter_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| clean_logged_exception_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| clean_logging_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 12 |
+| clean_prepared_stmt_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| clean_rename_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 12 |
+| clean_try_with_resources_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 15 |
+| clean_unit_test_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| complex_cache_004 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| complex_config_005 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| complex_discount_003 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| complex_file_download_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 15 |
+| complex_import_002 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 15 |
+| complex_report_006 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 15 |
+| file_missing_authz_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| file_npe_contract_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| file_path_traversal_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 15 |
+| phase2_delete_authorization | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 14 |
+| phase2_large_multi_hunk | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 16 |
+| phase2_plain_getter | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| phase2_repository_update | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| phase2_shared_state_no_lock | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| phase5_multiwrite_transaction_unknown_upstream | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| phase5_protected_authorization_lure | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 15 |
+| phase5_protected_sensitive_with_exposure | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 15 |
+| repomap_npe_abstract_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| repomap_npe_caller_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| repomap_npe_crossfile_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| repomap_npe_delegate_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| repomap_npe_iface_impl_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+| repomap_npe_isolated_001 | 0 | threat_model=0, behavior=0, maintainability=0 | 0 | 1 | 0 | 0 (judge=0, aggregation=0, fp_rules=0, fp_llm=0) | 0 | 13 |
+
+### Phase 5 证据链指标
+
+比率均由 Judge 使用的 survivor candidate 映射计算；`—` 表示分母为零。
+实际工具调用只统计 EvidenceAgent 新调用，缓存复用不计。
+
+| 用例 | direct counter 保留率 | 全 insufficient 保留率 | 最终 Issue 策略覆盖率 | 最终 Issue 有效事实覆盖率 | RiskTag 策略覆盖率 | 平均实际证据工具调用 |
+|---|---|---|---|---|---|---|
+| clean_bounded_loop_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| clean_getter_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| clean_logged_exception_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| clean_logging_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| clean_prepared_stmt_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| clean_rename_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| clean_try_with_resources_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| clean_unit_test_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| complex_cache_004 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| complex_config_005 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| complex_discount_003 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| complex_file_download_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| complex_import_002 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| complex_report_006 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| file_missing_authz_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| file_npe_contract_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| file_path_traversal_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| phase2_delete_authorization | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| phase2_large_multi_hunk | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| phase2_plain_getter | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| phase2_repository_update | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| phase2_shared_state_no_lock | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| phase5_multiwrite_transaction_unknown_upstream | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| phase5_protected_authorization_lure | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| phase5_protected_sensitive_with_exposure | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| repomap_npe_abstract_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| repomap_npe_caller_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| repomap_npe_crossfile_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| repomap_npe_delegate_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| repomap_npe_iface_impl_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
+| repomap_npe_isolated_001 | 0/0 (—) | 0/0 (—) | 0/0 (—) | 0/0 (—) | 24/24 (1.000) | 0/0 (0.000) |
 
 ## 过度上报诊断(最后一次跑测)
 
@@ -103,6 +148,7 @@ ADR-032 中间态只用于 trace/eval,不进入最终 ReviewResult。
 | complex_file_download_001 | 1 | 0 | 0 | 0 |
 | complex_import_002 | 1 | 0 | 0 | 0 |
 | complex_report_006 | 1 | 0 | 0 | 0 |
+| phase5_protected_sensitive_with_exposure | 1 | 0 | 0 | 0 |
 
 ## 主/次项 recall 对照
 
@@ -126,7 +172,6 @@ _本报告由 `python -m evals.runner` 自动生成。_
 
 | 时间 | git | profile | 工具 | P | R | F1 | 误报率 |
 |---|---|---|---|---|---|---|---|
-| 2026-06-21T17-20-57 | 07a016c | pipeline-repomap | 开 | 0.506 | 0.867 | 0.639 | 0.667 |
 | 2026-06-21T17-41-52 | 07a016c | pipeline-repomap | 开 | 0.545 | 0.878 | 0.672 | 0.625 |
 | 2026-06-21T17-59-20 | 07a016c | pipeline-repomap | 开 | 0.543 | 0.911 | 0.680 | 0.708 |
 | 2026-06-22T19-55-33 | ff1a728 | pipeline-repomap-fpverify | 开 | 0.615 | 0.800 | 0.696 | 0.375 |
@@ -134,6 +179,7 @@ _本报告由 `python -m evals.runner` 自动生成。_
 | 2026-07-10T20-47-12 | f14bca2 | pipeline-notools | 关 | 0.000 | 0.000 | 0.000 | 0.000 |
 | 2026-07-11T19-41-59 | e6c44d7 | pipeline-notools | 关 | 0.000 | 0.000 | 0.000 | 0.000 |
 | 2026-07-11T19-42-07 | e6c44d7 | pipeline-file | 关 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 2026-07-13T13-28-32 | 34a9b26 | pipeline-notools | 关 | 0.000 | 0.000 | 0.000 | 0.000 |
 
 ## profile 横向对照(各 profile 最近一次)
 

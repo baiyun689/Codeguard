@@ -1,0 +1,30 @@
+id: phase5_protected_sensitive_with_exposure
+category: protected-sensitive-operation-with-data-exposure
+dimension: security
+language: java
+description: 受角色保护的敏感查询不应被误判为缺少鉴权，但直接返回凭据字段仍是数据暴露
+capability: [diff-only]
+diff: |
+  diff --git a/src/main/java/com/demo/AdminUserController.java b/src/main/java/com/demo/AdminUserController.java
+  --- a/src/main/java/com/demo/AdminUserController.java
+  +++ b/src/main/java/com/demo/AdminUserController.java
+  @@ -12,2 +12,7 @@ public class AdminUserController {
+  +  @PreAuthorize("hasRole('ADMIN')")
+  +  @GetMapping("/users/{id}/credentials")
+  +  public UserCredentials credentials(@PathVariable long id) {
+  +    return userRepository.findCredentialsById(id);
+  +  }
+   }
+expected:
+  - type_keywords: ["敏感数据", "凭据", "credential", "data exposure", "password"]
+    file: AdminUserController.java
+    line: 16
+    tolerance: 2
+    severity: CRITICAL
+    note: ADMIN 鉴权是缺少授权候选的直接反证，但把完整凭据对象返回给客户端仍需最小化和脱敏
+distractors:
+  - type_keywords: ["缺少鉴权", "未授权", "authorization", "access control", "PreAuthorize"]
+    file: AdminUserController.java
+    line: 13
+    tolerance: 3
+    note: 当前方法已有明确 ADMIN 角色保护，不能仅因敏感操作存在就报告缺少鉴权
