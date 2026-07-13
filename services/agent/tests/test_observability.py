@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 import re
 import tempfile
 from pathlib import Path
@@ -968,12 +969,14 @@ class TestCliTraceConfig:
     def test_review_uses_trace_setting_when_cli_flag_is_omitted(
         self,
         monkeypatch,
+        caplog,
     ):
         from codeguard_agent import cli
         from codeguard_agent.config import Settings
         from codeguard_agent.models.schemas import ReviewResult
 
         observed = {}
+        caplog.set_level(logging.INFO, logger="codeguard")
 
         class FakeOrchestrator:
             def __init__(self, **kwargs):
@@ -1004,6 +1007,7 @@ class TestCliTraceConfig:
         assert cli.main(["review", "--repo", "."]) == 0
 
         assert observed["trace_enabled"] is False
+        assert "coordinator → planner → evidence → judge" in caplog.text
 
     def test_review_trace_flag_overrides_environment_setting(
         self,
