@@ -417,7 +417,10 @@ candidate_id → task_id / risk tags
 - Judge 不能通过任何字段直接执行非策略允许的工具。
 - `ReviewResult` / `Issue` 字段与 CLI 契约不变。
 
-**新增评测指标**：有直接保护事实的诱饵误报率、证据不足误报率、每个最终 Issue 的策略/事实覆盖率、23 标签策略覆盖率、平均工具调用数。
+**新增过程指标**：direct-counter 候选保留率、all-insufficient 候选保留率、最终 Issue
+策略覆盖率、最终 Issue 有效事实覆盖率、全部 24 个 `RiskTag` 的 counter/support/severity
+注册表覆盖率、平均实际 EvidenceAgent 工具调用数。前两项按候选与 Judge survivor 映射计算，
+不与 eval 标答匹配，因此不得称作“误报率”。
 
 ---
 
@@ -454,7 +457,7 @@ candidate_id → task_id / risk tags
 | 5B-1 | `pipeline/evidence_agent.py`：`collect_evidence`（工具缓存 + finding 生成 + 确定性强模式 + 安全回退 + 每 request 一 note）；确定性解释覆盖 AUTHORIZATION/TRANSACTION local counter | `test_evidence_agent`：缓存复用同 evidence_id、空结果=insufficient、None=insufficient、strategy_mismatch |
 | 5B-2 | `pipeline/council_judge.py`：`judge_candidates`（候选裁决矩阵 + 全局去重合并 + 修 `c_file`→`best.file`）；删 `_rule_strong_support`、改 `_rule_contradicted` 读 strength | `test_council_judge`：direct counter→drop、support 不走 fast keep、最后一轮 needs_more 兜底、c_file bug 回归 |
 | 5B-3 | `graph.py`：新增 `_evidence_planner_node`；回环边改 `_council_judge_node → _evidence_planner_node`；三节点变薄 adapter；删 reviewer 收集处两次 `build_evidence_requests` 及 `MAX_TOTAL` 截断；拆 5A-1 的 TODO 桩 | `test_graph_orchestration`：Planner 在 coordinator 后、Agent 首次必经、回环回 Planner、no-op 冒烟 |
-| 5B-4 | trace 事件接入 + mock/None 全链路安全回退 + eval 用例（诱饵误报、证据不足、23 标签覆盖）+ 更新主设计台账与本文状态 | 全套 pytest 全绿；`ruff`/`mypy` clean；mock CLI EXIT=0；`pipeline-notools` mock eval 完成并出报告 |
+| 5B-4 | trace 事件接入 + mock/None 全链路安全回退；接入 direct-counter/all-insufficient 保留率、最终 Issue 策略/有效事实覆盖率、24 RiskTag 三目的注册表覆盖率、平均实际 Evidence 工具调用；增加 3 个行为样本并更新主设计台账与本文状态 | 全套 pytest 全绿；`ruff`/`mypy` clean；mock CLI EXIT=0；`pipeline-notools` mock eval 完成并出报告 |
 
 **5B 验收**：全套单测全绿、mock 冒烟通过、eval 报告更新、主设计四处修订（第 11 节）落地、本文台账从 `planned` 改 `done`。
 

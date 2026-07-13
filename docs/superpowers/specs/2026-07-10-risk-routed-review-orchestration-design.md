@@ -33,7 +33,7 @@ git diff
   → [ThreatModelAgent | BehaviorAgent | MaintainabilityAgent]
   → CouncilCoordinator（显式 fan-in，只在三路完成后运行一次）
   → EvidencePlanner（候选证据主题 → 静态策略 → EvidenceRequest）
-  → EvidenceAgent（固定运行一次；没有请求时记录 no-op）
+  → EvidenceAgent（每个规划轮执行；没有请求时记录 no-op）
   → CouncilJudge
       ├─ needs_more 且未超轮次 → EvidencePlanner
       └─ 其余 → ReviewResult
@@ -49,7 +49,8 @@ Planner/Agent，并把回环入口移到 Planner。这样 Judge 只能请求 `su
 - **RiskTag 是路由信号，不是问题结论**: 风险标签只说明“应该从哪些角度审”，不说明“这里已经有问题”。
 - **ContextBundle 按风险构建**: 上下文构建由 RiskProfile 驱动，而不是盲目读取全项目。
 - **State 先稳定，节点内部后增强**: Phase 1 一次定义完整状态主干和稳定 ID；Phase 2 起不得新增改变主路由的业务 State 字段。
-- **Evidence 必经一次**: 三路发现完成并汇合后，必须进入一次 EvidenceAgent；EvidenceAgent 可以 no-op，但不能被路由跳过。
+- **规划/执行每轮必经**: 三路发现完成并汇合后，必须先进入 EvidencePlanner，再进入
+  EvidenceAgent；补证轮同样走 Planner → Agent。Agent 可以 no-op，但不能从 Planner 直接跳到 Judge。
 - **产品输出保持不变**: 最终仍输出 `ReviewResult` / `Issue`，任务、风险、证据等中间态只进入 trace / eval。
 
 ---
@@ -357,7 +358,7 @@ MAINTAINABILITY / PERFORMANCE / ERROR_HANDLING
 
 - 作为三路发现者的显式 fan-in barrier，只在所有发现者结束后运行一次。
 - 记录本轮候选和证据请求的批次统计。
-- 固定转入 EvidenceAgent；不承担“是否跳过首次补证”的路由决策，也不解析自然语言。
+- 固定转入 EvidencePlanner；不生成/筛选请求，也不承担“是否跳过首次补证”的路由决策。
 
 ### 4.8 EvidenceAgent
 
@@ -410,7 +411,8 @@ Phase 2 起，每个阶段只能填充已有对象、替换节点内部策略或
 - 一次引入 `ReviewBudget`、`ReviewTask`、`RiskProfile`、`TaskSelection`、`TaskContextBundle`。
 - 将 `CandidateIssue.task_id` 设为必填，完成候选到任务的确定性映射与 fallback task。
 - 新增 DiffTaskBuilder、RiskTriage、TaskRank 节点的最小实现；全量任务默认选中，RiskProfile 可为空。
-- 采用显式三路 fan-in；三路发现后固定进入一次 EvidenceAgent，再进入 CouncilJudge。
+- 采用显式三路 fan-in；三路发现后建立首轮证据执行骨架。Phase 5 在该接缝前补入
+  EvidencePlanner，并要求首轮与每个补证轮都按 Planner → Agent → Judge 执行。
 - 移除仅为条件跳转服务的 `council_route` 状态；首次 Evidence 不再由条件路由决定。
 
 非目标:
@@ -421,7 +423,8 @@ Phase 2 起，每个阶段只能填充已有对象、替换节点内部策略或
 
 完成条件:
 
-- 图结构测试证明 coordinator 在三路发现结束后只运行一次，EvidenceAgent 首次必经。
+- 图结构测试证明 coordinator 在三路发现结束后只运行一次，首个规划轮的
+  EvidencePlanner → EvidenceAgent 首次必经。
 - 所有候选均有 task_id，或被显式拒绝并留下 trace。
 - 新旧 mock 路径仍能返回 `ReviewResult`。
 
@@ -484,7 +487,7 @@ Phase 2 起，每个阶段只能填充已有对象、替换节点内部策略或
 
 完成条件:
 
-- 首次 Evidence 始终存在，额外 Evidence 只由 Judge 的结构化 verdict 触发。
+- 首轮 Planner → Agent 始终执行；额外 Planner → Agent 轮只由 Judge 的结构化 verdict 触发。
 - 最终 Issue 不暴露内部 RiskTag，且 Judge 不回写上游事实。
 
 ### Phase 6: 完成 Trace 与 Eval 闭环
