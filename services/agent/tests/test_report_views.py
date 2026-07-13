@@ -107,6 +107,22 @@ def test_报告_None指标渲染占位符不报错():
     assert "诱饵命中率 | —" in out          # None → "—"
 
 
+def test_mock_no_llm报告隐藏配置模型并醒目标记质量指标无意义():
+    out = render_report(
+        _metrics(),
+        SimpleNamespace(provider="mock", model="deepseek-v4-pro"),
+        [[MatchOutcome(case_id="smoke", is_clean=True)]],
+        [],
+        model_label="(mock-no-llm)",
+        quality_metrics_meaningful=False,
+    )
+
+    assert "Provider / Model:`mock` / `(mock-no-llm)`" in out
+    assert "deepseek-v4-pro" not in out
+    assert "**⚠️ Smoke only**" in out
+    assert "Precision / Recall / F1 不具有质量意义" in out
+
+
 def test_报告_一致率百分比渲染():
     m = _metrics(judge_rule_agreement=0.5)
     run = [MatchOutcome(case_id="v", is_clean=False, primary_judge="llm",

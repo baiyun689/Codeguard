@@ -107,6 +107,9 @@ def render_report(
     settings: Settings,
     runs: list[list[MatchOutcome]],
     cases,
+    *,
+    model_label: str | None = None,
+    quality_metrics_meaningful: bool = True,
 ) -> str:
     """生成 Markdown 报告文本。"""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -117,14 +120,23 @@ def render_report(
             f"| LLM-judge 建议质量 | {metrics.avg_judge_suggestion_quality:.2f} / 5 |\n"
         )
 
+    effective_model_label = model_label or settings.model or "(provider-default)"
     lines = [
         "# Codeguard 审查质量评测报告",
         "",
         f"- 生成时间:{ts}",
-        f"- Provider / Model:`{settings.provider}` / `{settings.model or '(mock)'}`",
+        f"- Provider / Model:`{settings.provider}` / `{effective_model_label}`",
         f"- 数据集:{metrics.num_cases} 条(漏洞 {metrics.num_vuln_cases} / 干净 {metrics.num_clean_cases})",
         f"- 重复跑测:{metrics.runs} 次",
         "",
+    ]
+    if not quality_metrics_meaningful:
+        lines += [
+            "> **⚠️ Smoke only**：本次未调用审查 LLM；Precision / Recall / F1 不具有质量意义，",
+            "> 仅用于验证数据集、编排、统计、归档和报告链路可执行。",
+            "",
+        ]
+    lines += [
         "> 审查质量以固定的数据集 + 指标为统一标准;被测目标(mode / 工具 / 模型)由 profile 描述。",
         "> 跨 profile、跨版本的纵向趋势与横向对照见下方「历史趋势 / profile 对照 / 能力切片」。",
         "",

@@ -24,9 +24,11 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 from codeguard_agent.config import Settings
 from codeguard_agent.git.diff_collector import parse_changed_files
@@ -51,6 +53,27 @@ from evals.tool_usage import summarize_tool_usage
 
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s", stream=sys.stderr)
 logger = logging.getLogger("codeguard.evals")
+
+
+@dataclass(frozen=True)
+class _RuntimeIdentity:
+    """本次评测实际执行的模型身份，不复述未调用的配置值。"""
+
+    provider: str
+    model: str
+    quality_metrics_meaningful: bool
+
+
+def _runtime_identity(settings: Any, llm: Any) -> _RuntimeIdentity:
+    """根据真实 LLM 实例生成报告/归档共用身份。"""
+    if llm is None:
+        label = "(mock-no-llm)" if settings.provider == "mock" else "(no-llm)"
+        return _RuntimeIdentity(settings.provider, label, False)
+    return _RuntimeIdentity(
+        settings.provider,
+        settings.model or "(provider-default)",
+        True,
+    )
 
 
 def run_once(cases, review_fn, judge_llm) -> list[MatchOutcome]:
@@ -129,22 +152,22 @@ def main(argv: list[str] | None = None) -> int:
     if profile.model:
         settings.model = profile.model  # profile 显式覆盖模型
 
+    llm = build_llm(settings)
+    runtime_identity = _runtime_identity(settings, llm)
     logger.info(
         "profile=%s mode=%s orchestration=%s tools=%s fp_verify=%s provider=%s model=%s runs=%d judge=%s",
         profile.name, profile.mode, profile.orchestration, profile.tools or "(无)", profile.fp_verify,
-        settings.provider, settings.model, args.runs, args.judge,
+        runtime_identity.provider, runtime_identity.model, args.runs, args.judge,
     )
 
-    if settings.provider == "mock":
+    if not runtime_identity.quality_metrics_meaningful:
         logger.warning(
-            "当前为 mock 模式:只验证评测链路是否打通,指标无业务含义。"
+            "当前未调用审查 LLM:只验证评测链路是否打通,指标无业务含义。"
             "要量化真实效果请设 CODEGUARD_PROVIDER 与 CODEGUARD_API_KEY。"
         )
 
     cases = load_cases(Path(args.dataset) if args.dataset else None)
     logger.info("加载用例 %d 条", len(cases))
-
-    llm = build_llm(settings)
 
     # 裁判模型:独立配置(CODEGUARD_JUDGE_*),temperature=0 锁确定性,尽量与审查器异源(见 ADR-005)。
     judge_llm = None
@@ -247,8 +270,8 @@ def main(argv: list[str] | None = None) -> int:
         profile_orchestration=profile.orchestration,
         tools_enabled=use_tools,
         fp_verify=profile.fp_verify,
-        provider=settings.provider,
-        model=settings.model or "(mock)",
+        provider=runtime_identity.provider,
+        model=runtime_identity.model,
         runs=args.runs,
         metrics=metrics,
         by_capability=by_capability,
@@ -262,7 +285,14 @@ def main(argv: list[str] | None = None) -> int:
     # 报告 = 本次详细报告 + 从历史归档(含本次)渲染的趋势/对照/能力切片三视图。
     history = load_archives()
     report_body = (
-        render_report(metrics, settings, all_runs, cases)
+        render_report(
+            metrics,
+            settings,
+            all_runs,
+            cases,
+            model_label=runtime_identity.model,
+            quality_metrics_meaningful=runtime_identity.quality_metrics_meaningful,
+        )
         + "\n"
         + render_history_views(history)
     )
