@@ -2034,10 +2034,13 @@ mock eval 成功运行 28 个样本，报告写入 `services/agent/evals/reports
    contradicts/unknowns/evidence_ids、`build_evidence_requests` 与全局 20 请求截断。
 4. **安全回退方向固定为 insufficient**：工具失败/禁用/空结果、上下文截断、方法或调用方
    无法解析、LLM `None` 均不得推导支持或反证。AUTHORIZATION/TRANSACTION 的 direct
-   counter 只接受当前 task 所属方法或类的保护注解；同文件其他方法不触发 drop。
+   counter 只接受当前 task 所属方法或类的确定性保护注解；analyst LLM 即使声称
+   `direct + contradicts` 也强制降为 contextual。同文件其他方法、另一类和无法解析 scope
+   都不能触发确定性 drop，已合法生成的 prior direct finding 仍可复用。
 5. **Judge 使用目的感知矩阵**：direct counter 可确定性 drop；severity 反证只允许降级/保留；
-   support 不 fast-keep；最后一轮强制收口。最终 Issue 通过 Judge 的 survivor candidate ID
-   映射生成，不修改上游 CandidateIssue。
+   support 不 fast-keep；默认执行两轮，首轮 needs_more 回 Planner，第二轮强制收口。
+   `CODEGUARD_MAX_EVIDENCE_ROUNDS` 只接受 1 或 2。最终 Issue 通过 Judge 的 survivor
+   candidate ID 映射生成，不修改上游 CandidateIssue。
 6. **观测不扩张业务 State**：六个过程指标写入既有 `CouncilRunStats` 侧信道并进入 eval
    schema/report/archive。EvidenceAgent 每次真实新工具调用发 `evidence_tool_called` trace；
    缓存命中只记 reused，因此不会把 ContextProvider/Discover 调用或 reducer 去重误算为成本。
@@ -2053,8 +2056,9 @@ mock eval 成功运行 28 个样本，报告写入 `services/agent/evals/reports
 
 ### 验证
 
-实现 commits `5737c08…7b495b2`。确定性测试覆盖 24 个标签三目的注册、候选分类、counter-first
+实现 commits `5737c08…42dfe83`。确定性测试覆盖 24 个标签三目的注册、候选分类、counter-first
 规划、回环 exhausted、请求字段校验、工具缓存、当前方法/类反证范围、空/失败/None 回退、
-Judge survivor 映射和六个指标的分子/分母/零分母语义。全量 pytest `593 passed`，Ruff/mypy
-clean，mock CLI EXIT=0；`pipeline-notools` mock eval 完成 31 cases 并生成报告。mock 档实际
-证据工具调用为 0，配置的本地 Gateway 健康检查超时，未声称真实 tool-profile 成本结果。
+恶意 analyst direct 降级、prior direct 复用、默认两轮回环与 1/2 配置校验、Judge survivor
+映射和六个指标的分子/分母/零分母语义。全量 pytest `611 passed`，Ruff/mypy clean，mock CLI
+EXIT=0；`pipeline-notools` mock eval 完成 31 cases 并生成报告。mock 档实际证据工具调用为 0，
+配置的本地 Gateway 健康检查超时，未声称真实 tool-profile 成本结果。

@@ -222,7 +222,7 @@ python -m evals.runner --runs 3 --judge  # 额外开 LLM-as-judge
 | `CODEGUARD_MAX_RETRIES` | `3` | LLM 调用重试次数 |
 | `CODEGUARD_ENABLE_SUMMARY` | `true` | ADR-032 前置摘要开关;关闭则 ContextProvider / ReviewCouncil 直接基于 diff 运行 |
 | `CODEGUARD_REVIEW_ORCHESTRATION` | `adr-032` | 当前唯一运行编排 profile;旧 supervisor 仅在 legacy 目录作参考 |
-| `CODEGUARD_MAX_EVIDENCE_ROUNDS` | `1` | Planner → Agent → Judge 证据执行轮次上限；Judge 补证回 Planner |
+| `CODEGUARD_MAX_EVIDENCE_ROUNDS` | `2` | Planner → Agent → Judge 证据执行轮次上限；只允许 1 或 2，Judge 补证回 Planner |
 | `CODEGUARD_MAX_REVIEW_TASKS` | `100` | Phase 2 总任务预算 |
 | `CODEGUARD_MAX_TASKS_PER_FILE` | `10` | Phase 2 单文件任务预算 |
 

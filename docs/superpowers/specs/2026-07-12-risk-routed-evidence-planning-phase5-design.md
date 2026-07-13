@@ -502,15 +502,17 @@ CandidateIssue(task_id)
 | 5A-2/4 注册表 | done | 23 个具体 RiskTag + `GENERAL_REVIEW` 全量 counter/support/severity；上游反证与严格工具 allowlist | `574947f`, `4d95443` |
 | 5A-3 分类 | done | exact/strong/weak 计分、歧义 LLM 受限分类、GENERAL 安全回退 | `545febc`, `63ec21d` |
 | 5A-4 Planner | done | 初轮 counter-first 两遍规划、回环按 requested_purpose 选下一策略、exhausted/invalid trace | `6618c8d`, `d48372e` |
-| 5B-1/2/3 运行时迁移 | done | dossier 绑定、策略执行/缓存、结构化 finding、purpose-aware Judge、回 Planner 图接线、旧路径删净 | `f5e98e6`, `0bc4f82` |
+| 5B-1/2/3 运行时迁移 | done | dossier 绑定、策略执行/缓存、结构化 finding、purpose-aware Judge、回 Planner 图接线、旧路径删净；AUTHORIZATION/TRANSACTION analyst direct 硬降 contextual；默认两轮与 1/2 配置边界 | `f5e98e6`, `0bc4f82`, `42dfe83` |
 | 5B-4 可观测/eval | done | 六个过程指标、稳定 survivor 映射、真实新工具调用 trace、3 个行为样本、报告/归档接线与 CLI 拓扑日志同步 | `34a9b26`, `0a24d89`, `7b495b2` |
 
 实施后顶层 `ReviewState` 与产品 `Issue` 契约均未变化；`EvidenceNote` 载荷一次切换为
 `findings[EvidenceFinding]`，旧 builder、总请求截断、字符串 note 状态、自由工具建议和强支持
-旧规则均已删除。AUTHORIZATION/TRANSACTION 的 direct counter 被限制在当前方法/类作用域，
-无工具、空结果、截断、无法解析和 LLM `None` 都只会产生 `insufficient`。
+旧规则均已删除。AUTHORIZATION/TRANSACTION 的 direct counter 被限制在当前方法/类的确定性
+作用域命中；analyst LLM 声称的 direct 强制降为 contextual，prior 合法 direct 仍可复用。
+无工具、空结果、截断、无法解析和 LLM `None` 都只会产生 `insufficient`。证据预算默认两轮，
+只接受 1 或 2；首轮 needs_more 回 Planner，第二轮强制 END。
 
-最终回归为 **593 passed**，Ruff 与 mypy clean，mock CLI EXIT=0。`pipeline-notools` mock
+最终回归为 **611 passed**，Ruff 与 mypy clean，mock CLI EXIT=0。`pipeline-notools` mock
 评测完成 **31 cases**，质量 P/R/F1 均为 0（mock 只证明链路，不代表审查质量）；该档没有候选
 或工具，过程指标观测到实际 EvidenceAgent 工具调用 **0**，注册表覆盖 **24/24**。配置的
 `http://localhost:9090` Gateway 健康检查超时，因此没有伪造 repo-backed/tool-profile 成本数字；
