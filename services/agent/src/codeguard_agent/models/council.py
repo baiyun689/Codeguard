@@ -106,11 +106,18 @@ class EvidenceJudgment(BaseModel):
         description="证据对候选主张意味着什么"
     )
     reasoning: str = Field(default="", description="推理依据")
+
+
+EvidencePurpose = Literal["support", "counter", "severity"]
+
+
 class EvidenceRequest(BaseModel):
     """候选 issue 对证据的结构化请求。"""
 
     id: str = ""
     candidate_id: str
+    strategy_id: str = ""
+    purpose: EvidencePurpose = "counter"
     target: str = ""
     question: str = ""
     preferred_tools: list[str] = Field(default_factory=list)
@@ -121,6 +128,8 @@ class EvidenceRequest(BaseModel):
             payload = "\0".join(
                 [
                     self.candidate_id,
+                    self.strategy_id,
+                    self.purpose,
                     self.target,
                     self.question,
                     *self.preferred_tools,
