@@ -15,6 +15,7 @@ from codeguard_agent.models.schemas import Issue, Severity
 
 
 SourceAgent = Literal["threat_model", "behavior", "maintainability"]
+EvidencePurpose = Literal["support", "counter", "severity"]
 
 
 MAX_CANDIDATES_PER_AGENT = 10
@@ -37,6 +38,7 @@ class Verdict:
     suggested_target_id: str = ""  # merge 时指向被合并方
     severity_override: Severity | None = None  # downgrade 时建议新级别
     suggested_tools: list[str] = field(default_factory=list)  # needs_more_evidence 时建议补证工具
+    requested_purpose: EvidencePurpose | None = None
 
 
 class JudgeDecision(BaseModel):
@@ -48,6 +50,7 @@ class JudgeDecision(BaseModel):
     merge_target_id: str = ""  # merge 时指向被合并方
     adjusted_severity: Severity | None = None  # downgrade 时建议新级别
     suggested_tools: list[str] = Field(default_factory=list)  # needs_more_evidence 时建议工具
+    requested_purpose: EvidencePurpose | None = None
 
 
 class JudgeDecisions(BaseModel):
@@ -106,9 +109,6 @@ class EvidenceJudgment(BaseModel):
         description="证据对候选主张意味着什么"
     )
     reasoning: str = Field(default="", description="推理依据")
-
-
-EvidencePurpose = Literal["support", "counter", "severity"]
 
 
 class EvidenceRequest(BaseModel):

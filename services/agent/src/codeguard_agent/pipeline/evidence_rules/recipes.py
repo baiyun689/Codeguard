@@ -8,7 +8,7 @@ from codeguard_agent.pipeline.context_rules import resolve_method_name
 from codeguard_agent.pipeline.evidence_rules.types import ToolCallSpec
 
 if TYPE_CHECKING:
-    from codeguard_agent.pipeline.evidence_planner import CandidateDossier  # type: ignore[import-untyped]
+    from codeguard_agent.pipeline.evidence_planner import CandidateDossier
 
 
 def file_only(dossier: "CandidateDossier") -> list[ToolCallSpec]:

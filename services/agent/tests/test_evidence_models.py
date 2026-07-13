@@ -2,7 +2,10 @@
 
 from hashlib import sha256
 
-from codeguard_agent.models.council import EvidenceRequest
+import pytest
+
+from codeguard_agent.models.council import EvidenceRequest, JudgeDecision, Verdict
+from codeguard_agent.models.schemas import Severity
 
 
 def test_evidence_request_id_distinguishes_strategy_and_purpose():
@@ -70,3 +73,37 @@ def test_evidence_request_preserves_legacy_constructor_defaults():
 
     assert request.strategy_id == ""
     assert request.purpose == "counter"
+
+
+@pytest.mark.parametrize("purpose", ["support", "counter", "severity"])
+def test_verdict_requested_purpose_defaults_to_none_and_accepts_all_values(purpose):
+    baseline = Verdict(
+        candidate_id="candidate-1",
+        action="keep",
+        reason_code="done",
+    )
+    requested = Verdict(
+        candidate_id="candidate-1",
+        action="needs_more_evidence",
+        reason_code="more",
+        requested_purpose=purpose,
+    )
+
+    assert baseline.requested_purpose is None
+    assert requested.requested_purpose == purpose
+
+
+@pytest.mark.parametrize("purpose", ["support", "counter", "severity"])
+def test_judge_decision_requested_purpose_defaults_to_none_and_accepts_all_values(
+    purpose,
+):
+    baseline = JudgeDecision(candidate_id="candidate-1", action="keep")
+    requested = JudgeDecision(
+        candidate_id="candidate-1",
+        action="needs_more_evidence",
+        adjusted_severity=Severity.WARNING,
+        requested_purpose=purpose,
+    )
+
+    assert baseline.requested_purpose is None
+    assert requested.requested_purpose == purpose

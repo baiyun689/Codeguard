@@ -9,7 +9,7 @@ from codeguard_agent.models.council import EvidencePurpose
 from codeguard_agent.models.tasks import RiskTag
 
 if TYPE_CHECKING:
-    from codeguard_agent.pipeline.evidence_planner import CandidateDossier  # type: ignore[import-untyped]
+    from codeguard_agent.pipeline.evidence_planner import CandidateDossier
 
 
 ToolName = Literal[
