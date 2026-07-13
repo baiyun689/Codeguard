@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 import json
 
+import pytest
+
 from codeguard_agent.models.council import (
     CandidateIssue,
     ContextFact,
@@ -14,7 +16,7 @@ from codeguard_agent.models.council import (
 )
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import ReviewTask, RiskProfile, RiskTag, TaskContextBundle
-from codeguard_agent.pipeline.evidence_planner import CandidateDossier
+from codeguard_agent.pipeline.evidence_planner import CandidateDossier, DossierAssembly
 from codeguard_agent.pipeline.evidence_rules import STRATEGIES_BY_ID
 from codeguard_agent.tools.tool_client import ToolResponse
 
@@ -398,6 +400,145 @@ def test_other_method_and_comment_annotation_text_are_never_direct():
     batch = _collect([dossier], [_request(dossier)], client=client)
 
     assert not any(finding.strength == "direct" for finding in batch.notes[0].findings)
+
+
+def _malicious_direct_analyst() -> _StructuredLLM:
+    return _StructuredLLM(
+        {
+            "relation": "contradicts",
+            "strength": "direct",
+            "observation": "analyst claims a scoped authorization guard",
+            "limitation": "",
+        }
+    )
+
+
+def _judge_evidence_batch(dossier: CandidateDossier, request: EvidenceRequest, batch):
+    judged = CandidateDossier(
+        candidate=dossier.candidate,
+        task=dossier.task,
+        risk_profile=dossier.risk_profile,
+        context_bundle=dossier.context_bundle,
+        requests=(request,),
+        notes=tuple(batch.notes),
+        latest_verdict=None,
+    )
+    module = importlib.import_module("codeguard_agent.pipeline.council_judge")
+    return module.judge_candidates(
+        DossierAssembly((judged,), (), ()),
+        judge_llm=None,
+        structured_method="function_calling",
+        evidence_round=1,
+        max_evidence_rounds=2,
+        max_retries=1,
+    )
+
+
+@pytest.mark.parametrize("scope_case", ["other_method", "other_class", "unresolved"])
+def test_analyst_cannot_create_direct_counter_without_deterministic_scope(scope_case):
+    if scope_case == "other_method":
+        dossier, client = _authorization_scope_dossier(
+            "public class Service {\n"
+            "  @PreAuthorize(\"hasRole('ADMIN')\") void admin() {}\n"
+            "\n\n\n\n\n\n"
+            "  public void update() { save(); }\n"
+            "}",
+            "public void update()",
+        )
+    elif scope_case == "other_class":
+        dossier, client = _authorization_scope_dossier(
+            "@PreAuthorize(\"hasRole('ADMIN')\")\n"
+            "class Other {}\n"
+            "public class Service {\n"
+            "\n\n\n\n\n\n"
+            "  public void update() { save(); }\n"
+            "}",
+            "public void update()",
+        )
+    else:
+        dossier = _dossier(context=None)
+        client = _ToolClient(
+            "class Service {\n"
+            "  @PreAuthorize(\"hasRole('ADMIN')\")\n"
+            "  public void update() { save(); }\n"
+            "}"
+        )
+    request = _request(dossier)
+
+    batch = _collect_with_llm(
+        [dossier],
+        [request],
+        _malicious_direct_analyst(),
+        client=client,
+    )
+
+    assert not any(finding.strength == "direct" for finding in batch.notes[0].findings)
+    verdict = _judge_evidence_batch(dossier, request, batch).verdicts[0]
+    assert verdict.reason_code != "direct_counter_evidence"
+
+
+def test_deterministic_current_method_scope_remains_direct_with_malicious_analyst():
+    dossier, client = _authorization_scope_dossier(
+        "class Service {\n\n\n\n\n\n\n\n@PreAuthorize(\"hasRole('ADMIN')\")\n"
+        "public void update() { save(); }\n}",
+        "@PreAuthorize public void update()",
+    )
+
+    batch = _collect_with_llm(
+        [dossier],
+        [_request(dossier)],
+        _malicious_direct_analyst(),
+        client=client,
+    )
+
+    assert any(
+        finding.strength == "direct"
+        and finding.relation == "contradicts"
+        and finding.observation.startswith("当前方法")
+        for finding in batch.notes[0].findings
+    )
+
+
+def test_prior_legal_direct_counter_finding_remains_direct_when_reused():
+    dossier = _dossier()
+    request = _request(dossier)
+    prior = EvidenceNote(
+        request_id="prior-request",
+        candidate_id=dossier.candidate.id,
+        findings=[
+            EvidenceFinding(
+                evidence_id="prior-scoped-guard",
+                source="tool:get_file_content",
+                observation="当前方法声明含 @PreAuthorize",
+                relation="contradicts",
+                strength="direct",
+            )
+        ],
+    )
+    dossier = CandidateDossier(
+        candidate=dossier.candidate,
+        task=dossier.task,
+        risk_profile=dossier.risk_profile,
+        context_bundle=dossier.context_bundle,
+        requests=(),
+        notes=(prior,),
+        latest_verdict=None,
+    )
+
+    batch = _collect_with_llm(
+        [dossier],
+        [request],
+        _malicious_direct_analyst(),
+        client=_ToolClient(),
+    )
+
+    reused = next(
+        finding
+        for finding in batch.notes[0].findings
+        if finding.evidence_id == "prior-scoped-guard"
+    )
+    assert reused.relation == "contradicts"
+    assert reused.strength == "direct"
 
 
 def test_severity_request_reuses_prior_observation_with_same_evidence_id():

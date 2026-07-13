@@ -471,12 +471,21 @@ def _analyze_fact(
                 strength="contextual",
                 limitation=result.limitation.strip() or "analyst_insufficient",
             )
+        strength = result.strength
+        if (
+            strength == "direct"
+            and request.purpose == "counter"
+            and request.strategy_id.startswith(
+                ("authorization.", "transaction_atomicity.")
+            )
+        ):
+            strength = "contextual"
         return EvidenceFinding(
             evidence_id=fact.evidence_id,
             source=fact.source,
             observation=result.observation,
             relation=result.relation,
-            strength=result.strength,
+            strength=strength,
             limitation=result.limitation,
         )
     except Exception as exc:  # noqa: BLE001 - 结构化输出失败安全降级
