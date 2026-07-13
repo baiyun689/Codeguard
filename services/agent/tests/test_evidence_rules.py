@@ -15,6 +15,7 @@ from codeguard_agent.pipeline.evidence_rules import (
     strategies_for,
 )
 from codeguard_agent.pipeline.evidence_rules import _build_registry
+from codeguard_agent.pipeline.evidence_rules import recipes
 from codeguard_agent.pipeline.evidence_rules.recipes import callers_upstream
 
 
@@ -45,6 +46,47 @@ UPSTREAM_TAGS = {
     RiskTag.API_CONTRACT,
     RiskTag.PERFORMANCE,
     RiskTag.OBSERVABILITY_TESTABILITY,
+}
+UPSTREAM_QUESTIONS = {
+    RiskTag.AUTHORIZATION: (
+        "上游调用方是否已完成鉴权或资源归属校验，使当前方法无需重复校验"
+    ),
+    RiskTag.AUTHENTICATION_SESSION: (
+        "上游是否验证 token/session 有效期、撤销和主体绑定"
+    ),
+    RiskTag.SQL_DATA_ACCESS: (
+        "调用方是否已强制租户/查询边界或使用安全参数，使当前数据访问条件受控"
+    ),
+    RiskTag.TRANSACTION_ATOMICITY: (
+        "外层调用方是否建立事务边界或可靠补偿，覆盖当前副作用"
+    ),
+    RiskTag.CONCURRENCY_CONSISTENCY: (
+        "调用方是否在锁、原子边界或线程封闭范围内调用当前方法"
+    ),
+    RiskTag.IDEMPOTENCY_RETRY: (
+        "上游是否提供幂等键、去重或唯一约束覆盖重复触发"
+    ),
+    RiskTag.CACHE_CONSISTENCY: (
+        "上游是否协调持久化与缓存更新/失效，覆盖当前路径"
+    ),
+    RiskTag.MESSAGE_DELIVERY: (
+        "上游发布/消费链是否提供 ack、retry、DLQ、outbox 或去重保证"
+    ),
+    RiskTag.ERROR_HANDLING: (
+        "上游是否捕获并正确传播、转换或恢复当前错误"
+    ),
+    RiskTag.RESOURCE_LIFECYCLE: (
+        "上游生命周期是否明确托管并释放当前资源"
+    ),
+    RiskTag.API_CONTRACT: (
+        "调用方是否已同步适配新的请求/响应/签名契约"
+    ),
+    RiskTag.PERFORMANCE: (
+        "上游是否限制输入规模/调用频率或批量化调用以控制成本"
+    ),
+    RiskTag.OBSERVABILITY_TESTABILITY: (
+        "上游入口是否提供覆盖当前调用的日志、指标、trace 或可替换 seam"
+    ),
 }
 
 
@@ -119,6 +161,45 @@ def test_every_strategy_has_valid_declarations_and_recipe_tools():
         assert {call.tool_name for call in calls} <= set(strategy.allowed_tools)
 
 
+def test_non_upstream_strategy_allowlist_exactly_matches_recipe_tools():
+    dossier = _dossier()
+
+    for strategy in STRATEGIES_BY_ID.values():
+        if strategy.id.endswith(".counter_upstream"):
+            continue
+        calls = strategy.build_tool_calls(dossier)
+        actual_tools = tuple(dict.fromkeys(call.tool_name for call in calls))
+        assert strategy.allowed_tools == actual_tools, strategy.id
+
+
+def test_upstream_strategy_allowlist_exactly_matches_callers_recipe():
+    ast_fact = SimpleNamespace(
+        kind="ast_structure",
+        content=(
+            "AST for: src/OrderService.java\n"
+            "  class: OrderService\n"
+            "    public void save(Order order) [L10-L20]\n"
+        ),
+        truncated=False,
+    )
+    dossier = _dossier(ast_fact)
+
+    for tag in UPSTREAM_TAGS:
+        strategy = STRATEGIES_BY_ID[f"{tag.value.lower()}.counter_upstream"]
+        calls = strategy.build_tool_calls(dossier)
+        actual_tools = tuple(dict.fromkeys(call.tool_name for call in calls))
+        assert strategy.allowed_tools == actual_tools == ("find_callers",)
+
+
+def test_upstream_strategies_use_explicit_tag_specific_questions():
+    assert set(UPSTREAM_QUESTIONS) == UPSTREAM_TAGS
+    for tag, expected_question in UPSTREAM_QUESTIONS.items():
+        strategy = STRATEGIES_BY_ID[f"{tag.value.lower()}.counter_upstream"]
+        assert strategy.question_template == expected_question
+        assert strategy.question_template.strip()
+        assert not strategy.question_template.startswith("外层调用方是否提供以下保护：")
+
+
 @pytest.mark.parametrize("tag", list(RiskTag))
 def test_strategies_for_is_priority_ordered_and_filters_purpose(tag: RiskTag):
     strategies = strategies_for(tag)
@@ -173,6 +254,13 @@ def test_callers_upstream_returns_empty_without_ast_fact():
     assert callers_upstream(_dossier()) == []
 
 
+def test_callers_upstream_returns_empty_without_context_bundle():
+    dossier = _dossier()
+    dossier.context_bundle = None
+
+    assert callers_upstream(dossier) == []
+
+
 def test_callers_upstream_ignores_truncated_ast_fact():
     ast_fact = SimpleNamespace(
         kind="ast_structure",
@@ -210,3 +298,8 @@ def test_callers_upstream_uses_exact_file_and_resolved_method_query():
             (("query", "src/OrderService.java#save"),),
         )
     ]
+
+
+def test_recipes_do_not_expose_unused_caller_combinations():
+    assert not hasattr(recipes, "file_callers")
+    assert not hasattr(recipes, "file_metrics_callers")

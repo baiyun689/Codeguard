@@ -37,15 +37,9 @@ def file_metrics(dossier: "CandidateDossier") -> list[ToolCallSpec]:
     ]
 
 
-def file_callers(dossier: "CandidateDossier") -> list[ToolCallSpec]:
-    return [*file_only(dossier), *callers_upstream(dossier)]
-
-
-def file_metrics_callers(dossier: "CandidateDossier") -> list[ToolCallSpec]:
-    return [*file_metrics(dossier), *callers_upstream(dossier)]
-
-
 def callers_upstream(dossier: "CandidateDossier") -> list[ToolCallSpec]:
+    if dossier.context_bundle is None:
+        return []
     for fact in dossier.context_bundle.facts:
         if fact.kind != "ast_structure" or fact.truncated:
             continue

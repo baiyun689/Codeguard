@@ -26,7 +26,7 @@ def _strategies(
     context_kinds: tuple[str, ...],
     allowed_tools: tuple[ToolName, ...],
     recipe: Callable[..., list[ToolCallSpec]],
-    upstream: bool = False,
+    upstream_question: str | None = None,
 ) -> list[EvidenceStrategy]:
     slug = tag.value.lower()
     result = [
@@ -51,14 +51,14 @@ def _strategies(
             build_tool_calls=recipe,
         ),
     ]
-    if upstream:
+    if upstream_question is not None:
         result.append(
             EvidenceStrategy(
                 id=f"{slug}.counter_upstream",
                 tags=frozenset({tag}),
                 purpose="counter",
                 priority=30,
-                question_template=f"外层调用方是否提供以下保护：{counter}",
+                question_template=upstream_question,
                 context_kinds=context_kinds,
                 allowed_tools=("find_callers",),
                 build_tool_calls=callers_upstream,
@@ -86,9 +86,11 @@ SECURITY_STRATEGIES = [
         support="路径是否真实执行敏感操作或访问受保护资源",
         severity="未授权路径的可达性、受保护资源敏感度和影响用户范围是否支撑候选级别",
         context_kinds=("sensitive_api", "ast_structure", "find_callers"),
-        allowed_tools=("get_file_content", "find_sensitive_apis", "find_callers"),
+        allowed_tools=("get_file_content", "find_sensitive_apis"),
         recipe=file_sensitive,
-        upstream=True,
+        upstream_question=(
+            "上游调用方是否已完成鉴权或资源归属校验，使当前方法无需重复校验"
+        ),
     ),
     *_strategies(
         RiskTag.AUTHENTICATION_SESSION,
@@ -96,9 +98,9 @@ SECURITY_STRATEGIES = [
         support="变更是否真实影响认证凭据或会话生命周期",
         severity="可利用会话范围、凭据敏感度和账户影响面是否支撑候选级别",
         context_kinds=("ast_structure", "find_callers"),
-        allowed_tools=("get_file_content", "find_callers"),
+        allowed_tools=("get_file_content",),
         recipe=file_only,
-        upstream=True,
+        upstream_question="上游是否验证 token/session 有效期、撤销和主体绑定",
     ),
     *_strategies(
         RiskTag.WEB_SECURITY_CONFIG,
@@ -133,9 +135,11 @@ SECURITY_STRATEGIES = [
         support="路径是否真实执行查询/写入并满足候选数据条件",
         severity="数据敏感度、租户/行影响范围与写入可恢复性是否支撑候选级别",
         context_kinds=("sensitive_api", "ast_structure", "find_callers"),
-        allowed_tools=("get_file_content", "find_callers"),
+        allowed_tools=("get_file_content",),
         recipe=file_only,
-        upstream=True,
+        upstream_question=(
+            "调用方是否已强制租户/查询边界或使用安全参数，使当前数据访问条件受控"
+        ),
     ),
     *_strategies(
         RiskTag.FILE_PATH_IO,
