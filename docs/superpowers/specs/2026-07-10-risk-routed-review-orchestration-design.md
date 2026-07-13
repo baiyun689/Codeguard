@@ -1,7 +1,7 @@
 # 风险路由驱动的 ReviewTask 编排设计
 
 **日期**: 2026-07-10  
-**状态**: Phase 1、Phase 2 已落地；Phase 3-6 规划中
+**状态**: Phase 1-5 已落地；Phase 6 规划中
 **关联背景**: ADR-032 ReviewCouncil、ADR-036 ContextProvider AST 富化、当前 trace 可视化模块
 
 ---
@@ -21,7 +21,7 @@
 
 ## 2. 总体目标
 
-最终拓扑（Phase 1 即固定，后续阶段不再改变主路由）:
+当前拓扑（Phase 1 冻结主干；Phase 5 对证据段做了一次受控修订）:
 
 ```text
 git diff
@@ -32,11 +32,16 @@ git diff
   → ContextProvider
   → [ThreatModelAgent | BehaviorAgent | MaintainabilityAgent]
   → CouncilCoordinator（显式 fan-in，只在三路完成后运行一次）
+  → EvidencePlanner（候选证据主题 → 静态策略 → EvidenceRequest）
   → EvidenceAgent（固定运行一次；没有请求时记录 no-op）
   → CouncilJudge
-  → EvidenceAgent（仅 Judge 明确要求补证且未超轮次时回环）
-  → ReviewResult
+      ├─ needs_more 且未超轮次 → EvidencePlanner
+      └─ 其余 → ReviewResult
 ```
+
+Phase 5 没有改变任务准备、风险路由或发现者主干，而是把原来单一 Evidence 步骤拆为
+Planner/Agent，并把回环入口移到 Planner。这样 Judge 只能请求 `support/counter/severity`
+目的，不能绕过静态策略直接选工具；该修订未新增顶层 `ReviewState` 字段。
 
 核心原则:
 
@@ -161,7 +166,7 @@ class TaskContextBundle(BaseModel):
 | `task_selection` | `TaskRank` | 只读 |
 | `task_context_bundles` | `ContextProvider` | 只读 |
 | `candidate_issues` | `ReviewCouncil` | Evidence / Judge 只读 |
-| `evidence_requests` | `ReviewCouncil` / `CouncilJudge`（追加） | Coordinator / Evidence 只读 |
+| `evidence_requests` | `EvidencePlanner`（追加） | Coordinator / Evidence / Judge 只读；Judge 只写 verdict 的 `requested_purpose` |
 | `evidence_notes` | `EvidenceAgent` | Judge 只读 |
 | `council_verdicts` | `CouncilJudge` | 只读 |
 | `final_issues` | `CouncilJudge` | CLI / eval 只读 |
@@ -364,10 +369,13 @@ MAINTAINABILITY / PERFORMANCE / ERROR_HANDLING
 
 Phase 5 增强:
 
-- 证据策略按 RiskTag 分流。
-- 对 AUTHORIZATION 查上游鉴权。
-- 对 TRANSACTION 查外层事务。
-- 对 IDEMPOTENCY 查唯一索引和查重逻辑。
+- `EvidencePlanner` 先从候选 `type/claim/suggestion` 解析 candidate evidence tag，再从静态
+  注册表选择 counter/support/severity 策略；task RiskTag 只作先验、一致性 trace 和上下文参考。
+- `EvidenceAgent` 只执行请求绑定的策略，优先复用 task patch / TaskContextBundle，缺事实才调用
+  Gateway；缓存调用仍为每个请求生成独立 `EvidenceNote`。
+- AUTHORIZATION / TRANSACTION 的 direct counter 只接受当前方法或所属类的保护事实；工具失败、
+  截断、空结果、方法或上游无法解析都记为 `insufficient`，不从“没找到”推导漏洞成立。
+- `EvidenceFinding` 明确记录 relation、strength、limitation，Judge 按 request purpose 解释 finding。
 
 ### 4.9 CouncilJudge
 
@@ -468,9 +476,11 @@ Phase 2 起，每个阶段只能填充已有对象、替换节点内部策略或
 
 实现内容:
 
-- EvidenceAgent 通过 `candidate_id → task_id` 读取风险和任务上下文，按 RiskTag 选择补证策略。
-- CouncilJudge 将 task、risk、context、evidence 统一用于 keep/drop/downgrade/merge 决策。
-- 保留 Judge 发起额外补证的有限回环；任何额外请求仍只追加到既有 `evidence_requests` 队列。
+- EvidencePlanner 通过 `candidate_id → task_id` 组装 dossier，按 candidate evidence tag 选择静态策略。
+- EvidenceAgent 执行策略并写结构化 findings；CouncilJudge 将 task、risk、context、evidence
+  统一用于 keep/drop/downgrade/merge 决策。
+- 保留 Judge 发起额外补证目的的有限回环；额外请求仍由 Planner 追加到既有
+  `evidence_requests` 队列，Judge 不直接指定工具。
 
 完成条件:
 
@@ -499,8 +509,8 @@ Phase 2 起，每个阶段只能填充已有对象、替换节点内部策略或
 | Phase 1 | done | `models/tasks.py`(ReviewTask/RiskTag/RiskSignal/RiskProfile/ReviewBudget/SkippedTask/TaskSelection/TaskContextBundle)；`pipeline/task_prep.py`(build_tasks 按 hunk 解析，并为删除文件、纯重命名、二进制和仅 mode 变化补文件级 fallback task / triage_tasks 空画像 / rank_tasks 全选 / map_candidate_to_task 严格绑定：changed_lines→hunk 覆盖范围→文件级 fallback→否则 None，绝不落到"第一个"task)；`diff_collector.py` 将纯重命名、二进制和仅 mode 变化的当前文件同步纳入 `split_diff_by_file` 与工具白名单；`graph.py` 新增 diff_task_builder→risk_triage→task_rank 节点并前置于 context_provider；context_provider 产出空 task_context_bundles；`CandidateIssue.task_id` 字面必填 + 收集节点确定性映射，无法映射候选留 `candidate_rejected_unmapped`、映射到未选中任务留 `candidate_rejected_unselected`（按 task_selection 收口，使 Phase 2 预算真正生效）；orchestrator 写入 review_budget 初始 State；移除 council_route，改为 coordinator(fan-in 一次)→evidence(必经一次)→judge→[needs_more 回环\|END] | 新增 review_budget/review_tasks/risk_profiles/task_selection/task_context_bundles；删除 council_route | tests/test_tasks_models.py(7)、tests/test_task_prep.py(15，含严格绑定/上下文行归属/越界拒绝/删除文件/纯重命名/二进制与 mode 变化)、tests/test_diff_parse.py(无文本 diff 的当前文件与白名单)、tests/test_graph_orchestration.py(拓扑+映射+fan-in-once+拒绝未映射/未选中候选) 全绿；全套 278 passed；ruff/mypy clean；mock CLI 冒烟 EXIT=0；commits a2f97a6…0a59549 | 风险规则覆盖率/预算效果/上下文质量/定向发现（Phase 2-6）；ReviewCouncil 暂保持整份 diff 粒度；观测层 council_route 恒空读取的清理留 Phase 6 |
 | Phase 2 | done | `risk_rules/features.py` 提取 path/added/deleted/context；security/behavior/maintainability 三组规则覆盖 23 个具体标签；`catalog.py` 稳定注册、去重、按标签 capped 聚合、规则诊断和 `GENERAL_REVIEW` 兜底；`task_prep.rank_tasks` 实现风险排序、总预算/单文件预算和跳过原因；`risk_routing.py` 派生 reviewer 并集并渲染 task scope；`graph.py` 接入空路由、scope 输入和 unrouted 候选拒绝；Settings/CLI/orchestrator 接入默认 100/10 预算 | 无新增 State 字段；仍使用 `review_budget` / `review_tasks` / `risk_profiles` / `task_selection` | 全量 pytest 374 passed；ruff/mypy clean；mock CLI EXIT=0；pipeline-notools mock eval 28 cases 完成，报告 `services/agent/evals/reports/pipeline.md` | AST、Java Gateway、风险感知 ContextProvider、Evidence/Judge 任务化和 Dashboard 指标留后续阶段 |
 | Phase 3 | done | `context_rules.py` 以公开路径归一化、AST/敏感 API 的 Level0 切片、RiskTag→Level1 调用规划和每任务预算截断构建事实；`graph.py` 执行去重后的有界 Level1 调用并填充任务包/trace | 无新增主路由 State | pytest 400 passed；ruff/mypy clean；Task 1-7 TDD 与独立审查完成 | Phase 4 定向发现 |
-| Phase 4 | planned | 无 | 禁止新增主路由 State | 无 | Evidence/Judge 策略 |
-| Phase 5 | planned | 无 | 禁止新增主路由 State | 无 | Dashboard 与质量指标 |
+| Phase 4 | done | task-scoped 三路发现子图；task/risk/context 结构化 prompt；按标签加载 threat-model/behavior/maintainability 领域知识；工具查询固定 task 文件边界；缺失画像与子图 checkpoint 隔离修复 | 无新增主路由 State；reviewer scope 继续从 `RiskProfile` 派生 | commits `f81d5d3…b7bd539`；全量 pytest 430 passed；ruff/mypy clean；mock CLI EXIT=0；pipeline-notools mock eval 28 cases | 不新增 reviewer assignment State；不改 Evidence/Judge；不让知识规则判断“是不是问题” |
+| Phase 5 | done | `evidence_rules/` 完整覆盖 23 个具体标签 + `GENERAL_REVIEW` 的 counter/support/severity；候选主题分类与两遍 Planner；策略约束 EvidenceAgent；purpose-aware CouncilJudge 与回 Planner 的有限回环；6 个过程指标接入 CouncilRunStats/eval/report/archive | 无新增顶层 State；重写 `EvidenceNote` 为 `findings[EvidenceFinding]`；`EvidenceRequest` 增加 strategy/purpose；删除 `build_evidence_requests`、`MAX_TOTAL_EVIDENCE_REQUESTS`、旧 note 状态/列表、`_rule_strong_support` 与自由 `suggested_tools` | commits `5737c08…7b495b2`；`test_evidence_rules`/`test_candidate_tag_resolution`/`test_evidence_planner`/`test_evidence_agent`/`test_council_judge`/`test_council_metrics`/graph/eval 回归；全量 pytest 593 passed；ruff/mypy clean；mock CLI EXIT=0；pipeline-notools mock eval 31 cases，实际证据工具调用 0 | 不新增 Java 工具、Issue 字段或顶层 State；不让 Judge/LLM 自由选工具；真实 tool-profile 成本因本地 9090 Gateway 不可用未声称结果；Dashboard 交互仍留 Phase 6 |
 | Phase 6 | planned | 无 | 仅派生观测，不加业务 State | 无 | 无 |
 
 台账的“已落地内容”必须写入具体节点/模型/配置；“验证证据”必须写入测试、评测或 trace

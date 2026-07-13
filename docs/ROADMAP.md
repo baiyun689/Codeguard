@@ -112,10 +112,10 @@ git diff → 一次 LLM 调用 → 返回结构化 issues → 打印
 - [x] 把默认审查路径切到显式 LangGraph 状态图:ADR-032 ReviewCouncil 外层拓扑已落地
 - [x] 落地 ReviewCouncil 内部 Agent 职责:已从 security / logic / quality 过渡到 ThreatModel / Behavior / Maintainability 方法论分工
 - [x] 落地每个发现者 Agent 的第一版工具边界:ThreatModel / Behavior / Maintainability 已声明固定 allowlist;后续继续补齐 budget / 失败策略 / 禁止行为 / trace
-- [ ] 强化 CouncilCoordinator 的确定性调度:基于结构化字段控制 Evidence / Challenge / 轮次 / fast path,不回到自然语言关键词判断
-- [ ] 增强 EvidenceAgent 的证据路由:把 `related_snippet` / `caller_path` / `sensitive_sink` / `metric_context` / `open_question` 稳定映射到现有工具与证据状态
-- [ ] 把 SelfChecker 从旧 aggregation + fp_filter 包装升级为真正裁决节点:去重、证据一致性、challenge 处理、级别校准
-- [ ] 增加 ReviewCouncil 过程 trace 与 eval 指标:Agent 触发次数、补证次数、challenge 推翻率、证据覆盖率、候选丢弃原因等
+- [x] 将 CouncilCoordinator 收敛为确定性 fan-in，并由 `EvidencePlanner → EvidenceAgent → CouncilJudge` 控制有限补证回环
+- [x] 增强 EvidenceAgent 的证据路由:按 candidate evidence tag 与静态策略稳定映射 task/context/tool 事实，失败统一 insufficient
+- [x] 用 CouncilJudge 取代默认路径的旧 SelfChecker/Challenge 包装:目的感知裁决、级别校准、全局去重/语义合并
+- [x] 增加 Phase 5 ReviewCouncil 过程 trace 与 eval 指标:直接反证/证据不足保留率、最终 Issue 策略/事实覆盖、注册表覆盖和实际工具调用
 - [ ] 重新设计可控的多轮审查 / 回溯 / 人在环路(human-in-the-loop)审批
 - [ ] 用 `langgraph-checkpoint` 做有状态、可恢复的审查流程
 
@@ -135,8 +135,8 @@ TaskContextBundle` 接缝逐阶段增强:
 | Phase 1 | ✅ | 冻结五个任务链 State 字段、hunk/fallback task、严格候选映射和 Evidence 首次必经拓扑 |
 | Phase 2 | ✅ | 23 个具体 RiskTag + `GENERAL_REVIEW`、path/text 方向规则、TaskRank 默认 100/10 预算、RiskTag 到三路 reviewer 的 task scope 路由 |
 | Phase 3 | ✅ | ContextProvider 按 RiskTag 构建上下文，AST 只作为事实来源，不产出风险标签 |
-| Phase 4 | ⬜ | 在已有 task scope 上增强三路审查员的风险感知提示和工具策略 |
-| Phase 5 | ⬜ | Evidence/Judge 消费 task、risk、context、evidence，保持既有候选和裁决契约 |
+| Phase 4 | ✅ | task-scoped 三路发现者消费 task/risk/context，并按 RiskTag 注入领域知识与约束工具边界 |
+| Phase 5 | ✅ | Candidate evidence tag → 静态策略 → Planner/Agent/Judge；结构化 finding、安全回退、有限回环与过程指标，产品契约不变 |
 | Phase 6 | ⬜ | Trace Dashboard 与 eval 展示命中、路由、预算跳过和证据闭环 |
 
 🤔 **思考点**:每个创新都要能回答 ——"常见方案为什么没做/做得不够,我做了什么、解决了什么问题"。能答清楚,这就是你的东西。

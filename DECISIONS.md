@@ -2005,3 +2005,56 @@ mock eval 成功运行 28 个样本，报告写入 `services/agent/evals/reports
 ### 验证
 
 新增纯函数和图集成回归，覆盖 Level0 切片、Level1 去重、GENERAL_REVIEW、方法未解析、预算截断与失败响应隔离。pytest、ruff 与 mypy 通过；任务级独立审查未发现生产缺陷。
+
+---
+
+## ADR-041: Phase 5 风险标签驱动的证据规划与裁决链
+
+**日期**: 2026-07-13
+**状态**: 已实现
+**关联**: ADR-032、ADR-038；`docs/superpowers/specs/2026-07-12-risk-routed-evidence-planning-phase5-design.md`
+
+### 背景
+
+原证据链把低置信候选变成泛化工具请求，并可能把任意非空工具输出当作支持证据；Judge
+还能通过自由工具建议绕开既定调查边界。任务级 RiskTag 又只是审查先验，不能直接代表候选
+声称的问题主题。继续在旧 EvidenceAgent 中追加判断会把规划、执行和裁决揉在一个节点里，
+无法解释证据为什么足以 keep/drop/downgrade。
+
+### 决策
+
+1. **规划与执行分离**：在 Coordinator 与 EvidenceAgent 之间加入 `EvidencePlanner`。
+   Planner 从候选语义解析 candidate evidence tag，按静态注册表写 `EvidenceRequest`；Judge
+   回环只表达 `requested_purpose=support|counter|severity`，再回 Planner 选下一策略。
+2. **候选主题优先，task RiskTag 只作先验**：23 个具体 RiskTag 与 `GENERAL_REVIEW`
+   都注册可执行 counter/support/severity 策略。分类器先走确定性 exact/strong/weak 规则，
+   歧义时才复用异源 judge LLM，失败退回 GENERAL，不让 task 标签覆盖候选语义。
+3. **finding 取代字符串状态**：`EvidenceNote` 只保存 `findings[EvidenceFinding]`，每项明确
+   evidence_id/source/observation/relation/strength/limitation。删除旧 status、supports/
+   contradicts/unknowns/evidence_ids、`build_evidence_requests` 与全局 20 请求截断。
+4. **安全回退方向固定为 insufficient**：工具失败/禁用/空结果、上下文截断、方法或调用方
+   无法解析、LLM `None` 均不得推导支持或反证。AUTHORIZATION/TRANSACTION 的 direct
+   counter 只接受当前 task 所属方法或类的保护注解；同文件其他方法不触发 drop。
+5. **Judge 使用目的感知矩阵**：direct counter 可确定性 drop；severity 反证只允许降级/保留；
+   support 不 fast-keep；最后一轮强制收口。最终 Issue 通过 Judge 的 survivor candidate ID
+   映射生成，不修改上游 CandidateIssue。
+6. **观测不扩张业务 State**：六个过程指标写入既有 `CouncilRunStats` 侧信道并进入 eval
+   schema/report/archive。EvidenceAgent 每次真实新工具调用发 `evidence_tool_called` trace；
+   缓存命中只记 reused，因此不会把 ContextProvider/Discover 调用或 reducer 去重误算为成本。
+
+### 权衡与放弃
+
+- 不让 Judge/LLM 直接选择工具：牺牲开放探索，换取可审计的工具权限与稳定成本边界。
+- 不从“未找到保护”推出漏洞成立：会保守保留部分候选，但避免工具/上下文缺陷制造伪证据。
+- 不保留旧 EvidenceNote 兼容层和请求总量 cap：一次迁移所有消费者；成本先通过指标观测，
+  若不可接受再设计候选预聚合，不能静默剥夺后序候选的反证机会。
+- 不新增顶层 ReviewState、Java 工具或 Issue 字段；CandidateDossier、候选主题和策略均为节点
+  内临时视图/静态值。
+
+### 验证
+
+实现 commits `5737c08…7b495b2`。确定性测试覆盖 24 个标签三目的注册、候选分类、counter-first
+规划、回环 exhausted、请求字段校验、工具缓存、当前方法/类反证范围、空/失败/None 回退、
+Judge survivor 映射和六个指标的分子/分母/零分母语义。全量 pytest `593 passed`，Ruff/mypy
+clean，mock CLI EXIT=0；`pipeline-notools` mock eval 完成 31 cases 并生成报告。mock 档实际
+证据工具调用为 0，配置的本地 Gateway 健康检查超时，未声称真实 tool-profile 成本结果。

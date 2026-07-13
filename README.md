@@ -4,8 +4,9 @@
 
 Codeguard 是一次 **vibe coding 实践** —— 尝试用"边写边迭代、跟着感觉走、借助 AI 协作"的方式,从零搭一个 AI 代码审查 Agent。它分析代码变更(diff),从安全、逻辑、质量等维度审查问题。
 
-当前进度:**ADR-032 · 证据驱动的多 Agent ReviewCouncil 编排**。默认路径为
-`summary? → context_provider → review_council → self_checker → END`;旧 Supervisor 图已迁移到
+当前进度:**ADR-032 + ADR-038 Phase 1–5 · 风险路由与策略证据链**。默认路径为
+`summary? → task/risk/context → task-scoped discover × 3 → EvidencePlanner → EvidenceAgent → CouncilJudge → END`，
+Judge 需要补证时按结构化目的回到 Planner；旧 Supervisor 图已迁移到
 `services/agent/legacy/supervisor_graph/` 作为历史参考,不再作为运行回退。
 完整路线图见 [`docs/ROADMAP.md`](docs/ROADMAP.md),关键技术决策见 [`DECISIONS.md`](DECISIONS.md)。
 
@@ -71,10 +72,10 @@ Codeguard/
     │   │   ├── cli.py           # 命令行入口
     │   │   ├── config.py        # 环境变量配置
     │   │   ├── models/schemas.py# 核心数据结构(Issue/ReviewResult)
-    │   │   ├── models/council.py# ADR-032 内部状态(Candidate/Evidence/Challenge)
+    │   │   ├── models/council.py# 内部状态(Candidate/EvidenceFinding/Verdict/TraceStats)
     │   │   ├── git/             # diff 采集
     │   │   ├── llm/             # LLM 工厂 + 重试 + mock
-    │   │   ├── pipeline/        # ADR-032 ReviewCouncil 编排与 stage
+    │   │   ├── pipeline/        # 风险路由、EvidencePlanner/Agent、CouncilJudge 与 stage
     │   │   └── prompts/         # 提示词模板
     │   ├── legacy/supervisor_graph/ # 旧 Supervisor 图备份,不作为运行路径
     │   └── tests/
