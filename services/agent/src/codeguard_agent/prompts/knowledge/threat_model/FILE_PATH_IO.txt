@@ -11,7 +11,7 @@ Files.copy(file.getInputStream(), target);
 确认路径的可控来源、规范化后的边界、符号链接与覆盖行为；上传类型要依据内容/白名单而非仅扩展名。对于下载，确认 base 目录是否过宽以及对象授权是否已验证。检查解压累计大小、条目数和每条目标路径。
 
 ### 严重级别参考
-CRITICAL：攻击者能读写任意服务器文件、写入可执行 web root 或 zip slip 成功。WARNING：可能覆盖受限目录、上传校验薄弱或资源上限缺失。INFO：仅建议统一使用安全路径 helper。
+CRITICAL：攻击者能读写任意服务器文件、写入可执行 web root 或 zip slip 成功。WARNING：可控路径可能越出专用目录、覆盖受限文件，或上传/解压边界存在可利用缺口。INFO：只用于已证明外部输入影响路径、但读写范围严格受限的具体弱点；仅建议统一 helper 不报告。
 
 ### 已知误报判例
 文件名由服务端 UUID 生成；`target.normalize().startsWith(root)` 且 root 为专用不可执行目录；对象存储 SDK 不接受本地路径；下载前服务层已按资源所有者授权。

@@ -12,7 +12,7 @@ registry.addMapping("/**").allowedOrigins("*").allowCredentials(true);
 确认 matcher 的真实覆盖范围和顺序，特别是 `/**`、`/api/**` 与静态资源规则；判断服务是 cookie 会话还是 bearer-token API，后者禁 CSRF 可能合理。核实 Actuator 是否还有网络隔离与角色限制，CORS 是否反射受控 Origin。
 
 ### 严重级别参考
-CRITICAL：受保护业务或 `/actuator/env`、heapdump 等敏感端点向匿名开放；cookie 会话应用全局关闭 CSRF 且存在可写操作。WARNING：宽泛 CORS、过宽忽略路径，利用条件依赖部署。INFO：缺少推荐安全响应头但无可利用路径。
+CRITICAL：受保护业务或 `/actuator/env`、heapdump 等敏感端点向匿名开放；cookie 会话应用全局关闭 CSRF 且存在可写操作。WARNING：宽泛 CORS、过宽忽略路径，利用条件依赖部署。INFO：只用于已有具体敏感响应或浏览器攻击面的低影响配置弱点；没有可利用路径的通用响应头建议不报告。
 
 ### 已知误报判例
 `csrf.disable()` 仅用于严格 bearer token 的无状态 API；`permitAll` 只覆盖登录、健康检查或公开静态资源；Actuator 只绑定 loopback 或由独立网关鉴权。

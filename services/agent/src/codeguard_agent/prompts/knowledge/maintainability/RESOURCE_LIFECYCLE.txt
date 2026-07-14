@@ -14,7 +14,7 @@ return mapper.readValue(in, Payload.class); // mapper 抛异常时 in 未关闭
 确认资源是否由框架托管，谁拥有关闭责任，以及所有正常、异常、提前 return 和重试分支是否都能释放。重点报告会使后续修改者无法判断所有权、会在长生命周期服务中累积泄漏，或关闭顺序影响复用/事务的代码；不要仅因出现 `close()` 或流 API 就断定问题。
 
 ### 严重级别参考
-持续泄漏连接、线程、文件句柄且可耗尽共享资源可为 WARNING；会在请求路径上稳定造成服务不可用或数据损坏时为 CRITICAL。局部、一次性且影响有限的释放不清晰通常为 INFO 或 WARNING，取决于调用频率与资源成本。
+资源所有权分散、关闭责任不清并会让后续修改容易遗漏释放时通常为 WARNING；局部、一次性且影响有限的边界不清通常为 INFO。若已有可信路径会泄漏并耗尽连接、线程或文件句柄，应由 BehaviorAgent 按运行影响报告。
 
 ### 已知误报判例
 `@Bean(destroyMethod = "close")` 创建的客户端、Spring 注入的 `DataSource`、Web 框架负责关闭的请求流，以及明确将 `InputStream` 所有权转交给返回对象并在其 `close()` 中释放的实现，不应报为泄漏。try-with-resources 包住的资源也无需要求额外关闭。

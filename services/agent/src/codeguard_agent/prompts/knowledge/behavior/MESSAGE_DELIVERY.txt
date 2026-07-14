@@ -17,4 +17,4 @@ CRITICAL：订单、支付等关键事件可永久丢失或重复产生不可逆
 框架 transactional outbox 自动发布；Kafka listener 使用手动 ack 且异常会重投；消费者已按业务事件 ID 去重；事件为可再计算的缓存失效通知。
 
 ### 排除项
-HTTP 重试属于 SSRF_OUTBOUND；请求重复属于 IDEMPOTENCY_RETRY；跨表写入回滚属于 TRANSACTION_ATOMICITY。
+普通 HTTP 请求重试和重复业务意图属于 IDEMPOTENCY_RETRY；出站目标、重定向和响应处理属于 SSRF_OUTBOUND；跨表写入回滚属于 TRANSACTION_ATOMICITY。

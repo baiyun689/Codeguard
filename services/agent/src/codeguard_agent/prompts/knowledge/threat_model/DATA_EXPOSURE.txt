@@ -12,7 +12,7 @@ throw new RuntimeException("db password=" + password, ex);
 确认字段确实敏感且日志/响应对非必要受众可见，检查 Jackson `@JsonIgnore`、DTO 映射、日志脱敏器与集中异常处理。`userId`、订单号等普通业务标识通常不等于 PII 泄漏；异常信息必须确认会离开可信边界。
 
 ### 严重级别参考
-CRITICAL：生产凭证、私钥、完整支付/身份数据可被未授权请求读取或写入可访问日志。WARNING：内部栈、token 或 PII 可能被记录/返回但访问范围需确认。INFO：低敏感版本号或可选的字段最小化建议。
+CRITICAL：生产凭证、私钥、完整支付/身份数据可被未授权请求读取或写入可访问日志。WARNING：内部栈、token 或 PII 可能被记录/返回但访问范围需确认。INFO：只用于确有非必要受众可见、但字段敏感度和影响很低的暴露；普通版本号或可选字段最小化建议不报告。
 
 ### 已知误报判例
 DTO 已排除秘密字段；日志框架的 masking converter 对指定字段脱敏；异常只进入受访问控制的审计库；测试 fixture 中的假 token/邮箱不代表生产泄漏。
