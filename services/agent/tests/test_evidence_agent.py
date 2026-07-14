@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import threading
+import time
 
 import pytest
 
@@ -165,6 +167,50 @@ def test_same_tool_call_is_cached_but_each_request_gets_its_own_note():
         for note in batch.notes
     ]
     assert tool_ids[0] == tool_ids[1]
+
+
+class _ConcurrentFileTools(_ToolClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self.active = 0
+        self.peak_active = 0
+
+    def get_file_content(self, file_path: str) -> ToolResponse:
+        with self._lock:
+            self.calls.append(("get_file_content", file_path))
+            self.active += 1
+            self.peak_active = max(self.peak_active, self.active)
+        time.sleep(0.05)
+        with self._lock:
+            self.active -= 1
+        return ToolResponse(success=True, result=f"class {file_path} {{}}")
+
+
+def test_unique_tool_calls_run_concurrently_and_notes_keep_request_order():
+    tasks = [
+        ReviewTask(
+            id=f"src/Service{index}.java#h0",
+            file=f"src/Service{index}.java",
+            patch="+void update() {}",
+            changed_lines=[10],
+        )
+        for index in range(3)
+    ]
+    dossiers = [
+        _dossier(f"candidate-{index}", task=task)
+        for index, task in enumerate(tasks)
+    ]
+    requests = [_request(dossier) for dossier in dossiers]
+    client = _ConcurrentFileTools()
+
+    batch = _collect(dossiers, requests, client=client)
+
+    assert client.peak_active > 1
+    assert [note.request_id for note in batch.notes] == [
+        request.id for request in requests
+    ]
+    assert client.calls.count(("find_sensitive_apis", {})) == 1
 
 
 def test_context_fact_reuse_skips_matching_sensitive_api_tool():
@@ -331,6 +377,56 @@ def test_analyst_prompt_contains_candidate_strategy_task_risk_context_and_fact()
     assert "AUTHORIZATION" in rendered
     assert "ast_structure" in rendered
     assert "source" in rendered and "limitation" in rendered
+
+
+class _ConcurrentStructuredLLM(_StructuredLLM):
+    def __init__(self) -> None:
+        super().__init__(
+            {
+                "relation": "insufficient",
+                "strength": "contextual",
+                "observation": "",
+                "limitation": "not decisive",
+            }
+        )
+        self._lock = threading.Lock()
+        self.active = 0
+        self.peak_active = 0
+
+    def invoke(self, messages):
+        with self._lock:
+            self.messages.append(messages)
+            self.active += 1
+            self.peak_active = max(self.peak_active, self.active)
+        time.sleep(0.05)
+        with self._lock:
+            self.active -= 1
+        return self.result
+
+
+def test_fact_analysis_runs_concurrently_and_keeps_request_order():
+    tasks = [
+        ReviewTask(
+            id=f"src/Analysis{index}.java#h0",
+            file=f"src/Analysis{index}.java",
+            patch="+void update() { save(); }",
+            changed_lines=[10],
+        )
+        for index in range(3)
+    ]
+    dossiers = [
+        _dossier(f"analysis-candidate-{index}", task=task)
+        for index, task in enumerate(tasks)
+    ]
+    requests = [_request(dossier) for dossier in dossiers]
+    llm = _ConcurrentStructuredLLM()
+
+    batch = _collect_with_llm(dossiers, requests, llm)
+
+    assert llm.peak_active > 1
+    assert [note.request_id for note in batch.notes] == [
+        request.id for request in requests
+    ]
 
 
 def _authorization_scope_dossier(file_content: str, ast_method: str) -> tuple[CandidateDossier, _ToolClient]:
@@ -750,10 +846,14 @@ def test_sensitive_cache_keeps_global_raw_and_slices_per_task_request():
         if '"source":"tool:find_sensitive_apis"' in call[1][1]
     ]
     assert len(sensitive_prompts) == 2
-    assert "src/A.java:10" in sensitive_prompts[0]
-    assert "src/B.java:20" not in sensitive_prompts[0]
-    assert "src/B.java:20" in sensitive_prompts[1]
-    assert "src/A.java:10" not in sensitive_prompts[1]
+    prompt_by_patch = {
+        patch: next(prompt for prompt in sensitive_prompts if patch in prompt)
+        for patch in ('"task_patch":"+a();"', '"task_patch":"+b();"')
+    }
+    assert "src/A.java:10" in prompt_by_patch['"task_patch":"+a();"']
+    assert "src/B.java:20" not in prompt_by_patch['"task_patch":"+a();"']
+    assert "src/B.java:20" in prompt_by_patch['"task_patch":"+b();"']
+    assert "src/A.java:10" not in prompt_by_patch['"task_patch":"+b();"']
     sensitive_findings = [
         next(
             finding

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from dataclasses import FrozenInstanceError
 
 import pytest
@@ -138,6 +140,44 @@ def test_initial_plan_orders_all_counters_before_gated_supports(monkeypatch):
         "candidate-1",
         "candidate-2",
     }
+
+
+def test_candidate_tag_resolution_runs_concurrently_and_keeps_plan_order(monkeypatch):
+    lock = threading.Lock()
+    active = 0
+    peak_active = 0
+
+    def resolve(dossier, classifier_llm, *, structured_method):
+        nonlocal active, peak_active
+        with lock:
+            active += 1
+            peak_active = max(peak_active, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return _resolution(reason=dossier.candidate.id)
+
+    monkeypatch.setattr(
+        "codeguard_agent.pipeline.evidence_planner.resolve_candidate_evidence_tag",
+        resolve,
+    )
+    dossiers = [_dossier(30), _dossier(31), _dossier(32)]
+
+    plan = plan_evidence(
+        dossiers,
+        evidence_round=0,
+        classifier_llm=object(),
+        structured_method="function_calling",
+    )
+
+    assert peak_active > 1
+    assert [request.candidate_id for request in plan.requests] == [
+        dossier.candidate.id for dossier in dossiers
+    ]
+    assert [
+        detail["candidate_id"]
+        for detail in _trace_details(plan, "candidate_evidence_tag_resolved")
+    ] == [dossier.candidate.id for dossier in dossiers]
 
 
 def test_initial_plan_has_no_global_twenty_request_cap(monkeypatch):

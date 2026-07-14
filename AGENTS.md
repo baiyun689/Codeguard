@@ -60,8 +60,8 @@ ADR-032 默认阶段:
 - **SummaryStage(可选)**:产出变更摘要,作为 ContextBundle 和 ReviewCouncil 的共享背景。由 `CODEGUARD_ENABLE_SUMMARY` 控制(默认开)。
 - **ContextProvider**:在 ReviewCouncil 前构造轻量 `ContextBundle`,只产出事实、来源与截断标记,不判断"是不是问题"。
 - **ReviewCouncilSubgraph**:三个 task-scoped 发现者 fan-out 产出 `CandidateIssue`;`CouncilCoordinator` 只作显式 fan-in。
-- **EvidencePlanner**:解析 candidate evidence tag，按全量静态注册表规划 counter/support/severity 请求；Judge 回环也必须回到 Planner。
-- **EvidenceAgent**:校验请求的 strategy/purpose/target/question/tools/profile allowlist，优先复用 task/context facts，只为缺失事实调用 Gateway；失败/空/截断/None 均为 insufficient。
+- **EvidencePlanner**:解析 candidate evidence tag，按全量静态注册表规划 counter/support/severity 请求；候选主题解析以最多 8 个线程并发，结果按候选稳定顺序进入两遍规划；Judge 回环也必须回到 Planner。
+- **EvidenceAgent**:校验请求的 strategy/purpose/target/question/tools/profile allowlist，优先复用 task/context facts，只为缺失事实调用 Gateway；跨请求先按工具名与规范化参数去重，再以最多 8 个线程并发执行唯一工具调用和事实关系分析，最终按请求/事实原顺序组装；失败/空/截断/None 均为 insufficient。
 - **CouncilJudge**:外层唯一最终裁决节点；按 request purpose 与 finding strength keep/drop/downgrade/needs_more，再做全局精确/语义聚合，最终仍输出现有 `ReviewResult` / `Issue`。
 
 审查员的"执行方式"抽成可插拔引擎(`pipeline/engines.py`):`DirectEngine`(无工具基准)/ `ToolAgentEngine`(ReAct,基于 langchain v1 `create_agent`)。`ReviewerStage` 按 `tool_client` 是否存在分流(见 ADR-009 / openspec design.md D1、D5)。

@@ -8,13 +8,14 @@ import re
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel
 
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.council import EvidenceFinding, EvidenceNote, EvidenceRequest
 from codeguard_agent.pipeline import context_rules
+from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.engines import GatheredContext
 from codeguard_agent.pipeline.evidence_planner import CandidateDossier
 from codeguard_agent.pipeline.evidence_rules import STRATEGIES_BY_ID
@@ -40,6 +41,24 @@ class _RawFact:
     raw: str
     limitation: str = ""
     prior_finding: EvidenceFinding | None = None
+
+
+@dataclass(frozen=True)
+class _ToolUse:
+    call: ToolCallSpec
+    key: tuple[str, str]
+    canonical_args: str
+    first_use: bool
+
+
+@dataclass
+class _RequestWork:
+    request: EvidenceRequest
+    dossier: CandidateDossier | None
+    facts: list[_RawFact] = field(default_factory=list)
+    tool_uses: list[_ToolUse] = field(default_factory=list)
+    tool_trace: list[tuple[str, str]] = field(default_factory=list)
+    ready_note: EvidenceNote | None = None
 
 
 class _EvidenceAnalysis(BaseModel):
@@ -490,14 +509,7 @@ def _analyze_fact(
         )
     except Exception as exc:  # noqa: BLE001 - 结构化输出失败安全降级
         logger.warning("EvidenceAgent 关系分析失败，降级 insufficient: %s", exc)
-        return EvidenceFinding(
-            evidence_id=fact.evidence_id,
-            source=fact.source,
-            observation="",
-            relation="insufficient",
-            strength="contextual",
-            limitation="analyst_error",
-        )
+        return _analysis_error_finding(fact)
 
 
 def _finding_from_fact(fact: _RawFact) -> EvidenceFinding:
@@ -512,6 +524,28 @@ def _finding_from_fact(fact: _RawFact) -> EvidenceFinding:
     )
 
 
+def _analysis_error_finding(fact: _RawFact) -> EvidenceFinding:
+    return EvidenceFinding(
+        evidence_id=fact.evidence_id,
+        source=fact.source,
+        observation="",
+        relation="insufficient",
+        strength="contextual",
+        limitation="analyst_error",
+    )
+
+
+def _unique_facts(facts: list[_RawFact]) -> list[_RawFact]:
+    unique: list[_RawFact] = []
+    seen_ids: set[str] = set()
+    for fact in facts:
+        if fact.evidence_id in seen_ids:
+            continue
+        seen_ids.add(fact.evidence_id)
+        unique.append(fact)
+    return unique
+
+
 def collect_evidence(
     dossiers: list[CandidateDossier] | tuple[CandidateDossier, ...],
     pending_requests: list[EvidenceRequest] | tuple[EvidenceRequest, ...],
@@ -524,25 +558,29 @@ def collect_evidence(
     """执行已规划请求；每请求恰好生成一条非空 EvidenceNote。"""
     batch = EvidenceBatch()
     by_candidate = {dossier.candidate.id: dossier for dossier in dossiers}
-    cache: dict[tuple[str, str], tuple[str, str]] = {}
+    works: list[_RequestWork] = []
+    unique_calls: dict[tuple[str, str], ToolCallSpec] = {}
 
+    # 第一遍只校验请求并规划工具调用；跨请求的相同调用在执行前即完成去重。
     for request in pending_requests:
         dossier = by_candidate.get(request.candidate_id)
+        work = _RequestWork(request=request, dossier=dossier)
+        works.append(work)
         mismatch = request_strategy_mismatch(request, dossier)
         if mismatch is not None:
-            batch.notes.append(
-                _insufficient(request, "request_strategy_mismatch", detail=mismatch)
+            work.ready_note = _insufficient(
+                request, "request_strategy_mismatch", detail=mismatch
             )
             continue
         assert dossier is not None
         strategy = STRATEGIES_BY_ID[request.strategy_id]
-        facts = _base_facts(dossier, request)
+        work.facts = _base_facts(dossier, request)
         calls = strategy.build_tool_calls(dossier)
         for call in calls:
-            if _has_fact_for_tool(call.tool_name, facts, dossier):
+            if _has_fact_for_tool(call.tool_name, work.facts, dossier):
                 continue
             if enabled_tools is not None and call.tool_name not in enabled_tools:
-                facts.append(
+                work.facts.append(
                     _RawFact(
                         _digest(request.id, call.tool_name, "disabled"),
                         f"tool:{call.tool_name}",
@@ -552,7 +590,7 @@ def collect_evidence(
                 )
                 continue
             if tool_client is None:
-                facts.append(
+                work.facts.append(
                     _RawFact(
                         _digest(request.id, call.tool_name, "no-client"),
                         f"tool:{call.tool_name}",
@@ -563,17 +601,52 @@ def collect_evidence(
                 continue
             arguments = dict(call.arguments)
             canonical_args = _stable_json(arguments)
-            key = (call.tool_name, canonical_args)
-            reused = key in cache
-            if reused:
-                raw, limitation = cache[key]
-            else:
-                raw, limitation = _call_tool(tool_client, call)
-                cache[key] = (raw, limitation)
-                batch.gathered_context.append(
-                    GatheredContext(call.tool_name, canonical_args, raw or limitation)
+            call_key = (call.tool_name, canonical_args)
+            first_use = call_key not in unique_calls
+            if first_use:
+                unique_calls[call_key] = call
+            work.tool_uses.append(
+                _ToolUse(
+                    call=call,
+                    key=call_key,
+                    canonical_args=canonical_args,
+                    first_use=first_use,
                 )
-                batch.trace.append(
+            )
+
+    # 第二遍并发执行唯一工具调用，结果仍按首次出现顺序回收。
+    call_items = list(unique_calls.items())
+    call_outcomes = run_bounded_parallel(
+        call_items,
+        lambda item: _call_tool(tool_client, item[1]),
+    )
+    cache: dict[tuple[str, str], tuple[str, str]] = {}
+    for (cache_key, call), tool_outcome in zip(
+        call_items, call_outcomes, strict=True
+    ):
+        raw, limitation = (
+            tool_outcome
+            if tool_outcome is not None
+            else ("", "tool_error:parallel_execution_failed")
+        )
+        cache[cache_key] = (raw, limitation)
+        batch.gathered_context.append(
+            GatheredContext(call.tool_name, cache_key[1], raw or limitation)
+        )
+
+    # 第三遍把共享工具结果按请求作用域切片并回填，不改变请求/事实顺序。
+    for work in works:
+        if work.ready_note is not None:
+            continue
+        request = work.request
+        dossier = work.dossier
+        assert dossier is not None
+        for use in work.tool_uses:
+            call = use.call
+            raw, limitation = cache[use.key]
+            arguments = dict(call.arguments)
+            if use.first_use:
+                work.tool_trace.append(
                     (
                         "evidence_tool_called",
                         _stable_json(
@@ -596,9 +669,9 @@ def collect_evidence(
                 else:
                     scoped_raw = ""
                     scoped_limitation = "no_task_sensitive_api"
-            evidence_id = _digest(call.tool_name, canonical_args, scoped_raw)
-            if reused:
-                batch.trace.append(
+            evidence_id = _digest(call.tool_name, use.canonical_args, scoped_raw)
+            if not use.first_use:
+                work.tool_trace.append(
                     (
                         "evidence_tool_reused",
                         _stable_json(
@@ -611,7 +684,7 @@ def collect_evidence(
                         ),
                     )
                 )
-            facts.append(
+            work.facts.append(
                 _RawFact(
                     evidence_id=evidence_id,
                     source=f"tool:{call.tool_name}",
@@ -620,23 +693,42 @@ def collect_evidence(
                 )
             )
 
-        unique_facts: list[_RawFact] = []
-        seen_ids: set[str] = set()
-        for fact in facts:
-            if fact.evidence_id in seen_ids:
-                continue
-            seen_ids.add(fact.evidence_id)
-            unique_facts.append(fact)
-        findings = [
-            _analyze_fact(
-                dossier,
-                request,
-                fact,
-                analyst_llm,
-                structured_method,
-            )
-            for fact in unique_facts
-        ]
+        work.facts = _unique_facts(work.facts)
+
+    # 最后把所有需要判断的事实扁平化后受控并发分析，再按原坐标稳定组装。
+    analysis_items: list[tuple[int, _RequestWork, _RawFact]] = []
+    for work_index, work in enumerate(works):
+        if work.ready_note is not None:
+            continue
+        for fact in work.facts:
+            analysis_items.append((work_index, work, fact))
+    analysis_outcomes = run_bounded_parallel(
+        analysis_items,
+        lambda item: _analyze_fact(
+            cast(CandidateDossier, item[1].dossier),
+            item[1].request,
+            item[2],
+            analyst_llm,
+            structured_method,
+        ),
+    )
+    findings_by_work: dict[int, list[EvidenceFinding]] = {}
+    for (work_index, _, fact), analysis_outcome in zip(
+        analysis_items, analysis_outcomes, strict=True
+    ):
+        findings_by_work.setdefault(work_index, []).append(
+            analysis_outcome
+            if analysis_outcome is not None
+            else _analysis_error_finding(fact)
+        )
+
+    for work_index, work in enumerate(works):
+        request = work.request
+        batch.trace.extend(work.tool_trace)
+        if work.ready_note is not None:
+            batch.notes.append(work.ready_note)
+            continue
+        findings = findings_by_work.get(work_index, [])
         if not findings:
             findings = _insufficient(request, "no_evidence").findings
         note = EvidenceNote(

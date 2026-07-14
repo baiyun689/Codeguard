@@ -2096,3 +2096,47 @@ PR 审查能成功获取 installation token 并创建 Check Run，但完成 PATC
 - 不把 400/422 当瞬态错误重试，也不做无限退避。
 - 本期不实现 annotation 二分上传；通过过滤和 request id 诊断先消除已知无效输入。
 - 不修改产品 `Issue`、ReviewJob 数据库结构或 GitHub App 权限。
+
+---
+
+## ADR-043: EvidencePlanner 与 EvidenceAgent 采用有界并发
+
+**日期**: 2026-07-14
+**状态**: 已实现
+**关联**: ADR-041；`pipeline/concurrency.py`
+
+### 背景
+
+Phase 5 的证据语义已经稳定，但 Planner 对候选主题逐个解析、Agent 对工具与事实逐项执行，
+使候选较多的审查耗时近似按 LLM 调用数线性增长。直接把整个 EvidenceRequest 扔进线程池会
+让相同工具调用在缓存写入前重复执行，也会使 Note 与 trace 顺序随线程完成顺序漂移。
+
+### 决策
+
+1. Planner 仅并发候选主题解析，最多使用 8 个线程；解析结果按 dossier 输入顺序回收，初轮仍
+   保持“全部 counter 在前、满足 gate 的 support 在后”的两遍规划，回环仍只处理
+   `needs_more_evidence` 候选。
+2. Agent 分为准备、工具执行、事实分析、稳定组装四步。准备阶段先完成 request/strategy 校验，
+   并以 `(tool_name, canonical_arguments)` 对整批工具调用去重；唯一调用最多 8 路并发执行，
+   同一结果再按各 task 作用域切片并回填。
+3. 所有待分析事实扁平化后最多 8 路并发调用 analyst LLM，最后按 request 顺序和 fact 顺序重建
+   `EvidenceNote` 与 finding trace。单项并发异常只把对应结果降级为 `analyst_error` 或明确的
+   tool limitation，不丢弃其他请求。
+4. 继续复用同步 `ToolClient` 与现有 `run_bounded_parallel`；不切 async，不新增 State、模型字段、
+   Java 协议或产品 Issue 字段。`evidence_tool_called` 仍只统计去重后真实发生的调用，后续复用记
+   `evidence_tool_reused`。
+
+### 权衡与边界
+
+- 本次只提供单次审查进程内的批次去重，不引入 Redis。Redis 不能缩短首次审查的 LLM 调用，
+  且跨审查缓存必须额外解决 repo/head SHA、prompt/model/strategy 版本与失败结果失效问题。
+- 每批并发调用沿用公共 helper 的硬上限 8，避免形成“每个 request 各开一组 worker”的乘法并发；
+  该 helper 每批创建独立线程池，不代表跨节点或进程级全局限流。
+- 保持输出稳定顺序优先于按完成时间流式写 State，便于 reducer、trace、eval 和故障复现继续使用
+  确定性关联。
+
+### 验证
+
+新增测试分别测得 Planner candidate tag 解析、Agent 唯一工具调用和事实分析的并发峰值大于 1，
+同时校验请求/Note 顺序稳定及跨请求 `find_sensitive_apis` 只真实调用一次。全量 Python
+`638 passed`，Ruff 与 mypy clean；本次不修改 Java 代码，因此未重复执行 Gateway 构建。

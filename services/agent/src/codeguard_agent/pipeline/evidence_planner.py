@@ -17,6 +17,7 @@ from codeguard_agent.models.council import (
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import ReviewTask, RiskProfile, RiskTag, TaskContextBundle
 from codeguard_agent.pipeline import task_prep
+from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.evidence_rules import (
     CandidateTagResolution,
     EvidenceStrategy,
@@ -180,17 +181,11 @@ def _positive_task_tags(dossier: CandidateDossier) -> list[RiskTag]:
     )
 
 
-def _resolve_and_trace(
+def _trace_resolution(
     plan: EvidencePlan,
     dossier: CandidateDossier,
-    classifier_llm: Any,
-    structured_method: str,
+    resolution: CandidateTagResolution,
 ) -> CandidateTagResolution:
-    resolution = resolve_candidate_evidence_tag(
-        dossier,
-        classifier_llm,
-        structured_method=structured_method,
-    )
     task_tags = _positive_task_tags(dossier)
     _trace(
         plan,
@@ -207,6 +202,33 @@ def _resolve_and_trace(
         },
     )
     return resolution
+
+
+def _resolve_dossiers(
+    dossiers: Sequence[CandidateDossier],
+    *,
+    classifier_llm: Any,
+    structured_method: str,
+) -> list[CandidateTagResolution]:
+    outcomes = run_bounded_parallel(
+        list(dossiers),
+        lambda dossier: resolve_candidate_evidence_tag(
+            dossier,
+            classifier_llm,
+            structured_method=structured_method,
+        ),
+    )
+    return [
+        outcome
+        if outcome is not None
+        else CandidateTagResolution(
+            tag=RiskTag.GENERAL_REVIEW,
+            confidence=0.5,
+            source="general",
+            reason="候选证据主题并发解析失败",
+        )
+        for outcome in outcomes
+    ]
 
 
 def _next_strategy(
@@ -322,16 +344,20 @@ def _plan_initial(
         tuple[CandidateDossier, CandidateTagResolution, set[str]]
     ] = []
     request_counts: dict[str, int] = {}
+    valid_dossiers: list[CandidateDossier] = []
     for dossier in dossiers:
         if not _valid_binding(dossier):
             _trace_invalid_binding(plan, dossier)
             continue
-        resolution = _resolve_and_trace(
-            plan,
-            dossier,
-            classifier_llm,
-            structured_method,
-        )
+        valid_dossiers.append(dossier)
+
+    resolutions = _resolve_dossiers(
+        valid_dossiers,
+        classifier_llm=classifier_llm,
+        structured_method=structured_method,
+    )
+    for dossier, resolution in zip(valid_dossiers, resolutions, strict=True):
+        _trace_resolution(plan, dossier, resolution)
         resolved.append(
             (
                 dossier,
@@ -389,6 +415,7 @@ def _plan_followup(
     structured_method: str,
 ) -> EvidencePlan:
     plan = EvidencePlan()
+    eligible: list[tuple[CandidateDossier, EvidencePurpose]] = []
     for dossier in dossiers:
         verdict = dossier.latest_verdict
         if verdict is None or verdict.action != "needs_more_evidence":
@@ -409,12 +436,15 @@ def _plan_followup(
                 },
             )
             continue
-        resolution = _resolve_and_trace(
-            plan,
-            dossier,
-            classifier_llm,
-            structured_method,
-        )
+        eligible.append((dossier, purpose))
+
+    resolutions = _resolve_dossiers(
+        [dossier for dossier, _ in eligible],
+        classifier_llm=classifier_llm,
+        structured_method=structured_method,
+    )
+    for (dossier, purpose), resolution in zip(eligible, resolutions, strict=True):
+        _trace_resolution(plan, dossier, resolution)
         excluded = {request.strategy_id for request in dossier.requests}
         strategy = _next_strategy(resolution.tag, purpose, excluded)
         if strategy is None:
