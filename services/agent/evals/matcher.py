@@ -119,8 +119,14 @@ diff:
 审查器报出的问题([R#] 是编号):
 {reported}
 
-请对**每一条标准答案**输出一条 match:expected_id 填它的编号,reported_id 填命中它的报告编号\
-(找不到则填 -1),reason 简述判定依据。"""
+返回结构化 `CaseJudgement`：
+- `matches`：每一条标准答案恰好一项 `JudgeMatch`，不要遗漏或额外生成标准答案；
+- `expected_id`：填写对应 `[E#]` 的编号；
+- `reported_id`：填写命中的 `[R#]` 编号，找不到则填 `-1`；
+- `reason`：简述根因和位置是否匹配的判定依据；
+- `comment`：可选的整体简评，没有额外信息时留空。
+
+不要输出 TP/FP/FN、评分、修复建议或模型未定义的其他字段。"""
 
 
 def _fmt_expected(case: EvalCase) -> str:

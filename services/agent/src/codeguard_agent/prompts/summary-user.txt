@@ -4,4 +4,4 @@
 {{diff}}
 </diff>
 
-请通过结构化输出只返回 summary。
+请通过结构化输出只返回唯一字段 `summary`，不要附加 Issue、Markdown 标题或代码块。

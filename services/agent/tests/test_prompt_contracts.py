@@ -7,6 +7,7 @@ from pathlib import Path
 from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.risk_rules.catalog import RISK_TAG_REVIEWERS
 from codeguard_agent.pipeline.stages.reviewer_stage import DEFAULT_REVIEWERS
+from evals.matcher import _JUDGE_CASE_PROMPT
 
 
 PROMPT_DIR = Path(__file__).parents[1] / "src" / "codeguard_agent" / "prompts"
@@ -81,3 +82,48 @@ def test_evidence_and_judge_prompts_describe_wrapper_contracts() -> None:
     assert "`candidate_id`" in judge
     assert "不要选择 `merge`" in judge
     assert "仅在输入明确允许补证" in judge
+
+
+def test_summary_and_classifier_prompts_name_structured_fields() -> None:
+    summary = _prompt("summary-system.txt") + _prompt("summary-user.txt")
+    assert "`summary`" in summary
+    assert "唯一字段" in summary
+
+    classifier = _prompt("evidence-tag-classifier-system.txt")
+    assert all(
+        f"`{field}`" in classifier for field in ("tag", "confidence", "reason")
+    )
+    assert "恰好选择一个" in classifier
+
+
+def test_judge_prompt_names_every_judge_decision_field() -> None:
+    judge = _prompt("council-judge.txt")
+    fields = {
+        "decisions",
+        "candidate_id",
+        "action",
+        "reason",
+        "merge_target_id",
+        "adjusted_severity",
+        "requested_purpose",
+    }
+    assert all(f"`{field}`" in judge for field in fields)
+    assert "恰好包含一项" in judge
+
+
+def test_aggregation_prompts_name_merge_plan_fields_and_index_base() -> None:
+    aggregation = _prompt("aggregation-system.txt") + _prompt(
+        "aggregation-user.txt"
+    )
+    assert "`groups`" in aggregation
+    assert "`members`" in aggregation
+    assert "从 1 开始" in aggregation
+    assert "每组至少 2" in aggregation
+
+
+def test_eval_judge_prompt_names_case_judgement_fields() -> None:
+    assert all(
+        f"`{field}`" in _JUDGE_CASE_PROMPT
+        for field in ("matches", "expected_id", "reported_id", "reason", "comment")
+    )
+    assert "每一条标准答案恰好一项" in _JUDGE_CASE_PROMPT

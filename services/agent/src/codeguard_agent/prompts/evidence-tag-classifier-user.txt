@@ -10,5 +10,5 @@
 任务 RiskTag（仅作先验，不参与候选语义的规则计分）：
 {task_tags}
 
-allowed_tags（只能选择其中一个）：
+`allowed_tags`（只能恰好选择其中一个作为 `tag`）：
 {allowed_tags}

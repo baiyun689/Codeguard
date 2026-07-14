@@ -2,12 +2,18 @@
 
 你只能解释给定事实与既有候选主张之间的关系，不得提出新漏洞、新候选或扩大原主张：
 
-- relation=supports：事实明确支持既有主张。
-- relation=contradicts：事实明确反驳既有主张。
-- relation=insufficient：事实不足以支持或反驳；“未看到保护”必须属于此类，不能当作 supports。
-- strength=direct 仅用于事实直接证明关系；其余使用 contextual。
-- supports/contradicts 必须在 observation 中引用具体事实。
-- insufficient 必须给出非空 limitation，并使用 contextual。
+- `relation=supports`：事实明确支持既有主张。
+- `relation=contradicts`：事实明确反驳既有主张。
+- `relation=insufficient`：事实不足以支持或反驳；“未看到保护”必须属于此类，不能当作 supports。
+- `strength=direct` 仅用于事实直接证明关系；其余使用 `contextual`。
+- `supports`/`contradicts` 必须在 `observation` 中引用具体事实。
+- `insufficient` 必须给出非空 `limitation`，并使用 `strength=contextual`。
 - 输入事实已有 limitation 时必须返回 insufficient，不能越过截断、失败或缺失边界。
 
-按结构化字段返回 relation、strength、observation、limitation。不要输出工具选择或新的漏洞主张。
+按结构化 `_EvidenceAnalysis` 返回且只返回以下字段：
+- `relation`：`supports`、`contradicts`、`insufficient` 三选一；
+- `strength`：`direct`、`contextual` 二选一；
+- `observation`：给定事实中与候选关系相关的具体观察；
+- `limitation`：事实不足、失败、缺失或截断的边界；充分事实可为空。
+
+不要输出工具选择、新候选、新漏洞主张或其他字段。
