@@ -87,8 +87,8 @@ class Settings:
     # "max" 给模型更多思考预算,对复杂代码审查任务可能有更好的推理质量(走 extra_body 透传)。
     # 留空不设;非 DeepSeek 端点静默无视。注意:"max" 会消耗更多 token(含不可见的 reasoning_tokens)。
     reasoning_effort: str = ""
-    # 追踪模块:默认开启(可通过 --no-trace 关闭)。
-    trace_enabled: bool = True
+    # 本地 HTML 追踪默认关闭；LangSmith 使用其标准环境变量独立自动追踪。
+    trace_enabled: bool = False
     # 追踪文件输出目录。
     trace_dir: str = "trace"
     # LLM 输出截断字符数,0=不截断。
@@ -135,7 +135,7 @@ class Settings:
         if reasoning_effort not in ("high", "max"):
             reasoning_effort = ""
         trace_enabled = os.environ.get(
-            "CODEGUARD_TRACE_ENABLED", "true"
+            "CODEGUARD_TRACE_ENABLED", "false"
         ).strip().lower() not in ("0", "false", "no", "off")
         trace_dir = os.environ.get("CODEGUARD_TRACE_DIR", "trace").strip()
         trace_max_llm_content = int(os.environ.get("CODEGUARD_TRACE_MAX_LLM_CONTENT", "0"))
