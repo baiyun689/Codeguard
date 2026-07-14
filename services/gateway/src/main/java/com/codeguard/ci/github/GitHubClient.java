@@ -19,7 +19,6 @@ import java.security.Signature;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -266,7 +265,6 @@ public class GitHubClient {
         ObjectNode body = MAPPER.createObjectNode();
         body.put("status", "completed");
         body.put("conclusion", conclusion);
-        body.put("completed_at", Instant.now().truncatedTo(ChronoUnit.SECONDS).toString());
 
         ObjectNode output = MAPPER.createObjectNode();
         output.put("title", title);

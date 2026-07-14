@@ -64,6 +64,8 @@ class GitHubClientTest {
             JsonNode sent = MAPPER.readTree(requestBody.get());
             assertEquals("completed", sent.path("status").asText());
             assertEquals("neutral", sent.path("conclusion").asText());
+            assertFalse(sent.has("completed_at"),
+                "完成时间应由 GitHub 服务端生成，避免客户端时钟早于 started_at");
             assertEquals("title", sent.path("output").path("title").asText());
             assertEquals("summary", sent.path("output").path("summary").asText());
         } finally {
