@@ -1,10 +1,22 @@
 package com.codeguard.ci.github;
 
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.http.HttpClient;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Base64;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -12,6 +24,106 @@ import static org.junit.jupiter.api.Assertions.*;
  * GitHubClient 单元测试: JWT 生成与构造函数验证。
  */
 class GitHubClientTest {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    @Test
+    void completeCheckRunUsesJsonHeadersAndRetriesTransientStatusOnce() throws Exception {
+        AtomicInteger patchAttempts = new AtomicInteger();
+        AtomicReference<String> contentType = new AtomicReference<>();
+        AtomicReference<String> apiVersion = new AtomicReference<>();
+        AtomicReference<String> userAgent = new AtomicReference<>();
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/app/installations/7/access_tokens", exchange ->
+            respond(exchange, 201, tokenResponse()));
+        server.createContext("/repos/acme/demo/check-runs/99", exchange -> {
+            contentType.set(exchange.getRequestHeaders().getFirst("Content-Type"));
+            apiVersion.set(exchange.getRequestHeaders().getFirst("X-GitHub-Api-Version"));
+            userAgent.set(exchange.getRequestHeaders().getFirst("User-Agent"));
+            method.set(exchange.getRequestMethod());
+            requestBody.set(new String(exchange.getRequestBody().readAllBytes(),
+                java.nio.charset.StandardCharsets.UTF_8));
+            int status = patchAttempts.incrementAndGet() == 1 ? 503 : 200;
+            respond(exchange, status, status == 200 ? "{}" : "{\"message\":\"temporary\"}");
+        });
+        server.start();
+
+        try {
+            GitHubClient client = testClient(server);
+            client.completeCheckRun("acme/demo", 99, "neutral", "title", "summary",
+                List.of(), 7);
+
+            assertEquals(2, patchAttempts.get());
+            assertEquals("application/json; charset=utf-8", contentType.get());
+            assertEquals("2022-11-28", apiVersion.get());
+            assertEquals("Codeguard", userAgent.get());
+            assertEquals("PATCH", method.get());
+            JsonNode sent = MAPPER.readTree(requestBody.get());
+            assertEquals("completed", sent.path("status").asText());
+            assertEquals("neutral", sent.path("conclusion").asText());
+            assertEquals("title", sent.path("output").path("title").asText());
+            assertEquals("summary", sent.path("output").path("summary").asText());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void completeCheckRunDoesNotRetryClientError() throws Exception {
+        AtomicInteger patchAttempts = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/app/installations/7/access_tokens", exchange ->
+            respond(exchange, 201, tokenResponse()));
+        server.createContext("/repos/acme/demo/check-runs/99", exchange -> {
+            patchAttempts.incrementAndGet();
+            exchange.getRequestBody().readAllBytes();
+            respond(exchange, 400, "{\"message\":\"invalid\"}");
+        });
+        server.start();
+
+        try {
+            GitHubClient client = testClient(server);
+            IOException error = assertThrows(IOException.class, () ->
+                client.completeCheckRun("acme/demo", 99, "neutral", "title", "summary",
+                    List.of(), 7));
+
+            assertEquals("完成 Check Run 失败: HTTP 400", error.getMessage());
+            assertEquals(1, patchAttempts.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private static GitHubClient testClient(HttpServer server) throws Exception {
+        return new GitHubClient("12345", createTestPrivateKeyPem(),
+            "http://127.0.0.1:" + server.getAddress().getPort(),
+            HttpClient.newHttpClient(), Duration.ZERO);
+    }
+
+    private static String tokenResponse() {
+        return "{\"token\":\"test-token\",\"expires_at\":\""
+            + Instant.now().plusSeconds(3600) + "\"}";
+    }
+
+    private static void respond(HttpExchange exchange, int status, String body) throws IOException {
+        byte[] bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+        exchange.sendResponseHeaders(status, bytes.length);
+        exchange.getResponseBody().write(bytes);
+        exchange.close();
+    }
+
+    private static String createTestPrivateKeyPem() throws Exception {
+        KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
+        gen.initialize(2048);
+        KeyPair pair = gen.generateKeyPair();
+        String pkcs8Der = Base64.getMimeEncoder(64, "\n".getBytes())
+            .encodeToString(pair.getPrivate().getEncoded());
+        return "-----BEGIN PRIVATE KEY-----\n" + pkcs8Der + "\n-----END PRIVATE KEY-----";
+    }
 
     /**
      * 生成测试 RSA 密钥对并验证 JWT 结构正确(三段式)。

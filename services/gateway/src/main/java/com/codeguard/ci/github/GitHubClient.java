@@ -17,10 +17,13 @@ import java.security.KeyFactory;
 import java.security.PrivateKey;
 import java.security.Signature;
 import java.security.spec.PKCS8EncodedKeySpec;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -31,6 +34,10 @@ public class GitHubClient {
 
     private static final Logger log = LoggerFactory.getLogger(GitHubClient.class);
     private static final String API_BASE = "https://api.github.com";
+    private static final String API_VERSION = "2022-11-28";
+    private static final String USER_AGENT = "Codeguard";
+    private static final Duration DEFAULT_RETRY_DELAY = Duration.ofSeconds(1);
+    private static final Set<Integer> RETRYABLE_STATUS_CODES = Set.of(502, 503, 504);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /** RSA 算法标识符 DER 编码(固定 15 字节),用于 PKCS#1 → PKCS#8 转换 */
@@ -42,7 +49,9 @@ public class GitHubClient {
     private final String appId;
     private final String privateKeyPem;
     private final PrivateKey privateKey;
+    private final String apiBase;
     private final HttpClient httpClient;
+    private final Duration retryDelay;
     private final Map<Long, TokenCache> tokenCache = new ConcurrentHashMap<>();
 
     /**
@@ -58,10 +67,17 @@ public class GitHubClient {
      * @param privateKeyPem RSA 私钥 PEM(PKCS#1 或 PKCS#8 格式)
      */
     public GitHubClient(String appId, String privateKeyPem) {
+        this(appId, privateKeyPem, API_BASE, HttpClient.newHttpClient(), DEFAULT_RETRY_DELAY);
+    }
+
+    GitHubClient(String appId, String privateKeyPem, String apiBase,
+                 HttpClient httpClient, Duration retryDelay) {
         this.appId = appId;
         this.privateKeyPem = privateKeyPem;
         this.privateKey = parsePrivateKey(privateKeyPem);
-        this.httpClient = HttpClient.newHttpClient();
+        this.apiBase = apiBase;
+        this.httpClient = httpClient;
+        this.retryDelay = retryDelay;
     }
 
     // ── JWT 生成 ──
@@ -184,16 +200,15 @@ public class GitHubClient {
             throw new IOException("JWT 生成失败", e);
         }
 
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(API_BASE + "/app/installations/" + installationId + "/access_tokens"))
+        HttpRequest request = requestBuilder(
+                URI.create(apiBase + "/app/installations/" + installationId + "/access_tokens"))
             .header("Authorization", "Bearer " + jwt)
-            .header("Accept", "application/vnd.github+json")
             .POST(HttpRequest.BodyPublishers.noBody())
             .build();
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = send(request, false);
         if (response.statusCode() != 201) {
-            log.error("获取 installation token 失败: HTTP {} {}", response.statusCode(), response.body());
+            logApiFailure("获取 installation token 失败", response, "");
             throw new IOException("获取 installation token 失败: HTTP " + response.statusCode());
         }
 
@@ -222,16 +237,14 @@ public class GitHubClient {
         body.put("head_sha", headSha);
         body.put("status", "in_progress");
 
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(API_BASE + "/repos/" + repo + "/check-runs"))
+        HttpRequest request = requestBuilder(URI.create(apiBase + "/repos/" + repo + "/check-runs"))
             .header("Authorization", "Bearer " + token)
-            .header("Accept", "application/vnd.github+json")
             .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
             .build();
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = send(request, false);
         if (response.statusCode() != 201) {
-            log.error("创建 Check Run 失败: HTTP {} {}", response.statusCode(), response.body());
+            logApiFailure("创建 Check Run 失败", response, body.toString());
             throw new IOException("创建 Check Run 失败: HTTP " + response.statusCode());
         }
 
@@ -253,7 +266,7 @@ public class GitHubClient {
         ObjectNode body = MAPPER.createObjectNode();
         body.put("status", "completed");
         body.put("conclusion", conclusion);
-        body.put("completed_at", java.time.Instant.now().toString());
+        body.put("completed_at", Instant.now().truncatedTo(ChronoUnit.SECONDS).toString());
 
         ObjectNode output = MAPPER.createObjectNode();
         output.put("title", title);
@@ -275,16 +288,18 @@ public class GitHubClient {
 
         body.set("output", output);
 
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(API_BASE + "/repos/" + repo + "/check-runs/" + checkRunId))
+        HttpRequest request = requestBuilder(
+                URI.create(apiBase + "/repos/" + repo + "/check-runs/" + checkRunId))
             .header("Authorization", "Bearer " + token)
-            .header("Accept", "application/vnd.github+json")
             .method("PATCH", HttpRequest.BodyPublishers.ofString(body.toString()))
             .build();
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        String requestBody = body.toString();
+        log.debug("完成 Check Run 请求体大小: {} bytes, annotations: {}",
+            requestBody.length(), annotations != null ? annotations.size() : 0);
+        HttpResponse<String> response = send(request, true);
         if (response.statusCode() != 200) {
-            log.error("完成 Check Run 失败: HTTP {} {}", response.statusCode(), response.body());
+            logApiFailure("完成 Check Run 失败", response, requestBody);
             throw new IOException("完成 Check Run 失败: HTTP " + response.statusCode());
         }
 
@@ -309,14 +324,13 @@ public class GitHubClient {
         commentBody.put("path", path);
         commentBody.put("line", line);
 
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(API_BASE + "/repos/" + repo + "/pulls/" + prNumber + "/comments"))
+        HttpRequest request = requestBuilder(
+                URI.create(apiBase + "/repos/" + repo + "/pulls/" + prNumber + "/comments"))
             .header("Authorization", "Bearer " + token)
-            .header("Accept", "application/vnd.github+json")
             .POST(HttpRequest.BodyPublishers.ofString(commentBody.toString()))
             .build();
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = send(request, false);
         if (response.statusCode() == 201) {
             log.info("已创建 PR 评论: repo={} PR#{} path={}:{}", repo, prNumber, path, line);
             return true;
@@ -324,12 +338,14 @@ public class GitHubClient {
 
         // 422: 行号在 diff 中无法解析（LLM 报的绝对行号与 diff 上下文不匹配）
         if (response.statusCode() == 422) {
-            log.warn("PR 行级评论跳过(行号无法映射到 diff): repo={} PR#{} path={}:{}", repo, prNumber, path, line);
+            logApiWarning("PR 行级评论跳过(行号无法映射到 diff): repo=" + repo
+                + " PR#" + prNumber + " path=" + path + ":" + line,
+                response, commentBody.toString());
             return false;
         }
 
         // 其他错误仍抛异常
-        log.error("创建 PR 评论失败: HTTP {} {}", response.statusCode(), response.body());
+        logApiFailure("创建 PR 评论失败", response, commentBody.toString());
         throw new IOException("创建 PR 评论失败: HTTP " + response.statusCode());
     }
 
@@ -343,19 +359,76 @@ public class GitHubClient {
         ObjectNode req = MAPPER.createObjectNode();
         req.put("body", body);
 
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(API_BASE + "/repos/" + repo + "/issues/" + prNumber + "/comments"))
+        HttpRequest request = requestBuilder(
+                URI.create(apiBase + "/repos/" + repo + "/issues/" + prNumber + "/comments"))
             .header("Authorization", "Bearer " + token)
-            .header("Accept", "application/vnd.github+json")
             .POST(HttpRequest.BodyPublishers.ofString(req.toString()))
             .build();
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = send(request, false);
         if (response.statusCode() != 201) {
-            log.error("创建 PR 普通评论失败: HTTP {} {}", response.statusCode(), response.body());
+            logApiFailure("创建 PR 普通评论失败", response, req.toString());
             throw new IOException("创建 PR 普通评论失败: HTTP " + response.statusCode());
         }
 
         log.info("已创建 PR 普通评论: repo={} PR#{}", repo, prNumber);
+    }
+
+    private HttpRequest.Builder requestBuilder(URI uri) {
+        return HttpRequest.newBuilder()
+            .uri(uri)
+            .header("Accept", "application/vnd.github+json")
+            .header("Content-Type", "application/json; charset=utf-8")
+            .header("X-GitHub-Api-Version", API_VERSION)
+            .header("User-Agent", USER_AGENT);
+    }
+
+    private HttpResponse<String> send(HttpRequest request, boolean retryTransient)
+            throws IOException, InterruptedException {
+        try {
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (!retryTransient || !RETRYABLE_STATUS_CODES.contains(response.statusCode())) {
+                return response;
+            }
+            logApiWarning("GitHub 请求收到瞬态响应，将在 " + retryDelay.toMillis()
+                + " ms 后重试一次: " + request.method() + " " + request.uri(),
+                response, "");
+        } catch (IOException e) {
+            if (!retryTransient) {
+                throw e;
+            }
+            log.warn("GitHub 请求发生瞬态网络错误，将在 {} ms 后重试一次: {} {} ({})",
+                retryDelay.toMillis(), request.method(), request.uri(), e.getMessage());
+        }
+
+        if (!retryDelay.isZero()) {
+            Thread.sleep(retryDelay.toMillis());
+        }
+        return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    private static String abbreviate(String value, int maxLength) {
+        if (value == null) {
+            return "";
+        }
+        return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
+    }
+
+    private static void logApiFailure(String operation, HttpResponse<String> response,
+                                      String requestBody) {
+        log.error("{}: HTTP {} request_id={} response_type={} body={} response={}",
+            operation, response.statusCode(),
+            response.headers().firstValue("X-GitHub-Request-Id").orElse("-"),
+            response.headers().firstValue("Content-Type").orElse("-"),
+            abbreviate(requestBody, 500), abbreviate(response.body(), 1_000));
+    }
+
+    private static void logApiWarning(String operation, HttpResponse<String> response,
+                                      String requestBody) {
+        log.warn("{}: HTTP {} request_id={} response_type={} body={} response={}",
+            operation, response.statusCode(),
+            response.headers().firstValue("X-GitHub-Request-Id").orElse("-"),
+            response.headers().firstValue("Content-Type").orElse("-"),
+            abbreviate(requestBody, 500), abbreviate(response.body(), 1_000));
     }
 }

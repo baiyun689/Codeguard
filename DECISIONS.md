@@ -2062,3 +2062,37 @@ mock eval 成功运行 28 个样本，报告写入 `services/agent/evals/reports
 映射和六个指标的分子/分母/零分母语义。全量 pytest `611 passed`，Ruff/mypy clean，mock CLI
 EXIT=0；`pipeline-notools` mock eval 完成 31 cases 并生成报告。mock 档实际证据工具调用为 0，
 配置的本地 Gateway 健康检查超时，未声称真实 tool-profile 成本结果。
+
+---
+
+## ADR-042: GitHub Check Run 反馈采用严格请求契约、diff annotation 与有限重试
+
+**日期**: 2026-07-14
+**状态**: 已实现
+**关联设计**: `docs/superpowers/specs/2026-07-14-github-check-run-feedback-hardening-design.md`
+
+### 背景
+
+PR 审查能成功获取 installation token 并创建 Check Run，但完成 PATCH 收到 GitHub HTML 400；
+随后的无 annotations 降级请求又遇到 `Connection reset`。原客户端没有显式 JSON Content-Type、
+固定 API 版本或应用 User-Agent；反馈层还会把所有 LLM issue 原样转为 annotation，不校验
+文件与行号是否处于本次 PR diff。
+
+### 决策
+
+1. 所有 GitHub REST 请求统一发送 vendor Accept、JSON Content-Type、固定 API 版本与 Codeguard
+   User-Agent。非成功 Check Run 响应记录状态码、GitHub request id、响应类型和受限长度摘要，
+   不记录 Authorization/token。
+2. 只有幂等的 Check Run PATCH 自动重放：网络 `IOException` 或 HTTP 502/503/504 最多重试一次，
+   默认等待一秒；4xx 不重试，创建评论等可能产生重复副作用的 POST 也不重试。
+3. Check Run annotations 只保留能映射到当前 unified diff new-side hunk 的 issue。先过滤再应用
+   单次 50 条上限，避免非法前缀耗尽预算；无法映射的 issue 仍保留在 summary，CRITICAL 项继续
+   走既有普通 PR 评论降级。
+4. 保留秒级 `completed_at`、summary 65,000 字符和 annotation message 200 字符的防御性截断。
+
+### 放弃与边界
+
+- 不对所有请求做通用重试，避免重复创建 Check Run 或 PR 评论。
+- 不把 400/422 当瞬态错误重试，也不做无限退避。
+- 本期不实现 annotation 二分上传；通过过滤和 request id 诊断先消除已知无效输入。
+- 不修改产品 `Issue`、ReviewJob 数据库结构或 GitHub App 权限。

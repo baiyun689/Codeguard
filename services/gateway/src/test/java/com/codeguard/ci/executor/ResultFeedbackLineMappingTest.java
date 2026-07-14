@@ -1,9 +1,54 @@
 package com.codeguard.ci.executor;
 
+import com.codeguard.ci.github.GitHubClient;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class ResultFeedbackLineMappingTest {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    @Test
+    void annotationsOnlyIncludeLocationsOnDiffNewSide() throws Exception {
+        String diff = """
+            diff --git a/Foo.java b/Foo.java
+            --- a/Foo.java
+            +++ b/Foo.java
+            @@ -10,2 +10,3 @@
+              context
+            + added
+              tail
+            """;
+        List<JsonNode> issues = new ArrayList<>();
+        issues.add(issue("Foo.java", 10, "WARNING", "context issue"));
+        issues.add(issue("Foo.java", 11, "CRITICAL", "added issue"));
+        issues.add(issue("Foo.java", 99, "WARNING", "outside hunk"));
+        issues.add(issue("Other.java", 11, "WARNING", "unknown file"));
+        issues.add(issue("Foo.java", 0, "INFO", "invalid line"));
+
+        List<GitHubClient.IssueAnnot> annotations =
+            ResultFeedback.buildAnnotations(issues, diff);
+
+        assertEquals(2, annotations.size());
+        assertEquals("Foo.java", annotations.get(0).path());
+        assertEquals(10, annotations.get(0).line());
+        assertEquals("warning", annotations.get(0).annotationLevel());
+        assertEquals(11, annotations.get(1).line());
+        assertEquals("failure", annotations.get(1).annotationLevel());
+    }
+
+    private static JsonNode issue(String file, int line, String severity, String message)
+            throws Exception {
+        return MAPPER.readTree("""
+            {"file":"%s","line":%d,"severity":"%s","message":"%s"}
+            """.formatted(file, line, severity, message));
+    }
 
     @Test
     void findsLineInSimpleHunk() {
@@ -75,6 +120,38 @@ class ResultFeedbackLineMappingTest {
             + new
             """;
         assertEquals(-1, ResultFeedback.mapToDiffLine(diff, "Foo.java", 10));
+    }
+
+    @Test
+    void filePathMustNotPrefixMatchAnotherFile() {
+        String diff = """
+            diff --git a/Foo.java.bak b/Foo.java.bak
+            --- a/Foo.java.bak
+            +++ b/Foo.java.bak
+            @@ -9,1 +10,2 @@
+              context
+            + added
+            """;
+
+        assertEquals(-1, ResultFeedback.mapToDiffLine(diff, "Foo.java", 10));
+    }
+
+    @Test
+    void renameUsesNewSideFilePath() {
+        String diff = """
+            diff --git a/OldName.java b/NewName.java
+            similarity index 80%
+            rename from OldName.java
+            rename to NewName.java
+            --- a/OldName.java
+            +++ b/NewName.java
+            @@ -10,1 +10,2 @@
+              context
+            + added
+            """;
+
+        assertEquals(11, ResultFeedback.mapToDiffLine(diff, "NewName.java", 11));
+        assertEquals(-1, ResultFeedback.mapToDiffLine(diff, "OldName.java", 11));
     }
 
     @Test

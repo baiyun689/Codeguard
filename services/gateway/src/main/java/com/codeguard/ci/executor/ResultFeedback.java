@@ -15,6 +15,7 @@ public class ResultFeedback {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final int MAX_ANNOTATIONS = 50;
     private static final int MAX_LINE_COMMENTS = 10;
+    private static final int MAX_SUMMARY_CHARS = 65_000;  // GitHub limit 65535
 
     private final GitHubClient client;
 
@@ -61,7 +62,7 @@ public class ResultFeedback {
         String conclusion = determineConclusion(issueList);
         String title = "发现 " + issueList.size() + " 个问题";
         String summary = buildSummary(issueList);
-        List<GitHubClient.IssueAnnot> annotations = buildAnnotations(issueList);
+        List<GitHubClient.IssueAnnot> annotations = buildAnnotations(issueList, job.getDiffText());
 
         try {
             client.completeCheckRun(job.getRepo(), checkRunId, conclusion, title,
@@ -108,22 +109,38 @@ public class ResultFeedback {
         sb.append("\n📊 统计: CRITICAL=").append(crit)
           .append(" WARNING=").append(warn)
           .append(" INFO=").append(info);
-        return sb.toString();
+        String summary = sb.toString();
+        if (summary.length() > MAX_SUMMARY_CHARS) {
+            summary = summary.substring(0, MAX_SUMMARY_CHARS - 100)
+                + "\n\n... (摘要过长已截断，共 " + issues.size() + " 个问题)";
+        }
+        return summary;
     }
 
     private static final int MAX_ANNOTATION_MSG_LEN = 200;
 
-    private List<GitHubClient.IssueAnnot> buildAnnotations(List<JsonNode> issues) {
+    static List<GitHubClient.IssueAnnot> buildAnnotations(List<JsonNode> issues, String diffText) {
         List<GitHubClient.IssueAnnot> annots = new ArrayList<>();
-        int limit = Math.min(issues.size(), MAX_ANNOTATIONS);
-        for (int i = 0; i < limit; i++) {
-            JsonNode issue = issues.get(i);
+        for (JsonNode issue : issues) {
+            if (annots.size() >= MAX_ANNOTATIONS) {
+                break;
+            }
+            String file = issue.path("file").asText();
+            int line = issue.path("line").asInt();
+            int diffLine = mapToDiffLine(diffText, file, line);
+            if (diffLine <= 0) {
+                continue;
+            }
             annots.add(new GitHubClient.IssueAnnot(
-                issue.path("file").asText(),
-                Math.max(issue.path("line").asInt(), 1),
+                file,
+                diffLine,
                 toAnnotationLevel(issue.path("severity").asText()),
                 ellipsis(issue.path("message").asText(), MAX_ANNOTATION_MSG_LEN)
             ));
+        }
+        if (annots.size() < Math.min(issues.size(), MAX_ANNOTATIONS)) {
+            log.info("Check Run annotations 已过滤无法映射到 PR diff 的定位: issues={} annotations={}",
+                issues.size(), annots.size());
         }
         return annots;
     }
@@ -144,16 +161,20 @@ public class ResultFeedback {
             return -1;
         }
 
-        // 找 "diff --git a/" + targetFile 开头的文件块
-        String fileMarker = "diff --git a/" + targetFile;
-        int fileStart = diffText.indexOf(fileMarker);
+        // 以 new-side 文件头精确定位文件块；可正确处理 rename，且不会把 Foo.java
+        // 前缀误匹配为 Foo.java.bak。删除文件的 new-side 是 /dev/null，自然不可标注。
+        java.util.regex.Pattern newPathPattern = java.util.regex.Pattern.compile(
+            "(?m)^\\+\\+\\+ b/" + java.util.regex.Pattern.quote(targetFile) + "\\r?$");
+        java.util.regex.Matcher newPathMatcher = newPathPattern.matcher(diffText);
+        if (!newPathMatcher.find()) {
+            return -1;
+        }
+        int fileStart = diffText.lastIndexOf("diff --git ", newPathMatcher.start());
         if (fileStart == -1) {
-            fileMarker = "diff --git b/" + targetFile;
-            fileStart = diffText.indexOf(fileMarker);
-            if (fileStart == -1) return -1;
+            return -1;
         }
 
-        int nextFileStart = diffText.indexOf("diff --git ", fileStart + fileMarker.length());
+        int nextFileStart = diffText.indexOf("diff --git ", newPathMatcher.end());
         String fileBlock = nextFileStart == -1
             ? diffText.substring(fileStart)
             : diffText.substring(fileStart, nextFileStart);
@@ -247,7 +268,7 @@ public class ResultFeedback {
         };
     }
 
-    private String toAnnotationLevel(String sev) {
+    private static String toAnnotationLevel(String sev) {
         return switch (sev) {
             case "CRITICAL" -> "failure";
             case "WARNING" -> "warning";
@@ -255,7 +276,7 @@ public class ResultFeedback {
         };
     }
 
-    private String ellipsis(String s, int max) {
+    private static String ellipsis(String s, int max) {
         if (s == null) return "";
         return s.length() <= max ? s : s.substring(0, max - 3) + "...";
     }
