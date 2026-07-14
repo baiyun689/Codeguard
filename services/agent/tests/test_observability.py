@@ -302,6 +302,76 @@ def test_trace_view_main_stages_resolve_without_copying_state_values():
     )
 
 
+def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
+    events = []
+    sequence = 0
+
+    def node(name: str, output: dict) -> None:
+        nonlocal sequence
+        sequence += 1
+        run_id = f"{name}-run"
+        events.append(_flow_event(sequence, "node_start", name, name, run_id))
+        sequence += 1
+        events.append(
+            _flow_event(
+                sequence,
+                "node_end",
+                name,
+                name,
+                run_id,
+                detail={"output": output},
+            )
+        )
+
+    node("summary", {"diff_summary": "summary"})
+    node("diff_task_builder", {"review_tasks": [{"id": "task-1"}]})
+    node("risk_triage", {"risk_profiles": {"task-1": {}}})
+    node("task_rank", {"task_selection": {"selected_task_ids": ["task-1"]}})
+    node("context_provider", {"task_context_bundles": {"task-1": {}}})
+    for reviewer in (
+        "discover_threat_model",
+        "discover_behavior",
+        "discover_maintainability",
+    ):
+        node(reviewer, {"candidate_issues": []})
+    node("council_coordinator", {"council_trace": []})
+    node("evidence_planner", {"evidence_requests": []})
+    node("evidence_agent", {"evidence_notes": []})
+    node("council_judge", {"final_issues": [], "council_stats": {}})
+
+    view = build_trace_view(
+        TraceReport(
+            run_id="phase5-run",
+            timestamp="2026-07-14T00:00:00",
+            events=events,
+        )
+    )
+
+    assert [stage["code_name"] for stage in view["main_stages"]] == [
+        "summary",
+        "diff_task_builder",
+        "risk_triage",
+        "task_rank",
+        "context_provider",
+        "review_council",
+        "coordination_loop",
+        "council_judge",
+    ]
+    assert all(section["step_ids"] for section in view["reviewer_sections"])
+    assert {
+        view["steps"][step_id]["code_name"]
+        for step_id in view["coordination_steps"]
+    } == {
+        "council_coordinator",
+        "evidence_planner",
+        "evidence_agent",
+        "council_judge",
+    }
+    assert {"review_tasks", "risk_profiles", "task_selection", "evidence_requests"} <= set(
+        view["state_writes"]
+    )
+
+
 def test_trace_view_indexes_state_writes_from_hidden_discover_nodes():
     report = TraceReport(
         run_id="discover-state-run",
@@ -527,8 +597,9 @@ class TestTraceReport:
 class TestPhaseMapping:
     def test_all_nodes_have_phase(self):
         expected = {
-            "summary", "context_provider", "discover_threat_model", "discover_behavior",
-            "discover_maintainability", "council_coordinator", "evidence_agent", "council_judge",
+            "summary", "diff_task_builder", "risk_triage", "task_rank", "context_provider",
+            "discover_threat_model", "discover_behavior", "discover_maintainability",
+            "council_coordinator", "evidence_planner", "evidence_agent", "council_judge",
             "prepare", "review", "collect",
         }
         assert set(_NODE_PHASE_MAP.keys()) == expected

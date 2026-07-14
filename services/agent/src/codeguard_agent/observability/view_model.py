@@ -27,15 +27,23 @@ REVIEWERS: dict[str, tuple[str, str, str]] = {
 
 _NODE_TITLES: dict[str, str] = {
     "summary": "变更摘要",
+    "diff_task_builder": "审查任务构建",
+    "risk_triage": "风险分诊",
+    "task_rank": "任务选择",
     "context_provider": "上下文构建",
+    "discover_threat_model": "安全候选发现",
+    "discover_behavior": "行为候选发现",
+    "discover_maintainability": "可维护性候选发现",
     "prepare": "准备审查",
     "collect": "汇总候选问题",
     "council_coordinator": "委员会协调",
+    "evidence_planner": "证据规划",
     "evidence_agent": "证据补充",
     "council_judge": "委员会裁决",
 }
 _COORDINATION_NODES = {
     "council_coordinator",
+    "evidence_planner",
     "evidence_agent",
     "challenge_agent",
     "council_judge",
@@ -236,11 +244,19 @@ def _main_stages(
         by_name[step["code_name"]].append(step)
 
     stages: list[dict[str, Any]] = []
+    stages.append(_main_stage("summary", "变更摘要", by_name.get("summary")))
     for code_name, title in (
-        ("summary", "变更摘要"),
-        ("context_provider", "上下文构建"),
+        ("diff_task_builder", "审查任务构建"),
+        ("risk_triage", "风险分诊"),
+        ("task_rank", "任务选择"),
     ):
-        stages.append(_main_stage(code_name, title, by_name.get(code_name)))
+        if code_name in by_name:
+            stages.append(_main_stage(code_name, title, by_name[code_name]))
+    stages.append(_main_stage(
+        "context_provider",
+        "上下文构建",
+        by_name.get("context_provider"),
+    ))
 
     stages.append({
         "id": "main:review_council",
@@ -303,7 +319,7 @@ def _coordination_loop_step(
     coordination = [
         step
         for step in node_steps
-        if step["code_name"] in {"council_coordinator", "evidence_agent"}
+        if step["code_name"] in _COORDINATION_NODES
     ]
     route_count = sum(
         1
@@ -328,6 +344,15 @@ def _coordination_loop_step(
         for step in coordination
         if step["code_name"] == "evidence_agent"
     )
+    planner_count = sum(
+        1
+        for step in coordination
+        if step["code_name"] == "evidence_planner"
+    )
+    summary_parts = [f"协调 {coordinator_count} 次"]
+    if planner_count:
+        summary_parts.append(f"证据规划 {planner_count} 次")
+    summary_parts.extend((f"证据补充 {evidence_count} 次", f"路由 {route_count} 次"))
     return {
         "id": "group:coordination_loop",
         "sequence": min(
@@ -344,10 +369,7 @@ def _coordination_loop_step(
         "end_sequence": None,
         "duration_ms": sum(step["duration_ms"] for step in coordination),
         "status": "complete" if coordination else "missing",
-        "summary": (
-            f"协调 {coordinator_count} 次，证据补充 {evidence_count} 次，"
-            f"路由 {route_count} 次"
-        ),
+        "summary": "，".join(summary_parts),
     }
 
 
@@ -408,6 +430,16 @@ def _reviewer_sections(
             if str(step["node_path"]).split("/", 1)[0] == path_root
             and not step.get("hidden")
         ]
+        if not owned:
+            # Phase 4+ 的 task-scoped 发现者把发现流程收敛为单个
+            # discover_* 节点，不再产生旧 prepare/review/collect 子节点。
+            # 该 wrapper 节点仍有 candidate_issues 等 State patch，必须作为
+            # Reviewer 面板的可见锚点，不能因其被 State 视图标为 hidden 而丢失。
+            owned = [
+                step
+                for step in steps.values()
+                if step["code_name"] == path_root
+            ]
         owned.sort(key=lambda item: item["sequence"])
         round_number = 0
         for step in owned:

@@ -25,11 +25,15 @@ logger = logging.getLogger("codeguard.observability")
 
 _NODE_PHASE_MAP: dict[str, str] = {
     "summary": "outer_graph",
+    "diff_task_builder": "task_routing",
+    "risk_triage": "task_routing",
+    "task_rank": "task_routing",
     "context_provider": "outer_graph",
     "discover_threat_model": "reviewer_subgraph",
     "discover_behavior": "reviewer_subgraph",
     "discover_maintainability": "reviewer_subgraph",
     "council_coordinator": "outer_graph",
+    "evidence_planner": "evidence",
     "evidence_agent": "evidence",
     "council_judge": "judge",
     "prepare": "reviewer_subgraph",
