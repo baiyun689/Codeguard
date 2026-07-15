@@ -90,9 +90,9 @@ UPSTREAM_QUESTIONS = {
 }
 
 
-def _dossier(*facts: SimpleNamespace) -> SimpleNamespace:
+def _dossier(*facts: SimpleNamespace, file_path: str = "src/OrderService.java") -> SimpleNamespace:
     task = SimpleNamespace(
-        file="src/OrderService.java",
+        file=file_path,
         hunk_header="@@ -12,2 +12,2 @@",
         changed_lines=[12],
     )
@@ -303,3 +303,19 @@ def test_callers_upstream_uses_exact_file_and_resolved_method_query():
 def test_recipes_do_not_expose_unused_caller_combinations():
     assert not hasattr(recipes, "file_callers")
     assert not hasattr(recipes, "file_metrics_callers")
+
+
+def test_file_metrics_skips_get_code_metrics_for_non_java_file():
+    """非 .java 文件只调 get_file_content，不调 get_code_metrics。"""
+    dossier_non_java = _dossier(file_path="pom.xml")
+    calls = recipes.file_metrics(dossier_non_java)
+    tool_names = {c.tool_name for c in calls}
+    assert tool_names == {"get_file_content"}
+
+
+def test_file_metrics_includes_get_code_metrics_for_java_file():
+    """.java 文件同时调 get_file_content 和 get_code_metrics。"""
+    dossier_java = _dossier(file_path="src/main/java/com/example/UserService.java")
+    calls = recipes.file_metrics(dossier_java)
+    tool_names = {c.tool_name for c in calls}
+    assert tool_names == {"get_file_content", "get_code_metrics"}

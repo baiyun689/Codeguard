@@ -74,6 +74,9 @@ public final class GetCodeMetricsTool implements AgentTool {
         if (!Files.isRegularFile(fullPath)) {
             return ToolResult.error("文件不存在: " + filePath);
         }
+        if (!filePath.endsWith(".java")) {
+            return ToolResult.error("非 Java 源文件,无法计算代码度量: " + filePath);
+        }
 
         String source;
         try {

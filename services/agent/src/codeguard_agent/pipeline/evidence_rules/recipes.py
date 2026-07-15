@@ -28,13 +28,16 @@ def file_sensitive(dossier: "CandidateDossier") -> list[ToolCallSpec]:
 
 
 def file_metrics(dossier: "CandidateDossier") -> list[ToolCallSpec]:
-    return [
-        *file_only(dossier),
-        ToolCallSpec(
-            tool_name="get_code_metrics",
-            arguments=(("file_path", dossier.task.file),),
-        ),
-    ]
+    """收集文件内容，仅对 .java 文件额外调用 get_code_metrics。"""
+    calls = [*file_only(dossier)]
+    if dossier.task.file.endswith(".java"):
+        calls.append(
+            ToolCallSpec(
+                tool_name="get_code_metrics",
+                arguments=(("file_path", dossier.task.file),),
+            )
+        )
+    return calls
 
 
 def callers_upstream(dossier: "CandidateDossier") -> list[ToolCallSpec]:
