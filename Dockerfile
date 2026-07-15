@@ -3,7 +3,7 @@ FROM eclipse-temurin:21-jre
 # Install Python 3.12 and git
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-venv git && \
+        python3 python3-pip python3-venv git wget && \
     rm -rf /var/lib/apt/lists/*
 
 # Make `python` available (Debian packages provide `python3`)

@@ -23,40 +23,42 @@ public class ResultFeedback {
         this.client = client;
     }
 
-    public void postResults(ReviewJob job) {
-        if (client == null || job.getResultJson() == null || job.getResultJson().isBlank()) return;
+    public boolean postResults(ReviewJob job) {
+        if (client == null || job.getResultJson() == null || job.getResultJson().isBlank()) return true;
 
         JsonNode root;
         try {
             root = MAPPER.readTree(job.getResultJson());
         } catch (Exception e) {
             log.error("结果 JSON 解析失败: {}", job.dedupKey(), e);
-            return;
+            return false;
         }
         JsonNode issues = root.path("issues");
-        if (!issues.isArray()) return;
+        if (!issues.isArray()) return false;
 
         List<JsonNode> issueList = new ArrayList<>();
         issues.forEach(issueList::add);
 
         // Check Run —— annotations 失败不阻塞后续反馈
-        completeCheckRunSafe(job, issueList);
+        boolean delivered = completeCheckRunSafe(job, issueList);
 
         // 行级评论 —— Check Run 失败也继续执行
         try {
             postHighSeverityComments(job, issueList);
         } catch (Exception e) {
             log.error("行级评论失败: {}", job.dedupKey(), e);
+            delivered = false;
         }
+        return delivered;
     }
 
-    private void completeCheckRunSafe(ReviewJob job, List<JsonNode> issueList) {
+    private boolean completeCheckRunSafe(ReviewJob job, List<JsonNode> issueList) {
         long checkRunId;
         try {
             checkRunId = client.createCheckRun(job.getRepo(), job.getHeadSha(), job.getInstallationId());
         } catch (Exception e) {
             log.error("创建 Check Run 失败: {}", job.dedupKey(), e);
-            return;
+            return false;
         }
 
         String conclusion = determineConclusion(issueList);
@@ -67,13 +69,16 @@ public class ResultFeedback {
         try {
             client.completeCheckRun(job.getRepo(), checkRunId, conclusion, title,
                 summary, annotations, job.getInstallationId());
+            return true;
         } catch (Exception e) {
             log.warn("Check Run 带 annotations 完成失败，降级为无 annotations: {}", e.getMessage());
             try {
                 client.completeCheckRun(job.getRepo(), checkRunId, conclusion, title,
                     summary, List.of(), job.getInstallationId());
+                return true;
             } catch (Exception e2) {
                 log.error("Check Run 无 annotations 降级也失败: {}", e2.getMessage());
+                return false;
             }
         }
     }

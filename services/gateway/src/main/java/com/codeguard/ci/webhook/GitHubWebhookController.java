@@ -78,6 +78,14 @@ public class GitHubWebhookController {
             // Idempotency check
             Optional<ReviewJob> existing = repo.findByDedupKey(
                 payload.repoFullName(), payload.prNumber(), payload.headSha());
+            if (existing.isPresent() && existing.get().getStatus() == ReviewJob.Status.PENDING) {
+                boolean accepted = scheduler.submit(existing.get());
+                ctx.status(accepted ? 202 : 503).json(Map.of(
+                    "status", accepted ? "accepted" : "queue_full",
+                    "job_id", existing.get().getId()
+                ));
+                return;
+            }
             if (existing.isPresent() && existing.get().getStatus() != ReviewJob.Status.FAILED) {
                 ctx.status(200).json(Map.of(
                     "status", "already_processed",

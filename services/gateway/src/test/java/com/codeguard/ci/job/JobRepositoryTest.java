@@ -99,6 +99,14 @@ class JobRepositoryTest {
         assertEquals("def456", unfinished.get(0).getHeadSha());
     }
 
+    @Test
+    void pingReflectsIdempotentClose() {
+        assertTrue(repo.ping());
+        repo.close();
+        assertFalse(repo.ping());
+        assertDoesNotThrow(repo::close);
+    }
+
     /** 创建测试用的 ReviewJob（最小字段） */
     private static ReviewJob newJob(String repo, int prNumber, String headSha) {
         ReviewJob job = new ReviewJob(repo, prNumber, headSha, "refs/heads/main",

@@ -1,89 +1,99 @@
 package com.codeguard.toolserver;
 
+import com.codeguard.ci.executor.ResultFeedback;
+import com.codeguard.ci.executor.ReviewExecutorImpl;
+import com.codeguard.ci.github.GitHubClient;
+import com.codeguard.ci.guard.ReviewGuard;
+import com.codeguard.ci.job.JobRepository;
+import com.codeguard.ci.job.JobScheduler;
+import com.codeguard.ci.webhook.GitHubWebhookController;
 import io.javalin.Javalin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Codeguard 工具服务应用。
- * <p>
- * 用 Javalin 暴露工具回调端点 + 健康检查,可作为独立进程启动,供 Python Agent 回调。
- * 默认端口 9090,可用环境变量 {@code CODEGUARD_TOOL_SERVER_PORT} 覆盖。
- */
-public final class ToolServerApp {
+import java.util.concurrent.TimeUnit;
 
+/** Owns the HTTP server and all CI resources for one Gateway process. */
+public final class ToolServerApp {
     private static final Logger log = LoggerFactory.getLogger(ToolServerApp.class);
-    private static final int DEFAULT_PORT = 9090;
 
     private final Javalin app;
+    private final GatewaySettings settings;
+    private final GatewayMetrics metrics;
+    private JobRepository jobRepository;
+    private JobScheduler scheduler;
+    private boolean pythonReady = true;
 
     public ToolServerApp() {
+        this(GatewaySettings.fromEnv());
+    }
+
+    ToolServerApp(GatewaySettings settings) {
+        this.settings = settings;
+        this.metrics = new GatewayMetrics();
         this.app = Javalin.create(cfg -> {
             cfg.showJavalinBanner = false;
             cfg.http.maxRequestSize = 10_000_000L;
         });
-        new ToolServerController().registerRoutes(app);
-        app.get("/health", ctx -> ctx.result("OK"));
+        new ToolServerController(metrics).registerRoutes(app);
+        configureCi();
+        new OperationalController(this::ready, metrics).register(app);
+    }
 
-        // CI 集成: webhook 端点
-        String webhookSecret = System.getenv("CODEGUARD_WEBHOOK_SECRET");
-        if (webhookSecret != null && !webhookSecret.isBlank()) {
-            var jobRepo = new com.codeguard.ci.job.JobRepository("./data/codeguard-jobs");
-            String githubToken = System.getenv().getOrDefault("CODEGUARD_GITHUB_TOKEN", "");
+    private void configureCi() {
+        if (settings.webhookSecret().isBlank()) return;
+        jobRepository = new JobRepository(settings.jobDbPath().toString());
+        GitHubClient githubClient = null;
+        if (!settings.githubAppId().isBlank() && !settings.githubPrivateKey().isBlank()) {
+            githubClient = new GitHubClient(settings.githubAppId(), settings.githubPrivateKey());
+        }
+        ResultFeedback feedback = githubClient == null ? null : new ResultFeedback(githubClient);
+        var executor = new ReviewExecutorImpl(settings.workspaceDir(), settings.githubToken(),
+            settings.reviewTimeout(), settings.pythonCommand());
+        scheduler = new JobScheduler(jobRepository, settings.maxConcurrentReviews(), executor,
+            settings.retryDelay(), settings.shutdownGrace(), feedback == null ? null : feedback::postResults, metrics);
+        pythonReady = probePython(settings.pythonCommand());
+        scheduler.start();
 
-            // GitHub App 客户端（用于 Check Runs + PR 评论）
-            com.codeguard.ci.github.GitHubClient githubClient = null;
-            String appId = System.getenv("CODEGUARD_GITHUB_APP_ID");
-            String privateKey = System.getenv("CODEGUARD_GITHUB_PRIVATE_KEY");
-            if (appId != null && !appId.isBlank() && privateKey != null && !privateKey.isBlank()) {
-                githubClient = new com.codeguard.ci.github.GitHubClient(appId, privateKey);
-            }
+        var guard = new ReviewGuard(settings.webhookRateLimit(), settings.maxDiffLines());
+        new GitHubWebhookController(settings.webhookSecret(), jobRepository, scheduler, guard).register(app);
+        log.info("GitHub webhook 端点已启用: POST /webhooks/github");
+    }
 
-            var feedback = githubClient != null
-                ? new com.codeguard.ci.executor.ResultFeedback(githubClient) : null;
-            var executor = new com.codeguard.ci.executor.ReviewExecutorImpl(
-                jobRepo,
-                java.nio.file.Path.of(System.getProperty("java.io.tmpdir", "/tmp"), "codeguard-jobs"),
-                githubToken,
-                feedback
-            );
-            var scheduler = new com.codeguard.ci.job.JobScheduler(jobRepo, 2, executor::accept);
-            scheduler.start();
+    private boolean ready() {
+        if (scheduler == null) return true;
+        return pythonReady && jobRepository != null && jobRepository.ping() && scheduler.isReady();
+    }
 
-            double rateLimit = Double.parseDouble(System.getenv().getOrDefault("CODEGUARD_WEBHOOK_RATE_LIMIT", "0.5"));
-            int maxDiff = Integer.parseInt(System.getenv().getOrDefault("CODEGUARD_MAX_DIFF_LINES", "5000"));
-            var guard = new com.codeguard.ci.guard.ReviewGuard(rateLimit, maxDiff);
-
-            var webhookCtrl = new com.codeguard.ci.webhook.GitHubWebhookController(webhookSecret, jobRepo, scheduler, guard);
-            webhookCtrl.register(app);
-            log.info("GitHub webhook 端点已启用: POST /webhooks/github");
+    private static boolean probePython(String python) {
+        try {
+            Process process = new ProcessBuilder(python, "--version").start();
+            boolean finished = process.waitFor(5, TimeUnit.SECONDS);
+            if (!finished) process.destroyForcibly();
+            return finished && process.exitValue() == 0;
+        } catch (Exception unavailable) {
+            log.error("Python Agent 初始化检查失败: {}", unavailable.getMessage());
+            return false;
         }
     }
 
     public static int resolvePort() {
-        String env = System.getenv("CODEGUARD_TOOL_SERVER_PORT");
-        if (env != null && !env.isBlank()) {
-            return Integer.parseInt(env.trim());
-        }
-        return DEFAULT_PORT;
+        return GatewaySettings.fromEnv().port();
     }
+
+    public int port() { return settings.port(); }
 
     public void start(int port) {
         app.start(port);
-        log.info("Codeguard 工具服务已启动,端口 {}", port);
-        log.info("  POST   /api/v1/tools/session       创建会话");
-        log.info("  DELETE /api/v1/tools/session/{{id}}  销毁会话");
-        log.info("  POST   /api/v1/tools/{{name}}        工具调用(需 X-Session-Id)");
-        log.info("  GET    /health                     健康检查");
+        log.info("Codeguard 工具服务已启动,端口 {} (single-instance mode)", port);
     }
 
     public void stop() {
-        app.stop();
+        app.stop(); // reject new webhooks before draining review workers
+        if (scheduler != null) scheduler.close();
+        else if (jobRepository != null) jobRepository.close();
         log.info("Codeguard 工具服务已停止");
     }
 
-    /** 暴露底层 Javalin 实例,便于测试中按需取用。 */
-    public Javalin javalin() {
-        return app;
-    }
+    public Javalin javalin() { return app; }
 }

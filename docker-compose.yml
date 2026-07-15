@@ -15,12 +15,22 @@ services:
       # Review config
       - CODEGUARD_TOOL_SERVER_URL=http://localhost:9090
       - CODEGUARD_MAX_CONCURRENT_REVIEWS=${CODEGUARD_MAX_CONCURRENT_REVIEWS:-2}
+      - CODEGUARD_REVIEW_TIMEOUT_SECONDS=${CODEGUARD_REVIEW_TIMEOUT_SECONDS:-600}
+      - CODEGUARD_RETRY_DELAY_SECONDS=${CODEGUARD_RETRY_DELAY_SECONDS:-30}
+      - CODEGUARD_SHUTDOWN_GRACE_SECONDS=${CODEGUARD_SHUTDOWN_GRACE_SECONDS:-30}
+      - CODEGUARD_JOB_DB_PATH=/app/data/codeguard-jobs
+      - CODEGUARD_WORKSPACE_DIR=/tmp/codeguard-jobs
       - CODEGUARD_WEBHOOK_RATE_LIMIT=${CODEGUARD_WEBHOOK_RATE_LIMIT:-30}
       - CODEGUARD_MAX_DIFF_LINES=${CODEGUARD_MAX_DIFF_LINES:-5000}
     volumes:
       - gateway-data:/app/data
       - job-workspaces:/tmp/codeguard-jobs
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/health/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 volumes:
   gateway-data:

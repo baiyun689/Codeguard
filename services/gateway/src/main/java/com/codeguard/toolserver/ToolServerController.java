@@ -34,6 +34,16 @@ public final class ToolServerController {
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final ToolSessionManager sessionManager = new ToolSessionManager();
+    private final GatewayMetrics metrics;
+
+    public ToolServerController() {
+        this(new GatewayMetrics());
+    }
+
+    public ToolServerController(GatewayMetrics metrics) {
+        this.metrics = metrics;
+        metrics.gaugeToolSessions(sessionManager, ToolSessionManager::activeSessionCount);
+    }
 
     public void registerRoutes(Javalin app) {
         app.post("/api/v1/tools/session", this::handleCreateSession);
@@ -98,11 +108,13 @@ public final class ToolServerController {
 
             int n = session.getContext().incrementToolCalls();
             ToolResult result = tool.execute(input, session.getContext());
+            metrics.toolCall(toolName, result.isSuccess() ? "success" : "error");
             // 记录工具调用,便于观测"工具利用率"(对照实验指标)与排障。
             log.info("工具调用 [{}] {}(\"{}\") -> {}", session.getId(), toolName, input,
                     result.isSuccess() ? "ok" : "err:" + result.getError());
             ctx.json(result.isSuccess() ? success(result.getResult()) : error(result.getError()));
         } catch (Exception e) {
+            metrics.toolCall(toolName, "error");
             log.error("工具执行失败: {}", toolName, e);
             ctx.json(error("工具执行失败: " + e.getMessage()));
         }

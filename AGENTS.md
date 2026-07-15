@@ -22,6 +22,9 @@ git diff → [Summary] → DiffTaskBuilder → RiskTriage → TaskRank → Conte
 CouncilJudge -- needs_more_evidence 且未超轮次 --> EvidencePlanner
 ```
 
+Java Gateway 的单实例 CI 执行底座已按 ADR-044 加固：一次执行返回结构化 outcome，调度器负责
+H2 状态、非阻塞重试、恢复、反馈与停机；workspace 按完整 SHA 隔离，并提供 readiness 与 Prometheus。
+
 ReviewCouncil 发现者由 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent` 方法论分工;最终 category 仍兼容 `security` / `logic` / `quality`。三类发现者各自声明工具 allowlist，并通过 `CandidateIssue` / `EvidenceRequest` / `EvidenceNote(findings)` / `Verdict` / `CouncilTrace` 结构化黑板通信。EvidencePlanner 是 `evidence_requests` 唯一写入者；EvidenceAgent 只执行静态策略；CouncilJudge 做目的感知裁决与全局聚合。旧 Supervisor 图迁移到 `services/agent/legacy/supervisor_graph/`,仅作历史参考,不作为默认路径、feature flag 或 eval profile 回退。
 
 阶段 2(管线化)已完成并存档:**并行三领域审查(security/logic/quality)→ 聚合去重 → 误报过滤**。
@@ -117,7 +120,9 @@ Codeguard/
             ├── agent/core/       # AgentTool 接口 / ToolResult 信封 / AgentContext
             ├── agent/tools/      # ToolRegistry / FileAccessSandbox(护栏)/ GetFileContentTool / GetRepoMapTool
             ├── agent/repomap/    # ★get_repo_map:TagExtractor 接口(JavaTagExtractor=JavaParser,TagExtractorRegistry 按扩展名路由)+ PageRank + RepoMapRanker + RepoMapRenderer + RepoMapBuilder
-            └── toolserver/       # ToolServerApp + Controller(通用 /tools/{name} 分发)+ SessionManager + Main
+            ├── ci/executor/      # 单次审查执行、进程协议/超时/输出限制与 Git 凭据护栏
+            ├── ci/job/           # H2 JobRepository + 非阻塞 JobScheduler + 启动恢复/停机
+            └── toolserver/       # 工具路由 + GatewaySettings + live/ready/metrics + 生命周期所有权
 ```
 
 带 ★ 的是改动时最需要小心的核心文件。
@@ -228,6 +233,12 @@ python -m evals.runner --runs 3 --judge  # 额外开 LLM-as-judge
 | `CODEGUARD_TRACE_ENABLED` | `false` | 历史本地 HTML Trace；仅在传 `--trace` 或显式设为 true 时运行 |
 | `LANGSMITH_TRACING` | `false` | LangSmith 标准开关；设为 true 后由 LangGraph/LangChain 自动追踪 |
 | `LANGSMITH_PROJECT` | `codeguard-phase5-test` | LangSmith 测试追踪项目名；需同时设置 `LANGSMITH_API_KEY` |
+| `CODEGUARD_MAX_CONCURRENT_REVIEWS` | `2` | Java CI 单实例最大并发审查数 |
+| `CODEGUARD_REVIEW_TIMEOUT_SECONDS` | `600` | Python 审查子进程超时 |
+| `CODEGUARD_RETRY_DELAY_SECONDS` | `30` | 可重试失败的非阻塞延迟 |
+| `CODEGUARD_SHUTDOWN_GRACE_SECONDS` | `30` | 停机等待活动审查的最长时间 |
+| `CODEGUARD_JOB_DB_PATH` | `./data/codeguard-jobs` | H2 job 数据库路径 |
+| `CODEGUARD_WORKSPACE_DIR` | 系统临时目录 | SHA 隔离 workspace 根目录 |
 
 > **Windows/PowerShell 注意**:bash 的 `VAR=value cmd` 内联写法在 PowerShell 不生效,要先 `$env:VAR="value"` 再跑命令;或直接写 `.env`(推荐)。
 

@@ -1,78 +1,129 @@
 package com.codeguard.ci.executor;
 
-import com.codeguard.ci.job.JobRepository;
 import com.codeguard.ci.model.ReviewJob;
 import com.codeguard.ci.model.WebhookPayload;
-import com.codeguard.ci.model.ReviewJob.Status;
-import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import static org.junit.jupiter.api.Assertions.*;
 
-import java.nio.file.*;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.*;
 
 class ReviewExecutorImplTest {
 
+    private static final String VALID = "{\"issues\":[],\"summary\":\"clean\"}";
+
     @TempDir
-    Path workspacesDir;
+    Path workspaceRoot;
 
-    private JobRepository repo;
-    private ReviewExecutorImpl executor;
+    @Test
+    void acceptsValidReviewJsonWithExitZero() {
+        FakeCommandRunner runner = successfulRunner(0, VALID);
+        ReviewExecutionOutcome outcome = executor(runner).execute(job("sha-zero"));
 
-    @BeforeEach
-    void setUp() {
-        String dbPath = System.getProperty("java.io.tmpdir") + "/codeguard-exec-" + System.nanoTime();
-        repo = new JobRepository(dbPath);
-        executor = new ReviewExecutorImpl(repo, workspacesDir, "");
-    }
-
-    @AfterEach
-    void tearDown() {
-        repo.close();
+        var succeeded = assertInstanceOf(ReviewExecutionOutcome.Succeeded.class, outcome);
+        assertEquals(0, succeeded.processExitCode());
+        assertEquals(VALID, succeeded.resultJson());
+        assertEquals("diff", succeeded.diffText());
     }
 
     @Test
-    void shouldFailOnInvalidRepoClone() {
-        var job = new ReviewJob(new WebhookPayload(
-            "no-such-org/no-such-repo", "https://github.com/no-such-org/no-such-repo.git",
-            1, "abc123", "main", "head", 1L));
-        repo.insert(job);
+    void acceptsValidReviewJsonWithExitOneBecauseCriticalIsAProductResult() {
+        String critical = "{\"issues\":[{\"severity\":\"CRITICAL\"}],\"summary\":\"blocked\"}";
+        ReviewExecutionOutcome outcome = executor(successfulRunner(1, critical)).execute(job("sha-critical"));
 
-        executor.accept(job);
-
-        assertEquals(Status.FAILED, job.getStatus());
-        assertNotNull(job.getErrorMessage());
+        var succeeded = assertInstanceOf(ReviewExecutionOutcome.Succeeded.class, outcome);
+        assertEquals(1, succeeded.processExitCode());
+        assertEquals(critical, succeeded.resultJson());
     }
 
     @Test
-    void shouldSetDoneForEchoFallback() throws Exception {
-        // Create a fake git repo so clone doesn't fail
-        Path repoDir = workspacesDir.resolve("fake-org_fake-repo-pr-42");
-        Files.createDirectories(repoDir.resolve(".git"));
+    void rejectsExitOneWhenStdoutIsNotReviewResultJson() {
+        ReviewExecutionOutcome outcome = executor(successfulRunner(1, "not-json")).execute(job("sha-bad"));
 
-        var job = new ReviewJob(new WebhookPayload(
-            "fake-org/fake-repo", "https://github.com/fake-org/fake-repo.git",
-            42, "abc123", "main", "head", 1L));
-        repo.insert(job);
-
-        // Override cloneOrFetch by pre-creating the directory
-        // The executor will find .git and skip clone, then run Python CLI
-        executor.accept(job);
-
-        // Python may or may not be available — check that job reached a terminal state
-        assertTrue(job.getStatus() == Status.DONE || job.getStatus() == Status.FAILED,
-            "job should reach terminal state, got: " + job.getStatus());
+        var failed = assertInstanceOf(ReviewExecutionOutcome.Failed.class, outcome);
+        assertEquals(FailureCode.INVALID_REVIEW_OUTPUT, failed.code());
+        assertFalse(failed.retryable());
     }
 
     @Test
-    void shouldHandleEmptyStdout() {
-        var job = new ReviewJob(new WebhookPayload(
-            "fake/repo", "url", 1, "sha", "main", "head", 1L));
-        job.setStatus(Status.RUNNING);
-        repo.insert(job);
+    void rejectsJsonMissingReviewResultContractFields() {
+        ReviewExecutionOutcome outcome = executor(successfulRunner(0, "{\"issues\":[]}")).execute(job("sha-missing"));
 
-        // Directly call handleFailure to test retry logic
-        executor.handleFailure(job, true, "test empty output");
-        // First retry: should be RETRYING with count=1
-        assertEquals(1, job.getRetryCount());
+        var failed = assertInstanceOf(ReviewExecutionOutcome.Failed.class, outcome);
+        assertEquals(FailureCode.INVALID_REVIEW_OUTPUT, failed.code());
+    }
+
+    @Test
+    void usesFullShaToIsolateWorkspaces() {
+        FakeCommandRunner runner = new FakeCommandRunner();
+        ReviewExecutorImpl executor = executor(runner);
+
+        Path first = executor.workspaceFor(job("0123456789abcdef"));
+        Path second = executor.workspaceFor(job("0123456789abcdee"));
+
+        assertNotEquals(first, second);
+        assertTrue(first.toString().endsWith("0123456789abcdef"));
+    }
+
+    @Test
+    void passesTokenOnlyThroughGitEnvironmentAndNeverCommandArguments() {
+        FakeCommandRunner runner = successfulRunner(0, VALID);
+        executor(runner).execute(job("sha-secret"));
+
+        for (CommandSpec command : runner.commands) {
+            assertFalse(String.join(" ", command.command()).contains("very-secret-token"));
+            assertFalse(command.toString().contains("very-secret-token"));
+        }
+        assertTrue(runner.commands.stream()
+            .filter(c -> c.command().contains("git"))
+            .anyMatch(c -> c.environment().getOrDefault("GIT_CONFIG_VALUE_0", "")
+                .startsWith("AUTHORIZATION: basic ")));
+        assertTrue(runner.commands.stream()
+            .flatMap(c -> c.environment().values().stream())
+            .noneMatch(v -> v.contains("very-secret-token")));
+        assertFalse(SecretRedactor.redact("failed very-secret-token", "very-secret-token")
+            .contains("very-secret-token"));
+    }
+
+    private ReviewExecutorImpl executor(FakeCommandRunner runner) {
+        return new ReviewExecutorImpl(
+            workspaceRoot, "very-secret-token", Duration.ofSeconds(5), runner);
+    }
+
+    private static FakeCommandRunner successfulRunner(int reviewExit, String reviewStdout) {
+        FakeCommandRunner runner = new FakeCommandRunner();
+        runner.results.add(ok("")); // clone
+        runner.results.add(ok("")); // fetch base
+        runner.results.add(ok("")); // fetch PR
+        runner.results.add(ok("")); // checkout
+        runner.results.add(ok("diff"));
+        runner.results.add(new CommandResult(reviewExit, reviewStdout, "diagnostic", false, Duration.ofMillis(5)));
+        return runner;
+    }
+
+    private static CommandResult ok(String stdout) {
+        return new CommandResult(0, stdout, "", false, Duration.ofMillis(1));
+    }
+
+    private static ReviewJob job(String sha) {
+        return new ReviewJob(new WebhookPayload(
+            "acme/demo", "https://github.com/acme/demo.git", 42, sha, "main", "feature", 7L));
+    }
+
+    private static final class FakeCommandRunner implements CommandRunner {
+        private final ArrayDeque<CommandResult> results = new ArrayDeque<>();
+        private final List<CommandSpec> commands = new ArrayList<>();
+
+        @Override
+        public CommandResult run(CommandSpec spec) {
+            commands.add(spec);
+            return results.removeFirst();
+        }
     }
 }

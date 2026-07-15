@@ -1,0 +1,12 @@
+.git
+.worktrees
+.idea
+.vscode
+trace
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.venv
+services/gateway/target/*
+!services/gateway/target/codeguard-gateway.jar

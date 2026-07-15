@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - name: Verify Python Agent
+        working-directory: services/agent
+        run: |
+          uv sync --group dev
+          uv run pytest tests/ -q
+          uv run ruff check src/
+          uv run mypy src/
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Verify Java Gateway
+        working-directory: services/gateway
+        run: mvn --batch-mode verify
+      - name: Build container
+        run: docker build -t codeguard:ci .

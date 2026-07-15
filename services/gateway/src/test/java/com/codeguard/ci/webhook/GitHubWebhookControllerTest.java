@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.HexFormat;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -30,12 +31,17 @@ class GitHubWebhookControllerTest {
     void setUp() {
         String dbPath = System.getProperty("java.io.tmpdir") + "/codeguard-ctrl-" + System.nanoTime();
         repo = new JobRepository(dbPath);
-        scheduler = new JobScheduler(repo, 2, job -> {});
+        scheduler = new JobScheduler(repo, 2,
+            job -> new com.codeguard.ci.executor.ReviewExecutionOutcome.Succeeded(
+                "{\"issues\":[],\"summary\":\"ok\"}", "", 0, Duration.ZERO),
+            Duration.ofMillis(10), Duration.ofSeconds(1), null);
+        scheduler.start();
         controller = new GitHubWebhookController(SECRET, repo, scheduler);
     }
 
     @AfterEach
     void tearDown() {
+        scheduler.close();
         repo.close();
     }
 

@@ -16,6 +16,7 @@ import java.util.Optional;
 public class JobRepository implements AutoCloseable {
 
     private final Connection conn;
+    private boolean closed;
 
     /**
      * @param dbPath H2 数据库文件路径（不含 jdbc:h2:file: 前缀）
@@ -60,7 +61,7 @@ public class JobRepository implements AutoCloseable {
      * @param job 待插入的 ReviewJob
      * @return 如果新行被创建返回包含 job 的 Optional；如果已存在（重复）返回 Optional.empty()
      */
-    public Optional<ReviewJob> insert(ReviewJob job) {
+    public synchronized Optional<ReviewJob> insert(ReviewJob job) {
         // 先检查是否已存在，用于区分"新建"和"重复"
         if (findByDedupKey(job.getRepo(), job.getPrNumber(), job.getHeadSha()).isPresent()) {
             return Optional.empty();
@@ -102,7 +103,7 @@ public class JobRepository implements AutoCloseable {
     /**
      * 按去重键查询，用于幂等性检查。
      */
-    public Optional<ReviewJob> findByDedupKey(String repo, int prNumber, String headSha) {
+    public synchronized Optional<ReviewJob> findByDedupKey(String repo, int prNumber, String headSha) {
         String sql = "SELECT * FROM review_jobs WHERE repo = ? AND pr_number = ? AND head_sha = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, repo);
@@ -123,7 +124,7 @@ public class JobRepository implements AutoCloseable {
      * 更新 job 的状态、结果、重试次数、错误信息和更新时间。
      * 按 id 定位。
      */
-    public void update(ReviewJob job) {
+    public synchronized void update(ReviewJob job) {
         String sql = """
             UPDATE review_jobs
             SET status = ?, result_json = ?, retry_count = ?, error_message = ?, diff_text = ?, updated_at = CURRENT_TIMESTAMP
@@ -145,7 +146,7 @@ public class JobRepository implements AutoCloseable {
     /**
      * 查找所有未完成的 job（PENDING / RUNNING / RETRYING），用于启动恢复。
      */
-    public List<ReviewJob> findUnfinished() {
+    public synchronized List<ReviewJob> findUnfinished() {
         String sql = "SELECT * FROM review_jobs WHERE status IN ('PENDING', 'RUNNING', 'RETRYING')";
         List<ReviewJob> jobs = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(sql);
@@ -190,12 +191,24 @@ public class JobRepository implements AutoCloseable {
         return job;
     }
 
+    public synchronized boolean ping() {
+        if (closed) return false;
+        try (Statement statement = conn.createStatement();
+             ResultSet result = statement.executeQuery("SELECT 1")) {
+            return result.next() && result.getInt(1) == 1;
+        } catch (SQLException ignored) {
+            return false;
+        }
+    }
+
     @Override
-    public void close() {
+    public synchronized void close() {
+        if (closed) return;
         try {
             if (conn != null && !conn.isClosed()) {
                 conn.close();
             }
+            closed = true;
         } catch (SQLException e) {
             throw new RuntimeException("关闭数据库连接失败", e);
         }

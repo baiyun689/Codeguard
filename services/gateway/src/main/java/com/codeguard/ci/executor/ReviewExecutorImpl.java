@@ -1,248 +1,210 @@
 package com.codeguard.ci.executor;
 
-import com.codeguard.ci.job.JobRepository;
 import com.codeguard.ci.model.ReviewJob;
-import com.codeguard.ci.model.ReviewJob.Status;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.*;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
-import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
-/**
- * 审查执行器: git clone/fetch + ProcessBuilder 调 Python CLI + 结果解析 + 重试。
- */
-public class ReviewExecutorImpl {
-
+/** Executes one isolated review attempt. Persistence, retry and feedback belong to JobScheduler. */
+public final class ReviewExecutorImpl implements ReviewExecutor {
     private static final Logger log = LoggerFactory.getLogger(ReviewExecutorImpl.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final int STDOUT_LIMIT = 10 * 1024 * 1024;
+    private static final int STDERR_LIMIT = 64 * 1024;
 
-    private final JobRepository repo;
-    private final Path workspacesDir;
+    private final Path workspaceRoot;
     private final String githubToken;
-    private final ResultFeedback feedback;
+    private final Duration reviewTimeout;
+    private final CommandRunner runner;
+    private final String pythonCommand;
 
-    public ReviewExecutorImpl(JobRepository repo, Path workspacesDir, String githubToken) {
-        this(repo, workspacesDir, githubToken, null);
+    public ReviewExecutorImpl(Path workspaceRoot, String githubToken, Duration reviewTimeout) {
+        this(workspaceRoot, githubToken, reviewTimeout,
+            System.getenv().getOrDefault("CODEGUARD_PYTHON", "python"), new ProcessCommandRunner());
     }
 
-    public ReviewExecutorImpl(JobRepository repo, Path workspacesDir, String githubToken,
-                              ResultFeedback feedback) {
-        this.repo = repo;
-        this.workspacesDir = workspacesDir;
-        this.githubToken = githubToken;
-        this.feedback = feedback;
+    ReviewExecutorImpl(Path workspaceRoot, String githubToken, Duration reviewTimeout, CommandRunner runner) {
+        this(workspaceRoot, githubToken, reviewTimeout,
+            System.getenv().getOrDefault("CODEGUARD_PYTHON", "python"), runner);
     }
 
-    /**
-     * 执行审查 job。供 JobScheduler 通过 Consumer&lt;ReviewJob&gt; 回调。
-     * 内部处理 git clone/fetch、Python CLI 调用、结果解析、重试。
-     */
-    public void accept(ReviewJob job) {
-        Path workdir = null;
+    public ReviewExecutorImpl(Path workspaceRoot, String githubToken, Duration reviewTimeout,
+                              String pythonCommand) {
+        this(workspaceRoot, githubToken, reviewTimeout, pythonCommand, new ProcessCommandRunner());
+    }
+
+    ReviewExecutorImpl(Path workspaceRoot, String githubToken, Duration reviewTimeout,
+                       String pythonCommand, CommandRunner runner) {
+        this.workspaceRoot = workspaceRoot;
+        this.githubToken = githubToken == null ? "" : githubToken;
+        this.reviewTimeout = reviewTimeout;
+        this.pythonCommand = pythonCommand;
+        this.runner = runner;
+    }
+
+    @Override
+    public ReviewExecutionOutcome execute(ReviewJob job) {
+        Instant started = Instant.now();
+        Path workspace = workspaceFor(job);
         try {
-            workdir = cloneOrFetch(job);
-            job.setDiffText(runGitDiff(workdir, job));
-            List<String> cmd = buildCommand(workdir, job);
-            String stdout = runProcess(cmd, workdir);
-
-            if (stdout == null || stdout.isBlank()) {
-                handleFailure(job, true, "审查输出为空");
-                return;
+            prepareWorkspace(job, workspace);
+            CommandResult diff = run(gitCommand(workspace,
+                "git", "diff", "origin/" + job.getBaseRef() + "..." + job.getHeadSha()), false);
+            if (diff.timedOut() || diff.exitCode() != 0) {
+                return failed(FailureCode.GIT_COMMAND_FAILED, diff, true, started);
             }
 
-            job.setResultJson(stdout);
-            job.setStatus(Status.DONE);
-            repo.update(job);
-            log.info("审查完成: {} PR#{}", job.getRepo(), job.getPrNumber());
-
-            // 结果反馈失败不影响审查结果（审查已完成，H2 已落盘）
-            if (feedback != null) {
-                try {
-                    feedback.postResults(job);
-                } catch (Exception e) {
-                    log.error("结果反馈失败(审查已完成): {}", job.dedupKey(), e);
-                }
+            CommandResult review = run(reviewCommand(workspace, job), true);
+            if (review.timedOut()) {
+                return new ReviewExecutionOutcome.Failed(FailureCode.PROCESS_TIMEOUT,
+                    "Python 审查进程超时", true, elapsed(started));
             }
-
-        } catch (IOException e) {
-            log.error("审查执行失败(IO): {}", job.dedupKey(), e);
-            handleFailure(job, false, e.getMessage());
-        } catch (InterruptedException e) {
+            if ((review.exitCode() == 0 || review.exitCode() == 1) && validReviewJson(review.stdout())) {
+                deleteWorkspace(workspace);
+                return new ReviewExecutionOutcome.Succeeded(review.stdout().trim(), diff.stdout(),
+                    review.exitCode(), elapsed(started));
+            }
+            if (!validReviewJson(review.stdout())) {
+                deleteWorkspace(workspace);
+                return new ReviewExecutionOutcome.Failed(FailureCode.INVALID_REVIEW_OUTPUT,
+                    "Python 输出不符合 ReviewResult JSON 契约", false, elapsed(started));
+            }
+            return failed(FailureCode.REVIEW_PROCESS_FAILED, review, true, started);
+        } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
-            handleFailure(job, true, "审查被中断");
-        } catch (ProcessTimeoutException e) {
-            log.error("审查超时: {}", job.dedupKey());
-            handleFailure(job, true, "审查进程超时 (10min)");
-        } catch (Exception e) {
-            log.error("审查执行失败: {}", job.dedupKey(), e);
-            handleFailure(job, isTransient(e), e.getMessage());
+            return new ReviewExecutionOutcome.Failed(FailureCode.INTERRUPTED,
+                "审查被中断", true, elapsed(started));
+        } catch (GitCommandException git) {
+            return new ReviewExecutionOutcome.Failed(git.code,
+                SecretRedactor.redact(git.getMessage(), githubToken), true, elapsed(started));
+        } catch (IOException io) {
+            return new ReviewExecutionOutcome.Failed(FailureCode.IO_ERROR,
+                SecretRedactor.redact(io.getMessage(), githubToken), true, elapsed(started));
+        } catch (RuntimeException unexpected) {
+            deleteWorkspace(workspace);
+            return new ReviewExecutionOutcome.Failed(FailureCode.IO_ERROR,
+                SecretRedactor.redact(unexpected.getMessage(), githubToken), false, elapsed(started));
         }
     }
 
-    // ── git clone/fetch ──
+    @Override
+    public void cleanup(ReviewJob job) {
+        deleteWorkspace(workspaceFor(job));
+    }
 
-    Path cloneOrFetch(ReviewJob job) throws IOException, InterruptedException {
-        String safeName = sanitizeDirName(job.getRepo()) + "-pr-" + job.getPrNumber();
-        Path dir = workspacesDir.resolve(safeName);
-        String cloneUrl = job.getCloneUrl();
+    Path workspaceFor(ReviewJob job) {
+        String repo = job.getRepo().replace('/', '_').replaceAll("[^a-zA-Z0-9_.-]", "");
+        String sha = job.getHeadSha().replaceAll("[^a-fA-F0-9]", "");
+        if (sha.isBlank()) sha = job.getHeadSha().replaceAll("[^a-zA-Z0-9_.-]", "");
+        return workspaceRoot.resolve(repo).resolve("pr-" + job.getPrNumber()).resolve(sha);
+    }
 
-        if (githubToken != null && !githubToken.isBlank() && cloneUrl.startsWith("https://")) {
-            cloneUrl = cloneUrl.replace("https://", "https://x-access-token:" + githubToken + "@");
+    private void prepareWorkspace(ReviewJob job, Path workspace) throws IOException, InterruptedException {
+        Files.createDirectories(workspace.getParent());
+        if (!Files.exists(workspace.resolve(".git"))) {
+            requireGitSuccess(run(gitCommand(workspace.getParent(),
+                "git", "clone", "--depth=50", job.getCloneUrl(), workspace.getFileName().toString()), false));
         }
+        requireGitSuccess(run(gitCommand(workspace, "git", "fetch", "origin",
+            job.getBaseRef() + ":refs/remotes/origin/" + job.getBaseRef()), false));
+        requireGitSuccess(run(gitCommand(workspace, "git", "fetch", "origin",
+            "pull/" + job.getPrNumber() + "/head"), false));
+        requireGitSuccess(run(gitCommand(workspace, "git", "checkout", "--detach", job.getHeadSha()), false));
+    }
 
-        if (Files.exists(dir.resolve(".git"))) {
-            log.info("fetch 已有仓库: {}", dir);
-            runCmd(dir, 2, TimeUnit.MINUTES, "git", "fetch", "origin");
-        } else {
-            log.info("clone 新仓库: {} → {}", cloneUrl, dir);
-            Files.createDirectories(dir.getParent());
-            runCmd(dir.getParent(), 2, TimeUnit.MINUTES,
-                "git", "clone", "--depth=50", cloneUrl, dir.getFileName().toString());
+    private void requireGitSuccess(CommandResult result) throws GitCommandException {
+        if (result.timedOut()) throw new GitCommandException(FailureCode.PROCESS_TIMEOUT, "git 命令超时");
+        if (result.exitCode() != 0) {
+            throw new GitCommandException(FailureCode.GIT_COMMAND_FAILED,
+                "git 命令失败: " + SecretRedactor.redact(result.stderr(), githubToken));
         }
-
-        // fetch base 分支 + PR 分支 + checkout 到 PR 的 head commit
-        runCmd(dir, 2, TimeUnit.MINUTES, "git", "fetch", "origin", job.getBaseRef() + ":" + "refs/remotes/origin/" + job.getBaseRef());
-        runCmd(dir, 2, TimeUnit.MINUTES, "git", "fetch", "origin", "pull/" + job.getPrNumber() + "/head");
-        runCmd(dir, 1, TimeUnit.MINUTES, "git", "checkout", job.getHeadSha());
-        return dir;
     }
 
-    private String sanitizeDirName(String repo) {
-        return repo.replace('/', '_').replaceAll("[^a-zA-Z0-9_.-]", "");
+    private CommandSpec gitCommand(Path directory, String... command) {
+        Map<String, String> env = new HashMap<>();
+        if (!githubToken.isBlank()) {
+            String credentials = Base64.getEncoder().encodeToString(
+                ("x-access-token:" + githubToken).getBytes(StandardCharsets.UTF_8));
+            env.put("GIT_CONFIG_COUNT", "1");
+            env.put("GIT_CONFIG_KEY_0", "http.https://github.com/.extraheader");
+            env.put("GIT_CONFIG_VALUE_0", "AUTHORIZATION: basic " + credentials);
+        }
+        return new CommandSpec(List.of(command), directory, env, Duration.ofMinutes(2),
+            STDOUT_LIMIT, STDERR_LIMIT);
     }
 
-    // ── Python CLI ──
-
-    List<String> buildCommand(Path workdir, ReviewJob job) {
-        String python = System.getenv().getOrDefault("CODEGUARD_PYTHON", "python");
-        List<String> cmd = new ArrayList<>(List.of(
-            python, "-m", "codeguard_agent", "review",
-            "--repo", workdir.toString(),
-            "--base", "origin/" + job.getBaseRef(),
-            "--format", "json"
-        ));
-        return cmd;
-    }
-
-    String runProcess(List<String> cmd, Path workdir)
-            throws IOException, InterruptedException, ProcessTimeoutException {
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.directory(workdir.toFile());
-        pb.redirectErrorStream(false);
-
-        Map<String, String> env = pb.environment();
-        System.getenv().forEach((k, v) -> {
-            if (k.startsWith("CODEGUARD_")) env.put(k, v);
+    private CommandSpec reviewCommand(Path workspace, ReviewJob job) {
+        List<String> command = new ArrayList<>(List.of(pythonCommand, "-m", "codeguard_agent", "review",
+            "--repo", workspace.toString(), "--base", "origin/" + job.getBaseRef(), "--format", "json"));
+        Map<String, String> env = new HashMap<>();
+        System.getenv().forEach((key, value) -> {
+            if (key.startsWith("CODEGUARD_")) env.put(key, value);
         });
         env.putIfAbsent("CODEGUARD_TOOL_SERVER_URL", "http://localhost:9090");
-
-        Process process = pb.start();
-
-        // 异步读取 stdout/stderr，避免子进程不退出时 readAllBytes 永久阻塞
-        var stdoutFuture = new CompletableFuture<String>();
-        var stderrFuture = new CompletableFuture<String>();
-        new Thread(() -> {
-            try { stdoutFuture.complete(new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8)); }
-            catch (IOException e) { stdoutFuture.completeExceptionally(e); }
-        }).start();
-        new Thread(() -> {
-            try { stderrFuture.complete(new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8)); }
-            catch (IOException e) { stderrFuture.completeExceptionally(e); }
-        }).start();
-
-        boolean finished = process.waitFor(10, TimeUnit.MINUTES);
-        if (!finished) {
-            process.destroyForcibly();
-            throw new ProcessTimeoutException();
-        }
-
-        String stderr = "";
-        try { stderr = stderrFuture.get(5, TimeUnit.SECONDS); } catch (Exception ignored) {}
-        if (!stderr.isBlank()) {
-            int maxLen = Math.min(500, stderr.length());
-            log.warn("审查 stderr(前{}字符): {}", maxLen, stderr.substring(0, maxLen));
-        }
-
-        try { return stdoutFuture.get(5, TimeUnit.SECONDS).trim(); }
-        catch (Exception e) { return ""; }
+        return new CommandSpec(command, workspace, env, reviewTimeout, STDOUT_LIMIT, STDERR_LIMIT);
     }
 
-    // ── 重试逻辑 ──
-
-    void handleFailure(ReviewJob job, boolean retryable, String message) {
-        job.setErrorMessage(message != null ? message : "未知错误");
-        if (retryable && job.getRetryCount() < 2) {
-            job.setStatus(Status.RETRYING);
-            job.setRetryCount(job.getRetryCount() + 1);
-            repo.update(job);
-            log.info("审查失败，30s 后重试 (第{}次): {}", job.getRetryCount(), job.dedupKey());
-            // 30s sleep then retry synchronously
-            try { Thread.sleep(30_000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
-            accept(job);
-        } else {
-            job.setStatus(Status.FAILED);
-            repo.update(job);
-            log.error("审查最终失败(重试{}次): {}", job.getRetryCount(), job.dedupKey());
+    private CommandResult run(CommandSpec spec, boolean review) throws IOException, InterruptedException {
+        CommandResult result = runner.run(spec);
+        if (!result.stderr().isBlank()) {
+            log.warn("{} stderr: {}", review ? "review" : "git",
+                SecretRedactor.redact(result.stderr(), githubToken));
         }
+        return result;
     }
 
-    private boolean isTransient(Exception e) {
-        String msg = e.getMessage();
-        if (msg == null) return false;
-        String lower = msg.toLowerCase();
-        return lower.contains("timeout") || lower.contains("connection") || lower.contains("transient");
-    }
-
-    // ── helpers ──
-
-    private void runCmd(Path dir, long timeout, TimeUnit unit, String... args)
-            throws IOException, InterruptedException {
-        ProcessBuilder pb = new ProcessBuilder(args);
-        pb.directory(dir.toFile());
-        pb.redirectErrorStream(true);
-        Process p = pb.start();
-        boolean ok = p.waitFor(timeout, unit);
-        if (!ok) {
-            p.destroyForcibly();
-            throw new IOException("git 命令超时: " + String.join(" ", args));
-        }
-        if (p.exitValue() != 0) {
-            String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            throw new IOException("git 命令失败: " + out);
-        }
-    }
-
-    private String runGitDiff(Path workdir, ReviewJob job) {
+    private static boolean validReviewJson(String output) {
+        if (output == null || output.isBlank()) return false;
         try {
-            ProcessBuilder pb = new ProcessBuilder(
-                "git", "diff", "origin/" + job.getBaseRef() + "..." + job.getHeadSha());
-            pb.directory(workdir.toFile());
-            pb.redirectErrorStream(false);
-            Process p = pb.start();
-            String stdout = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            boolean finished = p.waitFor(1, TimeUnit.MINUTES);
-            if (!finished) {
-                p.destroyForcibly();
-                log.warn("git diff 超时(1min): {}", job.dedupKey());
-                return "";
-            }
-            if (p.exitValue() != 0) {
-                String stderr = new String(p.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
-                log.warn("git diff 失败(exit={}): {} stderr={}", p.exitValue(), job.dedupKey(), stderr);
-                return "";
-            }
-            return stdout;
-        } catch (Exception e) {
-            log.warn("git diff 异常: {} {}", job.dedupKey(), e.getMessage());
-            return "";
+            JsonNode root = MAPPER.readTree(output);
+            return root.isObject() && root.path("issues").isArray()
+                && root.has("summary") && root.path("summary").isTextual();
+        } catch (Exception ignored) {
+            return false;
         }
     }
 
-    static class ProcessTimeoutException extends Exception {
-        ProcessTimeoutException() { super("审查进程超时"); }
+    private ReviewExecutionOutcome.Failed failed(FailureCode code, CommandResult result,
+                                                   boolean retryable, Instant started) {
+        String message = result.stderr().isBlank() ? code.name() : result.stderr();
+        return new ReviewExecutionOutcome.Failed(code,
+            SecretRedactor.redact(message, githubToken), retryable, elapsed(started));
+    }
+
+    private static Duration elapsed(Instant started) {
+        return Duration.between(started, Instant.now());
+    }
+
+    private static void deleteWorkspace(Path workspace) {
+        if (!Files.exists(workspace)) return;
+        try (var paths = Files.walk(workspace)) {
+            paths.sorted((left, right) -> right.compareTo(left)).forEach(path -> {
+                try { Files.deleteIfExists(path); } catch (IOException ignored) { }
+            });
+        } catch (IOException ignored) {
+            // Best-effort cleanup; stale SHA-scoped workspaces cannot corrupt another review.
+        }
+    }
+
+    private static final class GitCommandException extends IOException {
+        private final FailureCode code;
+
+        private GitCommandException(FailureCode code, String message) {
+            super(message);
+            this.code = code;
+        }
     }
 }

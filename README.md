@@ -50,6 +50,20 @@ python -m codeguard_agent review
 
 环境变量见 [`.env.example`](.env.example)。
 
+### Java Gateway 运维端点
+
+Java Gateway 明确按单实例运行，H2 负责 job 恢复，不承诺多实例抢占或一致性。CI 审查采用
+SHA 隔离 workspace、最多两次非阻塞重试和 600 秒默认进程超时。Python CLI 的退出码 `1`
+表示“审查成功但发现 CRITICAL”，Gateway 会在 `ReviewResult` JSON 合法时把 exit 0/1 都记为成功。
+
+- `GET /health`、`GET /health/live`：进程存活。
+- `GET /health/ready`：H2、调度器和 Python 初始化均正常时返回 200，否则返回 503。
+- `GET /metrics`：Prometheus 文本指标；repo、PR、SHA 和 jobId 只写日志，不作为 label。
+
+关键配置为 `CODEGUARD_MAX_CONCURRENT_REVIEWS`、`CODEGUARD_REVIEW_TIMEOUT_SECONDS`、
+`CODEGUARD_RETRY_DELAY_SECONDS`、`CODEGUARD_SHUTDOWN_GRACE_SECONDS`、
+`CODEGUARD_JOB_DB_PATH` 和 `CODEGUARD_WORKSPACE_DIR`，默认值见 `.env.example`。
+
 大 diff 可通过 `CODEGUARD_MAX_REVIEW_TASKS`（总任务数，默认 100）和
 `CODEGUARD_MAX_TASKS_PER_FILE`（单文件任务数，默认 10）限制深审范围；限制只作用于
 TaskRank，不会删除或改写已生成的风险画像。

@@ -10,8 +10,7 @@ public final class Main {
 
     public static void main(String[] args) {
         ToolServerApp app = new ToolServerApp();
-        int port = ToolServerApp.resolvePort();
-        app.start(port);
+        app.start(app.port());
         Runtime.getRuntime().addShutdownHook(new Thread(app::stop));
     }
 }

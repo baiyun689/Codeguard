@@ -2140,3 +2140,33 @@ Phase 5 的证据语义已经稳定，但 Planner 对候选主题逐个解析、
 新增测试分别测得 Planner candidate tag 解析、Agent 唯一工具调用和事实分析的并发峰值大于 1，
 同时校验请求/Note 顺序稳定及跨请求 `find_sensitive_apis` 只真实调用一次。全量 Python
 `638 passed`，Ruff 与 mypy clean；本次不修改 Java 代码，因此未重复执行 Gateway 构建。
+
+---
+
+## ADR-044: Java Gateway 采用单实例可靠审查执行模型
+
+**日期**: 2026-07-15
+**状态**: 已实现
+
+### 背景
+
+原 Java CI 路径把 git、Python 进程、H2 状态、同步 sleep 重试和 GitHub 反馈集中在一个执行器中；
+共享 workspace、共享 JDBC Connection、递归重试和 token URL 注入会放大并发、恢复与凭据风险。
+
+### 决策
+
+1. `ReviewExecutor` 只执行一次审查并返回结构化 outcome。Python stdout 满足既有
+   `ReviewResult(issues/summary)` 契约时，exit 0 与 exit 1 都是成功；exit 1 继续表达 CRITICAL 门禁。
+2. `JobScheduler` 统一持久化状态、最多两次延迟重试、进程内 job 去重、反馈和优雅停机。
+   重试使用独立定时器，不占用审查 worker；反馈失败不触发重新审查。
+3. workspace 按 repo/PR/完整 SHA 隔离；进程超时清理完整后代树，输出有界保留但持续排空。
+   GitHub token 只通过 Git 子进程环境传递，命令与错误统一脱敏。
+4. 保留 H2 并串行化仓库操作，提供 `ping` 和幂等关闭。系统明确只支持单实例，不引入
+   MySQL、Redis、MQ、租约或分布式锁。
+5. 增加集中配置、live/ready、Prometheus 指标、JaCoCo 门槛和跨语言 CI。
+
+### 权衡与边界
+
+- 单实例恢复优先于分布式扩展；进程崩溃时 RUNNING/RETRYING 会在下次启动恢复为 PENDING。
+- 可重试失败保留 workspace 便于复用和排障，成功、不可重试或重试耗尽后清理。
+- 指标禁止使用 repo、PR、SHA、jobId 高基数字段；它们只出现在结构化日志中。
