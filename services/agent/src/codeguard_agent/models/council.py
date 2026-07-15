@@ -19,7 +19,7 @@ EvidencePurpose = Literal["support", "counter", "severity"]
 
 
 MAX_CANDIDATES_PER_AGENT = 10
-DEFAULT_MAX_EVIDENCE_ROUNDS = 2
+DEFAULT_MAX_EVIDENCE_ROUNDS = 1
 NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 

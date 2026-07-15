@@ -27,11 +27,13 @@ def _settings(**overrides) -> Settings:
     return Settings(**values)
 
 
-def test_evidence_rounds_default_to_two_in_dataclass_and_environment(monkeypatch):
+def test_evidence_rounds_default_to_one_in_all_entry_points(monkeypatch):
     monkeypatch.delenv("CODEGUARD_MAX_EVIDENCE_ROUNDS", raising=False)
 
-    assert _settings().max_evidence_rounds == 2
-    assert Settings.from_env().max_evidence_rounds == 2
+    assert _settings().max_evidence_rounds == 1
+    assert Settings.from_env().max_evidence_rounds == 1
+    assert graph_module.DEFAULT_MAX_EVIDENCE_ROUNDS == 1
+    assert orchestrator_module.DEFAULT_MAX_EVIDENCE_ROUNDS == 1
 
 
 @pytest.mark.parametrize("value", ["1", "2"])
@@ -49,7 +51,7 @@ def test_evidence_rounds_reject_invalid_values_with_variable_name(monkeypatch, v
         Settings.from_env()
 
 
-def test_default_settings_replans_severity_once_then_stops_after_round_two():
+def test_default_settings_stop_after_first_evidence_round():
     settings = _settings()
     verdict = Verdict(
         candidate_id="candidate-1",
@@ -63,9 +65,6 @@ def test_default_settings_replans_severity_once_then_stops_after_round_two():
         "max_evidence_rounds": settings.max_evidence_rounds,
     }
 
-    assert graph_module._route_after_council_judge(state) == "evidence_planner"
-
-    state["evidence_round"] = 2
     assert graph_module._route_after_council_judge(state) == "END"
 
 

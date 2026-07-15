@@ -30,7 +30,7 @@ def _positive_int_env(name: str, default: int) -> int:
 
 def _evidence_rounds_env() -> int:
     name = "CODEGUARD_MAX_EVIDENCE_ROUNDS"
-    raw = os.environ.get(name, "2").strip()
+    raw = os.environ.get(name, "1").strip()
     try:
         value = int(raw)
     except ValueError as exc:
@@ -71,7 +71,7 @@ class Settings:
     # 前置摘要阶段开关:默认开。关闭时审查员不收到 diff_summary 背景。
     enable_summary: bool = True
     # ReviewCouncil 证据补充轮次上限。
-    max_evidence_rounds: int = 2
+    max_evidence_rounds: int = 1
     # Phase 2 风险任务预算。
     max_review_tasks: int = 100
     max_tasks_per_file: int = 10
