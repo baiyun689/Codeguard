@@ -104,3 +104,22 @@ def decide_tier(profile: RiskProfile | None) -> Literal["react", "direct"]:
         return "direct"
     max_score = max(profile.tag_scores.values(), default=0)
     return "react" if max_score >= 2 else "direct"
+
+
+def plan_task_tiers(
+    selected_task_ids: list[str],
+    profiles: Mapping[str, RiskProfile],
+    max_react_tasks: int,
+    *,
+    tools_available: bool,
+) -> dict[str, Literal["react", "direct"]]:
+    """按稳定风险顺序分配有限 ReAct 名额；所有 task 都保留 Direct 兜底。"""
+    remaining = max_react_tasks if tools_available else 0
+    tiers: dict[str, Literal["react", "direct"]] = {}
+    for task_id in selected_task_ids:
+        eligible = decide_tier(profiles.get(task_id)) == "react"
+        use_react = eligible and remaining > 0
+        tiers[task_id] = "react" if use_react else "direct"
+        if use_react:
+            remaining -= 1
+    return tiers

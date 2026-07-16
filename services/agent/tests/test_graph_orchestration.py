@@ -748,7 +748,7 @@ def test_make_reviewer_node_only_invokes_routed_and_selected_tasks(monkeypatch):
 
     monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _RecordingEngine())
     node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
-    node({
+    out = node({
         "diff_text": "+x\n+y",
         "review_tasks": [
             G.ReviewTask(id="A.java#h0", file="A.java", patch="+x", changed_lines=[1]),
@@ -867,12 +867,14 @@ def test_make_reviewer_node_invokes_tasks_concurrently_with_correct_tier(monkeyp
     monkeypatch.setattr(
         G, "build_reviewer_subgraph", lambda *a, **k: fake_subgraph
     )
-    node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[1], llm=_FakeLLM())
+    node = G.make_reviewer_node(
+        G.DEFAULT_REVIEWERS[1], llm=_FakeLLM(), tool_client=object()
+    )
     tasks = [
         G.ReviewTask(id="A.java#h0", file="A.java", patch="+strong", changed_lines=[1]),
         G.ReviewTask(id="B.java#h0", file="B.java", patch="+weak", changed_lines=[1]),
     ]
-    node({
+    out = node({
         "diff_text": "+strong\n+weak",
         "review_tasks": tasks,
         "risk_profiles": {
@@ -889,6 +891,45 @@ def test_make_reviewer_node_invokes_tasks_concurrently_with_correct_tier(monkeyp
     })
     assert seen_tiers["+strong"] == "react"
     assert seen_tiers["+weak"] == "direct"
+    tier_details = {
+        trace.detail
+        for trace in out["council_trace"]
+        if trace.event == "task_tier_planned"
+    }
+    assert tier_details == {
+        "task=A.java#h0 tier=react",
+        "task=B.java#h0 tier=direct",
+    }
+
+
+def test_make_reviewer_node_without_tools_forces_strong_task_to_direct(monkeypatch):
+    seen_tiers: list[str] = []
+
+    def _fake_subgraph_invoke(payload, config=None):
+        seen_tiers.append(payload.get("tier"))
+        return {"issues": [], "council_trace": []}
+
+    import types
+
+    fake_subgraph = types.SimpleNamespace(invoke=_fake_subgraph_invoke)
+    monkeypatch.setattr(G, "build_reviewer_subgraph", lambda *a, **k: fake_subgraph)
+    task = G.ReviewTask(id="A.java#h0", file="A.java", patch="+strong")
+
+    G.make_reviewer_node(G.DEFAULT_REVIEWERS[1], llm=_FakeLLM())(
+        {
+            "diff_text": task.patch,
+            "review_tasks": [task],
+            "risk_profiles": {
+                task.id: G.RiskProfile(
+                    task_id=task.id,
+                    tag_scores={RiskTag.CONCURRENCY_CONSISTENCY: 3},
+                )
+            },
+            "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
+        }
+    )
+
+    assert seen_tiers == ["direct"]
 
 
 def test_make_reviewer_node_injects_matched_tag_knowledge_into_system_prompt(monkeypatch):

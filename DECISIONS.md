@@ -2186,13 +2186,16 @@ Java Gateway 曾保留 `CODEGUARD_MAX_DIFF_LINES` 和“超限后伪造 WARNING 
 
 ### 决策
 
-1. Python 在 diff 超过 5000 行或 `ReviewTask` 超过 50 个时进入确定性降级；用户配置更严格时
-   保留其配置，否则预算收紧为总任务 20、每文件 3、每任务上下文 2000 字符。
+1. Python 只在 diff 超过 5000 行时进入确定性降级；task 数量不参与模式判断。用户配置更严格时
+   保留其配置，否则预算收紧为总任务 20、每文件 3、每任务上下文 2000 字符。普通 diff 默认
+   选择全部 task，不使用旧 100/10 默认值裁剪。
 2. 图顺序改为 `DiffTaskBuilder → RiskTriage → TaskRank → Summary → ContextProvider`。
    Summary 与 diff AST 只消费选中任务重建出的 diff；选中 diff 限 60000 字符，单任务 patch
    限 12000 字符。大 diff 模式不执行无任务范围的前置敏感 API 全仓扫描。
-3. 三路发现者继续按既有风险画像路由，不把低风险任务改成新的旁路。CouncilJudge 最终摘要
-   明确给出总任务、已审任务、跳过任务和“不代表完整覆盖”，并建议拆分 PR。
+3. 三路发现者继续按既有风险画像路由。选中 task 中 `score >= 2` 者按稳定风险顺序竞争
+   `CODEGUARD_MAX_REACT_TASKS`（默认 20）个 ReAct 名额；超额高风险、低风险、GENERAL 和缺失
+   画像的 task 全部 Direct，但不跳过。无工具服务时全部 Direct，避免伪 ReAct 触发重复兜底。
+   CouncilJudge 最终摘要明确给出大 diff 的总任务、已审任务、跳过任务和“不代表完整覆盖”。
 4. Java 删除大 diff 阈值、降级 JSON 和基于异常文本的重试判断；Gateway 只保留入口限流，
    重试继续由结构化 `FailureCode` 驱动的 `JobScheduler` 负责。
 

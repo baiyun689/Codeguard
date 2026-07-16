@@ -69,6 +69,7 @@ def test_review_budget_has_phase_2_defaults():
     budget = ReviewBudget()
     assert budget.max_tasks_to_review == 100
     assert budget.max_tasks_per_file == 10
+    assert budget.max_react_tasks == 20
     assert budget.max_final_issues is None
 
 
@@ -83,6 +84,7 @@ def test_review_budget_defaults_context_chars_per_task_to_4000():
         "max_tasks_to_review",
         "max_tasks_per_file",
         "max_context_chars_per_task",
+        "max_react_tasks",
         "max_final_issues",
     ],
 )
@@ -98,6 +100,7 @@ def test_review_budget_rejects_non_positive_values(field, value):
         "max_tasks_to_review",
         "max_tasks_per_file",
         "max_context_chars_per_task",
+        "max_react_tasks",
         "max_final_issues",
     ],
 )
@@ -112,11 +115,13 @@ def test_review_budget_accepts_positive_integer_values():
         max_tasks_to_review=1,
         max_tasks_per_file=2,
         max_context_chars_per_task=3,
+        max_react_tasks=5,
         max_final_issues=4,
     )
     assert budget.max_tasks_to_review == 1
     assert budget.max_tasks_per_file == 2
     assert budget.max_context_chars_per_task == 3
+    assert budget.max_react_tasks == 5
     assert budget.max_final_issues == 4
 
 

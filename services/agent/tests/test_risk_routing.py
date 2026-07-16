@@ -5,6 +5,7 @@ from __future__ import annotations
 from codeguard_agent.models.tasks import RiskProfile, RiskSignal, RiskTag, ReviewTask, TaskSelection
 from codeguard_agent.pipeline.risk_routing import (
     decide_tier,
+    plan_task_tiers,
     render_single_task_risk,
     render_task_scope,
     reviewers_for_profile,
@@ -119,6 +120,70 @@ def test_decide_tier_react_when_strong_signal_present():
 
 def test_decide_tier_direct_when_profile_missing():
     assert decide_tier(None) == "direct"
+
+
+def test_plan_task_tiers_limits_react_without_dropping_tasks():
+    selected = [f"t{i:02d}" for i in range(25)]
+    profiles = {
+        task_id: RiskProfile(
+            task_id=task_id,
+            tag_scores={RiskTag.AUTHORIZATION: 3},
+        )
+        for task_id in selected
+    }
+
+    tiers = plan_task_tiers(
+        selected,
+        profiles,
+        20,
+        tools_available=True,
+    )
+
+    assert list(tiers) == selected
+    assert list(tiers.values()).count("react") == 20
+    assert list(tiers.values()).count("direct") == 5
+    assert tiers["t19"] == "react"
+    assert tiers["t20"] == "direct"
+
+
+def test_plan_task_tiers_weak_tasks_do_not_consume_react_budget():
+    selected = ["weak", "general", "strong-1", "strong-2"]
+    profiles = {
+        "weak": RiskProfile(
+            task_id="weak", tag_scores={RiskTag.SQL_DATA_ACCESS: 1}
+        ),
+        "general": RiskProfile(
+            task_id="general", tag_scores={RiskTag.GENERAL_REVIEW: 1}
+        ),
+        "strong-1": RiskProfile(
+            task_id="strong-1", tag_scores={RiskTag.AUTHORIZATION: 3}
+        ),
+        "strong-2": RiskProfile(
+            task_id="strong-2", tag_scores={RiskTag.PERFORMANCE: 2}
+        ),
+    }
+
+    tiers = plan_task_tiers(selected, profiles, 1, tools_available=True)
+
+    assert tiers == {
+        "weak": "direct",
+        "general": "direct",
+        "strong-1": "react",
+        "strong-2": "direct",
+    }
+
+
+def test_plan_task_tiers_without_tools_is_all_direct():
+    selected = ["strong"]
+    profiles = {
+        "strong": RiskProfile(
+            task_id="strong", tag_scores={RiskTag.AUTHORIZATION: 3}
+        )
+    }
+
+    assert plan_task_tiers(
+        selected, profiles, 20, tools_available=False
+    ) == {"strong": "direct"}
 
 
 def test_routed_task_ids_routes_missing_profile_to_all_reviewers():

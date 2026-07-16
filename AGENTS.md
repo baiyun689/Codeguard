@@ -62,7 +62,7 @@ ADR-032 默认阶段:
 
 - **SummaryStage(可选)**:在 TaskRank 后对选中任务范围产出变更摘要,作为 ContextBundle 和 ReviewCouncil 的共享背景。由 `CODEGUARD_ENABLE_SUMMARY` 控制(默认开)。
 - **ContextProvider**:在 ReviewCouncil 前构造轻量 `ContextBundle`,只产出事实、来源与截断标记,不判断"是不是问题"。
-- **大 diff 降级**:超过 5000 行或 50 个任务时，Python 确定性收紧为最多 20 个任务、每文件 3 个、每任务上下文 2000 字符；Summary/AST/发现者只看选中范围，结果摘要披露部分覆盖。Java 不重复判断。
+- **大 diff 降级**:仅在超过 5000 行时，Python 确定性收紧为最多 20 个任务、每文件 3 个、每任务上下文 2000 字符；普通 diff 全选 task，并只让风险排序前 `CODEGUARD_MAX_REACT_TASKS`（默认 20）个合格 task 使用 ReAct，其余 Direct。Summary/AST/发现者在大 diff 时只看选中范围，结果摘要披露部分覆盖。Java 不重复判断。
 - **ReviewCouncilSubgraph**:三个 task-scoped 发现者 fan-out 产出 `CandidateIssue`;`CouncilCoordinator` 只作显式 fan-in。
 - **EvidencePlanner**:解析 candidate evidence tag，按全量静态注册表规划 counter/support/severity 请求；候选主题解析以最多 8 个线程并发，结果按候选稳定顺序进入两遍规划；Judge 回环也必须回到 Planner。
 - **EvidenceAgent**:校验请求的 strategy/purpose/target/question/tools/profile allowlist，优先复用 task/context facts，只为缺失事实调用 Gateway；跨请求先按工具名与规范化参数去重，再以最多 8 个线程并发执行唯一工具调用和事实关系分析，最终按请求/事实原顺序组装；失败/空/截断/None 均为 insufficient。
@@ -229,8 +229,9 @@ python -m evals.runner --runs 3 --judge  # 额外开 LLM-as-judge
 | `CODEGUARD_ENABLE_SUMMARY` | `true` | ADR-032 选中范围摘要开关;关闭则 TaskRank 后直接进入 ContextProvider |
 | `CODEGUARD_REVIEW_ORCHESTRATION` | `adr-032` | 当前唯一运行编排 profile;旧 supervisor 仅在 legacy 目录作参考 |
 | `CODEGUARD_MAX_EVIDENCE_ROUNDS` | `1` | Planner → Agent → Judge 证据执行轮次上限；只允许 1 或 2，默认单轮，显式设为 2 时 Judge 可补证回 Planner |
-| `CODEGUARD_MAX_REVIEW_TASKS` | `100` | Phase 2 总任务预算 |
-| `CODEGUARD_MAX_TASKS_PER_FILE` | `10` | Phase 2 单文件任务预算 |
+| `CODEGUARD_MAX_REVIEW_TASKS` | `100` | 仅作为大 diff 的更严格总任务上限 |
+| `CODEGUARD_MAX_TASKS_PER_FILE` | `10` | 仅作为大 diff 的更严格单文件上限 |
+| `CODEGUARD_MAX_REACT_TASKS` | `20` | 普通/大 diff 选中范围内允许使用 ReAct 的 task 上限；其余 Direct |
 | `CODEGUARD_TRACE_ENABLED` | `false` | 历史本地 HTML Trace；仅在传 `--trace` 或显式设为 true 时运行 |
 | `LANGSMITH_TRACING` | `false` | LangSmith 标准开关；设为 true 后由 LangGraph/LangChain 自动追踪 |
 | `LANGSMITH_PROJECT` | `codeguard-phase5-test` | LangSmith 测试追踪项目名；需同时设置 `LANGSMITH_API_KEY` |

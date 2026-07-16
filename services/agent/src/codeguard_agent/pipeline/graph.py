@@ -48,7 +48,7 @@ from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.knowledge_rules import load_knowledge
 from codeguard_agent.pipeline.large_diff_policy import LargeDiffPlan, plan_large_diff
 from codeguard_agent.pipeline.risk_routing import (
-    decide_tier,
+    plan_task_tiers,
     render_single_task_risk,
     routed_task_ids,
 )
@@ -759,13 +759,20 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         task_by_id = {t.id: t for t in tasks}
         task_context_bundles = state.get("task_context_bundles") or {}
         ordered_ids = list(routed_task_ids(reviewer.source_agent, tasks, profiles, selection))
+        budget = state.get("review_budget") or ReviewBudget()
+        tier_by_task = plan_task_tiers(
+            selection.selected_task_ids,
+            profiles,
+            budget.max_react_tasks,
+            tools_available=tool_client is not None,
+        )
 
         def _invoke_one(task_id: str) -> dict:
             task = task_by_id[task_id]
             scope = _scope_plan(state)
             scoped_task = task.model_copy(update={"patch": scope.scoped_patch(task.patch)})
             profile = profiles.get(task_id)
-            tier = decide_tier(profile)
+            tier = tier_by_task.get(task_id, "direct")
             risk_task = (
                 scoped_task.model_copy(update={"patch": "(patch 见上方 task_patch，不重复附加)"})
                 if scope.active
@@ -811,7 +818,14 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         task_results = run_bounded_parallel(ordered_ids, _invoke_one, max_workers=8)
 
         per_task_issues: list[tuple[str, Any]] = []
-        trace = []
+        trace = [
+            CouncilTrace(
+                node=reviewer.source_agent,
+                event="task_tier_planned",
+                detail=f"task={task_id} tier={tier_by_task.get(task_id, 'direct')}",
+            )
+            for task_id in ordered_ids
+        ]
         gathered_context: list = []
         review_summaries: list = []
         for task_id, result in zip(ordered_ids, task_results):

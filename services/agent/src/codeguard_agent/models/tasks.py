@@ -72,11 +72,12 @@ class RiskProfile(BaseModel):
 
 
 class ReviewBudget(BaseModel):
-    """预算入口。None 表示当前策略不施加该项限制；Phase 1 基线为全选。"""
+    """覆盖与执行预算。普通模式解除 task 上限，大 diff 才消费配置的覆盖上限。"""
 
     max_tasks_to_review: StrictInt | None = Field(default=100, gt=0)
     max_tasks_per_file: StrictInt | None = Field(default=10, gt=0)
     max_context_chars_per_task: StrictInt | None = Field(default=4000, gt=0)
+    max_react_tasks: StrictInt = Field(default=20, gt=0)
     max_final_issues: StrictInt | None = Field(default=None, gt=0)
 
 

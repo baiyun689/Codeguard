@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from codeguard_agent.models.tasks import ReviewBudget, ReviewTask, TaskSelection
 
 LARGE_DIFF_LINE_THRESHOLD = 5000
-LARGE_DIFF_TASK_THRESHOLD = 50
 LARGE_MAX_TASKS = 20
 LARGE_MAX_TASKS_PER_FILE = 3
 LARGE_MAX_CONTEXT_CHARS = 2000
@@ -86,9 +85,16 @@ def plan_large_diff(
     configured_budget: ReviewBudget,
 ) -> LargeDiffPlan:
     total_lines = len(diff_text.splitlines())
-    active = total_lines > LARGE_DIFF_LINE_THRESHOLD or len(tasks) > LARGE_DIFF_TASK_THRESHOLD
+    active = total_lines > LARGE_DIFF_LINE_THRESHOLD
     if not active:
-        return LargeDiffPlan(False, total_lines, len(tasks), configured_budget)
+        return LargeDiffPlan(
+            False,
+            total_lines,
+            len(tasks),
+            configured_budget.model_copy(
+                update={"max_tasks_to_review": None, "max_tasks_per_file": None}
+            ),
+        )
 
     return LargeDiffPlan(
         active=True,
@@ -104,6 +110,7 @@ def plan_large_diff(
             max_context_chars_per_task=_cap_configured_limit(
                 configured_budget.max_context_chars_per_task, LARGE_MAX_CONTEXT_CHARS
             ),
+            max_react_tasks=configured_budget.max_react_tasks,
             max_final_issues=configured_budget.max_final_issues,
         ),
     )

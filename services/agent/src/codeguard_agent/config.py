@@ -72,9 +72,11 @@ class Settings:
     enable_summary: bool = True
     # ReviewCouncil 证据补充轮次上限。
     max_evidence_rounds: int = 1
-    # Phase 2 风险任务预算。
+    # 大 diff 覆盖预算；普通 diff 默认全选。
     max_review_tasks: int = 100
     max_tasks_per_file: int = 10
+    # 普通审查只限制昂贵 ReAct，不裁掉 task。
+    max_react_tasks: int = 20
     # checkpoint 后端: "sqlite" | "memory" | 空=不启用(默认空)。
     checkpoint_backend: str = ""
     # SqliteSaver 数据库文件路径(仅 checkpoint_backend="sqlite" 时生效)
@@ -127,6 +129,7 @@ class Settings:
         max_evidence_rounds = _evidence_rounds_env()
         max_review_tasks = _positive_int_env("CODEGUARD_MAX_REVIEW_TASKS", 100)
         max_tasks_per_file = _positive_int_env("CODEGUARD_MAX_TASKS_PER_FILE", 10)
+        max_react_tasks = _positive_int_env("CODEGUARD_MAX_REACT_TASKS", 20)
         checkpoint_backend = os.environ.get("CODEGUARD_CHECKPOINT_BACKEND", "").strip().lower()
         checkpoint_db = os.environ.get("CODEGUARD_CHECKPOINT_DB", "codeguard_checkpoints.db").strip()
         react_recursion_limit = int(os.environ.get("CODEGUARD_REACT_RECURSION_LIMIT", "48"))
@@ -152,6 +155,7 @@ class Settings:
             max_evidence_rounds=max_evidence_rounds,
             max_review_tasks=max_review_tasks,
             max_tasks_per_file=max_tasks_per_file,
+            max_react_tasks=max_react_tasks,
             checkpoint_backend=checkpoint_backend,
             checkpoint_db=checkpoint_db,
             react_recursion_limit=react_recursion_limit,

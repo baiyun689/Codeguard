@@ -36,13 +36,17 @@ def _diff(tasks: list[ReviewTask]) -> str:
     )
 
 
+def _large_diff(tasks: list[ReviewTask]) -> str:
+    return _diff(tasks) + ("\ncontext" * 5001)
+
+
 def test_task_rank_applies_large_diff_budget_and_emits_trace():
     tasks = _tasks()
     profiles = {task.id: RiskProfile(task_id=task.id) for task in tasks}
 
     out = G._task_rank_node()(
         {
-            "diff_text": _diff(tasks),
+            "diff_text": _large_diff(tasks),
             "review_tasks": tasks,
             "risk_profiles": profiles,
             "review_budget": ReviewBudget(),
@@ -51,6 +55,31 @@ def test_task_rank_applies_large_diff_budget_and_emits_trace():
 
     assert len(out["task_selection"].selected_task_ids) == 20
     assert any(trace.event == "large_diff_degraded" for trace in out["council_trace"])
+
+
+def test_normal_diff_selects_more_than_ten_tasks_from_one_file():
+    tasks = [
+        ReviewTask(
+            id=f"A.java#h{i}",
+            file="A.java",
+            patch=f"@@ -{i + 1} +{i + 1} @@\n+x{i}",
+            changed_lines=[i + 1],
+        )
+        for i in range(11)
+    ]
+
+    out = G._task_rank_node()(
+        {
+            "diff_text": "small diff",
+            "review_tasks": tasks,
+            "risk_profiles": {task.id: RiskProfile(task_id=task.id) for task in tasks},
+            "review_budget": ReviewBudget(),
+        }
+    )
+
+    assert len(out["task_selection"].selected_task_ids) == 11
+    assert set(out["task_selection"].selected_task_ids) == {task.id for task in tasks}
+    assert out["task_selection"].skipped_tasks == []
 
 
 def test_summary_receives_only_selected_task_scope(monkeypatch):
@@ -65,7 +94,7 @@ def test_summary_receives_only_selected_task_scope(monkeypatch):
     monkeypatch.setattr(G.SummaryStage, "execute", capture)
     out = G._summary_node(None, None)(
         {
-            "diff_text": _diff(tasks),
+            "diff_text": _large_diff(tasks),
             "review_tasks": tasks,
             "task_selection": TaskSelection(selected_task_ids=[tasks[0].id]),
             "review_budget": ReviewBudget(),
@@ -107,7 +136,7 @@ def test_context_provider_large_diff_uses_selected_scope_and_skips_broad_scan():
 
     G._context_provider_node(client)(
         {
-            "diff_text": _diff(tasks),
+            "diff_text": _large_diff(tasks),
             "review_tasks": tasks,
             "risk_profiles": {task.id: RiskProfile(task_id=task.id) for task in tasks},
             "task_selection": TaskSelection(selected_task_ids=[tasks[0].id]),
@@ -136,7 +165,7 @@ def test_large_diff_reviewer_includes_bounded_patch_only_once(monkeypatch):
     task = tasks[0]
     G.make_reviewer_node(reviewer, llm=object())(
         {
-            "diff_text": _diff(tasks),
+            "diff_text": _large_diff(tasks),
             "review_tasks": tasks,
             "risk_profiles": {
                 task.id: RiskProfile(
@@ -166,7 +195,7 @@ def test_summary_runs_after_task_selection_in_graph():
 def test_large_diff_result_discloses_partial_coverage():
     tasks = _tasks()
 
-    result = PipelineOrchestrator(enable_summary=False).run(None, _diff(tasks))
+    result = PipelineOrchestrator(enable_summary=False).run(None, _large_diff(tasks))
 
     assert "大变更降级审查" in result.summary
     assert "共 51 个任务" in result.summary

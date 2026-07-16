@@ -12,21 +12,24 @@ def _task(index: int, patch: str = "+x") -> ReviewTask:
     )
 
 
-def test_large_diff_activates_only_above_line_or_task_threshold():
+def test_large_diff_activates_only_above_line_threshold():
     budget = ReviewBudget()
 
     assert not plan_large_diff("\n".join("x" for _ in range(5000)), [_task(1)], budget).active
     assert not plan_large_diff("\n".join("x" for _ in range(5000)) + "\n", [_task(1)], budget).active
     assert plan_large_diff("\n".join("x" for _ in range(5001)), [_task(1)], budget).active
-    assert not plan_large_diff("small", [_task(i) for i in range(50)], budget).active
-    assert plan_large_diff("small", [_task(i) for i in range(51)], budget).active
+    many_tasks = plan_large_diff("small", [_task(i) for i in range(200)], budget)
+    assert many_tasks.active is False
+    assert many_tasks.effective_budget.max_tasks_to_review is None
+    assert many_tasks.effective_budget.max_tasks_per_file is None
 
 
 def test_large_diff_tightens_budget_without_loosening_user_limits():
     tasks = [_task(i) for i in range(51)]
-    plan = plan_large_diff("small", tasks, ReviewBudget())
+    large_diff = "\n".join("x" for _ in range(5001))
+    plan = plan_large_diff(large_diff, tasks, ReviewBudget())
     stricter = plan_large_diff(
-        "small",
+        large_diff,
         tasks,
         ReviewBudget(
             max_tasks_to_review=7,
@@ -54,7 +57,7 @@ def test_selected_diff_contains_only_selected_tasks_and_is_bounded():
     skipped = _task(2, "+not-selected")
     huge = _task(3, "+" + "z" * 70_000)
     tasks = [selected, skipped, huge] + [_task(i) for i in range(4, 52)]
-    plan = plan_large_diff("small", tasks, ReviewBudget())
+    plan = plan_large_diff("\n".join("x" for _ in range(5001)), tasks, ReviewBudget())
     selection = TaskSelection(selected_task_ids=[selected.id, huge.id])
 
     rendered = plan.selected_diff(tasks, selection)
@@ -67,7 +70,7 @@ def test_selected_diff_contains_only_selected_tasks_and_is_bounded():
 
 def test_large_diff_scopes_single_task_patch_and_reports_partial_coverage():
     tasks = [_task(i) for i in range(51)]
-    plan = plan_large_diff("small", tasks, ReviewBudget())
+    plan = plan_large_diff("\n".join("x" for _ in range(5001)), tasks, ReviewBudget())
     selection = TaskSelection(
         selected_task_ids=[tasks[0].id, tasks[1].id],
         skipped_tasks=[],
