@@ -766,7 +766,12 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             scoped_task = task.model_copy(update={"patch": scope.scoped_patch(task.patch)})
             profile = profiles.get(task_id)
             tier = decide_tier(profile)
-            risk_text = render_single_task_risk(scoped_task, profile) if profile is not None else ""
+            risk_task = (
+                scoped_task.model_copy(update={"patch": "(patch 见上方 task_patch，不重复附加)"})
+                if scope.active
+                else scoped_task
+            )
+            risk_text = render_single_task_risk(risk_task, profile) if profile is not None else ""
             bundle = task_context_bundles.get(task_id)
             bundle_text = bundle.render() if bundle is not None else ""
             task_risk_context = "\n\n".join(p for p in (risk_text, bundle_text) if p)

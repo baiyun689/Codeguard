@@ -16,7 +16,7 @@ LARGE_SELECTED_DIFF_CHARS = 60_000
 LARGE_TASK_PATCH_CHARS = 12_000
 
 
-def _bounded(configured: int | None, ceiling: int) -> int:
+def _cap_configured_limit(configured: int | None, ceiling: int) -> int:
     return ceiling if configured is None else min(configured, ceiling)
 
 
@@ -85,7 +85,7 @@ def plan_large_diff(
     tasks: list[ReviewTask],
     configured_budget: ReviewBudget,
 ) -> LargeDiffPlan:
-    total_lines = 0 if not diff_text else diff_text.count("\n") + 1
+    total_lines = len(diff_text.splitlines())
     active = total_lines > LARGE_DIFF_LINE_THRESHOLD or len(tasks) > LARGE_DIFF_TASK_THRESHOLD
     if not active:
         return LargeDiffPlan(False, total_lines, len(tasks), configured_budget)
@@ -95,11 +95,13 @@ def plan_large_diff(
         total_lines=total_lines,
         total_tasks=len(tasks),
         effective_budget=ReviewBudget(
-            max_tasks_to_review=_bounded(configured_budget.max_tasks_to_review, LARGE_MAX_TASKS),
-            max_tasks_per_file=_bounded(
+            max_tasks_to_review=_cap_configured_limit(
+                configured_budget.max_tasks_to_review, LARGE_MAX_TASKS
+            ),
+            max_tasks_per_file=_cap_configured_limit(
                 configured_budget.max_tasks_per_file, LARGE_MAX_TASKS_PER_FILE
             ),
-            max_context_chars_per_task=_bounded(
+            max_context_chars_per_task=_cap_configured_limit(
                 configured_budget.max_context_chars_per_task, LARGE_MAX_CONTEXT_CHARS
             ),
             max_final_issues=configured_budget.max_final_issues,

@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
-from codeguard_agent.models.tasks import ReviewBudget, ReviewTask, RiskProfile, TaskSelection
+from codeguard_agent.models.schemas import ReviewResult
+from codeguard_agent.models.tasks import (
+    ReviewBudget,
+    ReviewTask,
+    RiskProfile,
+    RiskTag,
+    TaskSelection,
+)
 from codeguard_agent.pipeline import graph as G
+from codeguard_agent.pipeline.engines import ReviewOutcome
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
 
 
@@ -111,6 +119,39 @@ def test_context_provider_large_diff_uses_selected_scope_and_skips_broad_scan():
     ast_query = next(value for name, value in client.calls if name == "get_diff_ast")
     assert "selected0" in ast_query
     assert "selected1" not in ast_query
+
+
+def test_large_diff_reviewer_includes_bounded_patch_only_once(monkeypatch):
+    tasks = _tasks()
+    tasks[0] = tasks[0].model_copy(update={"patch": "+" + "x" * 20_000})
+    prompts: list[str] = []
+
+    class CaptureEngine:
+        def review(self, *args, **kwargs):
+            prompts.append(kwargs["user_prompt"])
+            return ReviewOutcome(ReviewResult(summary=""))
+
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: CaptureEngine())
+    reviewer = G.DEFAULT_REVIEWERS[0]
+    task = tasks[0]
+    G.make_reviewer_node(reviewer, llm=object())(
+        {
+            "diff_text": _diff(tasks),
+            "review_tasks": tasks,
+            "risk_profiles": {
+                task.id: RiskProfile(
+                    task_id=task.id,
+                    tag_scores={RiskTag.GENERAL_REVIEW: 1},
+                )
+            },
+            "task_selection": TaskSelection(selected_task_ids=[task.id]),
+            "review_budget": ReviewBudget(),
+        }
+    )
+
+    assert len(prompts) == 1
+    assert prompts[0].count("大 diff 单任务 patch 已截断") == 1
+    assert prompts[0].count("x") < 12_100
 
 
 def test_summary_runs_after_task_selection_in_graph():

@@ -16,6 +16,7 @@ def test_large_diff_activates_only_above_line_or_task_threshold():
     budget = ReviewBudget()
 
     assert not plan_large_diff("\n".join("x" for _ in range(5000)), [_task(1)], budget).active
+    assert not plan_large_diff("\n".join("x" for _ in range(5000)) + "\n", [_task(1)], budget).active
     assert plan_large_diff("\n".join("x" for _ in range(5001)), [_task(1)], budget).active
     assert not plan_large_diff("small", [_task(i) for i in range(50)], budget).active
     assert plan_large_diff("small", [_task(i) for i in range(51)], budget).active

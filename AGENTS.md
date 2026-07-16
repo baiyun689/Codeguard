@@ -140,8 +140,8 @@ Codeguard/
 4. **`llm/client.py:build_llm`** 按 provider 造 LangChain Chat 模型;`provider=mock` 返回 `None`。
 5. **工具会话(可选)**:配置 `CODEGUARD_TOOL_SERVER_URL` 且非 mock 时,CLI 为本次 diff 创建 Java 工具会话;否则走无工具直连基准。
 6. **`pipeline/orchestrator.py:PipelineOrchestrator.run`** 是审查唯一门面,内部构建 `pipeline/graph.py` 的 ADR-032 LangGraph:
-   - `[Summary]` 产出可选变更摘要。
    - `DiffTaskBuilder → RiskTriage → TaskRank` 把 diff 拆成 hunk task、生成风险画像并按预算选择任务。
+   - `[Summary]` 对 TaskRank 选中范围产出可选变更摘要。
    - `ContextProvider` 构造只读 `ContextBundle`。
    - `ReviewCouncil` 并行运行 task-scoped 发现者 Agent；没有匹配任务的 reviewer 记录 `no_tasks_routed`。
    - `CouncilCoordinator` 只作三路 fan-in，固定进入 EvidencePlanner。
