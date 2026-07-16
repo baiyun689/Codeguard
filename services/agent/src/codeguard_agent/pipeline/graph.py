@@ -3,7 +3,7 @@
 
 默认拓扑:
 
-    START → [summary] → diff_task_builder → risk_triage → task_rank
+    START → diff_task_builder → risk_triage → task_rank → [summary]
               → context_provider → discover_* → council_coordinator(fan-in)
               → evidence_agent → council_judge
                     ↑                   │
@@ -46,6 +46,7 @@ from codeguard_agent.pipeline import context_rules, task_prep
 from codeguard_agent.pipeline.council_judge import judge_candidates
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.knowledge_rules import load_knowledge
+from codeguard_agent.pipeline.large_diff_policy import LargeDiffPlan, plan_large_diff
 from codeguard_agent.pipeline.risk_routing import (
     decide_tier,
     render_single_task_risk,
@@ -273,9 +274,26 @@ def _state_to_context(state: ReviewState, llm=None, fp_verify_llm=None, tool_cli
     return ctx
 
 
+def _scope_plan(state: ReviewState) -> LargeDiffPlan:
+    return plan_large_diff(
+        state.get("diff_text", ""),
+        list(state.get("review_tasks") or []),
+        state.get("review_budget") or ReviewBudget(),
+    )
+
+
+def _selected_diff(state: ReviewState, scope: LargeDiffPlan) -> str:
+    selection = state.get("task_selection")
+    if selection is None:
+        return state.get("diff_text", "")
+    return scope.selected_diff(list(state.get("review_tasks") or []), selection)
+
+
 def _summary_node(llm, tool_client):
     def _node(state: ReviewState) -> dict:
+        scope = _scope_plan(state)
         ctx = _state_to_context(state, llm=llm, tool_client=tool_client)
+        ctx.diff_text = _selected_diff(state, scope)
         SummaryStage().execute(ctx)
         return {"diff_summary": ctx.diff_summary}
 
@@ -337,17 +355,34 @@ def _task_rank_node():
     def _node(state: ReviewState) -> dict:
         tasks = state.get("review_tasks") or []
         profiles = state.get("risk_profiles") or {}
-        budget = state.get("review_budget") or ReviewBudget()
+        scope = _scope_plan(state)
+        budget = scope.effective_budget
         selection = task_prep.rank_tasks(tasks, profiles, budget)
-        return {
-            "task_selection": selection,
-            "council_trace": [
+        trace = [
+            CouncilTrace(
+                node="task_rank",
+                event="selected",
+                detail=f"selected={len(selection.selected_task_ids)} skipped={len(selection.skipped_tasks)}",
+            )
+        ]
+        if scope.active:
+            trace.append(
                 CouncilTrace(
                     node="task_rank",
-                    event="selected",
-                    detail=f"selected={len(selection.selected_task_ids)} skipped={len(selection.skipped_tasks)}",
+                    event="large_diff_degraded",
+                    detail=(
+                        f"lines={scope.total_lines} tasks={scope.total_tasks} "
+                        f"selected={len(selection.selected_task_ids)} "
+                        f"skipped={len(selection.skipped_tasks)} "
+                        f"max_tasks={budget.max_tasks_to_review} "
+                        f"max_per_file={budget.max_tasks_per_file} "
+                        f"context_chars={budget.max_context_chars_per_task}"
+                    ),
                 )
-            ],
+            )
+        return {
+            "task_selection": selection,
+            "council_trace": trace,
         }
 
     return _node
@@ -375,8 +410,10 @@ def _context_provider_node(tool_client):
     """为选中任务装配 Level0 切片和按风险定向的 Level1 事实。"""
 
     def _node(state: ReviewState) -> dict:
+        scope = _scope_plan(state)
         ctx = _state_to_context(state, tool_client=tool_client)
-        ContextProviderStage().execute(ctx)
+        ctx.diff_text = _selected_diff(state, scope)
+        ContextProviderStage(include_broad_scan=not scope.active).execute(ctx)
         bundle = ctx.context_bundle
 
         selection = state.get("task_selection")
@@ -384,7 +421,7 @@ def _context_provider_node(tool_client):
         all_tasks: list[ReviewTask] = state.get("review_tasks") or []
         tasks = [task for task in all_tasks if task.id in selected_ids]
         risk_profiles: dict[str, RiskProfile] = state.get("risk_profiles") or {}
-        budget = state.get("review_budget") or ReviewBudget()
+        budget = scope.effective_budget
 
         ast_text = "\n".join(
             fact.content for fact in bundle.facts if fact.source == "tool:get_diff_ast"
@@ -725,9 +762,11 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
 
         def _invoke_one(task_id: str) -> dict:
             task = task_by_id[task_id]
+            scope = _scope_plan(state)
+            scoped_task = task.model_copy(update={"patch": scope.scoped_patch(task.patch)})
             profile = profiles.get(task_id)
             tier = decide_tier(profile)
-            risk_text = render_single_task_risk(task, profile) if profile is not None else ""
+            risk_text = render_single_task_risk(scoped_task, profile) if profile is not None else ""
             bundle = task_context_bundles.get(task_id)
             bundle_text = bundle.render() if bundle is not None else ""
             task_risk_context = "\n\n".join(p for p in (risk_text, bundle_text) if p)
@@ -741,7 +780,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             # invoke 都不需要也不应创建独立 thread_id；审查级恢复仍由外层图承担。
             result = subgraph.invoke(
                 {
-                    "diff_text": task.patch,
+                    "diff_text": scoped_task.patch,
                     "enabled_tools": effective_tools,
                     "max_retries": state.get("max_retries", 3),
                     "structured_method": state.get("structured_method", "function_calling"),
@@ -981,12 +1020,18 @@ def _council_judge_node(llm, judge_llm=None):
             evidence_rounds=state.get("evidence_round", 0),
             council_trace=state.get("council_trace") or [],
         )
+        summaries = list(state.get("review_summaries") or [])
+        selection = state.get("task_selection")
+        if selection is not None:
+            notice = _scope_plan(state).coverage_notice(selection)
+            if notice:
+                summaries.insert(0, notice)
         return {
 
             "council_verdicts": batch.verdicts,
             "final_issues": batch.final_issues,
             "council_stats": stats,
-            "summary": "  ".join(state.get("review_summaries") or []),
+            "summary": "  ".join(summaries),
             "council_trace": [
                 CouncilTrace(node="council_judge", event=event, detail=detail)
                 for event, detail in (*assembly.trace, *batch.trace)
@@ -1000,7 +1045,7 @@ def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=No
     """编译 ADR-032 审查状态图（风险路由 Phase 1）。
 
     目标拓扑:
-        summary? → diff_task_builder → risk_triage → task_rank → context_provider
+        diff_task_builder → risk_triage → task_rank → summary? → context_provider
           → discover_*(×3) → council_coordinator(fan-in 一次)
           → evidence_planner → evidence_agent(必经一次) → council_judge
           → [evidence_planner(needs_more 且轮次未超) | END]
@@ -1029,15 +1074,15 @@ def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=No
         _council_judge_node(llm, judge_llm=effective_judge_llm),
     )
 
-    if enable_summary:
-        g.add_node("summary", _summary_node(llm, tool_client))
-        g.add_edge(START, "summary")
-        g.add_edge("summary", "diff_task_builder")
-    else:
-        g.add_edge(START, "diff_task_builder")
+    g.add_edge(START, "diff_task_builder")
     g.add_edge("diff_task_builder", "risk_triage")
     g.add_edge("risk_triage", "task_rank")
-    g.add_edge("task_rank", "context_provider")
+    if enable_summary:
+        g.add_node("summary", _summary_node(llm, tool_client))
+        g.add_edge("task_rank", "summary")
+        g.add_edge("summary", "context_provider")
+    else:
+        g.add_edge("task_rank", "context_provider")
 
     for reviewer in DEFAULT_REVIEWERS:
         node_name = _discover_node_name(reviewer)

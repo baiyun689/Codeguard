@@ -21,7 +21,6 @@ services:
       - CODEGUARD_JOB_DB_PATH=/app/data/codeguard-jobs
       - CODEGUARD_WORKSPACE_DIR=/tmp/codeguard-jobs
       - CODEGUARD_WEBHOOK_RATE_LIMIT=${CODEGUARD_WEBHOOK_RATE_LIMIT:-30}
-      - CODEGUARD_MAX_DIFF_LINES=${CODEGUARD_MAX_DIFF_LINES:-5000}
     volumes:
       - gateway-data:/app/data
       - job-workspaces:/tmp/codeguard-jobs

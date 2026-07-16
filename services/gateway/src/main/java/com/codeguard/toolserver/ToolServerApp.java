@@ -55,7 +55,7 @@ public final class ToolServerApp {
         pythonReady = probePython(settings.pythonCommand());
         scheduler.start();
 
-        var guard = new ReviewGuard(settings.webhookRateLimit(), settings.maxDiffLines());
+        var guard = new ReviewGuard(settings.webhookRateLimit());
         new GitHubWebhookController(settings.webhookSecret(), jobRepository, scheduler, guard).register(app);
         log.info("GitHub webhook 端点已启用: POST /webhooks/github");
     }

@@ -17,8 +17,7 @@ public record GatewaySettings(
     String githubToken,
     String githubAppId,
     String githubPrivateKey,
-    double webhookRateLimit,
-    int maxDiffLines
+    double webhookRateLimit
 ) {
     public static GatewaySettings fromEnv() {
         return from(System.getenv(), Path.of(System.getProperty("java.io.tmpdir", "/tmp")));
@@ -38,8 +37,7 @@ public record GatewaySettings(
             env.getOrDefault("CODEGUARD_GITHUB_TOKEN", ""),
             env.getOrDefault("CODEGUARD_GITHUB_APP_ID", ""),
             env.getOrDefault("CODEGUARD_GITHUB_PRIVATE_KEY", ""),
-            nonNegativeDouble(env, "CODEGUARD_WEBHOOK_RATE_LIMIT", 0.5),
-            positiveInt(env, "CODEGUARD_MAX_DIFF_LINES", 5000));
+            nonNegativeDouble(env, "CODEGUARD_WEBHOOK_RATE_LIMIT", 0.5));
     }
 
     private static int positiveInt(Map<String, String> env, String name, int fallback) {

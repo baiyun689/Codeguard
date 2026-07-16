@@ -2170,3 +2170,41 @@ Phase 5 的证据语义已经稳定，但 Planner 对候选主题逐个解析、
 - 单实例恢复优先于分布式扩展；进程崩溃时 RUNNING/RETRYING 会在下次启动恢复为 PENDING。
 - 可重试失败保留 workspace 便于复用和排障，成功、不可重试或重试耗尽后清理。
 - 指标禁止使用 repo、PR、SHA、jobId 高基数字段；它们只出现在结构化日志中。
+
+---
+
+## ADR-045: 大 diff 由 Python 风险路由做确定性范围降级
+
+**日期**: 2026-07-16
+**状态**: 已实现
+
+### 背景
+
+Java Gateway 曾保留 `CODEGUARD_MAX_DIFF_LINES` 和“超限后伪造 WARNING 结果并跳过审查”的接口，
+但真实审查成本发生在 Python 的 Summary、任务发现和取证链。Java 只按行数跳过既无法利用风险画像，
+也会形成两套降级策略，并把“未审查”伪装成审查结论。
+
+### 决策
+
+1. Python 在 diff 超过 5000 行或 `ReviewTask` 超过 50 个时进入确定性降级；用户配置更严格时
+   保留其配置，否则预算收紧为总任务 20、每文件 3、每任务上下文 2000 字符。
+2. 图顺序改为 `DiffTaskBuilder → RiskTriage → TaskRank → Summary → ContextProvider`。
+   Summary 与 diff AST 只消费选中任务重建出的 diff；选中 diff 限 60000 字符，单任务 patch
+   限 12000 字符。大 diff 模式不执行无任务范围的前置敏感 API 全仓扫描。
+3. 三路发现者继续按既有风险画像路由，不把低风险任务改成新的旁路。CouncilJudge 最终摘要
+   明确给出总任务、已审任务、跳过任务和“不代表完整覆盖”，并建议拆分 PR。
+4. Java 删除大 diff 阈值、降级 JSON 和基于异常文本的重试判断；Gateway 只保留入口限流，
+   重试继续由结构化 `FailureCode` 驱动的 `JobScheduler` 负责。
+
+### 权衡与边界
+
+- 本轮不引入新 State、产品 Issue 字段、数据库、中间件或 Java 工具；大 diff 决策可由现有 State
+  重复确定性派生。
+- 固定阈值优先保证策略简单、可解释和快速落地；未来若 eval 显示不同语言/仓库需要不同预算，
+  再把阈值集中到 Python Settings，而不是复制到 Java。
+- 跳过前置全仓扫描不禁止后续 EvidenceAgent 针对已选候选调用受约束工具。
+
+### 验证
+
+确定性测试覆盖阈值边界、预算收紧、选中 diff/单任务截断、图节点顺序、Summary/AST 作用域、
+大 diff 跳过广域扫描和最终部分覆盖提示；Java 测试确认 ReviewGuard 只保留 Webhook 限流。
