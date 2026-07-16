@@ -30,7 +30,7 @@ ReviewCouncil 发现者由 `ThreatModelAgent` / `BehaviorAgent` / `Maintainabili
 阶段 2(管线化)已完成并存档:**并行三领域审查(security/logic/quality)→ 聚合去重 → 误报过滤**。
 
 风险路由子阶段 Phase 5 已完成：23 个具体 `RiskTag` + `GENERAL_REVIEW`，风险规则只消费
-path/diff-text 变化方向，默认任务预算为 100/10；reviewer 范围由 `RiskProfile.tag_scores`
+path/diff-text 变化方向；普通 diff 默认全选 task，旧 100/10 配置只作为大 diff 的更严格上限；reviewer 范围由 `RiskProfile.tag_scores`
 派生，不增加 `assigned_reviewers` 或其他 State 字段。证据策略完整覆盖 24 个标签的
 counter/support/severity，候选证据主题从候选语义解析，task RiskTag 只作先验；Phase 5
 仍未新增顶层 State、Java 工具或产品 Issue 字段。

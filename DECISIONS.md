@@ -2210,4 +2210,6 @@ Java Gateway 曾保留 `CODEGUARD_MAX_DIFF_LINES` 和“超限后伪造 WARNING 
 ### 验证
 
 确定性测试覆盖阈值边界、预算收紧、选中 diff/单任务截断、图节点顺序、Summary/AST 作用域、
-大 diff 跳过广域扫描和最终部分覆盖提示；Java 测试确认 ReviewGuard 只保留 Webhook 限流。
+大 diff 跳过广域扫描、普通全选、ReAct task 配额和最终部分覆盖提示；Java 测试确认 ReviewGuard
+只保留 Webhook 限流。全量 Python `661 passed`，Ruff/mypy 与 Java `mvn verify` 通过；
+`pipeline-notools` mock eval 跑通 31 条并存档，mock 未调用审查 LLM，零指标不代表真实质量。

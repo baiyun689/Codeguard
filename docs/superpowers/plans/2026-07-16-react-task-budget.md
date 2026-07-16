@@ -212,7 +212,7 @@ mvn verify
 
 Expected: 全部 PASS；`git diff --check` 无错误。
 
-- [ ] **Step 6: 审查并提交**
+- [x] **Step 6: 审查并提交**
 
 运行 Standards/Spec 双轴审查，修复发现后提交：
 

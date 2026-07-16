@@ -105,7 +105,7 @@ def test_decide_tier_direct_when_only_weak_signal():
 def test_decide_tier_direct_for_general_review():
     profile = RiskProfile(
         task_id="t1",
-        tag_scores={RiskTag.GENERAL_REVIEW: 1},
+        tag_scores={RiskTag.GENERAL_REVIEW: 2},
     )
     assert decide_tier(profile) == "direct"
 

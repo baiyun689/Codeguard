@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Literal
 
-from codeguard_agent.models.tasks import RiskProfile, ReviewTask, TaskSelection
+from codeguard_agent.models.tasks import RiskProfile, RiskTag, ReviewTask, TaskSelection
 from codeguard_agent.pipeline.risk_rules.catalog import reviewers_for_tag
 
 _REVIEWER_NAMES = {
@@ -102,7 +102,14 @@ def decide_tier(profile: RiskProfile | None) -> Literal["react", "direct"]:
     """
     if profile is None:
         return "direct"
-    max_score = max(profile.tag_scores.values(), default=0)
+    max_score = max(
+        (
+            score
+            for tag, score in profile.tag_scores.items()
+            if tag is not RiskTag.GENERAL_REVIEW
+        ),
+        default=0,
+    )
     return "react" if max_score >= 2 else "direct"
 
 

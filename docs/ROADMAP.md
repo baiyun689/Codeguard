@@ -133,7 +133,7 @@ TaskContextBundle` 接缝逐阶段增强:
 | 子阶段 | 状态 | 已确定边界 |
 |---|---|---|
 | Phase 1 | ✅ | 冻结五个任务链 State 字段、hunk/fallback task、严格候选映射和 Evidence 首次必经拓扑 |
-| Phase 2 | ✅ | 23 个具体 RiskTag + `GENERAL_REVIEW`、path/text 方向规则、TaskRank 默认 100/10 预算、RiskTag 到三路 reviewer 的 task scope 路由 |
+| Phase 2 | ✅ | 23 个具体 RiskTag + `GENERAL_REVIEW`、path/text 方向规则、普通 diff 全选与大 diff 覆盖预算、RiskTag 到三路 reviewer 的 task scope 路由 |
 | Phase 3 | ✅ | ContextProvider 按 RiskTag 构建上下文，AST 只作为事实来源，不产出风险标签 |
 | Phase 4 | ✅ | task-scoped 三路发现者消费 task/risk/context，并按 RiskTag 注入领域知识与约束工具边界 |
 | Phase 5 | ✅ | Candidate evidence tag → 静态策略 → Planner/Agent/Judge；结构化 finding、安全回退、有限回环与过程指标，产品契约不变 |
