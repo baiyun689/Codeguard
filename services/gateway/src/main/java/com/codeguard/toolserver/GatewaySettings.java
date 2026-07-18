@@ -1,5 +1,7 @@
 package com.codeguard.toolserver;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
@@ -36,8 +38,23 @@ public record GatewaySettings(
             env.getOrDefault("CODEGUARD_WEBHOOK_SECRET", ""),
             env.getOrDefault("CODEGUARD_GITHUB_TOKEN", ""),
             env.getOrDefault("CODEGUARD_GITHUB_APP_ID", ""),
-            env.getOrDefault("CODEGUARD_GITHUB_PRIVATE_KEY", ""),
+            githubPrivateKey(env),
             nonNegativeDouble(env, "CODEGUARD_WEBHOOK_RATE_LIMIT", 0.5));
+    }
+
+    private static String githubPrivateKey(Map<String, String> env) {
+        String file = env.getOrDefault("CODEGUARD_GITHUB_PRIVATE_KEY_FILE", "").trim();
+        if (file.isEmpty()) return env.getOrDefault("CODEGUARD_GITHUB_PRIVATE_KEY", "");
+        try {
+            String value = Files.readString(Path.of(file));
+            if (value.isBlank()) {
+                throw new IllegalArgumentException("CODEGUARD_GITHUB_PRIVATE_KEY_FILE 内容不能为空");
+            }
+            return value;
+        } catch (IOException error) {
+            throw new IllegalArgumentException(
+                "无法读取 CODEGUARD_GITHUB_PRIVATE_KEY_FILE: " + file, error);
+        }
     }
 
     private static int positiveInt(Map<String, String> env, String name, int fallback) {
