@@ -1,112 +1,280 @@
 # Codeguard
 
-> **AI 代码审查引擎** —— 以 Agent 为核心,双语言架构(Java 后端/工具 + Python Agent)。
+AI-powered pull request review with risk-aware multi-agent analysis.
 
-Codeguard 是一次 **vibe coding 实践** —— 尝试用"边写边迭代、跟着感觉走、借助 AI 协作"的方式,从零搭一个 AI 代码审查 Agent。它分析代码变更(diff),从安全、逻辑、质量等维度审查问题。
+Codeguard receives GitHub pull request events, analyzes the exact code change with a Python review council, and reports structured findings through GitHub Check Runs and pull request comments. A Java Gateway owns webhook verification, job persistence, isolated workspaces, retries, and code-access guardrails.
 
-当前进度:**ADR-032 + ADR-038 Phase 1–5 + ADR-045 · 风险路由与大 diff 降级**。默认路径为
-`task build/risk/rank → summary? → context → task-scoped discover × 3 → EvidencePlanner → EvidenceAgent → CouncilJudge → END`，
-Judge 需要补证时按结构化目的回到 Planner；旧 Supervisor 图已迁移到
-`services/agent/legacy/supervisor_graph/` 作为历史参考,不再作为运行回退。
-完整路线图见 [`docs/ROADMAP.md`](docs/ROADMAP.md),关键技术决策见 [`DECISIONS.md`](DECISIONS.md)。
+## Features
 
----
+- Reviews pull requests for security, behavioral, and maintainability risks.
+- Routes changed hunks by risk before running task-scoped specialist reviewers.
+- Plans and gathers supporting, counter, and severity evidence before producing a verdict.
+- Publishes Check Runs, diff annotations, and high-confidence critical comments to GitHub.
+- Verifies webhook signatures and deduplicates jobs by repository, pull request, and commit SHA.
+- Persists jobs in H2 and restores unfinished work after a restart.
+- Exposes liveness, readiness, and Prometheus metrics endpoints.
+- Runs the Python Agent and Java Gateway in one container with Docker Compose.
 
-## 架构(目标形态)
+## How It Works
 
+```text
+GitHub pull_request webhook
+        |
+        v
+Java Gateway
+  verify signature -> persist/deduplicate -> schedule -> prepare SHA workspace
+        |
+        v
+Python Agent
+  diff tasks -> risk routing -> specialist discovery -> evidence -> council verdict
+        |
+        v
+GitHub Check Run, annotations, and pull request comments
 ```
-┌─────────────────┐     HTTP / 工具调用      ┌──────────────────┐
-│  Python Agent   │ ──────────────────────> │  Java Gateway    │
-│  (审查管线/编排)  │ <────────────────────── │  (AST/调用图/RAG) │
-└─────────────────┘     代码上下文工具         └──────────────────┘
+
+The Python Agent owns review reasoning and orchestration. The Java Gateway owns deterministic facts and operational guardrails; it does not call an LLM or decide whether a finding is valid.
+
+## Quick Start with Docker Compose
+
+Prerequisites:
+
+- Docker Engine with Docker Compose v2
+- A GitHub App installed on the repositories to review
+- A publicly reachable HTTPS endpoint for GitHub webhooks
+- An API key for the configured LLM provider
+
+Clone the repository, create the deployment configuration, and create the secrets directory:
+
+```bash
+git clone https://github.com/baiyun689/codeguard.git
+cd codeguard
+cp .env.example .env
+mkdir -p secrets
 ```
 
-- **Python Agent**(`services/agent`):LLM 审查管线、LangGraph 编排、ReviewCouncil 多 Agent 协作
-- **Java Gateway**(`services/gateway`):只提供事实与护栏工具,如文件读取、敏感 API、调用方、代码度量
+PowerShell equivalents:
 
-> 设计原则:Python 负责智能编排和最终判断;Java 只提供事实与沙箱护栏,不调用 LLM、不判断问题。
+```powershell
+git clone https://github.com/baiyun689/codeguard.git
+Set-Location codeguard
+Copy-Item .env.example .env
+New-Item -ItemType Directory -Force secrets | Out-Null
+```
 
----
+Edit `.env` and set at least:
 
-## 快速开始
+```dotenv
+CODEGUARD_WEBHOOK_SECRET=replace-with-a-long-random-secret
+CODEGUARD_GITHUB_APP_ID=123456
+CODEGUARD_API_KEY=replace-with-your-provider-key
+CODEGUARD_GITHUB_PRIVATE_KEY_FILE=./secrets/github-app.pem
+```
+
+Save the private key downloaded from GitHub as `./secrets/github-app.pem`. Compose mounts that file read-only and sets the in-container `CODEGUARD_GITHUB_PRIVATE_KEY_FILE` automatically.
+
+Start the stable release. The default image is `ghcr.io/baiyun689/codeguard:latest`:
+
+```bash
+docker compose up -d
+```
+
+To run the continuously published `edge` image on Bash:
+
+```bash
+CODEGUARD_IMAGE_TAG=edge docker compose up -d
+```
+
+On PowerShell:
+
+```powershell
+$env:CODEGUARD_IMAGE_TAG = "edge"
+docker compose up -d
+```
+
+To build from the current checkout instead of relying on a published image:
+
+```bash
+docker compose up -d --build
+```
+
+The Gateway always listens on port `9090` inside the container. Change only the host-side port with `CODEGUARD_HOST_PORT`, for example:
+
+```dotenv
+CODEGUARD_HOST_PORT=8080
+```
+
+The public webhook URL would then be `https://your-host.example/webhooks/github` when a reverse proxy terminates HTTPS on the standard port, or `https://your-host.example:8080/webhooks/github` when exposing the mapped port directly.
+
+## Configure a GitHub App
+
+1. In GitHub, open **Settings > Developer settings > GitHub Apps > New GitHub App**.
+2. Set the webhook URL to `https://your-host.example/webhooks/github`.
+3. Choose a webhook secret and put the identical value in `CODEGUARD_WEBHOOK_SECRET`.
+4. Set these repository permissions:
+   - **Checks:** Read and write
+   - **Contents:** Read-only
+   - **Pull requests:** Read and write
+   - **Metadata:** Read-only (GitHub grants this permission automatically)
+5. Under webhook events, subscribe to **Pull request**. Codeguard handles the `opened`, `reopened`, and `synchronize` actions.
+6. Create the App, copy its **App ID** into `CODEGUARD_GITHUB_APP_ID`, generate a private key, and save it as `./secrets/github-app.pem`.
+7. Install the App on each organization or repository that Codeguard should review.
+
+Public repositories can be cloned without an additional token. For private repositories, set `CODEGUARD_GITHUB_TOKEN` in `.env` to a token that can read the repository contents. The current clone path does not automatically reuse the GitHub App installation token.
+
+Your webhook endpoint must be reachable from GitHub over HTTPS. If Codeguard is behind a reverse proxy, forward `/webhooks/github` to the host port selected by `CODEGUARD_HOST_PORT`.
+
+## Configure the LLM
+
+The default provider is OpenAI:
+
+```dotenv
+CODEGUARD_PROVIDER=openai
+CODEGUARD_MODEL=gpt-4o-mini
+CODEGUARD_API_KEY=replace-with-your-key
+```
+
+For an OpenAI-compatible endpoint, also set:
+
+```dotenv
+CODEGUARD_API_BASE_URL=https://provider.example/v1
+CODEGUARD_STRUCTURED_METHOD=function_calling
+```
+
+Anthropic is available with `CODEGUARD_PROVIDER=claude`. `CODEGUARD_PROVIDER=mock` exercises the pipeline without a real model and is intended for development checks, not production review.
+
+See [`.env.example`](.env.example) for all model, review-budget, and runtime settings.
+
+## Verify the Deployment
+
+Check container state and logs:
+
+```bash
+docker compose ps
+docker compose logs -f codeguard
+```
+
+With the default host port:
+
+```bash
+curl --fail http://localhost:9090/health/ready
+```
+
+Then use the GitHub App settings page to send a test delivery, or open/update a pull request in an installed repository. A valid `pull_request` delivery is accepted asynchronously and should produce a Codeguard Check Run after review completes.
+
+## Local CLI Usage
+
+The Python Agent can review a local Git diff without GitHub:
 
 ```bash
 cd services/agent
+python -m venv .venv
+```
 
-# 1) 安装依赖(推荐用 uv,或用 pip)
+Activate the virtual environment, then install and run:
+
+```bash
 pip install -e .
-
-# 2) 默认调真实 OpenAI API(需配密钥)
-export CODEGUARD_API_KEY=sk-xxx
-python -m codeguard_agent review --repo . --base HEAD
-
-# 3) 不想配密钥?用 mock 模式先验证流水线连通
-export CODEGUARD_PROVIDER=mock
-python -m codeguard_agent review
+export CODEGUARD_API_KEY=replace-with-your-key
+python -m codeguard_agent review --repo /path/to/repository --base HEAD
 ```
 
-> 也可把上述变量写进项目根目录的 `.env` 文件(已被 gitignore),程序会自动就近加载,
-> 之后直接 `python -m codeguard_agent review` 即可,无需每次 export。已显式设置的环境变量优先于 `.env`。
+PowerShell:
 
-环境变量见 [`.env.example`](.env.example)。
-
-### Java Gateway 运维端点
-
-Java Gateway 明确按单实例运行，H2 负责 job 恢复，不承诺多实例抢占或一致性。CI 审查采用
-SHA 隔离 workspace、最多两次非阻塞重试和 600 秒默认进程超时。Python CLI 的退出码 `1`
-表示“审查成功但发现 CRITICAL”，Gateway 会在 `ReviewResult` JSON 合法时把 exit 0/1 都记为成功。
-
-- `GET /health`、`GET /health/live`：进程存活。
-- `GET /health/ready`：H2、调度器和 Python 初始化均正常时返回 200，否则返回 503。
-- `GET /metrics`：Prometheus 文本指标；repo、PR、SHA 和 jobId 只写日志，不作为 label。
-
-关键配置为 `CODEGUARD_MAX_CONCURRENT_REVIEWS`、`CODEGUARD_REVIEW_TIMEOUT_SECONDS`、
-`CODEGUARD_RETRY_DELAY_SECONDS`、`CODEGUARD_SHUTDOWN_GRACE_SECONDS`、
-`CODEGUARD_JOB_DB_PATH` 和 `CODEGUARD_WORKSPACE_DIR`，默认值见 `.env.example`。
-
-Python 只在 diff 超过 5000 行时进入大变更降级：按风险最多深审 20 个任务、每文件最多
-3 个任务、每任务上下文最多 2000 字符。普通 diff 默认审查全部 task，其中风险合格且排序
-靠前的最多 20 个 task 使用 ReAct，其余全部使用 Direct；`CODEGUARD_MAX_REACT_TASKS` 可调整
-该上限。Summary、AST 与发现者在大 diff 时只消费选中范围，最终摘要明确披露部分覆盖。
-`CODEGUARD_MAX_REVIEW_TASKS` / `CODEGUARD_MAX_TASKS_PER_FILE` 只作为大 diff 的更严格覆盖上限。
-
----
-
-## 目录结构
-
-```
-Codeguard/
-├── README.md
-├── DECISIONS.md                 # 架构决策记录(ADR)—— "有自己思考"的证据
-├── .env.example
-├── docs/
-│   └── ROADMAP.md               # 分阶段搭建路线图
-└── services/
-    ├── agent/                   # Python Agent(已实现)
-    │   ├── pyproject.toml
-    │   ├── src/codeguard_agent/
-    │   │   ├── cli.py           # 命令行入口
-    │   │   ├── config.py        # 环境变量配置
-    │   │   ├── models/schemas.py# 核心数据结构(Issue/ReviewResult)
-    │   │   ├── models/council.py# 内部状态(Candidate/EvidenceFinding/Verdict/TraceStats)
-    │   │   ├── git/             # diff 采集
-    │   │   ├── llm/             # LLM 工厂 + 重试 + mock
-    │   │   ├── pipeline/        # 风险路由、EvidencePlanner/Agent、CouncilJudge 与 stage
-    │   │   └── prompts/         # 提示词模板
-    │   ├── legacy/supervisor_graph/ # 旧 Supervisor 图备份,不作为运行路径
-    │   └── tests/
-    └── gateway/                 # Java Gateway(事实工具 + 沙箱护栏)
+```powershell
+Set-Location services/agent
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e .
+$env:CODEGUARD_API_KEY = "replace-with-your-key"
+python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 ```
 
----
+Set `CODEGUARD_PROVIDER=mock` for a zero-cost pipeline smoke test. Configure `CODEGUARD_TOOL_SERVER_URL=http://localhost:9090` when the local Agent should use a separately running Gateway for repository context tools.
 
-## 路线图概览
+## Configuration
 
-| 阶段 | 内容 | 状态 |
+Deployment settings:
+
+| Variable | Default | Purpose |
 |---|---|---|
-| 0 | 立项与边界 | ✅ |
-| 1 | 最小可跑闭环(纯 Python) | ✅ |
-| 2 | 管线化(多阶段 + 并行审查员) | ✅ |
-| 3 | Agent 核心:工具调用(引入 Java) | ✅ |
-| 4 | 创新:LangGraph + ReviewCouncil 多 Agent 编排 | 🚧 |
-| 5 | 工程化收尾(韧性/可观测/部署) | ⬜ |
+| `CODEGUARD_IMAGE_TAG` | `latest` | Image tag under `ghcr.io/baiyun689/codeguard` |
+| `CODEGUARD_HOST_PORT` | `9090` | Host port mapped to the container's fixed port `9090` |
+| `CODEGUARD_WEBHOOK_SECRET` | required | Secret used to verify GitHub webhook signatures |
+| `CODEGUARD_GITHUB_APP_ID` | required | GitHub App ID used for installation authentication |
+| `CODEGUARD_GITHUB_PRIVATE_KEY_FILE` | `./secrets/github-app.pem` | Host path to the App private key mounted by Compose |
+| `CODEGUARD_GITHUB_TOKEN` | empty | Repository read token required for private repository clones |
+| `CODEGUARD_PROVIDER` | `openai` | LLM provider: `openai`, `claude`, or `mock` |
+| `CODEGUARD_MODEL` | provider default | Model name |
+| `CODEGUARD_API_KEY` | required by Compose | LLM provider API key |
+| `CODEGUARD_API_BASE_URL` | empty | Optional compatible API endpoint |
+| `CODEGUARD_MAX_CONCURRENT_REVIEWS` | `2` | Maximum reviews run concurrently in this instance |
+| `CODEGUARD_REVIEW_TIMEOUT_SECONDS` | `600` | Python review process timeout |
+| `CODEGUARD_RETRY_DELAY_SECONDS` | `30` | Delay before a retryable job is rescheduled |
+| `CODEGUARD_SHUTDOWN_GRACE_SECONDS` | `30` | Maximum drain time during shutdown |
+| `CODEGUARD_WEBHOOK_RATE_LIMIT` | `0.5` | Accepted webhook requests per second; `0` disables rate limiting |
+
+Compose sets container-only paths and ports for the bundled deployment. Do not change `CODEGUARD_TOOL_SERVER_PORT`, `CODEGUARD_TOOL_SERVER_URL`, `CODEGUARD_JOB_DB_PATH`, or `CODEGUARD_WORKSPACE_DIR` unless you are maintaining a custom deployment.
+
+## Operations and Observability
+
+Codeguard currently supports a single Gateway instance. H2 persistence and the scheduler recover jobs within that instance, but the deployment does not implement multi-instance leader election, distributed locking, or shared-workspace coordination. Do not scale the Compose service above one replica.
+
+Operational endpoints:
+
+| Endpoint | Meaning |
+|---|---|
+| `GET /health` | Compatibility health endpoint; reports process liveness |
+| `GET /health/live` | Liveness probe |
+| `GET /health/ready` | Readiness of H2, the scheduler, and Python initialization; returns `503` when unavailable |
+| `GET /metrics` | Prometheus text exposition |
+
+Compose persists the H2 database in `gateway-data` and temporary SHA-scoped review workspaces in `job-workspaces`. Stop the service with `docker compose down`. Add `--volumes` only when you intentionally want to delete persisted job state and workspaces.
+
+The image publishing workflow uses:
+
+- `edge` for pushes to `master`
+- semantic version tags such as `v1.2.3` for release images
+- `latest` for the newest semantic version
+
+After the package is published to GHCR for the first time, a repository owner may need to open the package settings on GitHub and change its visibility to **Public** before unauthenticated `docker compose up -d` can pull it.
+
+## Development
+
+Python checks:
+
+```bash
+cd services/agent
+uv sync --group dev
+uv run pytest tests/ -q
+uv run ruff check src/
+uv run mypy src/
+```
+
+Java checks:
+
+```bash
+cd services/gateway
+mvn --batch-mode verify
+```
+
+Container build:
+
+```bash
+docker build -t codeguard:local .
+```
+
+## Contributing
+
+Issues and pull requests are welcome. Keep changes focused, add deterministic tests for code changes, and run the relevant Python, Java, and container checks before submitting.
+
+Commit messages use Conventional Commits:
+
+```text
+<type>(<scope>): <description>
+```
+
+Common types are `feat`, `fix`, `docs`, `refactor`, `test`, and `chore`.
+
+## License
+
+Codeguard is available under the [MIT License](LICENSE).

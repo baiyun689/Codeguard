@@ -1,28 +1,76 @@
-# Codeguard Gateway(Java · 护栏 + 地面真值层)
+# Codeguard Gateway
 
-阶段 3 引入的 Java 侧。职责边界(见根目录 `DECISIONS.md` ADR-009 / openspec design.md D0):
-**只做"事实与护栏"——安全沙箱、代码地面真值、重静态计算;绝不调 LLM、不判断"是不是问题"**(那是 Python 智能层的事)。
+The Java Gateway is Codeguard's webhook, job-execution, repository-fact, and operational guardrail service. It verifies GitHub events, persists and schedules reviews, runs the Python Agent in isolated commit workspaces, publishes results, and exposes guarded code-context tools. Review reasoning remains in the Python Agent.
 
-## 当前能力(阶段 3 第一步)
+## Start with Docker Compose
 
-通过 HTTP 为 Python Agent 提供工具回调,会话化、通用分发:
-
-- `POST /api/v1/tools/session` —— 创建会话(repo 路径 + 本次 diff 改动文件集合)→ `session_id`
-- `DELETE /api/v1/tools/session/{id}` —— 销毁会话
-- `POST /api/v1/tools/{name}` —— 通用工具分发(需 `X-Session-Id`),本期已注册:
-  - `get_file_content` —— 读取仓库内文件,受 `FileAccessSandbox` 护栏(防穿越 + 限 diff 范围 + 大小上限)
-- `GET /health` —— 健康检查
-
-## 跑起来
+Use the repository-root Compose deployment for normal operation:
 
 ```bash
-mvn package                                 # 跑单测 + 出 fat jar
-java -jar target/codeguard-gateway.jar      # 默认端口 9090(CODEGUARD_TOOL_SERVER_PORT 可覆盖)
+cp .env.example .env
+mkdir -p secrets
+# Edit .env and save the GitHub App key as secrets/github-app.pem.
+docker compose up -d
 ```
 
-Python 侧设 `CODEGUARD_TOOL_SERVER_URL=http://localhost:9090` 后,`--mode pipeline` 的审查员即走 ReAct,可调上述工具。
+The published image defaults to `ghcr.io/baiyun689/codeguard:latest`. The Gateway listens on port `9090` inside the container; `CODEGUARD_HOST_PORT` controls the host mapping.
 
-## 后续(逐个加,沿通用协议 + 会话接缝)
+See the root [README](../../README.md) for complete GitHub App, LLM, private-repository, image-tag, and reverse-proxy configuration.
 
-- `get_method_definition`(JavaParser AST)、`get_call_graph`(调用图)、`semantic_search`(向量 RAG)、`search_memory`(记忆,阶段 4)。
-- 重资源(调用图/向量索引)届时按 project 在 `ToolSessionManager` 预留的挂载点共享。
+## HTTP Endpoints
+
+GitHub and operations:
+
+- `POST /webhooks/github` verifies and accepts supported `pull_request` events.
+- `GET /health` and `GET /health/live` report process liveness.
+- `GET /health/ready` reports H2, scheduler, and Python readiness.
+- `GET /metrics` exposes Prometheus metrics.
+
+Agent tool sessions:
+
+- `POST /api/v1/tools/session` creates a repository-scoped session.
+- `DELETE /api/v1/tools/session/{id}` destroys a session.
+- `POST /api/v1/tools/{name}` dispatches an allowed tool using the `X-Session-Id` header.
+
+The tool registry includes guarded file content, sensitive API, caller, code-metric, and diff AST queries. Repository paths are constrained by the session sandbox.
+
+## Local Development
+
+Requirements:
+
+- Java 21
+- Maven 3.9+
+- Python with the `codeguard_agent` package installed when exercising CI review jobs
+
+Build and test the Gateway:
+
+```bash
+cd services/gateway
+mvn --batch-mode verify
+```
+
+Run the packaged JAR:
+
+```bash
+java -jar target/codeguard-gateway.jar
+```
+
+On Windows, the helper script loads only missing `CODEGUARD_*` values from the repository-root `.env` and starts an already-built JAR:
+
+```powershell
+Set-Location services/gateway
+mvn package
+.\start-ci.ps1
+```
+
+The script does not build the JAR or read separate App ID/private-key files. Configure `CODEGUARD_GITHUB_APP_ID` and `CODEGUARD_GITHUB_PRIVATE_KEY_FILE` in the shell or root `.env`.
+
+Without `CODEGUARD_WEBHOOK_SECRET`, the Gateway starts its tool and operational endpoints but does not register the GitHub webhook or CI scheduler.
+
+## Runtime Notes
+
+- The Gateway is single-instance. Do not run multiple replicas against the same H2 database or workspace volumes.
+- `CODEGUARD_TOOL_SERVER_PORT` defaults to `9090` for direct JAR execution.
+- `CODEGUARD_JOB_DB_PATH` defaults to `./data/codeguard-jobs`.
+- `CODEGUARD_WORKSPACE_DIR` defaults to a directory under the system temporary directory.
+- On shutdown, the HTTP server stops accepting webhooks before the scheduler drains active work.
