@@ -229,14 +229,13 @@ python -m evals.runner --runs 3 --judge  # 额外开 LLM-as-judge
 | `CODEGUARD_DISABLE_THINKING` | `false` | 用 DeepSeek 推理模型时设 `true` |
 | `CODEGUARD_MAX_RETRIES` | `3` | LLM 调用重试次数 |
 | `CODEGUARD_ENABLE_SUMMARY` | `true` | ADR-032 选中范围摘要开关;关闭则 TaskRank 后直接进入 ContextProvider |
-| `CODEGUARD_REVIEW_ORCHESTRATION` | `adr-032` | 当前唯一运行编排 profile;旧 supervisor 仅在 legacy 目录作参考 |
 | `CODEGUARD_MAX_EVIDENCE_ROUNDS` | `1` | Planner → Agent → Judge 证据执行轮次上限；只允许 1 或 2，默认单轮，显式设为 2 时 Judge 可补证回 Planner |
 | `CODEGUARD_MAX_REVIEW_TASKS` | `100` | 仅作为大 diff 的更严格总任务上限 |
 | `CODEGUARD_MAX_TASKS_PER_FILE` | `10` | 仅作为大 diff 的更严格单文件上限 |
 | `CODEGUARD_MAX_REACT_TASKS` | `20` | 普通/大 diff 选中范围内允许使用 ReAct 的 task 上限；其余 Direct |
 | `CODEGUARD_TRACE_ENABLED` | `false` | 历史本地 HTML Trace；仅在传 `--trace` 或显式设为 true 时运行 |
 | `LANGSMITH_TRACING` | `false` | LangSmith 标准开关；设为 true 后由 LangGraph/LangChain 自动追踪 |
-| `LANGSMITH_PROJECT` | `codeguard-phase5-test` | LangSmith 测试追踪项目名；需同时设置 `LANGSMITH_API_KEY` |
+| `LANGSMITH_PROJECT` | `codeguard` | LangSmith 追踪项目名；需同时设置 `LANGSMITH_API_KEY` |
 | `CODEGUARD_MAX_CONCURRENT_REVIEWS` | `2` | Java CI 单实例最大并发审查数 |
 | `CODEGUARD_REVIEW_TIMEOUT_SECONDS` | `600` | Python 审查子进程超时 |
 | `CODEGUARD_RETRY_DELAY_SECONDS` | `30` | 可重试失败的非阻塞延迟 |
