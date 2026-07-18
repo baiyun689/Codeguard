@@ -47,3 +47,11 @@ services/gateway/github-app-id.txt
 # 系统
 .DS_Store
 Thumbs.db
+
+# Local project design and evaluation artifacts
+/docs/
+/DECISIONS.md
+/CONTEXT.md
+/HANDOFF.md
+/services/agent/evals/reports/
+/secrets/
