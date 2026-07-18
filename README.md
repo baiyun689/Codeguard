@@ -168,11 +168,7 @@ The Python Agent can review a local Git diff without GitHub:
 ```bash
 cd services/agent
 python -m venv .venv
-```
-
-Activate the virtual environment, then install and run:
-
-```bash
+source .venv/bin/activate
 pip install -e .
 export CODEGUARD_API_KEY=replace-with-your-key
 python -m codeguard_agent review --repo /path/to/repository --base HEAD

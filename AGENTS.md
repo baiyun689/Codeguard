@@ -95,13 +95,13 @@ Codeguard/
     │   │   ├── llm/client.py      # LLM 工厂(openai/Codex/mock)+ 重试 + mock 假数据
     │   │   ├── tools/             # ★工具调用(智能层侧)。tool_client(同步 HTTP)+ definitions(LangChain 工具)
     │   │   ├── pipeline/orchestrator.py   # 多阶段管线编排(审查唯一入口)
-    │   │   ├── pipeline/risk_rules/       # ★Phase 2:变化特征、23标签规则、注册表/聚合/兜底
+    │   │   ├── pipeline/risk_rules/       # ★变化特征、23 标签规则、注册表/聚合/兜底
     │   │   ├── pipeline/risk_routing.py   # ★从 RiskProfile 派生 reviewer task scope
-    │   │   ├── pipeline/evidence_rules/   # ★Phase 5:24 标签三目的静态策略与候选主题分类
+    │   │   ├── pipeline/evidence_rules/   # ★24 标签三目的静态策略与候选主题分类
     │   │   ├── pipeline/evidence_planner.py # ★dossier 绑定、两遍初轮与回环规划
     │   │   ├── pipeline/evidence_agent.py # ★策略执行、事实复用/工具缓存、finding 安全回退
     │   │   ├── pipeline/council_judge.py  # ★目的感知裁决、去重/语义合并、survivor 映射
-    │   │   ├── pipeline/council_metrics.py # ★Phase 5 过程指标唯一计算入口
+    │   │   ├── pipeline/council_metrics.py # ★ReviewCouncil 过程指标唯一计算入口
     │   │   ├── pipeline/engines.py        # ★审查员执行引擎:DirectEngine(直连基准)/ ToolAgentEngine(ReAct)
     │   │   ├── pipeline/stages/           # 各阶段:summary / context_provider / reviewer 等通用 stage
     │   │   ├── pipeline/fp_rules.py       # 误报过滤的确定性规则(纯函数,可单测)
