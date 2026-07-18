@@ -30,3 +30,22 @@ jobs:
         run: mvn --batch-mode verify
       - name: Build container
         run: docker build -t codeguard:ci .
+      - name: Smoke test container
+        run: |
+          docker run -d --name codeguard-smoke -p 19090:9090 \
+            -e CODEGUARD_PROVIDER=mock codeguard:ci
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://localhost:19090/health/ready >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              docker logs codeguard-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail http://localhost:19090/health/live
+          curl --fail http://localhost:19090/health/ready
+      - name: Clean up smoke container
+        if: always()
+        run: docker rm -f codeguard-smoke || true
