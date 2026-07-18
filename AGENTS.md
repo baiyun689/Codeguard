@@ -222,6 +222,9 @@ python -m evals.runner --runs 3 --judge  # 额外开 LLM-as-judge
 | `CODEGUARD_PROVIDER` | `openai` | `openai` / `Codex` / `mock` |
 | `CODEGUARD_MODEL` | 按 provider 回退 | 留空自动选默认模型 |
 | `CODEGUARD_API_KEY` | 空 | openai/Codex 必填 |
+| `CODEGUARD_IMAGE_TAG` | `latest` | Compose 部署使用的 `ghcr.io/baiyun689/codeguard` 镜像标签 |
+| `CODEGUARD_HOST_PORT` | `9090` | Compose 发布到宿主机的端口；容器内 Gateway 固定监听 9090 |
+| `CODEGUARD_GITHUB_PRIVATE_KEY_FILE` | `./secrets/github-app.pem` | GitHub App 私钥的宿主机路径；Compose 以只读 secret 挂载 |
 | `CODEGUARD_API_BASE_URL` | 空 | 代理 / 兼容端点(如 DeepSeek)填 |
 | `CODEGUARD_STRUCTURED_METHOD` | `function_calling` | 结构化输出方式 |
 | `CODEGUARD_DISABLE_THINKING` | `false` | 用 DeepSeek 推理模型时设 `true` |
