@@ -96,7 +96,8 @@ public class GitHubClient {
         String header = base64url(headerJson.getBytes());
 
         long now = Instant.now().getEpochSecond();
-        String payloadJson = "{\"iat\":" + now + ",\"exp\":" + (now + 600) + ",\"iss\":\"" + appId + "\"}";
+        String payloadJson = "{\"iat\":" + (now - 60) + ",\"exp\":" + (now + 540)
+            + ",\"iss\":\"" + appId + "\"}";
         String payload = base64url(payloadJson.getBytes());
 
         String signingInput = header + "." + payload;

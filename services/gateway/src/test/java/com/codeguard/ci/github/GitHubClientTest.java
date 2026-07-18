@@ -155,6 +155,27 @@ class GitHubClientTest {
         }
     }
 
+    @Test
+    void shouldLeaveClockSkewMarginInJwtClaims() throws Exception {
+        String privateKeyPem = createTestPrivateKeyPem();
+        long before = Instant.now().getEpochSecond();
+
+        String jwt = GitHubClient.createJwt("12345", privateKeyPem);
+
+        long after = Instant.now().getEpochSecond();
+        String payloadJson = new String(
+            Base64.getUrlDecoder().decode(jwt.split("\\.")[1]),
+            java.nio.charset.StandardCharsets.UTF_8);
+        JsonNode payload = MAPPER.readTree(payloadJson);
+
+        long issuedAt = payload.path("iat").asLong();
+        long expiresAt = payload.path("exp").asLong();
+        assertTrue(issuedAt >= before - 60 && issuedAt <= after - 60,
+            "iat 应回拨 60 秒以容忍客户端时钟偏快");
+        assertTrue(expiresAt >= before + 540 && expiresAt <= after + 540,
+            "exp 应只前推 9 分钟，为 GitHub 的 10 分钟上限保留余量");
+    }
+
     /**
      * 验证构造函数不会抛出异常(使用有效的测试密钥)。
      */
