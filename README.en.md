@@ -105,7 +105,7 @@ The Gateway always listens on port `9090` inside the container. Change only the 
 CODEGUARD_HOST_PORT=8080
 ```
 
-The public webhook URL would then be `https://your-host.example/webhooks/github` when a reverse proxy terminates HTTPS on the standard port, or `https://your-host.example:8080/webhooks/github` when exposing the mapped port directly.
+The mapped Gateway port serves plain HTTP and does not provide TLS. In production, terminate HTTPS at a reverse proxy and forward `/webhooks/github` to that host port; the public webhook URL should be `https://your-host.example/webhooks/github`. Do not point a GitHub webhook directly at the mapped port.
 
 ## Configure a GitHub App
 
@@ -269,9 +269,10 @@ Commit messages use Conventional Commits:
 
 ```text
 <type>(<scope>): <description>
+<type>: <description>
 ```
 
-Common types are `feat`, `fix`, `docs`, `refactor`, `test`, and `chore`.
+The `scope` is optional. Common types are `feat`, `fix`, `docs`, `refactor`, `test`, and `chore`.
 
 ## License
 
