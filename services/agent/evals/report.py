@@ -203,8 +203,8 @@ def render_report(
             "",
             "ADR-032 中间态只用于 trace/eval,不进入最终 ReviewResult。",
             "",
-            "| 用例 | 候选 | 角色候选分布 | 证据请求 | 证据轮次 | Judge 裁决 | 移除 | 候选截断 | Trace 事件 |",
-            "|---|---|---|---|---|---|---|---|---|",
+            "| 用例 | 候选 | 角色候选分布 | 证据请求 | Judge 裁决 | 移除 | 候选截断 | Trace 事件 |",
+            "|---|---|---|---|---|---|---|---|",
         ]
         for o in council_rows:
             c = o.council_trace
@@ -221,18 +221,16 @@ def render_report(
             agent_detail = ", ".join(agent_parts) if agent_parts else "—"
             removed = (
                 c.removed_by_judge
-                + c.removed_by_aggregation
                 + c.removed_by_fp_rules
                 + c.removed_by_fp_llm
             )
             detail = (
                 f"judge={c.removed_by_judge}, "
-                f"aggregation={c.removed_by_aggregation}, "
                 f"fp_rules={c.removed_by_fp_rules}, fp_llm={c.removed_by_fp_llm}"
             )
             lines.append(
                 f"| {o.case_id} | {c.candidate_count} | {agent_detail} | "
-                f"{c.evidence_request_count} | {c.evidence_rounds} | {c.verdict_count} | "
+                f"{c.evidence_request_count} | {c.verdict_count} | "
                 f"{removed} ({detail}) | {c.truncated_candidates} | {c.trace_events} |"
             )
 
@@ -243,15 +241,33 @@ def render_report(
             "比率均由 Judge 使用的 survivor candidate 映射计算；`—` 表示分母为零。",
             "实际工具调用只统计 EvidenceAgent 新调用，缓存复用不计。",
             "",
-            "| 用例 | direct counter 保留率 | 全 insufficient 保留率 | 最终 Issue 策略覆盖率 | 最终 Issue 有效事实覆盖率 | RiskTag 策略覆盖率 | 平均实际证据工具调用 |",
-            "|---|---|---|---|---|---|---|",
+            "| 用例 | 无 support 保留 | direct counter 保留率 | 全 insufficient 保留率 | 默认定级 | CRITICAL 命中 | 缺失 factor | 等级转移 |",
+            "|---|---|---|---|---|---|---|---|",
         ]
         for o in council_rows:
             c = o.council_trace
             lines.append(
                 f"| {o.case_id} | "
+                f"{c.no_support_retained_count}/{c.no_support_candidate_count} | "
                 f"{c.direct_counter_retained_count}/{c.direct_counter_candidate_count} ({_fmt(c.direct_counter_retained_rate)}) | "
                 f"{c.all_insufficient_retained_count}/{c.all_insufficient_candidate_count} ({_fmt(c.all_insufficient_retained_rate)}) | "
+                f"{c.severity_defaulted_count} | "
+                f"{c.critical_policy_matched_count}/{c.critical_candidate_count} | "
+                f"{c.critical_missing_factor_count} | "
+                f"{', '.join(f'{key}={value}' for key, value in sorted(c.severity_transitions.items())) or '—'} |"
+            )
+
+        lines += [
+            "",
+            "### 证据覆盖与成本",
+            "",
+            "| 用例 | 最终 Issue 策略覆盖率 | 最终 Issue 有效事实覆盖率 | RiskTag 策略覆盖率 | 平均实际证据工具调用 |",
+            "|---|---|---|---|---|",
+        ]
+        for o in council_rows:
+            c = o.council_trace
+            lines.append(
+                f"| {o.case_id} | "
                 f"{c.final_issue_strategy_covered_count}/{c.final_issue_count} ({_fmt(c.final_issue_strategy_coverage)}) | "
                 f"{c.final_issue_fact_covered_count}/{c.final_issue_count} ({_fmt(c.final_issue_fact_coverage)}) | "
                 f"{c.registry_risk_tag_covered_count}/{c.registry_risk_tag_total} ({_fmt(c.registry_risk_tag_coverage)}) | "

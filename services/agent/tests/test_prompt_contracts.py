@@ -158,12 +158,27 @@ def test_evidence_and_judge_prompts_describe_wrapper_contracts() -> None:
         f"`{field}`" in analysis
         for field in ("relation", "strength", "observation", "limitation")
     )
+    assert "relation 始终相对于候选主张" in analysis
+    assert "不得建议 CRITICAL、WARNING 或 INFO" in analysis
 
     judge = _prompt("council-judge.txt")
-    assert "`decisions`" in judge
     assert "`candidate_id`" in judge
-    assert "不要选择 `merge`" in judge
-    assert "仅在输入明确允许补证" in judge
+    assert "`claim_status`" in judge
+    assert "`counter_effect`" in judge
+    assert "`severity_factors`" in judge
+    assert "`factor_id`" in judge
+    assert "`status`" in judge
+    assert "`evidence_ids`" in judge
+    assert "`conflicts`" in judge
+    for forbidden in (
+        "needs_more_evidence",
+        "merge_target_id",
+        "adjusted_severity",
+        "requested_purpose",
+    ):
+        assert forbidden not in judge
+    assert "不得输出最终 severity" in judge
+    assert "任务 RiskTag 只能作为背景" in judge
 
 
 def test_summary_and_classifier_prompts_name_structured_fields() -> None:
@@ -178,19 +193,21 @@ def test_summary_and_classifier_prompts_name_structured_fields() -> None:
     assert "恰好选择一个" in classifier
 
 
-def test_judge_prompt_names_every_judge_decision_field() -> None:
+def test_judge_prompt_names_every_synthesis_field() -> None:
     judge = _prompt("council-judge.txt")
     fields = {
-        "decisions",
         "candidate_id",
-        "action",
+        "claim_status",
+        "counter_effect",
+        "severity_factors",
+        "factor_id",
+        "status",
+        "evidence_ids",
+        "conflicts",
         "reason",
-        "merge_target_id",
-        "adjusted_severity",
-        "requested_purpose",
     }
     assert all(f"`{field}`" in judge for field in fields)
-    assert "恰好包含一项" in judge
+    assert "CandidateEvidenceAssessment" in judge
 
 
 def test_aggregation_prompts_name_merge_plan_fields_and_index_base() -> None:

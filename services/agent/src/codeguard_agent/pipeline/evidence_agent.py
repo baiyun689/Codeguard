@@ -35,6 +35,14 @@ class EvidenceBatch:
 
 
 @dataclass(frozen=True)
+class BoundEvidence:
+    """A finding whose note and registered request are bound to one dossier."""
+
+    request: EvidenceRequest
+    finding: EvidenceFinding
+
+
+@dataclass(frozen=True)
 class _RawFact:
     evidence_id: str
     source: str
@@ -104,6 +112,8 @@ def request_strategy_mismatch(
 ) -> str | None:
     if dossier is None:
         return "missing_dossier"
+    if request.candidate_id != dossier.candidate.id:
+        return "candidate_id"
     strategy = STRATEGIES_BY_ID.get(request.strategy_id)
     if strategy is None:
         return "strategy_id"
@@ -120,6 +130,22 @@ def request_strategy_mismatch(
     if any(call.tool_name not in strategy.allowed_tools for call in calls):
         return "tool_allowlist"
     return None
+
+
+def bound_evidence(dossier: CandidateDossier) -> list[BoundEvidence]:
+    """Return only findings with a valid request and same-candidate note binding."""
+    valid_requests = {
+        request.id: request
+        for request in dossier.requests
+        if request_strategy_mismatch(request, dossier) is None
+    }
+    return [
+        BoundEvidence(valid_requests[note.request_id], finding)
+        for note in dossier.notes
+        if note.candidate_id == dossier.candidate.id
+        and note.request_id in valid_requests
+        for finding in note.findings
+    ]
 
 
 def _base_facts(dossier: CandidateDossier, request: EvidenceRequest) -> list[_RawFact]:
@@ -457,7 +483,7 @@ def _analyze_fact(
     if direct is not None:
         return direct
     if analyst_llm is None:
-        return _finding_from_fact(fact)
+        return _mock_finding_from_fact(request, fact)
     try:
         structured = analyst_llm.with_structured_output(
             _EvidenceAnalysis,
@@ -522,6 +548,23 @@ def _finding_from_fact(fact: _RawFact) -> EvidenceFinding:
         strength="contextual",
         limitation=limitation,
     )
+
+
+def _mock_finding_from_fact(
+    request: EvidenceRequest,
+    fact: _RawFact,
+) -> EvidenceFinding:
+    """Return deterministic fake evidence for the explicit mock provider path."""
+    if request.purpose == "support" and fact.raw.strip():
+        return EvidenceFinding(
+            evidence_id=fact.evidence_id,
+            source=fact.source,
+            observation=fact.raw,
+            relation="supports",
+            strength="contextual",
+            limitation="mock_mode_synthetic_relation",
+        )
+    return _finding_from_fact(fact)
 
 
 def _analysis_error_finding(fact: _RawFact) -> EvidenceFinding:
@@ -760,4 +803,10 @@ def collect_evidence(
     return batch
 
 
-__all__ = ["EvidenceBatch", "collect_evidence", "request_strategy_mismatch"]
+__all__ = [
+    "BoundEvidence",
+    "EvidenceBatch",
+    "bound_evidence",
+    "collect_evidence",
+    "request_strategy_mismatch",
+]

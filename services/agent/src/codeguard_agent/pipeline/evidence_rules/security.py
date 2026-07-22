@@ -177,4 +177,13 @@ SECURITY_STRATEGIES = [
         allowed_tools=("get_file_content",),
         recipe=file_only,
     ),
+    *_strategies(
+        RiskTag.DESERIALIZATION,
+        counter="类型白名单、校验或代理封装是否存在以限制可反序列化类型",
+        support="不可信输入是否真实进入反序列化入口",
+        severity="可反序列化类型范围、执行权限和数据影响是否支撑候选级别",
+        context_kinds=("sensitive_api", "ast_structure"),
+        allowed_tools=("get_file_content", "find_sensitive_apis"),
+        recipe=file_sensitive,
+    ),
 ]

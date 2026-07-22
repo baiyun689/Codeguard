@@ -19,7 +19,6 @@ EvidencePurpose = Literal["support", "counter", "severity"]
 
 
 MAX_CANDIDATES_PER_AGENT = 10
-DEFAULT_MAX_EVIDENCE_ROUNDS = 1
 NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
@@ -28,36 +27,36 @@ NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length
 
 @dataclass
 class Verdict:
-    """规则层产出的裁决结果。规则命中时返回此对象，返回 None 表示不命中。"""
+    """Evidence-gate + synthesis adjudication outcome."""
 
     candidate_id: str
-    action: Literal["keep", "drop", "downgrade", "merge", "needs_more_evidence"]
+    action: Literal["keep", "drop"]
     reason_code: str
     reason: str = ""
-    suggested_target_id: str = ""  # merge 时指向被合并方
-    severity_override: Severity | None = None  # downgrade 时建议新级别
-    requested_purpose: EvidencePurpose | None = None
+    resolved_severity: Severity | None = None
 
 
-class JudgeDecision(BaseModel):
-    """LLM 终审的结构化输出：对单条候选的裁决。"""
+# ── Evidence synthesis models (ADR-032 evidence-gated severity) ──
 
-    candidate_id: str
-    action: Literal["keep", "drop", "downgrade", "merge", "needs_more_evidence"]
+
+class SeverityFactorAssessment(BaseModel):
+    """LLM evidence synthesizer 对单个 severity factor 的评估。"""
+
+    factor_id: NonBlankStr
+    status: Literal["proven", "disproven", "unknown"]
+    evidence_ids: list[str] = Field(default_factory=list)
     reason: str = ""
-    merge_target_id: str = ""  # merge 时指向被合并方
-    adjusted_severity: Severity | None = None  # downgrade 时建议新级别
-    requested_purpose: EvidencePurpose | None = None
 
 
-class JudgeDecisions(BaseModel):
-    """包装模型：LLM 输出的裁决列表。
+class CandidateEvidenceAssessment(BaseModel):
+    """LLM evidence synthesizer 对单个候选的完整证据综合。"""
 
-    用于 with_structured_output()——DeepSeek 等兼容端点不支持
-    list[T] 泛型作为 response_format，必须用具名模型包装。
-    """
-
-    decisions: list[JudgeDecision] = Field(default_factory=list)
+    candidate_id: NonBlankStr
+    claim_status: Literal["supported", "refuted", "unresolved"]
+    counter_effect: Literal["none", "partial", "complete", "unknown"]
+    severity_factors: list[SeverityFactorAssessment] = Field(default_factory=list)
+    conflicts: list[str] = Field(default_factory=list)
+    reason: str = ""
 
 
 class ContextFact(BaseModel):
@@ -218,12 +217,16 @@ class CouncilRunStats(BaseModel):
     candidate_count_by_agent: dict[str, int] = Field(default_factory=dict)
     evidence_request_count: int = Field(default=0, description="累计证据请求总数")
     truncated_candidates: int = Field(default=0, description="发现阶段因候选上限被截断的数量")
-    evidence_rounds: int = Field(default=0, description="EvidenceAgent 实际执行轮次")
-    verdict_count: int = Field(default=0, description="本轮 Judge 的候选与合并裁决总数")
+    verdict_count: int = Field(default=0, description="Judge 产生的候选裁决总数")
     removed_by_judge: int = Field(default=0, description="Judge 裁决为 drop 的候选数")
-    removed_by_aggregation: int = Field(default=0, description="全局聚合为 merge 的候选数")
     removed_by_fp_rules: int = 0
     removed_by_fp_llm: int = 0
+    no_support_candidate_count: int = Field(
+        default=0, description="因缺少 support 证据而被 gate 拒绝的候选数"
+    )
+    no_support_retained_count: int = Field(
+        default=0, description="缺少 support 证据但仍映射到最终 Issue 的候选数"
+    )
     direct_counter_candidate_count: int = Field(
         default=0, description="具备 counter+direct+contradicts finding 的候选数"
     )
@@ -243,6 +246,22 @@ class CouncilRunStats(BaseModel):
     all_insufficient_retained_rate: float | None = Field(
         default=None,
         description="all_insufficient_retained_count/all_insufficient_candidate_count；分母为零时 None",
+    )
+    severity_defaulted_count: int = Field(
+        default=0, description="使用 RiskTag 固定默认等级的候选数"
+    )
+    critical_candidate_count: int = Field(
+        default=0, description="最终解析为 CRITICAL 的候选数"
+    )
+    critical_policy_matched_count: int = Field(
+        default=0, description="满足完整 CRITICAL policy 的候选数"
+    )
+    critical_missing_factor_count: int = Field(
+        default=0, description="所有候选累计缺失的 CRITICAL factor 数"
+    )
+    severity_transitions: dict[str, int] = Field(
+        default_factory=dict,
+        description="severity_proposal 到 resolved_severity 的转移计数",
     )
     final_issue_count: int = Field(default=0, description="最终 Issue 对应的 survivor 候选数")
     final_issue_strategy_covered_count: int = Field(

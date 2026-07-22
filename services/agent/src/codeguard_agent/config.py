@@ -28,18 +28,6 @@ def _positive_int_env(name: str, default: int) -> int:
     return value
 
 
-def _evidence_rounds_env() -> int:
-    name = "CODEGUARD_MAX_EVIDENCE_ROUNDS"
-    raw = os.environ.get(name, "1").strip()
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be 1 or 2, got {raw!r}") from exc
-    if value not in (1, 2):
-        raise ValueError(f"{name} must be 1 or 2, got {raw!r}")
-    return value
-
-
 def _load_dotenv() -> None:
     """从项目里就近向上查找并加载 .env 文件。
 
@@ -70,8 +58,6 @@ class Settings:
     tool_server_url: str = ""
     # 前置摘要阶段开关:默认开。关闭时审查员不收到 diff_summary 背景。
     enable_summary: bool = True
-    # ReviewCouncil 证据补充轮次上限。
-    max_evidence_rounds: int = 1
     # 大 diff 覆盖预算；普通 diff 默认全选。
     max_review_tasks: int = 100
     max_tasks_per_file: int = 10
@@ -126,7 +112,6 @@ class Settings:
         enable_summary = os.environ.get(
             "CODEGUARD_ENABLE_SUMMARY", "true"
         ).strip().lower() not in ("0", "false", "no", "off")
-        max_evidence_rounds = _evidence_rounds_env()
         max_review_tasks = _positive_int_env("CODEGUARD_MAX_REVIEW_TASKS", 100)
         max_tasks_per_file = _positive_int_env("CODEGUARD_MAX_TASKS_PER_FILE", 10)
         max_react_tasks = _positive_int_env("CODEGUARD_MAX_REACT_TASKS", 20)
@@ -152,7 +137,6 @@ class Settings:
             disable_thinking=disable_thinking,
             tool_server_url=os.environ.get("CODEGUARD_TOOL_SERVER_URL", "").strip(),
             enable_summary=enable_summary,
-            max_evidence_rounds=max_evidence_rounds,
             max_review_tasks=max_review_tasks,
             max_tasks_per_file=max_tasks_per_file,
             max_react_tasks=max_react_tasks,

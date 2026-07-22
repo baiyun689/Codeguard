@@ -160,16 +160,21 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
                 },
                 "evidence_request_count": 2,
                 "truncated_candidates": 1,
-                "evidence_rounds": 1,
                 "verdict_count": 3,
                 "removed_by_judge": 1,
-                "removed_by_aggregation": 1,
+                "no_support_candidate_count": 1,
+                "no_support_retained_count": 0,
                 "direct_counter_candidate_count": 1,
                 "direct_counter_retained_count": 0,
                 "direct_counter_retained_rate": 0.0,
                 "all_insufficient_candidate_count": 1,
                 "all_insufficient_retained_count": 1,
                 "all_insufficient_retained_rate": 1.0,
+                "severity_defaulted_count": 1,
+                "critical_candidate_count": 1,
+                "critical_policy_matched_count": 1,
+                "critical_missing_factor_count": 2,
+                "severity_transitions": {"WARNING->CRITICAL": 1},
                 "final_issue_count": 2,
                 "final_issue_strategy_covered_count": 1,
                 "final_issue_strategy_coverage": 0.5,
@@ -191,6 +196,8 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
     assert "threat_model=1, behavior=1, maintainability=1" in out
     assert "证据请求" in out
     assert "Judge 裁决" in out
+    assert "无 support 保留" in out
+    assert "0/1" in out
     assert "direct counter 保留率" in out
     assert "0/1 (0.000)" in out
     assert "全 insufficient 保留率" in out
@@ -202,6 +209,7 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
     assert "24/24 (1.000)" in out
     assert "平均实际证据工具调用" in out
     assert "1/3 (0.333)" in out
+    assert "WARNING->CRITICAL=1" in out
     assert "evidence_requests=" not in out
 
 

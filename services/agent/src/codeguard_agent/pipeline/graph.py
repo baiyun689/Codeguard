@@ -5,11 +5,7 @@
 
     START → diff_task_builder → risk_triage → task_rank → [summary]
               → context_provider → discover_* → council_coordinator(fan-in)
-              → evidence_agent → council_judge
-                    ↑                   │
-                    └──(needs_more)──────┤
-                                         │
-                                        END
+              → evidence_planner → evidence_agent → council_judge → END
 
 旧 LLM Supervisor 图已迁移到 `services/agent/legacy/supervisor_graph/graph.py`,
 仅作历史参考,不再作为主编排运行回退。
@@ -29,7 +25,6 @@ from codeguard_agent.models.council import (
     ContextFact,
     CouncilRunStats,
     CouncilTrace,
-    DEFAULT_MAX_EVIDENCE_ROUNDS as COUNCIL_DEFAULT_MAX_EVIDENCE_ROUNDS,
     EvidenceNote,
     EvidenceRequest,
     MAX_CANDIDATES_PER_AGENT,
@@ -75,8 +70,6 @@ from codeguard_agent.pipeline.stages.summary import SummaryStage
 
 logger = logging.getLogger("codeguard")
 
-DEFAULT_MAX_ROUNDS = 1
-DEFAULT_MAX_EVIDENCE_ROUNDS = COUNCIL_DEFAULT_MAX_EVIDENCE_ROUNDS
 DEFAULT_RECURSION_LIMIT = 50
 
 _ALL_REVIEWER_NAMES = [r.source_agent for r in DEFAULT_REVIEWERS]
@@ -198,8 +191,6 @@ class ReviewState(TypedDict, total=False):
     max_retries: int
     structured_method: str
     react_recursion_limit: int
-    max_evidence_rounds: int
-
     diff_summary: str
 
     review_budget: ReviewBudget
@@ -212,9 +203,7 @@ class ReviewState(TypedDict, total=False):
     candidate_issues: Annotated[list[CandidateIssue], _candidate_dedup_reducer]
     evidence_requests: Annotated[list[EvidenceRequest], dedup_evidence_request_reducer]
     evidence_notes: Annotated[list[EvidenceNote], operator.add]
-    council_verdicts: list  # council_judge 产出，_route_after_council_judge 读取（非 Annotated，每轮覆盖）
     council_trace: Annotated[list[CouncilTrace], operator.add]
-    evidence_round: int
     truncated_candidates: Annotated[int, operator.add]
 
     gathered_context: Annotated[list, dedup_gathered_reducer]
@@ -930,7 +919,6 @@ def _assemble_state_dossiers(state: ReviewState):
         state.get("task_context_bundles") or {},
         state.get("evidence_requests") or [],
         state.get("evidence_notes") or [],
-        state.get("council_verdicts") or [],
     )
 
 
@@ -941,10 +929,8 @@ def _evidence_planner_node(effective_judge_llm):
         assembly = _assemble_state_dossiers(state)
         plan = plan_evidence(
             assembly.dossiers,
-            evidence_round=state.get("evidence_round", 0),
             classifier_llm=effective_judge_llm,
             structured_method=state.get("structured_method", "function_calling"),
-
         )
         trace = [
             CouncilTrace(node="evidence_planner", event=event, detail=detail)
@@ -964,7 +950,7 @@ def _evidence_planner_node(effective_judge_llm):
 
 
 def _evidence_agent_node(tool_client=None, judge_llm=None):
-    """执行尚无 note 的 request；即使 no-op 也推进证据轮次。"""
+    """执行尚无 note 的 request。"""
 
     def _node(state: ReviewState) -> dict:
         requests = state.get("evidence_requests") or []
@@ -994,23 +980,10 @@ def _evidence_agent_node(tool_client=None, judge_llm=None):
         return {
             "evidence_notes": batch.notes,
             "gathered_context": batch.gathered_context,
-            "evidence_round": state.get("evidence_round", 0) + 1,
             "council_trace": trace,
         }
 
     return _node
-
-
-def _route_after_council_judge(state: ReviewState) -> str:
-    verdicts = state.get("council_verdicts") or []
-    evidence_round = state.get("evidence_round", 0)
-    max_rounds = state.get("max_evidence_rounds", DEFAULT_MAX_EVIDENCE_ROUNDS)
-    if (
-        any(verdict.action == "needs_more_evidence" for verdict in verdicts)
-        and evidence_round < max_rounds
-    ):
-        return "evidence_planner"
-    return "END"
 
 
 def _council_judge_node(llm, judge_llm=None):
@@ -1022,13 +995,12 @@ def _council_judge_node(llm, judge_llm=None):
             assembly,
             judge_llm=effective_judge_llm,
             structured_method=state.get("structured_method", "function_calling"),
-            evidence_round=state.get("evidence_round", 0),
-            max_evidence_rounds=state.get(
-                "max_evidence_rounds",
-                DEFAULT_MAX_EVIDENCE_ROUNDS,
-            ),
             max_retries=state.get("max_retries", 2),
         )
+        judge_trace = [
+            CouncilTrace(node="council_judge", event=event, detail=detail)
+            for event, detail in (*assembly.trace, *batch.trace)
+        ]
         stats = compute_council_run_stats(
             candidates=state.get("candidate_issues") or [],
             assembly=assembly,
@@ -1036,8 +1008,7 @@ def _council_judge_node(llm, judge_llm=None):
             final_candidate_ids=batch.final_candidate_ids,
             evidence_request_count=len(state.get("evidence_requests") or []),
             truncated_candidates=state.get("truncated_candidates", 0),
-            evidence_rounds=state.get("evidence_round", 0),
-            council_trace=state.get("council_trace") or [],
+            council_trace=[*(state.get("council_trace") or []), *judge_trace],
         )
         summaries = list(state.get("review_summaries") or [])
         selection = state.get("task_selection")
@@ -1046,28 +1017,22 @@ def _council_judge_node(llm, judge_llm=None):
             if notice:
                 summaries.insert(0, notice)
         return {
-
-            "council_verdicts": batch.verdicts,
             "final_issues": batch.final_issues,
             "council_stats": stats,
             "summary": "  ".join(summaries),
-            "council_trace": [
-                CouncilTrace(node="council_judge", event=event, detail=detail)
-                for event, detail in (*assembly.trace, *batch.trace)
-            ],
+            "council_trace": judge_trace,
         }
 
     return _node
 
 
 def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=None, fp_verify_llm=None, tool_client=None):
-    """编译 ADR-032 审查状态图（风险路由 Phase 1）。
+    """编译 ADR-032 审查状态图（一次性证据 + 固定策略定级）。
 
-    目标拓扑:
+    拓扑:
         diff_task_builder → risk_triage → task_rank → summary? → context_provider
-          → discover_*(×3) → council_coordinator(fan-in 一次)
-          → evidence_planner → evidence_agent(必经一次) → council_judge
-          → [evidence_planner(needs_more 且轮次未超) | END]
+          → discover_*(×3) → council_coordinator(fan-in)
+          → evidence_planner → evidence_agent → council_judge → END
     """
     from langgraph.graph import END, START, StateGraph
 
@@ -1108,17 +1073,9 @@ def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=No
         g.add_edge("context_provider", node_name)
         g.add_edge(node_name, "council_coordinator")
 
-    # 三路 fan-in 后固定规划并执行一次 EvidenceAgent，再进 CouncilJudge。
+    # 三路 fan-in 后一次性规划、收集证据、综合定级。
     g.add_edge("council_coordinator", "evidence_planner")
     g.add_edge("evidence_planner", "evidence_agent")
     g.add_edge("evidence_agent", "council_judge")
-    # Judge 仅在 needs_more 且轮次未超时回环补证，否则 END。
-    g.add_conditional_edges(
-        "council_judge",
-        _route_after_council_judge,
-        {
-            "evidence_planner": "evidence_planner",
-            "END": END,
-        },
-    )
+    g.add_edge("council_judge", END)
     return g.compile(checkpointer=checkpointer)

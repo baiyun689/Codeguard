@@ -48,7 +48,6 @@ class SelfCheckerStage(PipelineStage):
         *,
         candidates: list[CandidateIssue],
         challenges: list[Challenge],
-        evidence_rounds: int,
         evidence_request_count: int = 0,
         truncated_candidates: int = 0,
     ) -> SelfCheckerOutcome:
@@ -73,10 +72,8 @@ class SelfCheckerStage(PipelineStage):
             candidate_count_by_agent=by_agent,
             evidence_request_count=evidence_request_count,
             truncated_candidates=truncated_candidates,
-            evidence_rounds=evidence_rounds,
             verdict_count=len(challenges),
             removed_by_judge=len(drop_ids),
-            removed_by_aggregation=max(0, before_aggregation - after_aggregation),
             removed_by_fp_rules=getattr(fp_stats, "removed_by_rules", 0) or 0,
             removed_by_fp_llm=getattr(fp_stats, "removed_by_llm", 0) or 0,
         )
@@ -84,7 +81,7 @@ class SelfCheckerStage(PipelineStage):
             "管线阶段 [self_checker]:候选 %d, challenge 剔除 %d,聚合剔除 %d,FP 后 %d",
             len(candidates),
             stats.removed_by_judge,
-            stats.removed_by_aggregation,
+            max(0, before_aggregation - after_aggregation),
             after_fp,
         )
         return SelfCheckerOutcome(

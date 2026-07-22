@@ -7,11 +7,11 @@ from pydantic import ValidationError
 
 from codeguard_agent.models import council
 from codeguard_agent.models.council import (
+    CandidateEvidenceAssessment,
     EvidenceRequest,
-    JudgeDecision,
+    SeverityFactorAssessment,
     Verdict,
 )
-from codeguard_agent.models.schemas import Severity
 
 
 def test_evidence_request_id_distinguishes_strategy_and_purpose():
@@ -154,35 +154,58 @@ def test_legacy_evidence_types_are_removed():
     assert not hasattr(council, "build_evidence_requests")
 
 
-@pytest.mark.parametrize("purpose", ["support", "counter", "severity"])
-def test_verdict_requested_purpose_defaults_to_none_and_accepts_all_values(purpose):
-    baseline = Verdict(
-        candidate_id="candidate-1",
-        action="keep",
-        reason_code="done",
+def test_verdict_action_is_keep_or_drop():
+    keep = Verdict(candidate_id="c-1", action="keep", reason_code="ok")
+    drop = Verdict(candidate_id="c-1", action="drop", reason_code="bad")
+    assert keep.action == "keep"
+    assert drop.action == "drop"
+    assert keep.resolved_severity is None
+
+
+# ── Evidence synthesis models (Task 1) ──
+
+
+def test_candidate_evidence_assessment_accepts_only_bounded_factor_states():
+    assessment = CandidateEvidenceAssessment(
+        candidate_id="C001",
+        claim_status="supported",
+        counter_effect="partial",
+        severity_factors=[
+            SeverityFactorAssessment(
+                factor_id="untrusted_input",
+                status="proven",
+                evidence_ids=["E1"],
+                reason="request parameter reaches the query builder",
+            )
+        ],
+        conflicts=[],
+        reason="candidate remains supported after partial mitigation",
     )
-    requested = Verdict(
-        candidate_id="candidate-1",
-        action="needs_more_evidence",
-        reason_code="more",
-        requested_purpose=purpose,
-    )
-
-    assert baseline.requested_purpose is None
-    assert requested.requested_purpose == purpose
+    assert assessment.severity_factors[0].status == "proven"
 
 
-@pytest.mark.parametrize("purpose", ["support", "counter", "severity"])
-def test_judge_decision_requested_purpose_defaults_to_none_and_accepts_all_values(
-    purpose,
-):
-    baseline = JudgeDecision(candidate_id="candidate-1", action="keep")
-    requested = JudgeDecision(
-        candidate_id="candidate-1",
-        action="needs_more_evidence",
-        adjusted_severity=Severity.WARNING,
-        requested_purpose=purpose,
-    )
+def test_synthesis_model_rejects_unknown_status():
+    with pytest.raises(ValidationError):
+        SeverityFactorAssessment(
+            factor_id="untrusted_input",
+            status="likely",
+            evidence_ids=["E1"],
+            reason="invalid unbounded state",
+        )
 
-    assert baseline.requested_purpose is None
-    assert requested.requested_purpose == purpose
+
+def test_candidate_evidence_assessment_requires_candidate_id():
+    with pytest.raises(ValidationError):
+        CandidateEvidenceAssessment(
+            candidate_id="  ",
+            claim_status="supported",
+            counter_effect="none",
+        )
+
+
+def test_severity_factor_assessment_requires_factor_id():
+    with pytest.raises(ValidationError):
+        SeverityFactorAssessment(
+            factor_id="",
+            status="proven",
+        )

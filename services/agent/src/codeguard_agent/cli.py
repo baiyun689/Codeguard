@@ -126,7 +126,6 @@ def main(argv: list[str] | None = None) -> int:
 
         orch = PipelineOrchestrator(
             enable_summary=settings.enable_summary,
-            max_evidence_rounds=settings.max_evidence_rounds,
             review_budget=ReviewBudget(
                 max_tasks_to_review=settings.max_review_tasks,
                 max_tasks_per_file=settings.max_tasks_per_file,

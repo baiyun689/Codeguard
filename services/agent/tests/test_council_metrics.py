@@ -35,7 +35,7 @@ def _dossier(candidate_id: str, *, file: str | None = None) -> CandidateDossier:
         severity_proposal=Severity.WARNING,
         claim="敏感操作缺少授权保护",
     )
-    return CandidateDossier(candidate, task, None, None, (), (), None)
+    return CandidateDossier(candidate, task, None, None, (), ())
 
 
 def _with_finding(
@@ -75,7 +75,6 @@ def _with_finding(
         dossier.context_bundle,
         (request,),
         (note,),
-        dossier.latest_verdict,
     )
 
 
@@ -93,7 +92,6 @@ def _stats(
         final_candidate_ids=final_ids,
         evidence_request_count=sum(len(dossier.requests) for dossier in dossiers),
         truncated_candidates=0,
-        evidence_rounds=1,
         council_trace=traces or [],
     )
 
@@ -184,3 +182,80 @@ def test_zero_denominators_are_none_except_average_tool_calls():
     assert stats.final_issue_strategy_coverage is None
     assert stats.final_issue_fact_coverage is None
     assert stats.average_evidence_tool_calls == 0.0
+
+
+def test_gate_and_severity_metrics_are_derived_from_verdicts_and_trace():
+    candidates = [
+        _dossier("no-support"),
+        _dossier("defaulted"),
+        _dossier("normal-default"),
+        _dossier("critical"),
+    ]
+    verdicts = [
+        Verdict("no-support", "drop", "no_supporting_evidence"),
+        Verdict(
+            "defaulted",
+            "keep",
+            "severity_evidence_incomplete",
+            resolved_severity=Severity.WARNING,
+        ),
+        Verdict(
+            "normal-default",
+            "keep",
+            "severity_resolved",
+            resolved_severity=Severity.WARNING,
+        ),
+        Verdict(
+            "critical",
+            "keep",
+            "severity_resolved",
+            resolved_severity=Severity.CRITICAL,
+        ),
+    ]
+    traces = [
+        CouncilTrace(
+            node="council_judge",
+            event="severity_resolved",
+            detail=(
+                '{"candidate_id":"normal-default","matched_rule":"authorization.default",'
+                '"severity":"WARNING","missing_critical_factors":["impact"]}'
+            ),
+        ),
+        CouncilTrace(
+            node="council_judge",
+            event="severity_resolved",
+            detail=(
+                '{"candidate_id":"defaulted","matched_rule":"authorization.default",'
+                '"severity":"WARNING","missing_critical_factors":["impact"]}'
+            ),
+        ),
+        CouncilTrace(
+            node="council_judge",
+            event="severity_resolved",
+            detail=(
+                '{"candidate_id":"critical","matched_rule":"authorization.critical",'
+                '"severity":"CRITICAL","missing_critical_factors":[]}'
+            ),
+        ),
+    ]
+
+    stats = compute_council_run_stats(
+        candidates=[item.candidate for item in candidates],
+        assembly=DossierAssembly(tuple(candidates), (), ()),
+        verdicts=verdicts,
+        final_candidate_ids=["defaulted", "normal-default", "critical"],
+        evidence_request_count=0,
+        truncated_candidates=0,
+        council_trace=traces,
+    )
+
+    assert stats.no_support_candidate_count == 1
+    assert stats.no_support_retained_count == 0
+    assert stats.severity_defaulted_count == 1
+    assert stats.critical_candidate_count == 1
+    assert stats.critical_policy_matched_count == 1
+    assert stats.critical_missing_factor_count == 2
+    assert stats.severity_transitions == {
+        "WARNING->WARNING": 2,
+        "WARNING->CRITICAL": 1,
+    }

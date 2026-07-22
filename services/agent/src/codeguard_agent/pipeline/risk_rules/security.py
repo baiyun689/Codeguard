@@ -192,8 +192,34 @@ def detect_config_security(features: DiffFeatures) -> list[RiskSignal]:
     return _detect(
         features,
         RiskTag.CONFIG_SECURITY,
-        (_rule("config_security", r"@Value\b", r"\b(password|secret|token|apiKey)\b", r"application\.(yml|yaml|properties)\b"),),
+        (
+            _rule("config_security", r"@Value\b", r"\b(password|secret|token|apiKey)\b", r"application\.(yml|yaml|properties)\b"),
+            _rule("config_hardcoded_key", r'''(?:static\s+)?(?:final\s+)?String\s+\w*(?:key|secret|password|token)\w*\s*=\s*"[^"]{8,}"'''),
+            _rule("config_weak_crypto", r'''(?:MessageDigest|Cipher|KeyGenerator|SecretKeyFactory|Mac)\.getInstance\s*\(\s*"(?:DES|MD5|SHA-?1|RC4|Blowfish)"''', r'\b(?:DES|MD5|SHA-?1|RC4|Blowfish)\b'),
+        ),
         "敏感配置或凭据暴露变化",
+        added_score=3,
+        deleted_score=2,
+        changed_score=3,
+    )
+
+
+def detect_deserialization(features: DiffFeatures) -> list[RiskSignal]:
+    return _detect(
+        features,
+        RiskTag.DESERIALIZATION,
+        (_rule("deserialization",
+            r"ObjectInputStream\b",
+            r"\.readObject\s*\(",
+            r"\.readUnshared\s*\(",
+            r"XMLDecoder\b",
+            r"XStream\b",
+            r"Kryo\b",
+            r"\.readResolve\s*\(",
+            r"\.readExternal\s*\(",
+            r"ObjectInput\b",
+        ),),
+        "不可信反序列化变化",
         added_score=3,
         deleted_score=2,
         changed_score=3,

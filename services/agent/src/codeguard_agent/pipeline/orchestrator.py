@@ -14,7 +14,6 @@ import uuid
 from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.models.tasks import ReviewBudget
 from codeguard_agent.pipeline.graph import (
-    DEFAULT_MAX_EVIDENCE_ROUNDS,
     DEFAULT_RECURSION_LIMIT,
     ReviewState,
     build_review_graph,
@@ -64,7 +63,6 @@ class PipelineOrchestrator:
     def __init__(
         self,
         enable_summary: bool = True,
-        max_evidence_rounds: int = DEFAULT_MAX_EVIDENCE_ROUNDS,
         review_budget: ReviewBudget | None = None,
         recursion_limit: int = DEFAULT_RECURSION_LIMIT,
         checkpoint_backend: str = "",
@@ -72,7 +70,6 @@ class PipelineOrchestrator:
         react_recursion_limit: int = 48,
     ) -> None:
         self._enable_summary = enable_summary
-        self._max_evidence_rounds = max_evidence_rounds
         self._review_budget = review_budget if review_budget is not None else ReviewBudget()
         self._recursion_limit = recursion_limit
         self._checkpointer = _create_checkpointer(checkpoint_backend, checkpoint_db)
@@ -122,7 +119,6 @@ class PipelineOrchestrator:
             "max_retries": max_retries,
             "structured_method": structured_method,
             "react_recursion_limit": self._react_recursion_limit,
-            "max_evidence_rounds": self._max_evidence_rounds,
             "review_budget": self._review_budget,
         }
         invoke_config: dict = {"recursion_limit": self._recursion_limit}

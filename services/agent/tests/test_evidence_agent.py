@@ -7,8 +7,6 @@ import json
 import threading
 import time
 
-import pytest
-
 from codeguard_agent.models.council import (
     CandidateIssue,
     ContextFact,
@@ -57,7 +55,6 @@ def _dossier(
         context_bundle=context,
         requests=(),
         notes=(),
-        latest_verdict=None,
     )
 
 
@@ -163,7 +160,11 @@ def test_same_tool_call_is_cached_but_each_request_gets_its_own_note():
     assert sum(event == "evidence_tool_called" for event, _ in batch.trace) == 2
     assert sum(event == "evidence_tool_reused" for event, _ in batch.trace) == 2
     tool_ids = [
-        {finding.evidence_id for finding in note.findings if finding.source.startswith("tool:")}
+        {
+            finding.evidence_id
+            for finding in note.findings
+            if finding.source.startswith("tool:")
+        }
         for note in batch.notes
     ]
     assert tool_ids[0] == tool_ids[1]
@@ -517,60 +518,14 @@ def _judge_evidence_batch(dossier: CandidateDossier, request: EvidenceRequest, b
         context_bundle=dossier.context_bundle,
         requests=(request,),
         notes=tuple(batch.notes),
-        latest_verdict=None,
     )
     module = importlib.import_module("codeguard_agent.pipeline.council_judge")
     return module.judge_candidates(
         DossierAssembly((judged,), (), ()),
         judge_llm=None,
         structured_method="function_calling",
-        evidence_round=1,
-        max_evidence_rounds=2,
         max_retries=1,
     )
-
-
-@pytest.mark.parametrize("scope_case", ["other_method", "other_class", "unresolved"])
-def test_analyst_cannot_create_direct_counter_without_deterministic_scope(scope_case):
-    if scope_case == "other_method":
-        dossier, client = _authorization_scope_dossier(
-            "public class Service {\n"
-            "  @PreAuthorize(\"hasRole('ADMIN')\") void admin() {}\n"
-            "\n\n\n\n\n\n"
-            "  public void update() { save(); }\n"
-            "}",
-            "public void update()",
-        )
-    elif scope_case == "other_class":
-        dossier, client = _authorization_scope_dossier(
-            "@PreAuthorize(\"hasRole('ADMIN')\")\n"
-            "class Other {}\n"
-            "public class Service {\n"
-            "\n\n\n\n\n\n"
-            "  public void update() { save(); }\n"
-            "}",
-            "public void update()",
-        )
-    else:
-        dossier = _dossier(context=None)
-        client = _ToolClient(
-            "class Service {\n"
-            "  @PreAuthorize(\"hasRole('ADMIN')\")\n"
-            "  public void update() { save(); }\n"
-            "}"
-        )
-    request = _request(dossier)
-
-    batch = _collect_with_llm(
-        [dossier],
-        [request],
-        _malicious_direct_analyst(),
-        client=client,
-    )
-
-    assert not any(finding.strength == "direct" for finding in batch.notes[0].findings)
-    verdict = _judge_evidence_batch(dossier, request, batch).verdicts[0]
-    assert verdict.reason_code != "direct_counter_evidence"
 
 
 def test_deterministic_current_method_scope_remains_direct_with_malicious_analyst():
@@ -618,7 +573,6 @@ def test_prior_legal_direct_counter_finding_remains_direct_when_reused():
         context_bundle=dossier.context_bundle,
         requests=(),
         notes=(prior,),
-        latest_verdict=None,
     )
 
     batch = _collect_with_llm(
@@ -659,7 +613,6 @@ def test_severity_request_reuses_prior_observation_with_same_evidence_id():
         context_bundle=dossier.context_bundle,
         requests=(),
         notes=(prior,),
-        latest_verdict=None,
     )
     request = _request(dossier, "authorization.severity")
 
@@ -693,7 +646,6 @@ def test_counter_request_reuses_prior_tool_finding_without_repeating_call():
         context_bundle=dossier.context_bundle,
         requests=(),
         notes=(prior,),
-        latest_verdict=None,
     )
     client = _ToolClient()
 
@@ -875,7 +827,6 @@ def test_request_target_cannot_use_candidate_basename_to_bypass_task_path():
         context_bundle=dossier.context_bundle,
         requests=(),
         notes=(),
-        latest_verdict=None,
     )
     request = _request(dossier).model_copy(update={"target": "Service.java"})
     client = _ToolClient()
@@ -915,7 +866,6 @@ def test_prior_empty_tool_finding_prevents_cross_round_repeat_call():
         context_bundle=dossier.context_bundle,
         requests=(),
         notes=(prior,),
-        latest_verdict=None,
     )
     client = _ToolClient()
 

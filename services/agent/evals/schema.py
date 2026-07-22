@@ -198,12 +198,12 @@ class CouncilTraceStats(BaseModel):
     candidate_count_by_agent: dict[str, int] = Field(default_factory=dict)
     evidence_request_count: int = Field(default=0, description="累计有效/无效证据请求数")
     truncated_candidates: int = Field(default=0, description="发现阶段因候选上限被截断的数量")
-    evidence_rounds: int = Field(default=0, description="EvidenceAgent 实际执行轮次")
-    verdict_count: int = Field(default=0, description="本轮 Judge 产生的候选裁决与合并裁决数")
+    verdict_count: int = Field(default=0, description="Judge 产生的候选裁决数")
     removed_by_judge: int = Field(default=0, description="Judge 候选裁决为 drop 的数量")
-    removed_by_aggregation: int = Field(default=0, description="全局精确/语义聚合为 merge 的数量")
     removed_by_fp_rules: int = 0
     removed_by_fp_llm: int = 0
+    no_support_candidate_count: int = 0
+    no_support_retained_count: int = 0
     direct_counter_candidate_count: int = Field(
         default=0, description="具备 counter+direct+contradicts finding 的候选数"
     )
@@ -222,6 +222,11 @@ class CouncilTraceStats(BaseModel):
     all_insufficient_retained_rate: float | None = Field(
         default=None, description="全 insufficient 候选保留率；无此类候选时为 None"
     )
+    severity_defaulted_count: int = 0
+    critical_candidate_count: int = 0
+    critical_policy_matched_count: int = 0
+    critical_missing_factor_count: int = 0
+    severity_transitions: dict[str, int] = Field(default_factory=dict)
     final_issue_count: int = Field(default=0, description="最终 Issue 对应的 survivor 候选数")
     final_issue_strategy_covered_count: int = Field(
         default=0, description="survivor 中至少关联一条有效 EvidenceRequest 的数量"

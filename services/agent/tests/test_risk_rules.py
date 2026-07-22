@@ -288,6 +288,7 @@ def test_registry_covers_every_concrete_tag_once_and_maps_reviewers():
         RiskTag.SSRF_OUTBOUND: {"ThreatModelAgent", "BehaviorAgent"},
         RiskTag.CONFIG_SECURITY: {"ThreatModelAgent"},
         RiskTag.DATA_EXPOSURE: {"ThreatModelAgent", "BehaviorAgent"},
+        RiskTag.DESERIALIZATION: {"ThreatModelAgent"},
         RiskTag.TRANSACTION_ATOMICITY: {"BehaviorAgent"},
         RiskTag.CONCURRENCY_CONSISTENCY: {"BehaviorAgent"},
         RiskTag.IDEMPOTENCY_RETRY: {"BehaviorAgent"},

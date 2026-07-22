@@ -42,6 +42,7 @@ def test_risk_tag_has_exact_phase_2_values():
         "SSRF_OUTBOUND",
         "CONFIG_SECURITY",
         "DATA_EXPOSURE",
+        "DESERIALIZATION",
         "TRANSACTION_ATOMICITY",
         "CONCURRENCY_CONSISTENCY",
         "IDEMPOTENCY_RETRY",

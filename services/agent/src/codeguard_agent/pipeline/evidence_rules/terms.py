@@ -93,6 +93,11 @@ CANDIDATE_TAG_TERMS: dict[RiskTag, TagTerms] = {
         {"敏感数据", "日志泄露", "返回过量", "mask", "pii"},
         {"脱敏", "响应", "日志"},
     ),
+    RiskTag.DESERIALIZATION: _terms(
+        {"反序列化", "deserialization", "insecure deserialization"},
+        {"反序列化", "objectinputstream", "readobject", "xstream", "kryo", "xml serialization"},
+        {"类型白名单", "校验", "readresolve"},
+    ),
     RiskTag.TRANSACTION_ATOMICITY: _terms(
         {"事务原子性", "transaction atomicity", "partial write"},
         {"事务", "原子性", "回滚", "部分写入", "transaction"},

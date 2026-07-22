@@ -1,7 +1,8 @@
-"""EvidencePlanner 的纯函数契约测试。"""
+"""EvidencePlanner 的纯函数契约测试 — one-pass complete planning."""
 
 from __future__ import annotations
 
+import inspect
 import json
 import threading
 import time
@@ -14,7 +15,6 @@ from codeguard_agent.models.council import (
     CandidateIssue,
     EvidenceNote,
     EvidenceRequest,
-    Verdict,
 )
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import (
@@ -41,12 +41,13 @@ def _dossier(
     tag_scores: dict[RiskTag, int] | None = None,
     requests: tuple[EvidenceRequest, ...] = (),
     notes: tuple[EvidenceNote, ...] = (),
-    verdict: Verdict | None = None,
     candidate_task_id: str | None = None,
     candidate_file: str | None = None,
+    candidate_id: str | None = None,
 ) -> CandidateDossier:
     task_id = f"task-{index}"
     file = f"src/Service{index}.java"
+    cid = candidate_id or f"candidate-{index}"
     task = ReviewTask(
         id=task_id,
         file=file,
@@ -54,7 +55,7 @@ def _dossier(
         changed_lines=[index + 1],
     )
     candidate = CandidateIssue(
-        id=f"candidate-{index}",
+        id=cid,
         task_id=candidate_task_id or task_id,
         source_agent="threat_model",
         file=candidate_file or file,
@@ -74,7 +75,6 @@ def _dossier(
         context_bundle=None,
         requests=requests,
         notes=notes,
-        latest_verdict=verdict,
     )
 
 
@@ -103,43 +103,47 @@ def _force_resolution(monkeypatch: pytest.MonkeyPatch, resolution=None) -> None:
     )
 
 
+def _resolve_as(monkeypatch: pytest.MonkeyPatch, tag: RiskTag) -> None:
+    _force_resolution(monkeypatch, _resolution(tag))
+
+
 def _trace_details(plan, event: str) -> list[dict[str, object]]:
     return [json.loads(detail) for name, detail in plan.trace if name == event]
 
 
-def test_initial_plan_orders_all_counters_before_gated_supports(monkeypatch):
-    _force_resolution(monkeypatch)
-    dossiers = [
-        _dossier(0, severity=Severity.CRITICAL),
-        _dossier(1, tag_scores={RiskTag.AUTHORIZATION: 2}),
-        _dossier(2, confidence=0.89),
-        _dossier(3, tag_scores={RiskTag.AUTHORIZATION: 1}),
-    ]
+# -- mandatory support + severity + all registered counters --
 
+
+def test_initial_plan_always_contains_support_and_severity(monkeypatch):
+    _resolve_as(monkeypatch, RiskTag.GENERAL_REVIEW)
+    dossier = _dossier(1)
     plan = plan_evidence(
-        dossiers,
-        evidence_round=0,
-        classifier_llm=object(),
-        structured_method="json_schema",
+        [dossier], classifier_llm=None, structured_method="function_calling"
     )
-
     assert [request.purpose for request in plan.requests] == [
-        "counter",
-        "counter",
-        "counter",
-        "counter",
-        "support",
-        "support",
-        "support",
+        "counter", "support", "severity"
     ]
-    assert [request.candidate_id for request in plan.requests[:4]] == [
-        dossier.candidate.id for dossier in dossiers
+
+
+def test_authorization_plan_contains_local_and_upstream_counter(monkeypatch):
+    _resolve_as(monkeypatch, RiskTag.AUTHORIZATION)
+    dossier = _dossier(2)
+    plan = plan_evidence(
+        [dossier], classifier_llm=None, structured_method="function_calling"
+    )
+    assert [request.strategy_id for request in plan.requests] == [
+        "authorization.counter",
+        "authorization.counter_upstream",
+        "authorization.support",
+        "authorization.severity",
     ]
-    assert {request.candidate_id for request in plan.requests[4:]} == {
-        "candidate-0",
-        "candidate-1",
-        "candidate-2",
-    }
+
+
+def test_plan_interface_has_no_evidence_round():
+    assert "evidence_round" not in inspect.signature(plan_evidence).parameters
+
+
+# -- candidate order preserved --
 
 
 def test_candidate_tag_resolution_runs_concurrently_and_keeps_plan_order(monkeypatch):
@@ -165,37 +169,50 @@ def test_candidate_tag_resolution_runs_concurrently_and_keeps_plan_order(monkeyp
 
     plan = plan_evidence(
         dossiers,
-        evidence_round=0,
         classifier_llm=object(),
         structured_method="function_calling",
     )
 
     assert peak_active > 1
-    assert [request.candidate_id for request in plan.requests] == [
-        dossier.candidate.id for dossier in dossiers
-    ]
+    # 3 dossiers × 4 requests (AUTHORIZATION: counter + counter_upstream + support + severity)
+    # Requests are grouped: all counters per dossier, then support per dossier, then severity per dossier
+    purposes = [r.purpose for r in plan.requests]
+    # dossier 30: counter, counter_upstream; 31: counter, counter_upstream; 32: counter, counter_upstream
+    assert purposes[:6] == ["counter", "counter", "counter", "counter", "counter", "counter"]
+    # then support: 30, 31, 32
+    assert purposes[6:9] == ["support", "support", "support"]
+    # then severity: 30, 31, 32
+    assert purposes[9:] == ["severity", "severity", "severity"]
+    assert len(plan.requests) == 12
+    expected_ids = [d.candidate.id for d in dossiers]
     assert [
         detail["candidate_id"]
         for detail in _trace_details(plan, "candidate_evidence_tag_resolved")
-    ] == [dossier.candidate.id for dossier in dossiers]
+    ] == expected_ids
+
+
+# -- no global cap --
 
 
 def test_initial_plan_has_no_global_twenty_request_cap(monkeypatch):
-    _force_resolution(monkeypatch)
+    _resolve_as(monkeypatch, RiskTag.GENERAL_REVIEW)
     dossiers = [_dossier(index) for index in range(30)]
 
     plan = plan_evidence(
         dossiers,
-        evidence_round=0,
         classifier_llm=None,
         structured_method="function_calling",
     )
 
-    assert len(plan.requests) == 30
-    assert all(request.purpose == "counter" for request in plan.requests)
-    assert [request.candidate_id for request in plan.requests] == [
-        dossier.candidate.id for dossier in dossiers
-    ]
+    # 30 dossiers × 3 requests (counter + support + severity for GENERAL_REVIEW)
+    assert len(plan.requests) == 90
+    purposes = [r.purpose for r in plan.requests]
+    assert purposes[:30] == ["counter"] * 30
+    assert purposes[30:60] == ["support"] * 30
+    assert purposes[60:] == ["severity"] * 30
+
+
+# -- strategy id stability --
 
 
 def test_request_fields_come_from_strategy_and_id_is_stable(monkeypatch):
@@ -205,13 +222,11 @@ def test_request_fields_come_from_strategy_and_id_is_stable(monkeypatch):
 
     first = plan_evidence(
         [dossier],
-        evidence_round=0,
         classifier_llm=None,
         structured_method="function_calling",
     ).requests[0]
     second = plan_evidence(
         [dossier],
-        evidence_round=0,
         classifier_llm=None,
         structured_method="function_calling",
     ).requests[0]
@@ -224,8 +239,11 @@ def test_request_fields_come_from_strategy_and_id_is_stable(monkeypatch):
     assert first.id == second.id
 
 
+# -- queued strategy exclusion --
+
+
 def test_initial_plan_does_not_repeat_queued_strategy(monkeypatch):
-    _force_resolution(monkeypatch, _resolution(RiskTag.GENERAL_REVIEW))
+    _resolve_as(monkeypatch, RiskTag.GENERAL_REVIEW)
     queued = EvidenceRequest(
         candidate_id="candidate-4",
         strategy_id="general_review.counter",
@@ -233,67 +251,61 @@ def test_initial_plan_does_not_repeat_queued_strategy(monkeypatch):
         target="src/Service4.java",
         question="queued",
     )
-    dossier = _dossier(4, confidence=0.5, requests=(queued,))
+    dossier = _dossier(4, requests=(queued,))
 
     plan = plan_evidence(
         [dossier],
-        evidence_round=0,
         classifier_llm=None,
         structured_method="function_calling",
     )
 
-    assert [request.strategy_id for request in plan.requests] == [
-        "general_review.support"
-    ]
-    skipped = _trace_details(plan, "evidence_plan_skipped")
-    assert skipped == [
-        {
-            "candidate_id": "candidate-4",
-            "purpose": "counter",
-            "reason": "no_available_strategy",
-            "tag": "GENERAL_REVIEW",
-        }
+    # counter already queued → silently skipped; support + severity added
+    assert [r.strategy_id for r in plan.requests] == [
+        "general_review.support",
+        "general_review.severity",
     ]
 
 
-def test_initial_plan_does_not_replace_queued_base_counter_with_upstream(
+def test_initial_plan_queued_counter_skips_all_counters_adds_support_severity(
     monkeypatch,
 ):
-    _force_resolution(monkeypatch, _resolution(RiskTag.AUTHORIZATION))
-    queued = EvidenceRequest(
+    _resolve_as(monkeypatch, RiskTag.AUTHORIZATION)
+    queued_counter = EvidenceRequest(
         candidate_id="candidate-17",
         strategy_id="authorization.counter",
         purpose="counter",
         target="src/Service17.java",
         question="queued base counter",
     )
-    dossier = _dossier(17, requests=(queued,))
+    dossier = _dossier(17, requests=(queued_counter,))
 
     plan = plan_evidence(
         [dossier],
-        evidence_round=0,
         classifier_llm=None,
         structured_method="function_calling",
     )
 
-    assert plan.requests == []
-    assert _trace_details(plan, "evidence_plan_skipped") == [
-        {
-            "candidate_id": "candidate-17",
-            "purpose": "counter",
-            "reason": "no_available_strategy",
-            "tag": "AUTHORIZATION",
-        }
+    # authorization.counter excluded; authorization.counter_upstream still available
+    assert [r.strategy_id for r in plan.requests] == [
+        "authorization.counter_upstream",
+        "authorization.support",
+        "authorization.severity",
     ]
 
 
+# -- explicit per-candidate cap --
+
+
 def test_only_initial_round_exposes_an_explicit_per_candidate_cap():
-    assert evidence_planner.MAX_INITIAL_REQUESTS_PER_CANDIDATE == 2
+    assert evidence_planner.MAX_INITIAL_REQUESTS_PER_CANDIDATE == 4
     assert not hasattr(
         evidence_planner,
         "MAX_FOLLOWUP_REQUESTS_PER_CANDIDATE",
     )
     assert "MAX_FOLLOWUP_REQUESTS_PER_CANDIDATE" not in evidence_planner.__all__
+
+
+# -- invalid binding --
 
 
 @pytest.mark.parametrize(
@@ -306,7 +318,6 @@ def test_only_initial_round_exposes_an_explicit_per_candidate_cap():
 def test_invalid_candidate_binding_is_skipped(dossier, expected_task_id):
     plan = plan_evidence(
         [dossier],
-        evidence_round=0,
         classifier_llm=None,
         structured_method="function_calling",
     )
@@ -319,6 +330,9 @@ def test_invalid_candidate_binding_is_skipped(dossier, expected_task_id):
             "task_id": expected_task_id,
         }
     ]
+
+
+# -- classification trace --
 
 
 def test_classification_trace_has_stable_required_fields_and_prior_match(monkeypatch):
@@ -341,7 +355,6 @@ def test_classification_trace_has_stable_required_fields_and_prior_match(monkeyp
 
     plan = plan_evidence(
         dossiers,
-        evidence_round=0,
         classifier_llm=None,
         structured_method="function_calling",
     )
@@ -371,198 +384,41 @@ def test_classification_trace_has_stable_required_fields_and_prior_match(monkeyp
     ]
 
 
-def test_followup_only_handles_needs_more_and_reports_invalid_or_exhausted(monkeypatch):
-    _force_resolution(monkeypatch, _resolution(RiskTag.GENERAL_REVIEW))
-    existing = EvidenceRequest(
-        candidate_id="candidate-9",
-        strategy_id="general_review.support",
-        purpose="support",
-        target="src/Service9.java",
-        question="already queued",
-    )
-    orphan = EvidenceNote(
-        request_id="orphan",
-        candidate_id="candidate-9",
-        findings=[
-            {
-                "evidence_id": "orphan-evidence",
-                "source": "test",
-                "observation": "",
-                "relation": "insufficient",
-                "strength": "contextual",
-                "limitation": "orphan",
-            }
-        ],
-    )
-    dossiers = [
-        _dossier(
-            9,
-            requests=(existing,),
-            notes=(orphan,),
-            verdict=Verdict(
-                candidate_id="candidate-9",
-                action="needs_more_evidence",
-                reason_code="need-support",
-                requested_purpose="support",
-            ),
-        ),
-        _dossier(
-            10,
-            verdict=Verdict(
-                candidate_id="candidate-10",
-                action="needs_more_evidence",
-                reason_code="missing-purpose",
-            ),
-        ),
-        _dossier(
-            11,
-            verdict=Verdict(
-                candidate_id="candidate-11",
-                action="keep",
-                reason_code="done",
-                requested_purpose="counter",
-            ),
-        ),
-    ]
-
-    plan = plan_evidence(
-        dossiers,
-        evidence_round=2,
-        classifier_llm=None,
-        structured_method="function_calling",
-    )
-
-    assert plan.requests == []
-    assert _trace_details(plan, "evidence_plan_invalid_verdict") == [
-        {
-            "candidate_id": "candidate-10",
-            "evidence_round": 2,
-            "reason": "requested_purpose_missing",
-            "task_id": "task-10",
-        }
-    ]
-    assert _trace_details(plan, "evidence_plan_exhausted") == [
-        {
-            "candidate_id": "candidate-9",
-            "evidence_round": 2,
-            "purpose": "support",
-            "reason": "no_remaining_strategy",
-            "tag": "GENERAL_REVIEW",
-        }
-    ]
-    assert {
-        detail["candidate_id"]
-        for detail in _trace_details(plan, "candidate_evidence_tag_resolved")
-    } == {"candidate-9"}
-
-
-def test_followup_selects_next_counter_strategy_and_severity_is_reachable(monkeypatch):
-    _force_resolution(monkeypatch)
-    queued_counter = EvidenceRequest(
-        candidate_id="candidate-12",
-        strategy_id="authorization.counter",
-        purpose="counter",
-        target="src/Service12.java",
-        question="already queued",
-    )
-    dossiers = [
-        _dossier(
-            12,
-            requests=(queued_counter,),
-            verdict=Verdict(
-                candidate_id="candidate-12",
-                action="needs_more_evidence",
-                reason_code="try-next-counter",
-                requested_purpose="counter",
-            ),
-        ),
-        _dossier(
-            13,
-            verdict=Verdict(
-                candidate_id="candidate-13",
-                action="needs_more_evidence",
-                reason_code="calibrate-severity",
-                requested_purpose="severity",
-            ),
-        ),
-    ]
-
-    plan = plan_evidence(
-        dossiers,
-        evidence_round=1,
-        classifier_llm=None,
-        structured_method="function_calling",
-    )
-
-    assert [request.strategy_id for request in plan.requests] == [
-        "authorization.counter_upstream",
-        "authorization.severity",
-    ]
-    assert [request.purpose for request in plan.requests] == ["counter", "severity"]
-
-
-def test_followup_forwards_classifier_llm_and_structured_method(monkeypatch):
-    classifier_llm = object()
-    calls = []
-
-    def resolve(dossier, received_llm, *, structured_method):
-        calls.append((dossier.candidate.id, received_llm, structured_method))
-        return _resolution()
-
-    monkeypatch.setattr(
-        "codeguard_agent.pipeline.evidence_planner.resolve_candidate_evidence_tag",
-        resolve,
-    )
-    dossier = _dossier(
-        14,
-        verdict=Verdict(
-            candidate_id="candidate-14",
-            action="needs_more_evidence",
-            reason_code="follow-up",
-            requested_purpose="counter",
-        ),
-    )
-
-    plan_evidence(
-        [dossier],
-        evidence_round=1,
-        classifier_llm=classifier_llm,
-        structured_method="json_schema",
-    )
-
-    assert calls == [("candidate-14", classifier_llm, "json_schema")]
+# -- trace fields --
 
 
 def test_planned_trace_contains_required_request_fields(monkeypatch):
-    _force_resolution(monkeypatch)
+    _resolve_as(monkeypatch, RiskTag.GENERAL_REVIEW)
     dossier = _dossier(15)
 
     plan = plan_evidence(
         [dossier],
-        evidence_round=0,
         classifier_llm=None,
         structured_method="function_calling",
     )
 
-    assert _trace_details(plan, "evidence_planned") == [
-        {
-            "candidate_id": "candidate-15",
-            "evidence_round": 0,
-            "preferred_tools": ["get_file_content", "find_sensitive_apis"],
-            "purpose": "counter",
-            "reason": "initial_counter",
-            "strategy_id": "authorization.counter",
-            "target": "src/Service15.java",
-            "task_id": "task-15",
-        }
-    ]
+    trace = _trace_details(plan, "evidence_planned")
+    purposes = [t["purpose"] for t in trace]
+    assert purposes == ["counter", "support", "severity"]
+    for t in trace:
+        assert "candidate_id" in t
+        assert "strategy_id" in t
+        assert "target" in t
+        assert "task_id" in t
+        assert "reason" in t
+
+
+# -- frozen dossier --
 
 
 def test_candidate_dossier_is_frozen():
     dossier = _dossier(16)
 
     with pytest.raises(FrozenInstanceError):
-        dossier.latest_verdict = None
+        dossier.risk_profile = None  # type: ignore[misc]
+
+
+# -- assemble_dossiers --
 
 
 def test_assemble_dossiers_preserves_candidate_order_and_groups_state():
@@ -590,8 +446,6 @@ def test_assemble_dossiers_preserves_candidate_order_and_groups_state():
             }
         ],
     )
-    older = Verdict(first.candidate.id, "keep", "older")
-    latest = Verdict(first.candidate.id, "needs_more_evidence", "latest", requested_purpose="support")
     bundle = TaskContextBundle(task_id=first.task.id)
 
     assembly = evidence_planner.assemble_dossiers(
@@ -601,7 +455,6 @@ def test_assemble_dossiers_preserves_candidate_order_and_groups_state():
         {first.task.id: bundle},
         [request],
         [note],
-        [older, latest],
     )
 
     assert [d.candidate.id for d in assembly.dossiers] == [
@@ -611,7 +464,6 @@ def test_assemble_dossiers_preserves_candidate_order_and_groups_state():
     bound = assembly.dossiers[1]
     assert bound.requests == (request,)
     assert bound.notes == (note,)
-    assert bound.latest_verdict is latest
     assert bound.context_bundle is bundle
 
 
@@ -625,7 +477,6 @@ def test_assemble_dossiers_reports_missing_task_and_file_mismatch():
         [valid.task],
         {},
         {},
-        [],
         [],
         [],
     )

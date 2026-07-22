@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 
 from codeguard_agent.models.council import (
@@ -11,8 +12,9 @@ from codeguard_agent.models.council import (
     EvidenceFinding,
     Verdict,
 )
+from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import RiskTag
-from codeguard_agent.pipeline.evidence_agent import request_strategy_mismatch
+from codeguard_agent.pipeline.evidence_agent import bound_evidence, request_strategy_mismatch
 from codeguard_agent.pipeline.evidence_planner import CandidateDossier, DossierAssembly
 from codeguard_agent.pipeline.evidence_rules import strategies_for
 
@@ -22,18 +24,7 @@ def _ratio(numerator: int, denominator: int) -> float | None:
 
 
 def _valid_findings(dossier: CandidateDossier) -> list[EvidenceFinding]:
-    valid_request_ids = {
-        request.id
-        for request in dossier.requests
-        if request_strategy_mismatch(request, dossier) is None
-    }
-    return [
-        finding
-        for note in dossier.notes
-        if note.candidate_id == dossier.candidate.id
-        and note.request_id in valid_request_ids
-        for finding in note.findings
-    ]
+    return [item.finding for item in bound_evidence(dossier)]
 
 
 def _has_valid_request(dossier: CandidateDossier) -> bool:
@@ -64,7 +55,6 @@ def compute_council_run_stats(
     final_candidate_ids: Sequence[str],
     evidence_request_count: int,
     truncated_candidates: int,
-    evidence_rounds: int,
     council_trace: Sequence[CouncilTrace],
 ) -> CouncilRunStats:
     """从稳定候选映射和结构化证据计算 Phase 5 过程指标。"""
@@ -77,15 +67,10 @@ def compute_council_run_stats(
         dossier.candidate.id
         for dossier in assembly.dossiers
         if any(
-            request.purpose == "counter"
-            and note.request_id == request.id
-            and finding.strength == "direct"
-            and finding.relation == "contradicts"
-            for request in dossier.requests
-            if request_strategy_mismatch(request, dossier) is None
-            for note in dossier.notes
-            if note.candidate_id == dossier.candidate.id
-            for finding in note.findings
+            item.request.purpose == "counter"
+            and item.finding.strength == "direct"
+            and item.finding.relation == "contradicts"
+            for item in bound_evidence(dossier)
         )
     }
     all_insufficient_ids = {
@@ -119,18 +104,57 @@ def compute_council_run_stats(
 
     direct_retained = len(direct_counter_ids & final_ids)
     insufficient_retained = len(all_insufficient_ids & final_ids)
+    no_support_ids = {
+        verdict.candidate_id
+        for verdict in verdicts
+        if verdict.reason_code == "no_supporting_evidence"
+    }
+    no_support_retained = len(no_support_ids & final_ids)
+
+    severity_events: list[dict[str, object]] = []
+    for trace in council_trace:
+        if trace.node != "council_judge" or trace.event != "severity_resolved":
+            continue
+        try:
+            detail = json.loads(trace.detail)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(detail, dict):
+            severity_events.append(detail)
+
+    severity_defaulted = sum(
+        verdict.reason_code == "severity_evidence_incomplete"
+        for verdict in verdicts
+    )
+    critical_policy_matched = sum(
+        str(event.get("matched_rule", "")).endswith(".critical")
+        for event in severity_events
+    )
+    critical_missing_factors = sum(
+        len(missing)
+        for event in severity_events
+        if isinstance((missing := event.get("missing_critical_factors", [])), list)
+    )
+    proposals = {candidate.id: candidate.severity_proposal for candidate in candidates}
+    severity_transitions: dict[str, int] = {}
+    for verdict in verdicts:
+        proposed = proposals.get(verdict.candidate_id)
+        resolved = verdict.resolved_severity
+        if verdict.action != "keep" or proposed is None or resolved is None:
+            continue
+        key = f"{proposed.value}->{resolved.value}"
+        severity_transitions[key] = severity_transitions.get(key, 0) + 1
+
     final_issue_count = len(final_candidate_ids)
     return CouncilRunStats(
         candidate_count=candidate_count,
         candidate_count_by_agent=by_agent,
         evidence_request_count=evidence_request_count,
         truncated_candidates=truncated_candidates,
-        evidence_rounds=evidence_rounds,
         verdict_count=len(verdicts),
         removed_by_judge=sum(verdict.action == "drop" for verdict in verdicts),
-        removed_by_aggregation=sum(
-            verdict.action == "merge" for verdict in verdicts
-        ),
+        no_support_candidate_count=len(no_support_ids),
+        no_support_retained_count=no_support_retained,
         direct_counter_candidate_count=len(direct_counter_ids),
         direct_counter_retained_count=direct_retained,
         direct_counter_retained_rate=_ratio(
@@ -143,6 +167,14 @@ def compute_council_run_stats(
             insufficient_retained,
             len(all_insufficient_ids),
         ),
+        severity_defaulted_count=severity_defaulted,
+        critical_candidate_count=sum(
+            verdict.action == "keep" and verdict.resolved_severity is Severity.CRITICAL
+            for verdict in verdicts
+        ),
+        critical_policy_matched_count=critical_policy_matched,
+        critical_missing_factor_count=critical_missing_factors,
+        severity_transitions=severity_transitions,
         final_issue_count=final_issue_count,
         final_issue_strategy_covered_count=strategy_covered,
         final_issue_strategy_coverage=_ratio(strategy_covered, final_issue_count),

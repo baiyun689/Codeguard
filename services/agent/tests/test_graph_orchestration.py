@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import codeguard_agent.pipeline.orchestrator as orchestrator_module
-from codeguard_agent.models.council import ContextBundle, ContextFact, Verdict
+from codeguard_agent.models.council import ContextBundle, ContextFact
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
 from codeguard_agent.models.tasks import RiskSignal, RiskTag
 from codeguard_agent.pipeline import graph as G
@@ -86,9 +86,6 @@ def _base_state(**over):
         "candidate_issues": [],
         "evidence_notes": [],
         "challenges": [],
-        "council_verdicts": [],
-        "evidence_round": 0,
-        "max_evidence_rounds": 2,
     }
     state.update(over)
     return state
@@ -110,24 +107,6 @@ def _candidate(*, confidence=0.9):
         index=1,
         task_id="A.java#h0",
     )
-
-
-def test_route_after_council_judge_needs_more_loop():
-    """council_judge 有 needs_more_evidence + 轮次未超 → evidence_agent。"""
-    v = Verdict(candidate_id="c1", action="needs_more_evidence", reason_code="test")
-    assert G._route_after_council_judge(_base_state(council_verdicts=[v], evidence_round=1)) == "evidence_planner"
-
-
-def test_route_after_council_judge_exhausted_rounds():
-    """轮次耗尽 → END。"""
-    v = Verdict(candidate_id="c1", action="needs_more_evidence", reason_code="test")
-    assert G._route_after_council_judge(_base_state(council_verdicts=[v], evidence_round=2)) == "END"
-
-
-def test_route_after_council_judge_no_needs_more():
-    """没有 needs_more_evidence → END。"""
-    v = Verdict(candidate_id="c1", action="keep", reason_code="test")
-    assert G._route_after_council_judge(_base_state(council_verdicts=[v])) == "END"
 
 
 def test_reviewer_subgraph_exposes_internal_nodes():
@@ -369,7 +348,7 @@ def test_run_routes_gathered_context_to_trace_sink_and_council_metadata(monkeypa
 
     class _Stats:
         def model_dump(self):
-            return {"candidate_count": 1, "evidence_rounds": 0, "verdict_count": 1}
+            return {"candidate_count": 1, "verdict_count": 1}
 
     class _FakeGraph:
         def invoke(self, initial, config=None):
@@ -465,6 +444,41 @@ class _FakeLLM:
         return _Stub()
 
 
+class _ValueStub:
+    def __init__(self, value):
+        self.value = value
+
+    def invoke(self, _msgs):
+        return self.value
+
+
+class _CouncilLLM:
+    """Return valid evidence/synthesis structures for graph wiring tests."""
+
+    def with_structured_output(self, schema, *args, **kwargs):
+        if schema.__name__ == "_EvidenceAnalysis":
+            return _ValueStub(
+                {
+                    "relation": "supports",
+                    "strength": "contextual",
+                    "observation": "the changed task patch supports the candidate",
+                    "limitation": "",
+                }
+            )
+        if schema.__name__ == "CandidateEvidenceAssessment":
+            return _ValueStub(
+                {
+                    "candidate_id": "C001",
+                    "claim_status": "supported",
+                    "counter_effect": "none",
+                    "severity_factors": [],
+                    "conflicts": [],
+                    "reason": "supported for graph wiring test",
+                }
+            )
+        return _Stub()
+
+
 # 三路各发到自己的文件 line 1（都在各自 hunk 的 changed_lines，可绑定）；
 # 不同文件天然不触发同文件邻行合并，三条候选独立存活。
 _FAKE_TARGET = {
@@ -498,7 +512,13 @@ def test_graph_fanin_three_discoverers(monkeypatch):
     orch = PipelineOrchestrator(enable_summary=False)
     trace: list = []
     meta: dict = {}
-    result = orch.run(_FakeLLM(), _FANIN_DIFF, trace_sink=trace, metadata_sink=meta)
+    result = orch.run(
+        _FakeLLM(),
+        _FANIN_DIFF,
+        fp_verify_llm=_CouncilLLM(),
+        trace_sink=trace,
+        metadata_sink=meta,
+    )
     assert {i.type for i in result.issues} == {
         "ThreatModelAgent",
         "BehaviorAgent",
@@ -513,6 +533,8 @@ def test_graph_fanin_three_discoverers(monkeypatch):
         "behavior": 1,
         "maintainability": 1,
     }
+    assert meta["council"]["severity_defaulted_count"] == 0
+    assert meta["council"]["severity_transitions"] == {"WARNING->WARNING": 3}
 
 
 def test_build_graph_default_nodes_are_adr032():
@@ -705,8 +727,8 @@ def test_evidence_agent_runs_once_before_judge(monkeypatch):
     meta: dict = {}
     orch.run(_FakeLLM(), _DIFF, metadata_sink=meta)
 
-    # 首次 Evidence 必经一次（即便无 evidence_requests 也 no-op 跑一轮）
-    assert meta["council"]["evidence_rounds"] >= 1
+    assert meta["council"]["verdict_count"] >= 1
+    assert "evidence_rounds" not in meta["council"]
 
 
 def test_make_reviewer_node_rejects_unmapped_candidate(monkeypatch):
@@ -748,7 +770,7 @@ def test_make_reviewer_node_only_invokes_routed_and_selected_tasks(monkeypatch):
 
     monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _RecordingEngine())
     node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
-    out = node({
+    node({
         "diff_text": "+x\n+y",
         "review_tasks": [
             G.ReviewTask(id="A.java#h0", file="A.java", patch="+x", changed_lines=[1]),

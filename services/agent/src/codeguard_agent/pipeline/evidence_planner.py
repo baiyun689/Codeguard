@@ -12,9 +12,7 @@ from codeguard_agent.models.council import (
     EvidenceNote,
     EvidencePurpose,
     EvidenceRequest,
-    Verdict,
 )
-from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import ReviewTask, RiskProfile, RiskTag, TaskContextBundle
 from codeguard_agent.pipeline import task_prep
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
@@ -24,10 +22,9 @@ from codeguard_agent.pipeline.evidence_rules import (
     resolve_candidate_evidence_tag,
     strategies_for,
 )
-from codeguard_agent.pipeline.risk_routing import decide_tier
 
 
-MAX_INITIAL_REQUESTS_PER_CANDIDATE = 2
+MAX_INITIAL_REQUESTS_PER_CANDIDATE = 4
 
 
 @dataclass(frozen=True)
@@ -40,7 +37,6 @@ class CandidateDossier:
     context_bundle: TaskContextBundle | None
     requests: tuple[EvidenceRequest, ...]
     notes: tuple[EvidenceNote, ...]
-    latest_verdict: Verdict | None
 
 
 @dataclass(frozen=True)
@@ -79,7 +75,6 @@ def assemble_dossiers(
     bundles: Mapping[str, TaskContextBundle],
     requests: Sequence[EvidenceRequest],
     notes: Sequence[EvidenceNote],
-    verdicts: Sequence[Verdict],
 ) -> DossierAssembly:
     """把 graph state 关联为候选级只读快照，并显式保留绑定失败。"""
     tasks_by_id: dict[str, list[ReviewTask]] = {}
@@ -91,7 +86,6 @@ def assemble_dossiers(
     notes_by_candidate: dict[str, list[EvidenceNote]] = {}
     for note in notes:
         notes_by_candidate.setdefault(note.candidate_id, []).append(note)
-    latest_verdicts = {verdict.candidate_id: verdict for verdict in verdicts}
 
     dossiers: list[CandidateDossier] = []
     failures: list[CandidateBindingFailure] = []
@@ -139,7 +133,6 @@ def assemble_dossiers(
                 context_bundle=bundles.get(task.id),
                 requests=tuple(requests_by_candidate.get(candidate.id, ())),
                 notes=tuple(notes_by_candidate.get(candidate.id, ())),
-                latest_verdict=latest_verdicts.get(candidate.id),
             )
         )
     return DossierAssembly(tuple(dossiers), tuple(failures), tuple(trace))
@@ -246,23 +239,6 @@ def _next_strategy(
     )
 
 
-def _initial_counter_strategy(
-    tag: RiskTag,
-    excluded_strategy_ids: set[str],
-) -> EvidenceStrategy | None:
-    base_strategy_id = f"{tag.value.lower()}.counter"
-    return next(
-        (
-            strategy
-            for strategy in strategies_for(tag, "counter")
-            if strategy.id == base_strategy_id
-            and strategy.priority == 10
-            and strategy.id not in excluded_strategy_ids
-        ),
-        None,
-    )
-
-
 def _build_request(
     dossier: CandidateDossier,
     strategy: EvidenceStrategy,
@@ -286,7 +262,6 @@ def _append_request(
     dossier: CandidateDossier,
     strategy: EvidenceStrategy,
     *,
-    evidence_round: int,
     reason: str,
 ) -> None:
     request = _build_request(dossier, strategy)
@@ -301,8 +276,26 @@ def _append_request(
             "purpose": request.purpose,
             "target": request.target,
             "preferred_tools": request.preferred_tools,
-            "evidence_round": evidence_round,
             "reason": reason,
+        },
+    )
+
+
+def _append_cap_skip(
+    plan: EvidencePlan,
+    dossier: CandidateDossier,
+    resolution: CandidateTagResolution,
+    purpose: str,
+) -> None:
+    _trace(
+        plan,
+        "evidence_plan_skipped",
+        {
+            "candidate_id": dossier.candidate.id,
+            "task_id": dossier.task.id,
+            "tag": resolution.tag.value,
+            "purpose": purpose,
+            "reason": "candidate_request_cap",
         },
     )
 
@@ -322,14 +315,6 @@ def _trace_no_initial_strategy(
             "purpose": purpose,
             "reason": "no_available_strategy",
         },
-    )
-
-
-def _needs_initial_support(dossier: CandidateDossier) -> bool:
-    return (
-        dossier.candidate.severity_proposal is Severity.CRITICAL
-        or decide_tier(dossier.risk_profile) == "react"
-        or dossier.candidate.confidence < 0.9
     )
 
 
@@ -367,126 +352,60 @@ def _plan_initial(
         )
         request_counts[dossier.candidate.id] = 0
 
+    # All unqueued counter strategies in priority order (includes upstream).
+    for dossier, resolution, excluded in resolved:
+        for strategy in strategies_for(resolution.tag, "counter"):
+            if strategy.id in excluded:
+                continue
+            if request_counts[dossier.candidate.id] >= MAX_INITIAL_REQUESTS_PER_CANDIDATE:
+                _append_cap_skip(plan, dossier, resolution, "counter")
+                break
+            _append_request(
+                plan, dossier, strategy, reason="initial_counter",
+            )
+            excluded.add(strategy.id)
+            request_counts[dossier.candidate.id] += 1
+
+    # One support strategy (mandatory).
     for dossier, resolution, excluded in resolved:
         if request_counts[dossier.candidate.id] >= MAX_INITIAL_REQUESTS_PER_CANDIDATE:
+            _append_cap_skip(plan, dossier, resolution, "support")
             continue
-        strategy = _initial_counter_strategy(resolution.tag, excluded)
-        if strategy is None:
-            _trace_no_initial_strategy(plan, dossier, resolution, "counter")
-            continue
-        _append_request(
-            plan,
-            dossier,
-            strategy,
-            evidence_round=0,
-            reason="initial_counter",
-        )
-        excluded.add(strategy.id)
-        request_counts[dossier.candidate.id] += 1
-
-    for dossier, resolution, excluded in resolved:
-        if (
-            request_counts[dossier.candidate.id]
-            >= MAX_INITIAL_REQUESTS_PER_CANDIDATE
-            or not _needs_initial_support(dossier)
-        ):
-            continue
-        strategy = _next_strategy(resolution.tag, "support", excluded)
-        if strategy is None:
+        next_strategy = _next_strategy(resolution.tag, "support", excluded)
+        if next_strategy is None:
             _trace_no_initial_strategy(plan, dossier, resolution, "support")
             continue
         _append_request(
-            plan,
-            dossier,
-            strategy,
-            evidence_round=0,
-            reason="initial_support_gate",
+            plan, dossier, next_strategy, reason="initial_support",
         )
         request_counts[dossier.candidate.id] += 1
 
-    return plan
-
-
-def _plan_followup(
-    dossiers: Sequence[CandidateDossier],
-    *,
-    evidence_round: int,
-    classifier_llm: Any,
-    structured_method: str,
-) -> EvidencePlan:
-    plan = EvidencePlan()
-    eligible: list[tuple[CandidateDossier, EvidencePurpose]] = []
-    for dossier in dossiers:
-        verdict = dossier.latest_verdict
-        if verdict is None or verdict.action != "needs_more_evidence":
+    # One severity strategy (mandatory).
+    for dossier, resolution, excluded in resolved:
+        if request_counts[dossier.candidate.id] >= MAX_INITIAL_REQUESTS_PER_CANDIDATE:
+            _append_cap_skip(plan, dossier, resolution, "severity")
             continue
-        if not _valid_binding(dossier):
-            _trace_invalid_binding(plan, dossier)
-            continue
-        purpose = verdict.requested_purpose
-        if purpose is None:
-            _trace(
-                plan,
-                "evidence_plan_invalid_verdict",
-                {
-                    "candidate_id": dossier.candidate.id,
-                    "task_id": dossier.task.id,
-                    "evidence_round": evidence_round,
-                    "reason": "requested_purpose_missing",
-                },
-            )
-            continue
-        eligible.append((dossier, purpose))
-
-    resolutions = _resolve_dossiers(
-        [dossier for dossier, _ in eligible],
-        classifier_llm=classifier_llm,
-        structured_method=structured_method,
-    )
-    for (dossier, purpose), resolution in zip(eligible, resolutions, strict=True):
-        _trace_resolution(plan, dossier, resolution)
-        excluded = {request.strategy_id for request in dossier.requests}
-        strategy = _next_strategy(resolution.tag, purpose, excluded)
-        if strategy is None:
-            _trace(
-                plan,
-                "evidence_plan_exhausted",
-                {
-                    "candidate_id": dossier.candidate.id,
-                    "tag": resolution.tag.value,
-                    "purpose": purpose,
-                    "evidence_round": evidence_round,
-                    "reason": "no_remaining_strategy",
-                },
-            )
+        next_strategy = _next_strategy(resolution.tag, "severity", excluded)
+        if next_strategy is None:
+            _trace_no_initial_strategy(plan, dossier, resolution, "severity")
             continue
         _append_request(
-            plan,
-            dossier,
-            strategy,
-            evidence_round=evidence_round,
-            reason="followup_requested_purpose",
+            plan, dossier, next_strategy, reason="initial_severity",
         )
+        request_counts[dossier.candidate.id] += 1
+
     return plan
 
 
 def plan_evidence(
     dossiers: Sequence[CandidateDossier],
     *,
-    evidence_round: int,
     classifier_llm: Any,
     structured_method: str,
 ) -> EvidencePlan:
-    """规划本轮 EvidenceRequest，不执行策略中的潜在工具调用。"""
-    if evidence_round == 0:
-        return _plan_initial(
-            dossiers,
-            classifier_llm=classifier_llm,
-            structured_method=structured_method,
-        )
-    return _plan_followup(
+    """One-pass complete evidence plan: all counter + support + severity."""
+    return _plan_initial(
         dossiers,
-        evidence_round=evidence_round,
         classifier_llm=classifier_llm,
         structured_method=structured_method,
     )
