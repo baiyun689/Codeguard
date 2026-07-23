@@ -284,6 +284,43 @@ def test_disabled_tools_are_not_called_and_are_recorded_as_insufficient():
     )
 
 
+def test_complete_new_file_task_patch_satisfies_file_content_evidence_call():
+    task = ReviewTask(
+        id="src/NewService.java#h0",
+        file="src/NewService.java",
+        hunk_header="@@ -0,0 +1,2 @@",
+        patch="+class NewService {}\n",
+        changed_lines=[1],
+    )
+    dossier = _dossier(task=task)
+    client = _ToolClient()
+
+    batch = _collect([dossier], [_request(dossier)], client=client)
+
+    assert ("get_file_content", task.file) not in client.calls
+    assert any(
+        finding.source == "task_patch"
+        for finding in batch.notes[0].findings
+    )
+
+
+def test_truncated_new_file_patch_does_not_satisfy_file_content_evidence_call():
+    task = ReviewTask(
+        id="src/NewService.java#h0",
+        file="src/NewService.java",
+        hunk_header="@@ -0,0 +1,2000 @@",
+        patch="+class NewService {}\n...(大 diff 单任务 patch 已截断)",
+        changed_lines=[1],
+        patch_complete=False,
+    )
+    dossier = _dossier(task=task)
+    client = _ToolClient()
+
+    _collect([dossier], [_request(dossier)], client=client)
+
+    assert ("get_file_content", task.file) in client.calls
+
+
 def test_truncated_context_can_only_be_insufficient():
     task = _dossier().task
     context = TaskContextBundle(

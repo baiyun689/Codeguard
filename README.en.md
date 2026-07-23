@@ -10,6 +10,8 @@ Codeguard receives GitHub pull request events, analyzes the exact code change wi
 
 - Reviews pull requests for security, behavioral, and maintainability risks.
 - Routes changed hunks by risk before running task-scoped specialist reviewers.
+- Gives reviewers explicit task-scoped summaries, risk profiles, AST, sensitive APIs, callers, and metrics, including source, scope, truncation, and unavailable reasons.
+- Coalesces concurrent and repeated tool calls within one reviewer to avoid duplicate file reads and context injection while keeping reviewers isolated.
 - Plans and gathers supporting, counter, and severity evidence before producing a verdict.
 - Publishes Check Runs, diff annotations, and high-confidence critical comments to GitHub.
 - Verifies webhook signatures and deduplicates jobs by repository, pull request, and commit SHA.
@@ -35,6 +37,8 @@ GitHub Check Run, annotations, and pull request comments
 ```
 
 The Python Agent owns review reasoning and orchestration. The Java Gateway owns deterministic facts and operational guardrails; it does not call an LLM or decide whether a finding is valid.
+
+During discovery, the system prompt defines stable context semantics and the tool-use gate. Each task's actual patch, risk profile, prefetched facts, availability status, and tag knowledge are injected dynamically in the user message. A reviewer must skip tools when those facts are sufficient. Concurrent tasks within one reviewer may share review-scoped tool results, but no cache is shared with another reviewer or another review.
 
 ## Quick Start with Docker Compose
 

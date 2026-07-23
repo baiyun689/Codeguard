@@ -152,7 +152,12 @@ def test_context_provider_large_diff_uses_selected_scope_and_skips_broad_scan():
 
 def test_large_diff_reviewer_includes_bounded_patch_only_once(monkeypatch):
     tasks = _tasks()
-    tasks[0] = tasks[0].model_copy(update={"patch": "+" + "x" * 20_000})
+    tasks[0] = tasks[0].model_copy(
+        update={
+            "hunk_header": "@@ -0,0 +1,2000 @@",
+            "patch": "+" + "x" * 20_000,
+        }
+    )
     prompts: list[str] = []
 
     class CaptureEngine:
@@ -181,6 +186,8 @@ def test_large_diff_reviewer_includes_bounded_patch_only_once(monkeypatch):
     assert len(prompts) == 1
     assert prompts[0].count("大 diff 单任务 patch 已截断") == 1
     assert prompts[0].count("x") < 12_100
+    assert 'coverage="current_hunk"' in prompts[0]
+    assert 'coverage="full_new_file"' not in prompts[0]
 
 
 def test_summary_runs_after_task_selection_in_graph():

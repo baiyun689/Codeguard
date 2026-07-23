@@ -8,6 +8,7 @@ RiskProfile 不保存 total_score（分数是 TaskRank 的派生计算）。
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field, StrictInt
 
@@ -52,6 +53,7 @@ class ReviewTask(BaseModel):
     hunk_header: str = ""
     patch: str
     changed_lines: list[int] = Field(default_factory=list)
+    patch_complete: bool = True
 
 
 class RiskSignal(BaseModel):
@@ -97,21 +99,36 @@ class TaskSelection(BaseModel):
     skipped_tasks: list[SkippedTask] = Field(default_factory=list)
 
 
+class ContextStatus(BaseModel):
+    """某类预取上下文没有形成事实时的实际状态。"""
+
+    kind: str
+    status: Literal["skipped", "failed", "unavailable"]
+    reason: str
+
+
 class TaskContextBundle(BaseModel):
     """按任务构建的上下文包。不复制 file/patch/RiskTag（通过 task_id 关联读取）。"""
 
     task_id: str
     facts: list[ContextFact] = Field(default_factory=list)
+    statuses: list[ContextStatus] = Field(default_factory=list)
     truncated: bool = False
 
     def render(self, budget: int = 4000) -> str:
         """渲染为 prompt 可读文本，并按字符预算截断。"""
-        if not self.facts:
+        if not self.facts and not self.statuses and not self.truncated:
             return "(无任务上下文事实)"
-        lines = ["任务上下文事实:"]
+        lines = [f'任务上下文事实(bundle_truncated="{str(self.truncated).lower()}"):']
         for fact in self.facts:
             flag = " (已截断)" if fact.truncated else ""
             lines.append(f"- [{fact.source}/{fact.kind}]{flag} {fact.content}")
+        for status in self.statuses:
+            lines.append(
+                f"- [{status.kind}] status={status.status} reason={status.reason}"
+            )
+        if len(lines) == 1:
+            lines.append("(无任务上下文事实)")
         text = "\n".join(lines).strip()
         if len(text) <= budget:
             return text

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from threading import Lock
+import json
 
 import codeguard_agent.pipeline.orchestrator as orchestrator_module
 from codeguard_agent.models.council import ContextBundle, ContextFact
@@ -24,6 +25,23 @@ def test_dedup_gathered_reducer_dedups_by_tool_args_keep_order():
     a_dup = GatheredContext("get_file_content", "A.java", "x-again")
     out = G.dedup_gathered_reducer([a], [b, a_dup])
     assert [g.args for g in out] == ["A.java", "B.java"]
+
+
+def test_dedup_gathered_reducer_canonicalizes_path_variants():
+    first = GatheredContext(
+        "get_file_content",
+        json.dumps({"file_path": r"src\.\A.java"}),
+        "first",
+    )
+    duplicate = GatheredContext(
+        "get_file_content",
+        json.dumps({"file_path": "src/A.java"}),
+        "duplicate",
+    )
+
+    out = G.dedup_gathered_reducer([first], [duplicate])
+
+    assert out == [first]
 
 
 def test_context_bundle_render_truncates():
@@ -65,6 +83,28 @@ def test_context_provider_keeps_summary_and_files_out_of_facts():
         fact["kind"] not in {"changed_file", "summary"}
         for fact in dumped["facts"]
     )
+
+
+def test_context_provider_records_tool_failures_as_diagnostics_not_facts():
+    class _FailingBroadContextClient:
+        def find_sensitive_apis(self):
+            return _MockToolResponse(False, error="sensitive timeout")
+
+        def get_diff_ast(self, diff_text):  # noqa: ARG002
+            return _MockToolResponse(False, error="ast timeout")
+
+    ctx = PipelineContext(
+        diff_text="diff --git a/A.java b/A.java\n+++ b/A.java\n+class A {}",
+        tool_client=_FailingBroadContextClient(),
+    )
+
+    ContextProviderStage().execute(ctx)
+
+    assert ctx.context_bundle.facts == []
+    assert ctx.context_diagnostics == {
+        "sensitive_api": "sensitive timeout",
+        "ast_structure": "ast timeout",
+    }
 
 
 def test_summary_prompts_only_request_summary():
@@ -956,7 +996,7 @@ def test_make_reviewer_node_without_tools_forces_strong_task_to_direct(monkeypat
     assert seen_tiers == ["direct"]
 
 
-def test_make_reviewer_node_injects_matched_tag_knowledge_into_system_prompt(monkeypatch):
+def test_make_reviewer_node_injects_matched_tag_knowledge_into_user_prompt(monkeypatch):
     captured: dict[str, str] = {}
 
     class _CapturingEngine:
@@ -986,8 +1026,13 @@ def test_make_reviewer_node_injects_matched_tag_knowledge_into_system_prompt(mon
         "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
     })
 
-    assert "KNOWLEDGE_MARKER" in captured["system_prompt"]
-    assert "KNOWLEDGE_MARKER" not in captured["user_prompt"]
+    assert "KNOWLEDGE_MARKER" not in captured["system_prompt"]
+    assert "KNOWLEDGE_MARKER" in captured["user_prompt"]
+    assert '<tag_knowledge role="methodology_not_repository_fact">' in captured[
+        "user_prompt"
+    ]
+    assert captured["user_prompt"].count("+lock") == 1
+    assert '<risk_profile role="routing_prior_not_evidence">' in captured["user_prompt"]
 
 
 def test_make_reviewer_node_fanout_survives_real_memory_checkpointer(monkeypatch):
@@ -1112,6 +1157,13 @@ def test_context_provider_node_records_skip_when_method_unresolved():
     )
 
     assert not any(call[0] == "find_callers" for call in tool_client.calls)
+    statuses = out["task_context_bundles"][task.id].statuses
+    assert any(
+        status.kind == "find_callers"
+        and status.status == "skipped"
+        and status.reason == "no_method_resolved"
+        for status in statuses
+    )
     assert any("no_method_resolved" in trace.detail for trace in out["council_trace"])
 
 
@@ -1173,6 +1225,13 @@ def test_context_provider_node_does_not_store_failed_level1_response_as_fact():
 
     facts = out["task_context_bundles"][task.id].facts
     assert all("gateway timeout" not in fact.content for fact in facts)
+    statuses = out["task_context_bundles"][task.id].statuses
+    assert any(
+        status.kind == "find_callers"
+        and status.status == "failed"
+        and "gateway timeout" in status.reason
+        for status in statuses
+    )
 
     assert any("gateway timeout" in trace.detail for trace in out["council_trace"])
 
@@ -1267,3 +1326,49 @@ def test_make_reviewer_node_does_not_cache_across_reviews(monkeypatch):
     node(one_task)
 
     assert raw_client.calls == 2
+
+
+def test_make_reviewer_node_blocks_current_file_read_for_complete_new_file(monkeypatch):
+    raw_client = _CountingFileClient()
+    returned: list[str] = []
+
+    def _invoke(payload, config=None):  # noqa: ARG001
+        response = payload["review_tool_client"].get_file_content("A.java")
+        returned.append(response.result or "")
+        return {"issues": [], "council_trace": []}
+
+    import types
+
+    monkeypatch.setattr(
+        G,
+        "build_reviewer_subgraph",
+        lambda *args, **kwargs: types.SimpleNamespace(invoke=_invoke),
+    )
+    task = G.ReviewTask(
+        id="A.java#h0",
+        file="A.java",
+        hunk_header="@@ -0,0 +1,2 @@",
+        patch="+class A {}",
+        changed_lines=[1],
+    )
+    node = G.make_reviewer_node(
+        G.DEFAULT_REVIEWERS[1], llm=_FakeLLM(), tool_client=raw_client
+    )
+
+    node(
+        {
+            "review_tasks": [task],
+            "risk_profiles": {
+                task.id: G.RiskProfile(
+                    task_id=task.id,
+                    tag_scores={RiskTag.NULL_STATE_SAFETY: 2},
+                )
+            },
+            "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
+        }
+    )
+
+    assert raw_client.calls == 0
+    assert returned == [
+        "当前 task patch 已包含该新增文件的完整内容；请直接复用 patch，不要重复读取。"
+    ]

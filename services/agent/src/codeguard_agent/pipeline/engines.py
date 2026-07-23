@@ -20,7 +20,13 @@ from typing import Any
 
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.schemas import ReviewResult
-from codeguard_agent.pipeline.discovery_tools import DISCOVERY_GATEWAY_TOOLS
+from codeguard_agent.pipeline.discovery_tools import (
+    COMPLETE_PATCH_RESULT,
+    DISCOVERY_GATEWAY_TOOLS,
+    REPEATED_TOOL_RESULT,
+    ToolKey,
+    canonical_tool_key,
+)
 
 logger = logging.getLogger("codeguard")
 
@@ -251,31 +257,40 @@ def _extract_gathered_context(raw: Any) -> list[GatheredContext]:
             return []
         messages = raw.get("messages") or []
         # tool_call_id → (工具名, 入参摘要)
-        call_meta: dict[str, tuple[str, str]] = {}
+        call_meta: dict[str, tuple[str, str, ToolKey]] = {}
         for msg in messages:
             for call in getattr(msg, "tool_calls", None) or []:
                 cid = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
                 name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
                 args = call.get("args") if isinstance(call, dict) else getattr(call, "args", {})
                 if cid:
-                    call_meta[cid] = (name or "", _summarize_args(args))
+                    tool_name = name or ""
+                    args_text = _summarize_args(args)
+                    key = (
+                        canonical_tool_key(tool_name, args)
+                        if isinstance(args, dict)
+                        else (tool_name, args_text)
+                    )
+                    call_meta[cid] = (tool_name, args_text, key)
         gathered: list[GatheredContext] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[ToolKey] = set()
         for msg in messages:
             if getattr(msg, "type", "") != "tool":
                 continue
             cid = getattr(msg, "tool_call_id", None)
-            name, args = call_meta.get(
-                cid or "", (getattr(msg, "name", "") or "", "")
+            fallback_name = getattr(msg, "name", "") or ""
+            name, args, key = call_meta.get(
+                cid or "", (fallback_name, "", (fallback_name, ""))
             )
             if name not in DISCOVERY_GATEWAY_TOOLS:
                 continue
-            key = (name, args)
             if key in seen:
                 continue
             content = getattr(msg, "content", "")
             content = content if isinstance(content, str) else str(content)
             if not content.strip():
+                continue
+            if content in {COMPLETE_PATCH_RESULT, REPEATED_TOOL_RESULT}:
                 continue
             seen.add(key)
             gathered.append(GatheredContext(tool=name, args=args, content=content))

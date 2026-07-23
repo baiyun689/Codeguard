@@ -64,6 +64,8 @@ class PipelineContext:
     filter_stats: Any = None
     # ADR-032:ContextProvider 写入的共享事实包。用 Any 避免 base 反向依赖 council 模型。
     context_bundle: Any = None
+    # ContextProvider 工具失败/不可用诊断；失败信封不得伪装成 ContextFact。
+    context_diagnostics: dict[str, str] = field(default_factory=dict)
 
 
 class PipelineStage(ABC):

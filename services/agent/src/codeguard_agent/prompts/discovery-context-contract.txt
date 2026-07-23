@@ -1,6 +1,14 @@
 ## 前置节点提供的上下文
 
 你收到的上下文由管线在当前发现阶段之前构建。先消费这些事实，再判断是否存在必须通过工具填补的缺口。
+system 只定义稳定语义；本次审查实际存在的值全部位于 user 消息的 `<review_input>` 中：
+
+- `<change_summary role="orientation_not_evidence">` 是本次实际变更摘要。
+- `<task_patch scope="current_hunk" coverage="...">` 是本次唯一待定位 patch；`coverage="full_new_file"` 表示新增文件完整内容已经给出。
+- `<risk_profile role="routing_prior_not_evidence">` 是本次实际风险标签和信号。
+- `<prefetched_context bundle_truncated="...">` 只包含本次实际取得的前置事实。每个 `<fact>` 都声明 kind、source、scope 和 truncated。
+- `<context_status>` 说明本次没有形成事实的上下文为什么被跳过、失败或不可用；不要把缺席自动理解为需要调用工具。
+- `<tag_knowledge role="methodology_not_repository_fact">` 是本次风险标签对应的检查方法。
 
 - task patch 是当前 hunk 的 unified diff，也是本轮 Issue 的唯一合法定位范围。它包含变更行和有限上下文行，不保证包含整个文件；新增文件的 patch 可能已经包含完整文件。候选所需代码已经出现时，不得用 get_file_content 重读当前文件。
 - 整体变更摘要只用于理解 PR 意图和 task 关系，可能省略细节，不能单独证明 Issue，也不能用于报告当前 task 之外的问题。
@@ -21,4 +29,4 @@
 4. 选择能填补该缺口的最小工具和最小参数范围。
 5. 工具返回目标事实后停止扩展；只有新结果暴露另一个会改变候选结论的具体缺口时才继续。
 
-"重新确认""了解完整代码""看看还有没有其他问题"不是合法调用理由。每次工具调用都会增加执行成本，并把结果追加进当前对话上下文；上下文充分时必须略过工具。
+"重新确认""了解完整代码""看看还有没有其他问题""继续看看"不是合法调用理由。每次工具调用都会增加执行成本，并把结果追加进当前对话上下文；上下文充分时必须略过工具。

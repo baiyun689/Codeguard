@@ -141,7 +141,7 @@ def test_task_context_bundle_does_not_duplicate_task_facts():
         facts=[ContextFact(source="diff", kind="hunk", content="x")],
     )
     keys = set(bundle.model_dump())
-    assert keys == {"task_id", "facts", "truncated"}
+    assert keys == {"task_id", "facts", "statuses", "truncated"}
     assert "file" not in keys
     assert "patch" not in keys
 

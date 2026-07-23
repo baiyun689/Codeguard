@@ -14,6 +14,7 @@ challenge_agent 和 self_checker 节点已合并为 council_judge(规则+LLM 混
 
 from __future__ import annotations
 
+import json
 import logging
 import operator
 from typing import Annotated, Any, TypedDict
@@ -31,6 +32,7 @@ from codeguard_agent.models.council import (
 )
 from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.models.tasks import (
+    ContextStatus,
     ReviewBudget,
     ReviewTask,
     RiskProfile,
@@ -43,12 +45,12 @@ from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.discovery_tools import (
     CoordinatedDiscoveryToolClient,
     DiscoveryToolCoordinator,
+    canonical_tool_key,
 )
 from codeguard_agent.pipeline.knowledge_rules import load_knowledge
 from codeguard_agent.pipeline.large_diff_policy import LargeDiffPlan, plan_large_diff
 from codeguard_agent.pipeline.risk_routing import (
     plan_task_tiers,
-    render_single_task_risk,
     routed_task_ids,
 )
 from codeguard_agent.pipeline.engines import (
@@ -68,6 +70,7 @@ from codeguard_agent.pipeline.stages.reviewer_stage import (
     Reviewer,
     _build_user_prompt,
     build_reviewer_system_prompt,
+    build_reviewer_user_prompt,
 )
 from codeguard_agent.pipeline.stages.aggregation import deduplicate
 from codeguard_agent.pipeline.stages.summary import SummaryStage
@@ -80,12 +83,22 @@ _ALL_REVIEWER_NAMES = [r.source_agent for r in DEFAULT_REVIEWERS]
 
 
 def dedup_gathered_reducer(existing: list | None, new: list | None) -> list:
-    """`gathered_context` reducer:按 `(tool, args)` 去重,保留首次出现顺序。"""
+    """`gathered_context` reducer:按规范化工具参数去重,保留首次出现顺序。"""
     merged = list(existing or []) + list(new or [])
     seen: set[tuple[str, str]] = set()
     out: list = []
     for it in merged:
-        key = (getattr(it, "tool", ""), getattr(it, "args", ""))
+        tool = getattr(it, "tool", "")
+        args = getattr(it, "args", "")
+        try:
+            structured_args = json.loads(args)
+        except (TypeError, json.JSONDecodeError):
+            structured_args = None
+        key = (
+            canonical_tool_key(tool, structured_args)
+            if isinstance(structured_args, dict)
+            else (tool, args)
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -230,6 +243,9 @@ class ReviewerState(TypedDict, total=False):
     context_bundle: ContextBundle
     task_risk_context: str
     task_knowledge: str
+    review_task: ReviewTask
+    risk_profile: RiskProfile
+    task_context_bundle: TaskContextBundle
     tier: str
     review_tool_client: Any
 
@@ -409,6 +425,7 @@ def _context_provider_node(tool_client):
         ctx.diff_text = _selected_diff(state, scope)
         ContextProviderStage(include_broad_scan=not scope.active).execute(ctx)
         bundle = ctx.context_bundle
+        broad_diagnostics = ctx.context_diagnostics
 
         selection = state.get("task_selection")
         selected_ids = set(selection.selected_task_ids) if selection is not None else set()
@@ -463,6 +480,7 @@ def _context_provider_node(tool_client):
         ]
         for task in tasks:
             facts: list[ContextFact] = []
+            statuses: list[ContextStatus] = []
             ast_block = ast_blocks.get(context_rules.normalize_path(task.file))
             if ast_block:
                 facts.append(
@@ -470,6 +488,22 @@ def _context_provider_node(tool_client):
                         source="tool:get_diff_ast",
                         kind="ast_structure",
                         content=ast_block,
+                    )
+                )
+            else:
+                ast_failure = broad_diagnostics.get("ast_structure")
+                statuses.append(
+                    ContextStatus(
+                        kind="ast_structure",
+                        status="failed" if ast_failure else "unavailable",
+                        reason=(
+                            ast_failure
+                            or (
+                                "tool_server_not_configured"
+                                if tool_client is None
+                                else "no_parseable_ast_for_current_file"
+                            )
+                        ),
                     )
                 )
             sensitive_rows = context_rules.sensitive_api_rows_for_task(sensitive_text, task)
@@ -481,6 +515,30 @@ def _context_provider_node(tool_client):
                         content="\n".join(sensitive_rows),
                     )
                 )
+            else:
+                sensitive_failure = broad_diagnostics.get("sensitive_api")
+                statuses.append(
+                    ContextStatus(
+                        kind="sensitive_api",
+                        status=(
+                            "skipped"
+                            if scope.active
+                            else ("failed" if sensitive_failure else "unavailable")
+                        ),
+                        reason=(
+                            "large_diff_broad_scan_disabled"
+                            if scope.active
+                            else (
+                                sensitive_failure
+                                or (
+                                    "tool_server_not_configured"
+                                    if tool_client is None
+                                    else "no_matching_sensitive_api_current_hunk"
+                                )
+                            )
+                        ),
+                    )
+                )
 
             level1_labels: list[str] = []
             for call in plan.level1_calls:
@@ -488,6 +546,15 @@ def _context_provider_node(tool_client):
                     continue
                 content = level1_content.get((call.level, call.key))
                 if content is None:
+                    failure = failed_level1.get((call.level, call.key))
+                    if failure:
+                        statuses.append(
+                            ContextStatus(
+                                kind=call.level.value,
+                                status="failed",
+                                reason=failure,
+                            )
+                        )
                     continue
                 facts.append(
                     ContextFact(
@@ -498,12 +565,35 @@ def _context_provider_node(tool_client):
                 )
                 level1_labels.append(f"{call.level.value}({call.key})")
 
+            for skip in plan.skips:
+                if skip.task_id == task.id:
+                    statuses.append(
+                        ContextStatus(
+                            kind=skip.level.value,
+                            status="skipped",
+                            reason=skip.reason,
+                        )
+                    )
+            present_kinds = {fact.kind for fact in facts} | {
+                status.kind for status in statuses
+            }
+            for level in context_rules.ContextLevel:
+                if level.value not in present_kinds:
+                    statuses.append(
+                        ContextStatus(
+                            kind=level.value,
+                            status="skipped",
+                            reason="risk_tag_not_required",
+                        )
+                    )
+
             facts, truncated = context_rules.truncate_task_facts(
                 facts, budget.max_context_chars_per_task
             )
             task_bundles[task.id] = TaskContextBundle(
                 task_id=task.id,
                 facts=facts,
+                statuses=statuses,
                 truncated=truncated,
             )
             skip_reasons = [skip.reason for skip in plan.skips if skip.task_id == task.id]
@@ -539,10 +629,7 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
     from langgraph.graph import END, START, StateGraph
 
     def _system_prompt(state: ReviewerState) -> str:
-        return build_reviewer_system_prompt(
-            reviewer,
-            state.get("task_knowledge") or "",
-        )
+        return build_reviewer_system_prompt(reviewer)
 
     def _direct_fallback(state: ReviewerState) -> ReviewOutcome:
         return DirectEngine().review(
@@ -557,6 +644,17 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
     def _prepare(state: ReviewerState) -> dict:
         if llm is None:
             return {}
+        review_task = state.get("review_task")
+        if review_task is not None:
+            return {
+                "user_prompt": build_reviewer_user_prompt(
+                    task=review_task,
+                    summary=state.get("diff_summary", ""),
+                    risk_profile=state.get("risk_profile"),
+                    context_bundle=state.get("task_context_bundle"),
+                    task_knowledge=state.get("task_knowledge", ""),
+                )
+            }
         user = _build_user_prompt(
             state["diff_text"], summary=state.get("diff_summary", "")
         )
@@ -668,10 +766,21 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
 
         _coordinator = DiscoveryToolCoordinator() if tool_client is not None else None
 
-        def _task_tool_client():
+        def _task_tool_client(task: ReviewTask | None = None):
             if tool_client is None or _coordinator is None:
                 return None
-            return CoordinatedDiscoveryToolClient(tool_client, _coordinator)
+            complete_patch_files = (
+                {task.file}
+                if task is not None
+                and task.patch_complete
+                and task.hunk_header.strip().startswith("@@ -0,0 +")
+                else set()
+            )
+            return CoordinatedDiscoveryToolClient(
+                tool_client,
+                _coordinator,
+                complete_patch_files=complete_patch_files,
+            )
 
         routed_ids = (
             set(routed_task_ids(reviewer.source_agent, tasks, profiles, selection))
@@ -775,18 +884,17 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         def _invoke_one(task_id: str) -> dict:
             task = task_by_id[task_id]
             scope = _scope_plan(state)
-            scoped_task = task.model_copy(update={"patch": scope.scoped_patch(task.patch)})
+            scoped_patch = scope.scoped_patch(task.patch)
+            scoped_task = task.model_copy(
+                update={
+                    "patch": scoped_patch,
+                    "patch_complete": task.patch_complete
+                    and scoped_patch == task.patch,
+                }
+            )
             profile = profiles.get(task_id)
             tier = tier_by_task.get(task_id, "direct")
-            risk_task = (
-                scoped_task.model_copy(update={"patch": "(patch 见上方 task_patch，不重复附加)"})
-                if scope.active
-                else scoped_task
-            )
-            risk_text = render_single_task_risk(risk_task, profile) if profile is not None else ""
             bundle = task_context_bundles.get(task_id)
-            bundle_text = bundle.render() if bundle is not None else ""
-            task_risk_context = "\n\n".join(p for p in (risk_text, bundle_text) if p)
             active_tags = (
                 [tag for tag, score in profile.tag_scores.items() if score > 0]
                 if profile is not None
@@ -803,10 +911,12 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     "structured_method": state.get("structured_method", "function_calling"),
                     "diff_summary": state.get("diff_summary", ""),
                     "react_recursion_limit": state.get("react_recursion_limit", 24),
-                    "task_risk_context": task_risk_context,
+                    "review_task": scoped_task,
+                    "risk_profile": profile,
+                    "task_context_bundle": bundle,
                     "task_knowledge": task_knowledge,
                     "tier": tier,
-                    "review_tool_client": _task_tool_client(),
+                    "review_tool_client": _task_tool_client(scoped_task),
                 },
             )
             if profile is None:

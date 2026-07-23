@@ -207,6 +207,11 @@ def _has_fact_for_tool(
         "get_code_metrics": ("get_code_metrics",),
     }
     if tool_name == "get_file_content":
+        if (
+            dossier.task.patch_complete
+            and dossier.task.hunk_header.strip().startswith("@@ -0,0 +")
+        ):
+            return True
         return any("get_file_content" in fact.source for fact in facts)
     markers = source_markers.get(tool_name, ())
     if any(any(marker in fact.source for marker in markers) for fact in facts):

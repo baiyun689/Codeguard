@@ -6,6 +6,8 @@
 
 **Architecture:** Prompt 组合层统一注入一份上下文数据契约，三个领域 prompt 只保留角色特有的事实缺口规则。执行层新增 review-scoped、reviewer-isolated 的同步工具协调器：同一发现者的并发 task 共享 single-flight/cache，每个 ReAct 对话使用独立 wrapper 记录本地已见结果；协调器必须在 reviewer node 每次执行时创建，不能在图编译期创建。
 
+> **实施修订（2026-07-23）：** 后续审查确认原 Task 1 把 task-scoped 标签知识放入 system、并让 risk/context 以原始字符串拼入 user，仍要求模型猜测本次实际上下文。最终实现以修订后的设计文档为准：system 只保留稳定语义；`build_reviewer_user_prompt(...)` 统一动态渲染并转义 patch、summary、risk profile、typed facts、context status 和 tag knowledge。Task 4 的 GatheredContext 与最终 reducer 必须复用 canonical tool key；同一 wrapper 的并发重复调用也必须返回“一份正文 + 一份短标记”。`full_new_file` 只允许用于实际未截断的新增文件 patch。
+
 **Tech Stack:** Python 3.11、LangGraph 1.2+、LangChain `create_agent`、Pydantic 2、同步 `httpx` ToolClient、`concurrent.futures.Future`、pytest、ruff、mypy。
 
 ## Global Constraints

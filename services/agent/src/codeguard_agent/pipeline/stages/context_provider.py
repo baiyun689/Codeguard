@@ -45,13 +45,19 @@ class ContextProviderStage(PipelineStage):
     def execute(self, context: PipelineContext) -> PipelineContext:
         changed_files = parse_changed_files(context.diff_text)
         facts: list[ContextFact] = []
+        diagnostics: dict[str, str] = {}
 
         gathered: list[GatheredContext] = []
         if context.tool_client is not None and self._include_broad_scan:
             resp = context.tool_client.find_sensitive_apis()
-            content = resp.as_tool_output()
-            clipped, truncated = _clip(content)
-            if content.strip():
+            if not getattr(resp, "success", False):
+                diagnostics["sensitive_api"] = str(
+                    getattr(resp, "error", "tool_failed") or "tool_failed"
+                )
+            else:
+                content = resp.as_tool_output()
+                clipped, truncated = _clip(content)
+            if getattr(resp, "success", False) and content.strip():
                 facts.append(
                     ContextFact(
                         source="tool:find_sensitive_apis",
@@ -65,7 +71,17 @@ class ContextProviderStage(PipelineStage):
         # 4. AST 结构提取（diff 内文件）
         if context.tool_client is not None:
             resp = context.tool_client.get_diff_ast(context.diff_text)
-            content = resp.as_tool_output() if hasattr(resp, "as_tool_output") else str(resp)
+            if not getattr(resp, "success", False):
+                diagnostics["ast_structure"] = str(
+                    getattr(resp, "error", "tool_failed") or "tool_failed"
+                )
+                content = ""
+            else:
+                content = (
+                    resp.as_tool_output()
+                    if hasattr(resp, "as_tool_output")
+                    else str(resp)
+                )
             if content.strip() and "无可解析" not in content:
                 for file_block in _split_ast_blocks(content):
                     facts.append(ContextFact(
@@ -80,6 +96,7 @@ class ContextProviderStage(PipelineStage):
             facts=facts,
         )
         context.context_bundle = bundle
+        context.context_diagnostics = diagnostics
         context.gathered_context.extend(gathered)
         fact_sources = sorted({fact.source for fact in facts} | {"diff"})
         logger.info(

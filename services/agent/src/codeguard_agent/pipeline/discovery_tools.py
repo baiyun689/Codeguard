@@ -18,6 +18,9 @@ DISCOVERY_GATEWAY_TOOLS = frozenset({
 REPEATED_TOOL_RESULT = (
     "该工具和参数已经在当前对话中成功返回；请复用前述结果，不要重复读取。"
 )
+COMPLETE_PATCH_RESULT = (
+    "当前 task patch 已包含该新增文件的完整内容；请直接复用 patch，不要重复读取。"
+)
 ToolKey = tuple[str, str]
 
 
@@ -84,21 +87,34 @@ class DiscoveryToolCoordinator:
             with self._lock:
                 if _cacheable(response):
                     self._completed[key] = response
-                self._in_flight.pop(key, None)
             future.set_result(response)
-            return response
-        except BaseException as exc:
             with self._lock:
                 self._in_flight.pop(key, None)
+            return response
+        except BaseException as exc:
             future.set_exception(exc)
+            with self._lock:
+                self._in_flight.pop(key, None)
             raise
 
 
 class CoordinatedDiscoveryToolClient:
-    def __init__(self, delegate: Any, coordinator: DiscoveryToolCoordinator) -> None:
+    def __init__(
+        self,
+        delegate: Any,
+        coordinator: DiscoveryToolCoordinator,
+        *,
+        complete_patch_files: set[str] | frozenset[str] = frozenset(),
+    ) -> None:
         self._delegate = delegate
         self._coordinator = coordinator
+        self._lock = Lock()
         self._seen: set[ToolKey] = set()
+        self._in_flight: dict[ToolKey, Future[ToolResponse]] = {}
+        self._complete_patch_keys = {
+            canonical_tool_key("get_file_content", {"file_path": path})
+            for path in complete_patch_files
+        }
 
     def _invoke(
         self,
@@ -107,14 +123,40 @@ class CoordinatedDiscoveryToolClient:
         call: Callable[[], ToolResponse],
     ) -> ToolResponse:
         key = canonical_tool_key(tool_name, arguments)
-        if key in self._seen:
-            return ToolResponse(success=True, result=REPEATED_TOOL_RESULT)
-        response = self._coordinator.execute(key, call)
-        if _cacheable(response):
-            self._seen.add(key)
-        return response
+        with self._lock:
+            if key in self._seen:
+                return ToolResponse(success=True, result=REPEATED_TOOL_RESULT)
+            future = self._in_flight.get(key)
+            leader = future is None
+            if future is None:
+                future = Future()
+                self._in_flight[key] = future
+
+        if not leader:
+            response = future.result()
+            if _cacheable(response):
+                return ToolResponse(success=True, result=REPEATED_TOOL_RESULT)
+            return response
+
+        try:
+            response = self._coordinator.execute(key, call)
+            with self._lock:
+                if _cacheable(response):
+                    self._seen.add(key)
+            future.set_result(response)
+            with self._lock:
+                self._in_flight.pop(key, None)
+            return response
+        except BaseException as exc:
+            future.set_exception(exc)
+            with self._lock:
+                self._in_flight.pop(key, None)
+            raise
 
     def get_file_content(self, file_path: str) -> ToolResponse:
+        key = canonical_tool_key("get_file_content", {"file_path": file_path})
+        if key in self._complete_patch_keys:
+            return ToolResponse(success=True, result=COMPLETE_PATCH_RESULT)
         return self._invoke(
             "get_file_content",
             {"file_path": file_path},

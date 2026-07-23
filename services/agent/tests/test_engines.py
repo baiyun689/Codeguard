@@ -8,6 +8,7 @@ ReAct(create_agent)的返回要稳健地落成结构化结果:优先用图内置
 from __future__ import annotations
 
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
+from codeguard_agent.pipeline.discovery_tools import COMPLETE_PATCH_RESULT
 from codeguard_agent.pipeline.engines import (
     DirectEngine,
     ReviewOutcome,
@@ -183,6 +184,51 @@ def test_gathered_context_keeps_same_tool_with_different_args() -> None:
         ]
     }
     assert [item.content for item in _extract_gathered_context(raw)] == ["A", "B"]
+
+
+def test_gathered_context_dedups_canonical_equivalent_tool_arguments() -> None:
+    raw = {
+        "messages": [
+            _AIMsg([
+                {
+                    "id": "a",
+                    "name": "get_file_content",
+                    "args": {"file_path": "src\\.\\A.java"},
+                }
+            ]),
+            _ToolMsg("a", "FULL BODY"),
+            _AIMsg([
+                {
+                    "id": "b",
+                    "name": "get_file_content",
+                    "args": {"file_path": "src/A.java"},
+                }
+            ]),
+            _ToolMsg("b", "重复调用短标记"),
+        ]
+    }
+
+    got = _extract_gathered_context(raw)
+
+    assert len(got) == 1
+    assert got[0].content == "FULL BODY"
+
+
+def test_gathered_context_excludes_complete_patch_short_marker() -> None:
+    raw = {
+        "messages": [
+            _AIMsg([
+                {
+                    "id": "a",
+                    "name": "get_file_content",
+                    "args": {"file_path": "src/A.java"},
+                }
+            ]),
+            _ToolMsg("a", COMPLETE_PATCH_RESULT),
+        ]
+    }
+
+    assert _extract_gathered_context(raw) == []
 
 
 def _resolve_tool_names(enabled):
