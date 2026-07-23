@@ -16,6 +16,7 @@ from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.evidence_agent import bound_evidence, request_strategy_mismatch
 from codeguard_agent.pipeline.evidence_planner import CandidateDossier, DossierAssembly
+from codeguard_agent.pipeline.candidate_dedup import CandidateDedupStats
 from codeguard_agent.pipeline.evidence_rules import strategies_for
 
 
@@ -56,7 +57,7 @@ def compute_council_run_stats(
     evidence_request_count: int,
     truncated_candidates: int,
     council_trace: Sequence[CouncilTrace],
-    candidate_dedup_stats: Mapping[str, int] | None = None,
+    candidate_dedup_stats: Mapping[str, int] | CandidateDedupStats | None = None,
 ) -> CouncilRunStats:
     """从稳定候选映射和结构化证据计算 Phase 5 过程指标。"""
     final_ids = set(final_candidate_ids)
@@ -147,7 +148,7 @@ def compute_council_run_stats(
         severity_transitions[key] = severity_transitions.get(key, 0) + 1
 
     final_issue_count = len(final_candidate_ids)
-    dedup = dict(candidate_dedup_stats or {})
+    dedup = candidate_dedup_stats or {}
     raw_candidate_count = dedup.get("raw_candidate_count", candidate_count)
     candidate_dedup_removed_count = dedup.get(
         "removed_count",

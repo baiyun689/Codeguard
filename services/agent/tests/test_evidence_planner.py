@@ -96,10 +96,13 @@ def _resolution(
 def _force_resolution(monkeypatch: pytest.MonkeyPatch, resolution=None) -> None:
     chosen = resolution or _resolution()
     monkeypatch.setattr(
-        "codeguard_agent.pipeline.evidence_planner.resolve_candidate_evidence_tag",
-        lambda dossier, classifier_llm, *, structured_method: (
-            chosen(dossier) if callable(chosen) else chosen
-        ),
+        "codeguard_agent.pipeline.evidence_planner.resolve_candidate_tags",
+        lambda dossiers, **kwargs: {
+            dossier.candidate.id: (
+                chosen(dossier) if callable(chosen) else chosen
+            )
+            for dossier in dossiers
+        },
     )
 
 
@@ -162,7 +165,7 @@ def test_candidate_tag_resolution_runs_concurrently_and_keeps_plan_order(monkeyp
         return _resolution(reason=dossier.candidate.id)
 
     monkeypatch.setattr(
-        "codeguard_agent.pipeline.evidence_planner.resolve_candidate_evidence_tag",
+        "codeguard_agent.pipeline.evidence_rules.classify.resolve_candidate_evidence_tag",
         resolve,
     )
     dossiers = [_dossier(30), _dossier(31), _dossier(32)]

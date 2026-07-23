@@ -190,7 +190,7 @@ def resolve_candidate_tags(
             classifier_llm,
             structured_method=structured_method,
         ),
-        max_workers=max_workers,
+        max_workers=max(1, min(max_workers, 8)),
     )
     resolved: dict[str, CandidateTagResolution] = {}
     for dossier, outcome in zip(ordered, outcomes, strict=True):

@@ -42,6 +42,10 @@ from codeguard_agent.models.tasks import (
 )
 from codeguard_agent.pipeline import context_rules, task_prep
 from codeguard_agent.pipeline.council_judge import judge_candidates
+from codeguard_agent.pipeline.candidate_dedup import (
+    CandidateDedupStats,
+    deduplicate_candidates,
+)
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.discovery_tools import (
     CoordinatedDiscoveryToolClient,
@@ -64,6 +68,10 @@ from codeguard_agent.pipeline.engines import (
 from codeguard_agent.pipeline.evidence_agent import collect_evidence
 from codeguard_agent.pipeline.council_metrics import compute_council_run_stats
 from codeguard_agent.pipeline.evidence_planner import assemble_dossiers, plan_evidence
+from codeguard_agent.pipeline.evidence_rules.classify import (
+    CandidateTagResolution,
+    resolve_candidate_tags,
+)
 from codeguard_agent.pipeline.stages.base import PipelineContext
 from codeguard_agent.pipeline.stages.context_provider import ContextProviderStage
 from codeguard_agent.pipeline.stages.reviewer_stage import (
@@ -160,8 +168,8 @@ class ReviewState(TypedDict, total=False):
     context_bundle: ContextBundle
     raw_candidate_issues: Annotated[list[CandidateIssue], collect_candidate_reducer]
     candidate_issues: list[CandidateIssue]
-    candidate_tag_resolutions: dict[str, Any]
-    candidate_dedup_stats: dict[str, int]
+    candidate_tag_resolutions: dict[str, CandidateTagResolution]
+    candidate_dedup_stats: CandidateDedupStats
     evidence_requests: Annotated[list[EvidenceRequest], dedup_evidence_request_reducer]
     evidence_notes: Annotated[list[EvidenceNote], operator.add]
     council_trace: Annotated[list[CouncilTrace], operator.add]
@@ -969,13 +977,6 @@ def _coordinator_node(effective_judge_llm):
     """
 
     def _node(state: ReviewState) -> dict:
-        from codeguard_agent.pipeline.candidate_dedup import deduplicate_candidates
-        from codeguard_agent.pipeline.evidence_rules.classify import (
-            CandidateTagResolution,
-            _general_resolution,
-            resolve_candidate_evidence_tag,
-        )
-
         raw = list(state.get("raw_candidate_issues") or [])
         tasks = state.get("review_tasks") or []
         profiles = state.get("risk_profiles") or {}
@@ -983,44 +984,60 @@ def _coordinator_node(effective_judge_llm):
         structured_method = state.get("structured_method", "function_calling")
 
         trace: list[CouncilTrace] = []
-        tasks_by_id = {t.id: t for t in tasks}
-
-        # 1. 为每个 raw candidate 构建轻量 dossier 并解析 RiskTag
-        resolutions: dict[str, Any] = {}
-        for c in raw:
-            task = tasks_by_id.get(c.task_id)
-            if task is None:
-                resolutions[c.id] = CandidateTagResolution(
-                    tag=RiskTag.GENERAL_REVIEW,
-                    confidence=0.5,
-                    source="general",
-                    reason="candidate_task_not_found",
+        scope = _scope_plan(state)
+        scoped_tasks = []
+        for task in tasks:
+            scoped_patch = scope.scoped_patch(task.patch)
+            scoped_tasks.append(
+                task.model_copy(
+                    update={
+                        "patch": scoped_patch,
+                        "patch_complete": (
+                            task.patch_complete and scoped_patch == task.patch
+                        ),
+                    }
                 )
-                continue
-            profile = profiles.get(c.task_id)
-            bundle = bundles.get(c.task_id)
-            # 构建轻量 dossier（无 requests/notes）
-            from types import SimpleNamespace
-            dossier: Any = SimpleNamespace(
-                candidate=c,
-                task=task,
-                risk_profile=profile,
-                context_bundle=bundle,
             )
-            try:
-                resolutions[c.id] = resolve_candidate_evidence_tag(
-                    dossier,
-                    effective_judge_llm,
-                    structured_method=structured_method,
-                )
-            except Exception:  # noqa: BLE001
-                resolutions[c.id] = _general_resolution("coordinator_tag_resolution_failed")
+        tasks_by_id = {task.id: task for task in scoped_tasks}
+
+        # 1. 为 raw candidates 批量组装轻量 dossier 并解析 RiskTag
+        assembly = assemble_dossiers(
+            raw,
+            scoped_tasks,
+            profiles,
+            bundles,
+            (),
+            (),
+        )
+        resolutions = resolve_candidate_tags(
+            assembly.dossiers,
+            classifier_llm=effective_judge_llm,
+            structured_method=structured_method,
+            max_workers=8,
+        )
+        for failure in assembly.failures:
+            resolutions[failure.candidate.id] = CandidateTagResolution(
+                tag=RiskTag.GENERAL_REVIEW,
+                confidence=0.5,
+                source="general",
+                reason=f"candidate_binding_{failure.reason}",
+            )
+
+        source_counts = {"rule": 0, "llm": 0, "general": 0}
+        for resolution in resolutions.values():
+            source_counts[resolution.source] = (
+                source_counts.get(resolution.source, 0) + 1
+            )
 
         trace.append(
             CouncilTrace(
                 node="council_coordinator",
                 event="candidate_tags_resolved",
-                detail=f"resolved={len(resolutions)}",
+                detail=(
+                    f"resolved={len(resolutions)} "
+                    f"rule={source_counts['rule']} llm={source_counts['llm']} "
+                    f"general={source_counts['general']}"
+                ),
             )
         )
 
@@ -1033,6 +1050,17 @@ def _coordinator_node(effective_judge_llm):
             structured_method=structured_method,
         )
 
+        trace.append(
+            CouncilTrace(
+                node="council_coordinator",
+                event="candidate_dedup_blocks_built",
+                detail=(
+                    f"raw={result.raw_candidate_count} "
+                    f"singleton={result.block_count - result.multi_member_block_count} "
+                    f"multi={result.multi_member_block_count}"
+                ),
+            )
+        )
         trace.append(
             CouncilTrace(
                 node="council_coordinator",
@@ -1049,11 +1077,19 @@ def _coordinator_node(effective_judge_llm):
         )
 
         for group in result.accepted_groups:
+            removed_ids = [
+                member_id
+                for member_id in group.member_ids
+                if member_id != group.representative_id
+            ]
             trace.append(
                 CouncilTrace(
                     node="council_coordinator",
                     event="candidate_dedup_group_accepted",
-                    detail=f"rep={group.representative_id} members={list(group.member_ids)} confidence={group.confidence:.2f}",
+                    detail=(
+                        f"rep={group.representative_id} removed={removed_ids} "
+                        f"confidence={group.confidence:.2f} reason={group.reason}"
+                    ),
                 )
             )
         for rejected in result.rejected_groups:
@@ -1064,12 +1100,15 @@ def _coordinator_node(effective_judge_llm):
                     detail=f"members={list(rejected.member_ids)} reason={rejected.reason}",
                 )
             )
-        for block_id in result.block_failures:
+        for block_failure in result.block_failures:
             trace.append(
                 CouncilTrace(
                     node="council_coordinator",
                     event="candidate_dedup_block_failed",
-                    detail=block_id,
+                    detail=(
+                        f"block={block_failure.block_id} "
+                        f"reason={block_failure.reason}"
+                    ),
                 )
             )
 

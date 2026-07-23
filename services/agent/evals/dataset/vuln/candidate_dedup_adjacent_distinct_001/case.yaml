@@ -1,0 +1,20 @@
+id: candidate_dedup_adjacent_distinct_001
+category: 错误处理
+dimension: logic
+capability: [diff-only]
+description: >
+  checkout 连续吞掉支付异常和库存预留异常。两处都属于 ERROR_HANDLING 且位置相邻，
+  但根因、影响行为和修复方式不同，最终必须保留两个问题。
+expected:
+  - type_keywords: ["支付", "payment", "异常", "错误"]
+    file: CheckoutService.java
+    line: 7
+    tolerance: 2
+    severity: WARNING
+    note: 支付失败不能被吞掉
+  - type_keywords: ["库存", "inventory", "reserve", "异常", "错误"]
+    file: CheckoutService.java
+    line: 9
+    tolerance: 2
+    severity: WARNING
+    note: 库存预留失败不能被吞掉

@@ -102,3 +102,25 @@ def test_batch_resolution_runs_concurrently_and_keeps_input_order(monkeypatch):
 
     assert peak_active > 1
     assert list(result.keys()) == [d.candidate.id for d in dossiers]
+
+
+def test_batch_resolution_caps_public_worker_limit_at_eight(monkeypatch):
+    observed: list[int] = []
+
+    def run(items, fn, *, max_workers):
+        observed.append(max_workers)
+        return [fn(item) for item in items]
+
+    monkeypatch.setattr(
+        "codeguard_agent.pipeline.concurrency.run_bounded_parallel",
+        run,
+    )
+
+    resolve_candidate_tags(
+        [_dossier()],
+        classifier_llm=None,
+        structured_method="function_calling",
+        max_workers=99,
+    )
+
+    assert observed == [8]

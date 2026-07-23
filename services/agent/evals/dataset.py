@@ -5,7 +5,10 @@
 1. **内联合成用例**:dataset/vuln/*.yaml 与 dataset/clean/*.yaml,每个文件一条,
    diff 直接内联在 YAML 里(磁盘无对应文件,工具读不到)。新增 = 丢一个 YAML。
 
-2. **repo-backed 自包含快照用例**:dataset/repo/<case_id>/ 一个目录,含
+2. **外置 diff 合成用例**:任意分类目录下的 `<case_id>/case.yaml` +
+   `changes.diff`,用于较长 diff 与标答分离,不提供工具仓库快照。
+
+3. **repo-backed 自包含快照用例**:dataset/repo/<case_id>/ 一个目录,含
    - repo/         变更后的最小可解析工程(工具据此能读到 diff 之外的上下文)
    - changes.diff  被审查的 unified diff
    - case.yaml     标答 + 能力标签等元数据(diff 由 changes.diff 提供,可不在此内联)
@@ -36,7 +39,26 @@ def _load_synthetic_cases(root: Path) -> list[EvalCase]:
         # 跳过 repo-backed 区域里的任何 yaml(case.yaml、工程里的 application.yaml 等)。
         if repo_root in path.parents or path == repo_root:
             continue
+        if path.name == _CASE_FILE:
+            continue
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        cases.append(EvalCase.model_validate(raw))
+    return cases
+
+
+def _load_external_diff_cases(root: Path) -> list[EvalCase]:
+    """加载分类目录中的 case.yaml + changes.diff 合成用例。"""
+    repo_root = root / _REPO_SUBDIR
+    cases: list[EvalCase] = []
+    for case_file in sorted(root.rglob(_CASE_FILE)):
+        if repo_root in case_file.parents:
+            continue
+        case_dir = case_file.parent
+        diff_file = case_dir / _DIFF_FILE
+        if not diff_file.is_file():
+            raise ValueError(f"外置 diff 用例缺少 {_DIFF_FILE}:{case_dir}")
+        raw = yaml.safe_load(case_file.read_text(encoding="utf-8")) or {}
+        raw["diff"] = diff_file.read_text(encoding="utf-8")
         cases.append(EvalCase.model_validate(raw))
     return cases
 
@@ -79,7 +101,11 @@ def _load_repo_backed_cases(root: Path) -> list[EvalCase]:
 def load_cases(dataset_dir: Path | None = None) -> list[EvalCase]:
     """加载数据集下所有用例(内联 + repo-backed),按 id 排序返回。"""
     root = dataset_dir or _DATASET_DIR
-    cases = _load_synthetic_cases(root) + _load_repo_backed_cases(root)
+    cases = (
+        _load_synthetic_cases(root)
+        + _load_external_diff_cases(root)
+        + _load_repo_backed_cases(root)
+    )
     if not cases:
         raise FileNotFoundError(f"在 {root} 下没找到任何用例(*.yaml 或 {_REPO_SUBDIR}/<case>/)")
     cases.sort(key=lambda c: c.id)

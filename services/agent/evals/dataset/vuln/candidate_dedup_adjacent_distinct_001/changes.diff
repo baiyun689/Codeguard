@@ -1,0 +1,17 @@
+diff --git a/src/main/java/example/CheckoutService.java b/src/main/java/example/CheckoutService.java
+new file mode 100644
+--- /dev/null
++++ b/src/main/java/example/CheckoutService.java
+@@ -0,0 +1,12 @@
++package example;
++
++public final class CheckoutService {
++    public void checkout(Order order) {
++        try {
++            payment.charge(order);
++        } catch (PaymentException ignored) {}
++        try {
++            inventory.reserve(order);
++        } catch (InventoryException ignored) {}
++    }
++}

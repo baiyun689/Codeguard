@@ -15,11 +15,10 @@ from codeguard_agent.models.council import (
 )
 from codeguard_agent.models.tasks import ReviewTask, RiskProfile, RiskTag, TaskContextBundle
 from codeguard_agent.pipeline import task_prep
-from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.evidence_rules import (
     CandidateTagResolution,
     EvidenceStrategy,
-    resolve_candidate_evidence_tag,
+    resolve_candidate_tags,
     strategies_for,
 )
 
@@ -203,24 +202,14 @@ def _resolve_dossiers(
     classifier_llm: Any,
     structured_method: str,
 ) -> list[CandidateTagResolution]:
-    outcomes = run_bounded_parallel(
-        list(dossiers),
-        lambda dossier: resolve_candidate_evidence_tag(
-            dossier,
-            classifier_llm,
-            structured_method=structured_method,
-        ),
+    resolutions = resolve_candidate_tags(
+        dossiers,
+        classifier_llm=classifier_llm,
+        structured_method=structured_method,
     )
     return [
-        outcome
-        if outcome is not None
-        else CandidateTagResolution(
-            tag=RiskTag.GENERAL_REVIEW,
-            confidence=0.5,
-            source="general",
-            reason="候选证据主题并发解析失败",
-        )
-        for outcome in outcomes
+        resolutions.get(dossier.candidate.id, _fallback_resolution())
+        for dossier in dossiers
     ]
 
 

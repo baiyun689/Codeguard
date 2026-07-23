@@ -1416,3 +1416,139 @@ class TestCandidateCollectReducer:
         first = _c("behavior", "1", "OrderService.java", 30, "ERROR_HANDLING")
         second = _c("behavior", "2", "OrderService.java", 32, "ERROR_HANDLING")
         assert G.collect_candidate_reducer([first], [second]) == [first, second]
+
+
+def test_coordinator_batches_tag_resolution_and_emits_complete_trace(monkeypatch):
+    from codeguard_agent.pipeline.candidate_dedup import (
+        AcceptedCandidateGroup,
+        CandidateBlockFailure,
+        CandidateDedupResult,
+    )
+
+    first = _c("behavior", "1", "OrderService.java", 30, "ERROR_HANDLING")
+    second = _c("threat_model", "2", "OrderService.java", 31, "错误处理")
+    second = second.model_copy(update={"task_id": first.task_id})
+    task = G.ReviewTask(
+        id=first.task_id,
+        file=first.file,
+        patch="+ riskyCall();",
+        changed_lines=[30, 31],
+    )
+    resolution = G.CandidateTagResolution(
+        tag=RiskTag.ERROR_HANDLING,
+        confidence=0.95,
+        source="rule",
+        reason="test",
+    )
+    calls: list[list[str]] = []
+
+    def resolve(dossiers, **kwargs):
+        calls.append([dossier.candidate.id for dossier in dossiers])
+        assert kwargs["max_workers"] == 8
+        return {dossier.candidate.id: resolution for dossier in dossiers}
+
+    monkeypatch.setattr(G, "resolve_candidate_tags", resolve)
+    monkeypatch.setattr(
+        G,
+        "deduplicate_candidates",
+        lambda candidates, **kwargs: CandidateDedupResult(
+            candidates=(first,),
+            raw_candidate_count=2,
+            block_count=1,
+            multi_member_block_count=1,
+            llm_call_count=1,
+            accepted_groups=(
+                AcceptedCandidateGroup(
+                    member_ids=(first.id, second.id),
+                    representative_id=first.id,
+                    confidence=0.95,
+                    reason="same defect",
+                ),
+            ),
+            rejected_groups=(),
+            block_failures=(
+                CandidateBlockFailure("block-1", "empty_response"),
+            ),
+        ),
+    )
+
+    output = G._coordinator_node(object())(
+        {
+            "raw_candidate_issues": [first, second],
+            "review_tasks": [task],
+            "risk_profiles": {},
+            "task_context_bundles": {},
+            "structured_method": "function_calling",
+        }
+    )
+
+    assert calls == [[first.id, second.id]]
+    assert output["candidate_issues"] == [first]
+    traces = {trace.event: trace.detail for trace in output["council_trace"]}
+    assert "rule=2" in traces["candidate_tags_resolved"]
+    assert "singleton=0" in traces["candidate_dedup_blocks_built"]
+    assert f"removed=['{second.id}']" in traces["candidate_dedup_group_accepted"]
+    assert "reason=same defect" in traces["candidate_dedup_group_accepted"]
+    assert "reason=empty_response" in traces["candidate_dedup_block_failed"]
+
+
+def test_coordinator_scopes_large_diff_patch_before_classification_and_dedup(
+    monkeypatch,
+):
+    from codeguard_agent.pipeline.candidate_dedup import CandidateDedupResult
+
+    candidate = _c("behavior", "1", "OrderService.java", 30, "ERROR_HANDLING")
+    original_patch = "+" + ("x" * 13_000)
+    task = G.ReviewTask(
+        id=candidate.task_id,
+        file=candidate.file,
+        patch=original_patch,
+        patch_complete=True,
+        changed_lines=[30],
+    )
+    captured: dict[str, object] = {}
+    resolution = G.CandidateTagResolution(
+        tag=RiskTag.ERROR_HANDLING,
+        confidence=0.95,
+        source="rule",
+        reason="test",
+    )
+
+    def resolve(dossiers, **kwargs):
+        captured["dossier_task"] = dossiers[0].task
+        return {candidate.id: resolution}
+
+    def dedup(candidates, **kwargs):
+        captured["dedup_task"] = kwargs["tasks_by_id"][candidate.task_id]
+        return CandidateDedupResult(
+            candidates=(candidate,),
+            raw_candidate_count=1,
+            block_count=1,
+            multi_member_block_count=0,
+            llm_call_count=0,
+            accepted_groups=(),
+            rejected_groups=(),
+            block_failures=(),
+        )
+
+    monkeypatch.setattr(G, "resolve_candidate_tags", resolve)
+    monkeypatch.setattr(G, "deduplicate_candidates", dedup)
+
+    G._coordinator_node(object())(
+        {
+            "diff_text": "\n".join("+ changed" for _ in range(5001)),
+            "raw_candidate_issues": [candidate],
+            "review_tasks": [task],
+            "risk_profiles": {},
+            "task_context_bundles": {},
+            "review_budget": G.ReviewBudget(),
+        }
+    )
+
+    for scoped_task in (
+        captured["dossier_task"],
+        captured["dedup_task"],
+    ):
+        assert scoped_task.patch != original_patch
+        assert scoped_task.patch.endswith("...(大 diff 单任务 patch 已截断)")
+        assert scoped_task.patch_complete is False

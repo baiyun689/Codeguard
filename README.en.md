@@ -40,6 +40,8 @@ The Python Agent owns review reasoning and orchestration. The Java Gateway owns 
 
 During discovery, the system prompt defines stable context semantics and the tool-use gate. Each task's actual patch, risk profile, prefetched facts, availability status, and tag knowledge are injected dynamically in the user message. A reviewer must skip tools when those facts are sufficient. Concurrent tasks within one reviewer may share review-scoped tool results, but no cache is shared with another reviewer or another review.
 
+The three discoverers collect raw candidates by ID only. After fan-in, CouncilCoordinator resolves candidate RiskTags in a batch, builds connected candidate blocks from full Git paths and local positions, and runs conservative structured-LLM deduplication with at most eight parallel calls. A group removes duplicates only when it has high confidence and satisfies the same-root-cause, same-impact, and single-fix criteria; invalid, low-confidence, or failed results preserve every candidate. EvidencePlanner reuses the RiskTags resolved during this stage.
+
 ## Quick Start with Docker Compose
 
 Prerequisites:

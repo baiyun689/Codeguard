@@ -106,6 +106,88 @@ def test_canonical_order_ignores_fan_in_arrival_order():
     assert forward == reverse == ["a", "b"]
 
 
+def test_connected_component_links_nonconsecutive_same_task_candidates():
+    candidates = [
+        _candidate("a", line=10, task_id="same-task"),
+        _candidate("between", line=50, task_id="other-task"),
+        _candidate("c", line=100, task_id="same-task"),
+    ]
+    llm = _FakeLlm(
+        CandidateDedupDecision(
+            groups=[_group("a", "c", representative="c")]
+        )
+    )
+
+    result = deduplicate_candidates(
+        candidates,
+        tasks_by_id={},
+        tag_resolutions={},
+        llm=llm,
+        structured_method="function_calling",
+    )
+
+    assert [candidate.id for candidate in result.candidates] == ["c", "between"]
+    assert result.block_count == 2
+    assert result.llm_call_count == 1
+
+
+def test_connected_blocks_do_not_reorder_unmerged_candidates():
+    candidates = [
+        _candidate("a", line=10, task_id="same-task"),
+        _candidate("between", line=50, task_id="other-task"),
+        _candidate("c", line=100, task_id="same-task"),
+    ]
+
+    result = deduplicate_candidates(
+        candidates,
+        tasks_by_id={},
+        tag_resolutions={},
+        llm=_FakeLlm(CandidateDedupDecision(groups=[])),
+        structured_method="function_calling",
+    )
+
+    assert [candidate.id for candidate in result.candidates] == [
+        "a",
+        "between",
+        "c",
+    ]
+
+
+def test_git_path_case_is_preserved_when_building_candidate_blocks():
+    result = deduplicate_candidates(
+        [
+            _candidate("upper", file="src/Foo.java", line=10),
+            _candidate("lower", file="src/foo.java", line=10),
+        ],
+        tasks_by_id={},
+        tag_resolutions={},
+        llm=_FakeLlm(CandidateDedupDecision(groups=[])),
+        structured_method="function_calling",
+    )
+
+    assert result.block_count == 2
+    assert result.llm_call_count == 0
+
+
+def test_redundant_dot_path_segments_refer_to_the_same_repo_file():
+    result = deduplicate_candidates(
+        [
+            _candidate("plain", file="src/Foo.java", line=10),
+            _candidate("dotted", file="./src/./Foo.java", line=11),
+        ],
+        tasks_by_id={},
+        tag_resolutions={},
+        llm=_FakeLlm(
+            CandidateDedupDecision(
+                groups=[_group("plain", "dotted", representative="plain")]
+            )
+        ),
+        structured_method="function_calling",
+    )
+
+    assert [candidate.id for candidate in result.candidates] == ["plain"]
+
+
 # ── validation & application ──
 
 
@@ -123,6 +205,41 @@ def test_valid_group_keeps_existing_representative_at_earliest_member_position()
         CandidateDedupDecision(groups=[_group("a", "b", representative="b")]),
     )
     assert [candidate.id for candidate in result.candidates] == ["b", "c"]
+
+
+def test_representative_moves_before_unrelated_candidate_at_earliest_member_slot():
+    block = _CandidateBlock(
+        id="block-1",
+        candidates=(
+            _candidate("a", line=10),
+            _candidate("unrelated", line=11),
+            _candidate("c", line=12),
+        ),
+    )
+
+    result = _apply_decision(
+        block,
+        CandidateDedupDecision(groups=[_group("a", "c", representative="c")]),
+    )
+
+    assert [candidate.id for candidate in result.candidates] == ["c", "unrelated"]
+
+
+def test_duplicate_member_id_rejects_group_and_preserves_candidates():
+    block = _CandidateBlock(
+        id="block-1",
+        candidates=(_candidate("a", line=10), _candidate("b", line=11)),
+    )
+
+    result = _apply_decision(
+        block,
+        CandidateDedupDecision(
+            groups=[_group("a", "a", "b", representative="a")]
+        ),
+    )
+
+    assert [candidate.id for candidate in result.candidates] == ["a", "b"]
+    assert result.rejected_groups[0].reason == "duplicate_member_id"
 
 
 @pytest.mark.parametrize(
@@ -367,6 +484,31 @@ def test_llm_failure_keeps_entire_block(response):
     )
     assert [candidate.id for candidate in result.candidates] == ["a", "b"]
     assert result.block_failures
+    assert result.llm_call_count == 1
+
+
+def test_public_worker_limit_is_capped_at_eight(monkeypatch):
+    observed: list[int] = []
+
+    def run(items, fn, *, max_workers):
+        observed.append(max_workers)
+        return [fn(item) for item in items]
+
+    monkeypatch.setattr(
+        "codeguard_agent.pipeline.concurrency.run_bounded_parallel",
+        run,
+    )
+
+    deduplicate_candidates(
+        [_candidate("a", line=10), _candidate("b", line=11)],
+        tasks_by_id={},
+        tag_resolutions={},
+        llm=_FakeLlm(CandidateDedupDecision(groups=[])),
+        structured_method="function_calling",
+        max_workers=99,
+    )
+
+    assert observed == [8]
 
 
 def test_multi_member_blocks_run_in_parallel_and_reassemble_stably(monkeypatch):

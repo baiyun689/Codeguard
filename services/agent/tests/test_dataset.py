@@ -204,3 +204,16 @@ def test_phase5_behavior_fixtures_are_present_and_schema_valid():
     assert "@PreAuthorize" in protected.diff
     assert transaction.expected and "debit" in transaction.diff and "insert" in transaction.diff
     assert clean.is_clean and "@PreAuthorize" in clean.diff
+
+
+def test_candidate_dedup_fixtures_are_present_and_schema_valid():
+    cases = load_cases()
+    by_id = {case.id: case for case in cases}
+
+    duplicate = by_id["candidate_dedup_duplicate_001"]
+    adjacent = by_id["candidate_dedup_adjacent_distinct_001"]
+    assert len(duplicate.expected) == 1
+    assert "repository.save(order)" in duplicate.diff
+    assert len(adjacent.expected) == 2
+    assert "payment.charge(order)" in adjacent.diff
+    assert "inventory.reserve(order)" in adjacent.diff

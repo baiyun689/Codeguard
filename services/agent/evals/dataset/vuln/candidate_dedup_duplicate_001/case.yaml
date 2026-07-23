@@ -1,0 +1,15 @@
+id: candidate_dedup_duplicate_001
+category: 越权
+dimension: security
+capability: [diff-only]
+description: >
+  updateOrder 直接保存调用方提供的订单对象，没有校验当前用户是否拥有该订单。
+  安全和行为审查员可能以“越权”“资源归属缺失”“更新条件缺少 owner”等不同 type
+  描述同一底层问题；最终只应报告一个问题。
+expected:
+  - type_keywords: ["越权", "授权", "归属", "owner", "access control"]
+    file: OrderService.java
+    line: 11
+    tolerance: 3
+    severity: CRITICAL
+    note: 更新订单前必须按当前主体加载并校验订单归属

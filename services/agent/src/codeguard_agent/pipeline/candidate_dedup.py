@@ -12,13 +12,12 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from pydantic import BaseModel, Field
 
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.tasks import ReviewTask, RiskTag
-from codeguard_agent.pipeline import context_rules
 from codeguard_agent.pipeline.evidence_rules.classify import CandidateTagResolution
 
 logger = logging.getLogger("codeguard")
@@ -73,6 +72,19 @@ class RejectedCandidateGroup:
 
 
 @dataclass(frozen=True)
+class CandidateBlockFailure:
+    block_id: str
+    reason: str
+
+
+class CandidateDedupStats(TypedDict):
+    raw_candidate_count: int
+    removed_count: int
+    llm_call_count: int
+    block_failure_count: int
+
+
+@dataclass(frozen=True)
 class _CandidateBlock:
     id: str
     candidates: tuple[CandidateIssue, ...]
@@ -100,14 +112,23 @@ class CandidateDedupResult:
     llm_call_count: int
     accepted_groups: tuple[AcceptedCandidateGroup, ...]
     rejected_groups: tuple[RejectedCandidateGroup, ...]
-    block_failures: tuple[str, ...]
+    block_failures: tuple[CandidateBlockFailure, ...]
 
 
 # ── 排序 ──
 
 
+def _normalize_candidate_path(path: str) -> str:
+    """规范化 repo-relative Git 路径，保留路径大小写。"""
+    return "/".join(
+        segment
+        for segment in (path or "").replace("\\", "/").split("/")
+        if segment not in {"", "."}
+    )
+
+
 def _candidate_sort_key(candidate: CandidateIssue) -> tuple[object, ...]:
-    path = context_rules.normalize_path(candidate.file)
+    path = _normalize_candidate_path(candidate.file)
     line_key = (0, candidate.line) if candidate.line > 0 else (1, 0)
     return (
         path,
@@ -129,7 +150,7 @@ def _canonical_candidates(
 
 
 def _adjacent(left: CandidateIssue, right: CandidateIssue) -> bool:
-    if context_rules.normalize_path(left.file) != context_rules.normalize_path(
+    if _normalize_candidate_path(left.file) != _normalize_candidate_path(
         right.file
     ):
         return False
@@ -148,28 +169,32 @@ def _adjacent(left: CandidateIssue, right: CandidateIssue) -> bool:
 def _build_candidate_blocks(
     ordered: tuple[CandidateIssue, ...],
 ) -> tuple[_CandidateBlock, ...]:
-    """按规范化顺序扫描，相邻连通构建块。"""
+    """按邻接图的连通分量构建稳定候选块。"""
     if not ordered:
         return ()
     blocks: list[_CandidateBlock] = []
-    current: list[CandidateIssue] = [ordered[0]]
-    for candidate in ordered[1:]:
-        if _adjacent(current[-1], candidate):
-            current.append(candidate)
-        else:
-            blocks.append(
-                _CandidateBlock(
-                    id=f"block-{len(blocks)}",
-                    candidates=tuple(current),
-                )
+    visited: set[int] = set()
+    for seed in range(len(ordered)):
+        if seed in visited:
+            continue
+        component: set[int] = {seed}
+        pending = [seed]
+        visited.add(seed)
+        while pending:
+            current = pending.pop()
+            for other in range(len(ordered)):
+                if other in visited:
+                    continue
+                if _adjacent(ordered[current], ordered[other]):
+                    visited.add(other)
+                    component.add(other)
+                    pending.append(other)
+        blocks.append(
+            _CandidateBlock(
+                id=f"block-{len(blocks)}",
+                candidates=tuple(ordered[index] for index in sorted(component)),
             )
-            current = [candidate]
-    blocks.append(
-        _CandidateBlock(
-            id=f"block-{len(blocks)}",
-            candidates=tuple(current),
         )
-    )
     return tuple(blocks)
 
 
@@ -181,7 +206,9 @@ def _group_rejection_reason(
     group: DuplicateGroup,
     overlapping_ids: set[str],
 ) -> str | None:
-    member_ids = tuple(dict.fromkeys(group.member_ids))
+    if len(group.member_ids) != len(set(group.member_ids)):
+        return "duplicate_member_id"
+    member_ids = tuple(group.member_ids)
     known = {candidate.id: candidate for candidate in block.candidates}
     if len(member_ids) < 2:
         return "too_few_members"
@@ -229,16 +256,23 @@ def _apply_decision(
         if len(group_indices) > 1:
             overlapping_ids.add(member_id)
 
-    kept_ids: set[str] = set()
     removed_ids: set[str] = set()
+    replacement_at_index: dict[int, CandidateIssue] = {}
+    index_by_id = {
+        candidate.id: index for index, candidate in enumerate(block.candidates)
+    }
+    candidate_by_id = {candidate.id: candidate for candidate in block.candidates}
     for group in decision.groups:
         reason = _group_rejection_reason(block, group, overlapping_ids)
-        member_ids = tuple(dict.fromkeys(group.member_ids))
+        member_ids = tuple(group.member_ids)
         if reason is not None:
             rejected.append(RejectedCandidateGroup(member_ids, reason))
             continue
-        kept_ids.add(group.representative_id)
-        removed_ids.update(mid for mid in member_ids if mid != group.representative_id)
+        removed_ids.update(member_ids)
+        earliest_index = min(index_by_id[mid] for mid in member_ids)
+        replacement_at_index[earliest_index] = candidate_by_id[
+            group.representative_id
+        ]
         accepted.append(
             AcceptedCandidateGroup(
                 member_ids=member_ids,
@@ -249,7 +283,10 @@ def _apply_decision(
         )
 
     survivors: list[CandidateIssue] = []
-    for candidate in block.candidates:
+    for index, candidate in enumerate(block.candidates):
+        replacement = replacement_at_index.get(index)
+        if replacement is not None:
+            survivors.append(replacement)
         if candidate.id in removed_ids:
             continue
         survivors.append(candidate)
@@ -298,8 +335,8 @@ def deduplicate_candidates(
     multi = [b for b in blocks if len(b.candidates) >= 2]
 
     block_decisions: dict[str, _BlockDecisionOutcome] = {}
-    llm_call_count = 0
-    block_failures: list[str] = []
+    llm_call_count = len(multi) if llm is not None else 0
+    block_failures: list[CandidateBlockFailure] = []
 
     if llm is not None and multi:
         from codeguard_agent.pipeline.concurrency import run_bounded_parallel
@@ -313,35 +350,60 @@ def deduplicate_candidates(
                 llm=llm,
                 structured_method=structured_method,
             ),
-            max_workers=max_workers,
+            max_workers=max(1, min(max_workers, MAX_DEDUP_WORKERS)),
         )
         for block, outcome in zip(multi, outcomes, strict=True):
             if outcome is None:
-                block_failures.append(block.id)
+                block_failures.append(
+                    CandidateBlockFailure(
+                        block_id=block.id,
+                        reason="parallel_execution_failed",
+                    )
+                )
                 continue
             block_decisions[block.id] = outcome
-            if outcome.decision is not None:
-                llm_call_count += 1
             if outcome.failure:
-                block_failures.append(block.id)
+                block_failures.append(
+                    CandidateBlockFailure(
+                        block_id=block.id,
+                        reason=outcome.failure,
+                    )
+                )
 
     # 5. 组装结果
-    all_candidates: list[CandidateIssue] = []
     all_accepted: list[AcceptedCandidateGroup] = []
     all_rejected: list[RejectedCandidateGroup] = []
 
     for block in blocks:
         if len(block.candidates) == 1:
-            all_candidates.extend(block.candidates)
             continue
         outcome = block_decisions.get(block.id)
         if outcome is None or outcome.decision is None:
-            all_candidates.extend(block.candidates)
             continue
         result = _apply_decision(block, outcome.decision)
-        all_candidates.extend(result.candidates)
         all_accepted.extend(result.accepted_groups)
         all_rejected.extend(result.rejected_groups)
+
+    # 按全局规范顺序重放接受组，避免连通分量把其间的其他块挪位。
+    index_by_id = {
+        candidate.id: index for index, candidate in enumerate(ordered)
+    }
+    candidate_by_id = {candidate.id: candidate for candidate in ordered}
+    removed_ids: set[str] = set()
+    replacement_at_index: dict[int, CandidateIssue] = {}
+    for group in all_accepted:
+        removed_ids.update(group.member_ids)
+        anchor = min(index_by_id[member_id] for member_id in group.member_ids)
+        replacement_at_index[anchor] = candidate_by_id[group.representative_id]
+
+    all_candidates: list[CandidateIssue] = []
+    for index, candidate in enumerate(ordered):
+        replacement = replacement_at_index.get(index)
+        if replacement is not None:
+            all_candidates.append(replacement)
+        if candidate.id in removed_ids:
+            continue
+        all_candidates.append(candidate)
 
     return CandidateDedupResult(
         candidates=tuple(all_candidates),
@@ -376,7 +438,7 @@ def _build_user_prompt(
             {
                 "candidate_id": candidate.id,
                 "source_agent": candidate.source_agent,
-                "file": context_rules.normalize_path(candidate.file),
+                "file": _normalize_candidate_path(candidate.file),
                 "line": candidate.line,
                 "task_id": candidate.task_id,
                 "type": candidate.type,
@@ -456,8 +518,10 @@ __all__ = [
     "MIN_DEDUP_CONFIDENCE",
     "MAX_DEDUP_WORKERS",
     "AcceptedCandidateGroup",
+    "CandidateBlockFailure",
     "CandidateDedupDecision",
     "CandidateDedupResult",
+    "CandidateDedupStats",
     "DuplicateGroup",
     "RejectedCandidateGroup",
     "_CandidateBlock",
