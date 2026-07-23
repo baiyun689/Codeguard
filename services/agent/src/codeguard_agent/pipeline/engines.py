@@ -20,6 +20,7 @@ from typing import Any
 
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.schemas import ReviewResult
+from codeguard_agent.pipeline.discovery_tools import DISCOVERY_GATEWAY_TOOLS
 
 logger = logging.getLogger("codeguard")
 
@@ -259,15 +260,25 @@ def _extract_gathered_context(raw: Any) -> list[GatheredContext]:
                 if cid:
                     call_meta[cid] = (name or "", _summarize_args(args))
         gathered: list[GatheredContext] = []
+        seen: set[tuple[str, str]] = set()
         for msg in messages:
             if getattr(msg, "type", "") != "tool":
                 continue
             cid = getattr(msg, "tool_call_id", None)
-            name, args = call_meta.get(cid or "", (getattr(msg, "name", "") or "", ""))
+            name, args = call_meta.get(
+                cid or "", (getattr(msg, "name", "") or "", "")
+            )
+            if name not in DISCOVERY_GATEWAY_TOOLS:
+                continue
+            key = (name, args)
+            if key in seen:
+                continue
             content = getattr(msg, "content", "")
             content = content if isinstance(content, str) else str(content)
-            if content.strip():
-                gathered.append(GatheredContext(tool=name, args=args, content=content))
+            if not content.strip():
+                continue
+            seen.add(key)
+            gathered.append(GatheredContext(tool=name, args=args, content=content))
         return gathered
     except Exception as exc:  # noqa: BLE001 上下文捕获失败不应影响审查
         logger.warning("[engines] 抽取工具上下文失败,本次按空处理: %s", exc)

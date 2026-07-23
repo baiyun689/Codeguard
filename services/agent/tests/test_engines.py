@@ -149,6 +149,42 @@ def test_extract_json_object_无_json_返回_none():
     assert _extract_json_object("") is None
 
 
+def test_gathered_context_excludes_structured_response_tool_message() -> None:
+    raw = {
+        "messages": [
+            _AIMsg([{"id": "r1", "name": "ReviewResult", "args": {"issues": []}}]),
+            _ToolMsg("r1", "Returning structured response", name="ReviewResult"),
+        ]
+    }
+    assert _extract_gathered_context(raw) == []
+
+
+def test_gathered_context_keeps_first_result_for_duplicate_tool_and_args() -> None:
+    raw = {
+        "messages": [
+            _AIMsg([{"id": "c1", "name": "get_file_content", "args": {"file_path": "A.java"}}]),
+            _ToolMsg("c1", "FULL BODY"),
+            _AIMsg([{"id": "c2", "name": "get_file_content", "args": {"file_path": "A.java"}}]),
+            _ToolMsg("c2", "该工具和参数已经在当前对话中成功返回"),
+        ]
+    }
+    got = _extract_gathered_context(raw)
+    assert len(got) == 1
+    assert got[0].content == "FULL BODY"
+
+
+def test_gathered_context_keeps_same_tool_with_different_args() -> None:
+    raw = {
+        "messages": [
+            _AIMsg([{"id": "a", "name": "get_file_content", "args": {"file_path": "A.java"}}]),
+            _ToolMsg("a", "A"),
+            _AIMsg([{"id": "b", "name": "get_file_content", "args": {"file_path": "B.java"}}]),
+            _ToolMsg("b", "B"),
+        ]
+    }
+    assert [item.content for item in _extract_gathered_context(raw)] == ["A", "B"]
+
+
 def _resolve_tool_names(enabled):
     """复刻 ToolAgentEngine.review 里的工具白名单解析逻辑(不构造真实 agent)。"""
     available = ["find_sensitive_apis", "find_callers", "get_code_metrics", "get_file_content"]
