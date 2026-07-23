@@ -365,7 +365,7 @@ class AggregateMetrics(BaseModel):
     )
     duplicate_report_rate: float | None = Field(
         default=None,
-        description="重复报告率上界 = vuln 用例超出标答数的报告 / vuln 总报告；无 Council 数据时 None",
+        description="重复报告率上界 = vuln 用例未匹配报告 / vuln 总报告；无 Council 数据时 None",
     )
     suspected_false_merge_rate: float | None = Field(
         default=None,

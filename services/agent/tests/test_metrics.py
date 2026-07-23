@@ -82,8 +82,9 @@ def test_候选归并压缩重复与疑似误归并指标():
         _vuln(
             case_id="adjacent",
             expected_total=2,
-            reported_total=1,
+            reported_total=2,
             true_positives=1,
+            false_positives=1,
             false_negatives=1,
             council_trace=CouncilTraceStats(
                 raw_candidate_count=3,
@@ -96,7 +97,7 @@ def test_候选归并压缩重复与疑似误归并指标():
     metrics = aggregate([run])
 
     assert metrics.candidate_compression_rate == 2 / 7
-    assert metrics.duplicate_report_rate == 1 / 3
+    assert metrics.duplicate_report_rate == 0.5
     assert metrics.suspected_false_merge_rate == 0.5
 
 

@@ -135,10 +135,7 @@ def aggregate(runs: list[list[MatchOutcome]]) -> AggregateMetrics:
         o for o in vuln_outcomes if o.council_trace is not None
     ]
     reported_with_dedup = sum(o.reported_total for o in dedup_vuln_outcomes)
-    duplicate_excess = sum(
-        max(0, o.reported_total - o.expected_total)
-        for o in dedup_vuln_outcomes
-    )
+    duplicate_excess = sum(o.false_positives for o in dedup_vuln_outcomes)
     duplicate_report_rate = (
         _safe_div(duplicate_excess, reported_with_dedup)
         if reported_with_dedup
