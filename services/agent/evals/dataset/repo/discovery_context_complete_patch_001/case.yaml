@@ -1,0 +1,14 @@
+id: discovery_context_complete_patch_001
+category: 边界错误
+dimension: logic
+capability: [diff-only]
+description: >
+  BatchCounter 是完整新增文件，task patch 已包含全部实现，AST 可提供类、方法和控制流。
+  count 中使用 i <= items.size()，导致计数多 1；发现该问题不需要读取当前文件全文。
+expected:
+  - type_keywords: ["边界", "off-by-one", "越界", "计数"]
+    file: BatchCounter.java
+    line: 9
+    tolerance: 3
+    severity: WARNING
+    note: 循环条件应为 i < items.size()，当前实现使 total 比元素数多 1

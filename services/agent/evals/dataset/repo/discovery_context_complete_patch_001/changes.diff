@@ -1,0 +1,19 @@
+diff --git a/src/main/java/com/demo/BatchCounter.java b/src/main/java/com/demo/BatchCounter.java
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/main/java/com/demo/BatchCounter.java
+@@ -0,0 +1,13 @@
++package com.demo;
++
++import java.util.List;
++
++public class BatchCounter {
++    public int count(List<String> items) {
++        int total = 0;
++        for (int i = 0; i <= items.size(); i++) {
++            total++;
++        }
++        return total;
++    }
++}
