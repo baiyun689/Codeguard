@@ -795,7 +795,7 @@ def test_make_reviewer_node_rejects_unmapped_candidate(monkeypatch):
         "review_tasks": [G.ReviewTask(id="A.java#h0", file="A.java", patch="")],
     })
     # 候选指向 NotInDiff.java，不在 review_tasks 中 → 被拒绝
-    assert out["candidate_issues"] == []
+    assert out["raw_candidate_issues"] == []
     events = {t.event for t in out["council_trace"]}
     assert "candidate_rejected_unmapped" in events
 
@@ -874,7 +874,7 @@ def test_make_reviewer_node_skips_reviewer_without_routed_tasks(monkeypatch):
     )
 
     assert calls == 0
-    assert out["candidate_issues"] == []
+    assert out["raw_candidate_issues"] == []
     assert any(trace.event == "no_tasks_routed" for trace in out["council_trace"])
 
 
@@ -910,7 +910,7 @@ def test_make_reviewer_node_rejects_candidate_with_mismatched_file(monkeypatch):
         },
         "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
     })
-    assert out["candidate_issues"] == []
+    assert out["raw_candidate_issues"] == []
     events = {t.event for t in out["council_trace"]}
     assert "candidate_rejected_task_mismatch" in events
 
@@ -1087,7 +1087,7 @@ def test_make_reviewer_node_fanout_survives_real_memory_checkpointer(monkeypatch
     # 产出 task_review_failed 而不是候选——这条断言就是钉住这个修复的关键。
     events = [t.event for t in out["council_trace"]]
     assert "task_review_failed" not in events
-    assert {c.file for c in out["candidate_issues"]} == {"A.java", "B.java"}
+    assert {c.file for c in out["raw_candidate_issues"]} == {"A.java", "B.java"}
 
 
 def test_context_provider_node_fills_level0_and_level1_facts_per_task():
@@ -1397,87 +1397,22 @@ def _c(
     )
 
 
-class TestDedupCrossDimension:
-    """验证 _candidate_dedup_reducer 不会跨维度错误合并候选。"""
+class TestCandidateCollectReducer:
+    """验证 collect_candidate_reducer 仅按 ID 去重，不做语义合并。"""
 
-    def test_adjacent_line_different_agents_different_types_not_merged(self):
-        """trace: threat_model XmlParser:19 XXE CRITICAL vs behavior XmlParser:21 资源泄漏 → 不应合并"""
-        existing = [
-            _c("behavior", "1", "XmlReportParser.java", 21, "资源泄漏",
-               "parseReport 方法中 FileReader 未关闭导致资源泄漏"),
-        ]
-        new = [
-            _c("threat_model", "2", "XmlReportParser.java", 19, "XXE 注入",
-               "parseReport 使用默认 DocumentBuilderFactory 未禁用外部实体导致 XXE 注入"),
-        ]
-        result = G._candidate_dedup_reducer(existing, new)
-        assert len(result) == 2
-        assert {c.source_agent for c in result} == {"behavior", "threat_model"}
+    def test_candidate_reducer_only_removes_identical_ids(self):
+        first = _c("behavior", "1", "OrderService.java", 30, "ERROR_HANDLING",
+                   "payment failure")
+        same_id = first.model_copy(update={"claim": "conflicting duplicate payload"})
+        distinct = _c("behavior", "2", "OrderService.java", 30, "ERROR_HANDLING",
+                      "audit failure")
 
-    def test_same_agent_adjacent_line_different_types_not_merged(self):
-        """同 Agent 同文件相邻行但不同 type → 不合并（behavior-1 RESOURCE_LIFECYCLE vs behavior-2 DATA_EXPOSURE）"""
-        existing = [
-            _c("behavior", "1", "NotificationService.java", 36, "RESOURCE_LIFECYCLE"),
-        ]
-        new = [
-            _c("behavior", "2", "NotificationService.java", 35, "DATA_EXPOSURE"),
-        ]
-        result = G._candidate_dedup_reducer(existing, new)
-        assert len(result) == 2
+        result = G.collect_candidate_reducer([first], [same_id, distinct])
 
-    def test_different_agents_same_exact_type_merged(self):
-        """两个 Agent 输出完全相同的 type 字符串 + 邻行 → 合并"""
-        existing = [
-            _c("behavior", "1", "TokenService.java", 31, "ERROR_HANDLING"),
-        ]
-        new = [
-            _c("maintainability", "2", "TokenService.java", 32, "ERROR_HANDLING"),
-        ]
-        result = G._candidate_dedup_reducer(existing, new)
-        assert len(result) == 1
+        assert [candidate.id for candidate in result] == [first.id, distinct.id]
+        assert result[0].claim == "payment failure"
 
-    def test_different_type_strings_not_merged(self):
-        """不同 Agent 给同一缺陷贴了不同的 type 措辞 → 宁可不合并（等type标准化后自然解决）"""
-        existing = [
-            _c("behavior", "1", "XmlReportParser.java", 21, "资源泄漏"),
-        ]
-        new = [
-            _c("maintainability", "2", "XmlReportParser.java", 21, "RESOURCE_LIFECYCLE"),
-        ]
-        result = G._candidate_dedup_reducer(existing, new)
-        assert len(result) == 2
-
-    def test_same_type_distant_lines_not_merged(self):
-        """同文件同 type 但行号差超过 ±3 → 不合并（不同位置的同类缺陷不应合并）"""
-        existing = [
-            _c("behavior", "1", "XmlReportParser.java", 21, "资源泄漏",
-               "parseReport 中 FileReader 未关闭"),
-        ]
-        new = [
-            _c("behavior", "2", "XmlReportParser.java", 39, "资源泄漏",
-               "readFirstSection 中 FileInputStream 未关闭"),
-        ]
-        result = G._candidate_dedup_reducer(existing, new)
-        assert len(result) == 2
-
-    def test_exact_same_line_different_type_not_merged(self):
-        """同文件同行号但不同 type → 不合并（同一行可有资源泄漏+XXE 两个不同问题）"""
-        existing = [
-            _c("behavior", "1", "XmlReportParser.java", 21, "资源泄漏"),
-        ]
-        new = [
-            _c("threat_model", "2", "XmlReportParser.java", 21, "XXE 注入"),
-        ]
-        result = G._candidate_dedup_reducer(existing, new)
-        assert len(result) == 2
-
-    def test_different_files_not_merged(self):
-        """不同文件 → 不合并"""
-        existing = [
-            _c("behavior", "1", "OrderService.java", 16, "空指针解引用"),
-        ]
-        new = [
-            _c("behavior", "2", "XmlReportParser.java", 21, "资源泄漏"),
-        ]
-        result = G._candidate_dedup_reducer(existing, new)
-        assert len(result) == 2
+    def test_candidate_reducer_keeps_adjacent_same_type_candidates(self):
+        first = _c("behavior", "1", "OrderService.java", 30, "ERROR_HANDLING")
+        second = _c("behavior", "2", "OrderService.java", 32, "ERROR_HANDLING")
+        assert G.collect_candidate_reducer([first], [second]) == [first, second]

@@ -213,8 +213,12 @@ class CouncilTrace(BaseModel):
 class CouncilRunStats(BaseModel):
     """供 eval/report 使用的 ReviewCouncil 统计。"""
 
-    candidate_count: int = Field(default=0, description="本次进入 Council 的候选总数")
+    candidate_count: int = Field(default=0, description="本次进入 Council 的候选总数（归并后）")
     candidate_count_by_agent: dict[str, int] = Field(default_factory=dict)
+    raw_candidate_count: int = Field(default=0, description="归并前的原始候选总数")
+    candidate_dedup_removed_count: int = Field(default=0, description="归并移除的候选数")
+    candidate_dedup_llm_calls: int = Field(default=0, description="归并 LLM 调用次数")
+    candidate_dedup_block_failure_count: int = Field(default=0, description="归并失败块数")
     evidence_request_count: int = Field(default=0, description="累计证据请求总数")
     truncated_candidates: int = Field(default=0, description="发现阶段因候选上限被截断的数量")
     verdict_count: int = Field(default=0, description="Judge 产生的候选裁决总数")

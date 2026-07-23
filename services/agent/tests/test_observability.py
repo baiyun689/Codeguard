@@ -160,7 +160,7 @@ def _flow_report_fixture() -> TraceReport:
             "collect",
             "discover_threat_model/collect",
             "collect-run",
-            detail={"output": {"candidate_issues": [{"type": "security"}]}},
+            detail={"output": {"raw_candidate_issues": [{"type": "security"}]}},
         ),
         _flow_event(
             14,
@@ -280,7 +280,7 @@ def test_trace_view_groups_reviewer_react_steps_and_state_writes():
         view["steps"][step_id]["kind"]
         for step_id in threat["step_ids"]
     ] == ["node", "llm", "tool_call", "tool_result", "node"]
-    assert view["state_writes"]["candidate_issues"][0]["step_id"]
+    assert view["state_writes"]["raw_candidate_issues"][0]["step_id"]
     assert view["integrity"]["missing_end_count"] == 0
 
 
@@ -333,7 +333,7 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
         "discover_behavior",
         "discover_maintainability",
     ):
-        node(reviewer, {"candidate_issues": []})
+        node(reviewer, {"raw_candidate_issues": []})
     node("council_coordinator", {"council_trace": []})
     node("evidence_planner", {"evidence_requests": []})
     node("evidence_agent", {"evidence_notes": []})
@@ -392,7 +392,7 @@ def test_trace_view_indexes_state_writes_from_hidden_discover_nodes():
                 "discover-behavior-run",
                 detail={
                     "output": {
-                        "candidate_issues": [{"type": "null-deref"}],
+                        "raw_candidate_issues": [{"type": "null-deref"}],
                         "evidence_requests": [{"candidate_id": "c1"}],
                     }
                 },
@@ -402,8 +402,8 @@ def test_trace_view_indexes_state_writes_from_hidden_discover_nodes():
 
     view = build_trace_view(report)
 
-    assert "candidate_issues" in view["state_writes"]
-    candidate_write = view["state_writes"]["candidate_issues"][0]
+    assert "raw_candidate_issues" in view["state_writes"]
+    candidate_write = view["state_writes"]["raw_candidate_issues"][0]
     assert candidate_write["node_path"] == "discover_behavior"
     assert candidate_write["step_id"] in view["steps"]
 

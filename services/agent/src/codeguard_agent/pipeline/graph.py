@@ -36,6 +36,7 @@ from codeguard_agent.models.tasks import (
     ReviewBudget,
     ReviewTask,
     RiskProfile,
+    RiskTag,
     TaskContextBundle,
     TaskSelection,
 )
@@ -72,7 +73,6 @@ from codeguard_agent.pipeline.stages.reviewer_stage import (
     build_reviewer_system_prompt,
     build_reviewer_user_prompt,
 )
-from codeguard_agent.pipeline.stages.aggregation import deduplicate
 from codeguard_agent.pipeline.stages.summary import SummaryStage
 
 logger = logging.getLogger("codeguard")
@@ -120,54 +120,20 @@ def dedup_evidence_request_reducer(existing: list | None, new: list | None) -> l
     return unique
 
 
-def _candidate_dedup_reducer(existing: list | None, new: list | None) -> list:
-    """`candidate_issues` reducer: fan-in 时自动去重。
+def collect_candidate_reducer(existing: list | None, new: list | None) -> list:
+    """`raw_candidate_issues` reducer: 仅按 candidate.id 去重，保留首次出现的 payload。
 
-    两层：规则指纹 + 邻行容差(±3)强制合并。
+    语义去重在 CouncilCoordinator 中显式执行（见 candidate_dedup 模块）。
     """
     merged = list(existing or []) + list(new or [])
-    if len(merged) <= 1:
-        return merged
-
-    # 层 1: 规则指纹去重（同文件+同行号+同 type）
-    issues = [c.to_issue() for c in merged]
-    deduped_issues = deduplicate(issues)
-    surviving: list[CandidateIssue] = []
-    used_ids: set[str] = set()
-    for di in deduped_issues:
-        di_file = (di.file or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
-        for c in merged:
-            if c.id in used_ids:
-                continue
-            c_file = (c.file or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
-            if c_file == di_file and c.line == di.line and c.type == di.type:
-                surviving.append(c)
-                used_ids.add(c.id)
-                break
-
-    # 层 2: 同文件+同 type+邻行容差(±3)合并。
-    # 三个条件必须同时满足，防止跨维度错误合并和远距离误合并。
-    # type 直接比较原始字符串；LLM 输出不稳定时宁可少合也不要错合。
-    if len(surviving) >= 2:
-        final: list[CandidateIssue] = []
-        seen: list[tuple[str, int, CandidateIssue, str]] = []
-        for c in surviving:
-            c_file = (c.file or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
-            merged_into = None
-            for s_file, s_line, survivor, s_type in seen:
-                if s_file != c_file:
-                    continue
-                if c.type != s_type:
-                    continue
-                if c.line > 0 and abs(c.line - s_line) <= 3:
-                    merged_into = survivor
-                    break
-            if merged_into is None:
-                seen.append((c_file, c.line, c, c.type))
-                final.append(c)
-        return final
-
-    return surviving
+    seen: set[str] = set()
+    out: list[CandidateIssue] = []
+    for c in merged:
+        if c.id in seen:
+            continue
+        seen.add(c.id)
+        out.append(c)
+    return out
 
 
 def _discover_node_name(reviewer: Reviewer) -> str:
@@ -192,7 +158,10 @@ class ReviewState(TypedDict, total=False):
     task_context_bundles: dict[str, TaskContextBundle]
 
     context_bundle: ContextBundle
-    candidate_issues: Annotated[list[CandidateIssue], _candidate_dedup_reducer]
+    raw_candidate_issues: Annotated[list[CandidateIssue], collect_candidate_reducer]
+    candidate_issues: list[CandidateIssue]
+    candidate_tag_resolutions: dict[str, Any]
+    candidate_dedup_stats: dict[str, int]
     evidence_requests: Annotated[list[EvidenceRequest], dedup_evidence_request_reducer]
     evidence_notes: Annotated[list[EvidenceNote], operator.add]
     council_trace: Annotated[list[CouncilTrace], operator.add]
@@ -764,7 +733,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         )
         if routed_ids is not None and not routed_ids:
             return {
-                "candidate_issues": [],
+                "raw_candidate_issues": [],
                 "truncated_candidates": 0,
                 "council_trace": [
                     CouncilTrace(
@@ -835,7 +804,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     )
                 )
             out: dict = {
-                "candidate_issues": candidates,
+                "raw_candidate_issues": candidates,
                 "truncated_candidates": truncated_candidates,
                 "council_trace": trace,
             }
@@ -977,7 +946,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             )
 
         routed_out: dict = {
-            "candidate_issues": candidates,
+            "raw_candidate_issues": candidates,
             "truncated_candidates": truncated_candidates,
             "council_trace": trace,
         }
@@ -990,24 +959,138 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
     return _node
 
 
-def _coordinator_node():
-    """三路发现者的显式 fan-in barrier：只在三路结束后运行一次。
+def _coordinator_node(effective_judge_llm):
+    """三路发现者的显式 fan-in barrier：RiskTag 解析 + 候选语义归并。
 
-    只记录本轮候选/证据请求批次统计，固定转入 EvidenceAgent；
-    不承担"是否跳过首次补证"的路由决策，也不解析自然语言（spec §4.7）。
+    1. 读 raw_candidate_issues
+    2. 组装轻量 dossier → 解析 RiskTag
+    3. 调用 deduplicate_candidates 做语义归并
+    4. 产出 candidate_issues（唯一写入者）、candidate_tag_resolutions、stats
     """
 
     def _node(state: ReviewState) -> dict:
-        candidates = state.get("candidate_issues") or []
-        pending = state.get("evidence_requests") or []
-        return {
-            "council_trace": [
+        from codeguard_agent.pipeline.candidate_dedup import deduplicate_candidates
+        from codeguard_agent.pipeline.evidence_rules.classify import (
+            CandidateTagResolution,
+            _general_resolution,
+            resolve_candidate_evidence_tag,
+        )
+
+        raw = list(state.get("raw_candidate_issues") or [])
+        tasks = state.get("review_tasks") or []
+        profiles = state.get("risk_profiles") or {}
+        bundles = state.get("task_context_bundles") or {}
+        structured_method = state.get("structured_method", "function_calling")
+
+        trace: list[CouncilTrace] = []
+        tasks_by_id = {t.id: t for t in tasks}
+
+        # 1. 为每个 raw candidate 构建轻量 dossier 并解析 RiskTag
+        resolutions: dict[str, Any] = {}
+        for c in raw:
+            task = tasks_by_id.get(c.task_id)
+            if task is None:
+                resolutions[c.id] = CandidateTagResolution(
+                    tag=RiskTag.GENERAL_REVIEW,
+                    confidence=0.5,
+                    source="general",
+                    reason="candidate_task_not_found",
+                )
+                continue
+            profile = profiles.get(c.task_id)
+            bundle = bundles.get(c.task_id)
+            # 构建轻量 dossier（无 requests/notes）
+            from types import SimpleNamespace
+            dossier: Any = SimpleNamespace(
+                candidate=c,
+                task=task,
+                risk_profile=profile,
+                context_bundle=bundle,
+            )
+            try:
+                resolutions[c.id] = resolve_candidate_evidence_tag(
+                    dossier,
+                    effective_judge_llm,
+                    structured_method=structured_method,
+                )
+            except Exception:  # noqa: BLE001
+                resolutions[c.id] = _general_resolution("coordinator_tag_resolution_failed")
+
+        trace.append(
+            CouncilTrace(
+                node="council_coordinator",
+                event="candidate_tags_resolved",
+                detail=f"resolved={len(resolutions)}",
+            )
+        )
+
+        # 2. 语义归并
+        result = deduplicate_candidates(
+            raw,
+            tasks_by_id=tasks_by_id,
+            tag_resolutions=resolutions,
+            llm=effective_judge_llm,
+            structured_method=structured_method,
+        )
+
+        trace.append(
+            CouncilTrace(
+                node="council_coordinator",
+                event="candidate_dedup_completed",
+                detail=(
+                    f"raw={result.raw_candidate_count} final={len(result.candidates)} "
+                    f"blocks={result.block_count} multi={result.multi_member_block_count} "
+                    f"llm_calls={result.llm_call_count} "
+                    f"accepted_groups={len(result.accepted_groups)} "
+                    f"rejected_groups={len(result.rejected_groups)} "
+                    f"block_failures={len(result.block_failures)}"
+                ),
+            )
+        )
+
+        for group in result.accepted_groups:
+            trace.append(
                 CouncilTrace(
                     node="council_coordinator",
-                    event="fan_in",
-                    detail=f"candidates={len(candidates)} evidence_requests={len(pending)}",
+                    event="candidate_dedup_group_accepted",
+                    detail=f"rep={group.representative_id} members={list(group.member_ids)} confidence={group.confidence:.2f}",
                 )
-            ],
+            )
+        for rejected in result.rejected_groups:
+            trace.append(
+                CouncilTrace(
+                    node="council_coordinator",
+                    event="candidate_dedup_group_rejected",
+                    detail=f"members={list(rejected.member_ids)} reason={rejected.reason}",
+                )
+            )
+        for block_id in result.block_failures:
+            trace.append(
+                CouncilTrace(
+                    node="council_coordinator",
+                    event="candidate_dedup_block_failed",
+                    detail=block_id,
+                )
+            )
+
+        trace.append(
+            CouncilTrace(
+                node="council_coordinator",
+                event="fan_in",
+                detail=f"candidates={len(result.candidates)}",
+            )
+        )
+
+        return {
+            "candidate_issues": list(result.candidates),
+            "candidate_tag_resolutions": dict(resolutions),
+            "candidate_dedup_stats": {
+                "raw_candidate_count": result.raw_candidate_count,
+                "removed_count": result.raw_candidate_count - len(result.candidates),
+                "llm_call_count": result.llm_call_count,
+                "block_failure_count": len(result.block_failures),
+            },
+            "council_trace": trace,
         }
 
     return _node
@@ -1033,6 +1116,7 @@ def _evidence_planner_node(effective_judge_llm):
             assembly.dossiers,
             classifier_llm=effective_judge_llm,
             structured_method=state.get("structured_method", "function_calling"),
+            candidate_tag_resolutions=state.get("candidate_tag_resolutions"),
         )
         trace = [
             CouncilTrace(node="evidence_planner", event=event, detail=detail)
@@ -1111,6 +1195,7 @@ def _council_judge_node(llm, judge_llm=None):
             evidence_request_count=len(state.get("evidence_requests") or []),
             truncated_candidates=state.get("truncated_candidates", 0),
             council_trace=[*(state.get("council_trace") or []), *judge_trace],
+            candidate_dedup_stats=state.get("candidate_dedup_stats"),
         )
         summaries = list(state.get("review_summaries") or [])
         selection = state.get("task_selection")
@@ -1149,7 +1234,7 @@ def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=No
             _discover_node_name(reviewer),
             make_reviewer_node(reviewer, checkpointer=checkpointer, llm=llm, tool_client=tool_client),
         )
-    g.add_node("council_coordinator", _coordinator_node())
+    g.add_node("council_coordinator", _coordinator_node(effective_judge_llm))
     g.add_node("evidence_planner", _evidence_planner_node(effective_judge_llm))
     g.add_node(
         "evidence_agent",

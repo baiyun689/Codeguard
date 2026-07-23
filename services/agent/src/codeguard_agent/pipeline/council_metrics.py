@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from codeguard_agent.models.council import (
     CandidateIssue,
@@ -56,6 +56,7 @@ def compute_council_run_stats(
     evidence_request_count: int,
     truncated_candidates: int,
     council_trace: Sequence[CouncilTrace],
+    candidate_dedup_stats: Mapping[str, int] | None = None,
 ) -> CouncilRunStats:
     """从稳定候选映射和结构化证据计算 Phase 5 过程指标。"""
     final_ids = set(final_candidate_ids)
@@ -146,11 +147,23 @@ def compute_council_run_stats(
         severity_transitions[key] = severity_transitions.get(key, 0) + 1
 
     final_issue_count = len(final_candidate_ids)
+    dedup = dict(candidate_dedup_stats or {})
+    raw_candidate_count = dedup.get("raw_candidate_count", candidate_count)
+    candidate_dedup_removed_count = dedup.get(
+        "removed_count",
+        max(0, raw_candidate_count - candidate_count),
+    )
+    candidate_dedup_llm_calls = dedup.get("llm_call_count", 0)
+    candidate_dedup_block_failure_count = dedup.get("block_failure_count", 0)
     return CouncilRunStats(
         candidate_count=candidate_count,
         candidate_count_by_agent=by_agent,
         evidence_request_count=evidence_request_count,
         truncated_candidates=truncated_candidates,
+        raw_candidate_count=raw_candidate_count,
+        candidate_dedup_removed_count=candidate_dedup_removed_count,
+        candidate_dedup_llm_calls=candidate_dedup_llm_calls,
+        candidate_dedup_block_failure_count=candidate_dedup_block_failure_count,
         verdict_count=len(verdicts),
         removed_by_judge=sum(verdict.action == "drop" for verdict in verdicts),
         no_support_candidate_count=len(no_support_ids),
