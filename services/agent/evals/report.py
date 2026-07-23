@@ -203,8 +203,8 @@ def render_report(
             "",
             "ADR-032 中间态只用于 trace/eval,不进入最终 ReviewResult。",
             "",
-            "| 用例 | 候选 | 角色候选分布 | 证据请求 | Judge 裁决 | 移除 | 候选截断 | Trace 事件 |",
-            "|---|---|---|---|---|---|---|---|",
+            "| 用例 | 原始→归并后候选 | 角色候选分布 | 候选归并 | 证据请求 | Judge 裁决 | 移除 | 候选截断 | Trace 事件 |",
+            "|---|---|---|---|---|---|---|---|---|",
         ]
         for o in council_rows:
             c = o.council_trace
@@ -228,8 +228,14 @@ def render_report(
                 f"judge={c.removed_by_judge}, "
                 f"fp_rules={c.removed_by_fp_rules}, fp_llm={c.removed_by_fp_llm}"
             )
+            dedup_detail = (
+                f"归并={c.candidate_dedup_removed_count}, "
+                f"LLM={c.candidate_dedup_llm_calls}, "
+                f"失败块={c.candidate_dedup_block_failure_count}"
+            )
             lines.append(
-                f"| {o.case_id} | {c.candidate_count} | {agent_detail} | "
+                f"| {o.case_id} | {c.raw_candidate_count}->{c.candidate_count} | {agent_detail} | "
+                f"{dedup_detail} | "
                 f"{c.evidence_request_count} | {c.verdict_count} | "
                 f"{removed} ({detail}) | {c.truncated_candidates} | {c.trace_events} |"
             )
