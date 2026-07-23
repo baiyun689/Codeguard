@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -167,4 +168,42 @@ def _general_resolution(reason: str) -> CandidateTagResolution:
     )
 
 
-__all__ = ["CandidateTagResolution", "resolve_candidate_evidence_tag"]
+def resolve_candidate_tags(
+    dossiers: Sequence[Any],
+    *,
+    classifier_llm: Any,
+    structured_method: str,
+    max_workers: int = 8,
+) -> dict[str, CandidateTagResolution]:
+    """批量解析候选证据主题标签，返回按输入顺序的 candidate_id → 标签映射。
+
+    每个 dossier 独立调用 resolve_candidate_evidence_tag，
+    失败/None 回退 GENERAL_REVIEW。
+    """
+    from codeguard_agent.pipeline.concurrency import run_bounded_parallel
+
+    ordered = list(dossiers)
+    outcomes = run_bounded_parallel(
+        ordered,
+        lambda dossier: resolve_candidate_evidence_tag(
+            dossier,
+            classifier_llm,
+            structured_method=structured_method,
+        ),
+        max_workers=max_workers,
+    )
+    resolved: dict[str, CandidateTagResolution] = {}
+    for dossier, outcome in zip(ordered, outcomes, strict=True):
+        resolved[dossier.candidate.id] = (
+            outcome
+            if isinstance(outcome, CandidateTagResolution)
+            else _general_resolution("候选证据主题并发解析失败")
+        )
+    return resolved
+
+
+__all__ = [
+    "CandidateTagResolution",
+    "resolve_candidate_evidence_tag",
+    "resolve_candidate_tags",
+]

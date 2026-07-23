@@ -8,6 +8,7 @@ from codeguard_agent.pipeline.evidence_rules.behavior import BEHAVIOR_STRATEGIES
 from codeguard_agent.pipeline.evidence_rules.classify import (
     CandidateTagResolution,
     resolve_candidate_evidence_tag,
+    resolve_candidate_tags,
 )
 from codeguard_agent.pipeline.evidence_rules.general import GENERAL_STRATEGIES
 from codeguard_agent.pipeline.evidence_rules.maintainability import (
@@ -61,5 +62,6 @@ __all__ = [
     "STRATEGIES_BY_TAG",
     "STRATEGIES_BY_ID",
     "resolve_candidate_evidence_tag",
+    "resolve_candidate_tags",
     "strategies_for",
 ]

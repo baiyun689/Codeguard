@@ -488,3 +488,61 @@ def test_assemble_dossiers_reports_missing_task_and_file_mismatch():
     ]
     details = [json.loads(detail) for _, detail in assembly.trace]
     assert [detail["reason"] for detail in details] == ["missing_task", "file_mismatch"]
+
+
+# -- supplied candidate tag resolutions (Coordinator reuse) --
+
+
+def test_plan_reuses_supplied_candidate_tag_resolution(monkeypatch):
+    """已提供的 candidate_tag_resolutions 阻止重复分类。"""
+    from codeguard_agent.pipeline.evidence_rules import strategies_for
+
+    dossier = _dossier(70)
+    supplied = {dossier.candidate.id: _resolution(RiskTag.RESOURCE_LIFECYCLE)}
+
+    monkeypatch.setattr(
+        "codeguard_agent.pipeline.evidence_planner._resolve_dossiers",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("supplied resolution must prevent reclassification")
+        ),
+    )
+
+    plan = plan_evidence(
+        [dossier],
+        classifier_llm=object(),
+        structured_method="function_calling",
+        candidate_tag_resolutions=supplied,
+    )
+
+    assert {request.strategy_id for request in plan.requests} == {
+        strategy.id
+        for purpose in ("counter", "support", "severity")
+        for strategy in strategies_for(RiskTag.RESOURCE_LIFECYCLE, purpose)
+    }
+
+
+def test_plan_only_resolves_missing_candidate_ids(monkeypatch):
+    """只对 candidate_tag_resolutions 中缺失的 candidate_id 调分类器。"""
+    first = _dossier(71)
+    second = _dossier(72)
+    seen: list[str] = []
+
+    def resolve_missing(dossiers, **kwargs):
+        seen.extend(d.candidate.id for d in dossiers)
+        return [_resolution(RiskTag.ERROR_HANDLING) for _ in dossiers]
+
+    monkeypatch.setattr(
+        "codeguard_agent.pipeline.evidence_planner._resolve_dossiers",
+        resolve_missing,
+    )
+
+    plan_evidence(
+        [first, second],
+        classifier_llm=object(),
+        structured_method="function_calling",
+        candidate_tag_resolutions={
+            first.candidate.id: _resolution(RiskTag.AUTHORIZATION)
+        },
+    )
+
+    assert seen == [second.candidate.id]

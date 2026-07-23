@@ -318,11 +318,53 @@ def _trace_no_initial_strategy(
     )
 
 
+def _fallback_resolution() -> CandidateTagResolution:
+    return CandidateTagResolution(
+        tag=RiskTag.GENERAL_REVIEW,
+        confidence=0.5,
+        source="general",
+        reason="候选证据主题缺失",
+    )
+
+
+def _resolved_dossier_tags(
+    dossiers: Sequence[CandidateDossier],
+    *,
+    classifier_llm: Any,
+    structured_method: str,
+    candidate_tag_resolutions: Mapping[str, CandidateTagResolution] | None,
+) -> list[CandidateTagResolution]:
+    """组合预解析标签与缺失候选的分类结果。
+
+    对已提供的 candidate_id 直接复用；缺失的走 _resolve_dossiers（保留旧测试的
+    monkeypatch 兼容性）。当 Coordinator 已预解析全部标签时，不触发分类器调用。
+    """
+    supplied = dict(candidate_tag_resolutions or {})
+    missing = [
+        dossier
+        for dossier in dossiers
+        if dossier.candidate.id not in supplied
+    ]
+    if missing:
+        missing_resolutions = _resolve_dossiers(
+            missing,
+            classifier_llm=classifier_llm,
+            structured_method=structured_method,
+        )
+        for dossier, resolution in zip(missing, missing_resolutions, strict=True):
+            supplied[dossier.candidate.id] = resolution
+    return [
+        supplied.get(dossier.candidate.id, _fallback_resolution())
+        for dossier in dossiers
+    ]
+
+
 def _plan_initial(
     dossiers: Sequence[CandidateDossier],
     *,
     classifier_llm: Any,
     structured_method: str,
+    candidate_tag_resolutions: Mapping[str, CandidateTagResolution] | None = None,
 ) -> EvidencePlan:
     plan = EvidencePlan()
     resolved: list[
@@ -336,10 +378,11 @@ def _plan_initial(
             continue
         valid_dossiers.append(dossier)
 
-    resolutions = _resolve_dossiers(
+    resolutions = _resolved_dossier_tags(
         valid_dossiers,
         classifier_llm=classifier_llm,
         structured_method=structured_method,
+        candidate_tag_resolutions=candidate_tag_resolutions,
     )
     for dossier, resolution in zip(valid_dossiers, resolutions, strict=True):
         _trace_resolution(plan, dossier, resolution)
@@ -402,12 +445,18 @@ def plan_evidence(
     *,
     classifier_llm: Any,
     structured_method: str,
+    candidate_tag_resolutions: Mapping[str, CandidateTagResolution] | None = None,
 ) -> EvidencePlan:
-    """One-pass complete evidence plan: all counter + support + severity."""
+    """One-pass complete evidence plan: all counter + support + severity.
+
+    candidate_tag_resolutions: 预解析的候选标签映射（如来自 Coordinator）。
+    已提供的 candidate_id 不会重复分类。
+    """
     return _plan_initial(
         dossiers,
         classifier_llm=classifier_llm,
         structured_method=structured_method,
+        candidate_tag_resolutions=candidate_tag_resolutions,
     )
 
 
