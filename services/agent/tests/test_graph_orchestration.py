@@ -1425,18 +1425,27 @@ class TestDedupCrossDimension:
         result = G._candidate_dedup_reducer(existing, new)
         assert len(result) == 2
 
-    def test_different_agents_same_normalized_type_merged(self):
-        """trace: maint-8 ERROR_HANDLING vs behavior-6 ERROR_HANDLING → 应合并（同一缺陷）"""
+    def test_different_agents_same_exact_type_merged(self):
+        """两个 Agent 输出完全相同的 type 字符串 + 邻行 → 合并"""
         existing = [
-            _c("behavior", "1", "TokenService.java", 31, "ERROR_HANDLING",
-               "validateToken 空 catch 吞掉所有异常"),
+            _c("behavior", "1", "TokenService.java", 31, "ERROR_HANDLING"),
         ]
         new = [
-            _c("maintainability", "2", "TokenService.java", 32, "ERROR_HANDLING",
-               "validateToken 空 catch 块增加未来维护成本"),
+            _c("maintainability", "2", "TokenService.java", 32, "ERROR_HANDLING"),
         ]
         result = G._candidate_dedup_reducer(existing, new)
         assert len(result) == 1
+
+    def test_different_type_strings_not_merged(self):
+        """不同 Agent 给同一缺陷贴了不同的 type 措辞 → 宁可不合并（等type标准化后自然解决）"""
+        existing = [
+            _c("behavior", "1", "XmlReportParser.java", 21, "资源泄漏"),
+        ]
+        new = [
+            _c("maintainability", "2", "XmlReportParser.java", 21, "RESOURCE_LIFECYCLE"),
+        ]
+        result = G._candidate_dedup_reducer(existing, new)
+        assert len(result) == 2
 
     def test_same_type_distant_lines_not_merged(self):
         """同文件同 type 但行号差超过 ±3 → 不合并（不同位置的同类缺陷不应合并）"""
@@ -1450,20 +1459,6 @@ class TestDedupCrossDimension:
         ]
         result = G._candidate_dedup_reducer(existing, new)
         assert len(result) == 2
-
-    def test_different_agents_equivalent_types_merged(self):
-        """trace: maint-1 CONFIG_SECURITY vs threat_model-1 硬编码凭据 → 应合并（同一根因的硬编码问题）"""
-        existing = [
-            _c("maintainability", "1", "NotificationService.java", 16, "CONFIG_SECURITY",
-               "API_KEY 硬编码在源码中"),
-        ]
-        new = [
-            _c("threat_model", "2", "NotificationService.java", 17, "硬编码凭据",
-               "API_KEY 硬编码可被攻击者获取"),
-        ]
-        result = G._candidate_dedup_reducer(existing, new)
-        # 两个 type 在 _normalize_type 中都映射到 hardcoded_credential → 应合并
-        assert len(result) == 1
 
     def test_exact_same_line_different_type_not_merged(self):
         """同文件同行号但不同 type → 不合并（同一行可有资源泄漏+XXE 两个不同问题）"""
