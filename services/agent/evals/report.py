@@ -153,6 +153,9 @@ def render_report(
         f"| 诱饵命中率 | {_fmt(metrics.distractor_hit_rate)} | 过度上报里「被诱饵骗」的比例(越低=越克制) |",
         f"| vuln 噪音/条 | {_fmt(metrics.vuln_noise_per_case)} | 脏代码上平均每条 diff 误报几个(区别于 clean 误报率) |",
         f"| 报告膨胀比 | {_fmt(metrics.report_inflation)} | vuln 用例上 报告数/标答数 的均值(>1 偏过度上报) |",
+        f"| 候选压缩率 | {_fmt(metrics.candidate_compression_rate)} | 归并移除候选数/原始候选数 |",
+        f"| 重复报告率上界 | {_fmt(metrics.duplicate_report_rate)} | vuln 用例超出标答数的报告/总报告 |",
+        f"| 疑似误归并用例率 | {_fmt(metrics.suspected_false_merge_rate)} | 发生归并且仍漏标答的用例/发生归并的用例；需人工复核因果 |",
         f"| 级别准确率·复杂用例 | {_fmt(metrics.severity_accuracy_complex)} | 多问题场景下的级别判准率 |",
     ]
     if judge_line:

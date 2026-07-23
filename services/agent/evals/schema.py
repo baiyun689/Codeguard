@@ -359,6 +359,18 @@ class AggregateMetrics(BaseModel):
     report_inflation: float = Field(
         default=0.0, description="报告膨胀比 = vuln 用例上 报告数/标答数 的均值"
     )
+    candidate_compression_rate: float | None = Field(
+        default=None,
+        description="候选压缩率 = Σ归并移除候选 / Σ原始候选；无 Council 数据时 None",
+    )
+    duplicate_report_rate: float | None = Field(
+        default=None,
+        description="重复报告率上界 = vuln 用例超出标答数的报告 / vuln 总报告；无 Council 数据时 None",
+    )
+    suspected_false_merge_rate: float | None = Field(
+        default=None,
+        description="疑似误归并用例率 = 发生归并且仍漏标答的用例 / 发生归并的用例",
+    )
     recall_primary: float | None = Field(
         default=None, description="主项(CRITICAL)recall;无主项标答时 None"
     )

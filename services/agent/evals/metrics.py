@@ -113,6 +113,52 @@ def aggregate(runs: list[list[MatchOutcome]]) -> AggregateMetrics:
     inflations = [_safe_div(o.reported_total, o.expected_total) for o in vuln_outcomes if o.expected_total]
     report_inflation = mean(inflations) if inflations else 0.0
 
+    # 候选归并诊断。重复率是无需语义二次裁判即可稳定计算的上界；疑似误归并
+    # 只定位待人工复核用例，不把“归并后仍漏报”直接宣称为因果误归并。
+    council_outcomes = [o for o in all_outcomes if o.council_trace is not None]
+    raw_candidates = sum(
+        o.council_trace.raw_candidate_count
+        for o in council_outcomes
+        if o.council_trace is not None
+    )
+    removed_candidates = sum(
+        o.council_trace.candidate_dedup_removed_count
+        for o in council_outcomes
+        if o.council_trace is not None
+    )
+    candidate_compression_rate = (
+        _safe_div(removed_candidates, raw_candidates)
+        if raw_candidates
+        else None
+    )
+    dedup_vuln_outcomes = [
+        o for o in vuln_outcomes if o.council_trace is not None
+    ]
+    reported_with_dedup = sum(o.reported_total for o in dedup_vuln_outcomes)
+    duplicate_excess = sum(
+        max(0, o.reported_total - o.expected_total)
+        for o in dedup_vuln_outcomes
+    )
+    duplicate_report_rate = (
+        _safe_div(duplicate_excess, reported_with_dedup)
+        if reported_with_dedup
+        else None
+    )
+    merged_outcomes = [
+        o
+        for o in dedup_vuln_outcomes
+        if o.council_trace is not None
+        and o.council_trace.candidate_dedup_removed_count > 0
+    ]
+    suspected_false_merge_rate = (
+        _safe_div(
+            sum(o.false_negatives > 0 for o in merged_outcomes),
+            len(merged_outcomes),
+        )
+        if merged_outcomes
+        else None
+    )
+
     # severity 分层 recall(主=CRITICAL,次=WARNING/INFO)
     tp_p = sum(o.tp_primary for o in all_outcomes)
     fn_p = sum(o.fn_primary for o in all_outcomes)
@@ -155,6 +201,9 @@ def aggregate(runs: list[list[MatchOutcome]]) -> AggregateMetrics:
         distractor_hit_rate=distractor_hit_rate,
         vuln_noise_per_case=vuln_noise_per_case,
         report_inflation=report_inflation,
+        candidate_compression_rate=candidate_compression_rate,
+        duplicate_report_rate=duplicate_report_rate,
+        suspected_false_merge_rate=suspected_false_merge_rate,
         recall_primary=recall_primary,
         recall_secondary=recall_secondary,
         severity_accuracy_complex=severity_accuracy_complex,

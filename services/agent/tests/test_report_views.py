@@ -93,11 +93,17 @@ def _settings():
 
 def test_报告_渲染行为诊断指标行():
     m = _metrics(distractor_hit_rate=0.25, vuln_noise_per_case=1.5,
-                 report_inflation=2.0, severity_accuracy_complex=0.5)
+                 report_inflation=2.0, severity_accuracy_complex=0.5,
+                 candidate_compression_rate=0.25,
+                 duplicate_report_rate=0.1,
+                 suspected_false_merge_rate=0.2)
     out = render_report(m, _settings(), [[MatchOutcome(case_id="v", is_clean=False)]], [])
     assert "诱饵命中率" in out
     assert "vuln 噪音/条" in out
     assert "报告膨胀比" in out
+    assert "候选压缩率" in out
+    assert "重复报告率上界" in out
+    assert "疑似误归并用例率" in out
     assert "级别准确率·复杂用例" in out
 
 
