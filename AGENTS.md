@@ -21,7 +21,7 @@ git diff → DiffTaskBuilder → RiskTriage → TaskRank → [Summary] → Conte
 Java Gateway 的单实例 CI 执行底座一次执行返回结构化 outcome，调度器负责
 H2 状态、非阻塞重试、恢复、反馈与停机；workspace 按完整 SHA 隔离，并提供 readiness 与 Prometheus。
 
-ReviewCouncil 发现者由 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent` 方法论分工;最终 category 仍兼容 `security` / `logic` / `quality`。三类发现者各自声明工具 allowlist，并通过 `CandidateIssue` / `EvidenceRequest` / `EvidenceNote(findings)` / `Verdict` / `CouncilTrace` 结构化黑板通信。EvidencePlanner 是 `evidence_requests` 唯一写入者；EvidenceAgent 只执行静态策略；CouncilJudge 执行证据门槛、候选级证据综合和固定策略定级。旧 Supervisor 图迁移到 `services/agent/legacy/supervisor_graph/`,仅作历史参考,不作为默认路径、feature flag 或 eval profile 回退。
+ReviewCouncil 发现者由 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent` 方法论分工;最终 category 仍兼容 `security` / `logic` / `quality`。三类发现者各自声明工具 allowlist，并通过 `CandidateIssue` / `EvidenceRequest` / `EvidenceNote(findings)` / `Verdict` / `CouncilTrace` 结构化黑板通信。三路发现者只通过 ID reducer 汇集 raw candidates；CouncilCoordinator 在 fan-in 后复用候选 RiskTag 解析、按完整路径和局部位置构块，并以最多 8 个并行结构化 LLM 调用进行保守归并。非法、低置信或失败结果一律保留候选。EvidencePlanner 复用已解析 RiskTag，后续候选级证据和 Judge 契约不变。旧 Supervisor 图迁移到 `services/agent/legacy/supervisor_graph/`,仅作历史参考,不作为默认路径、feature flag 或 eval profile 回退。
 
 风险路由包含 24 个具体 `RiskTag` + `GENERAL_REVIEW`，风险规则只消费
 path/diff-text 变化方向；普通 diff 默认全选 task，旧 100/10 配置只作为大 diff 的更严格上限；reviewer 范围由 `RiskProfile.tag_scores`
@@ -99,6 +99,7 @@ Codeguard/
     │   │   ├── pipeline/evidence_rules/   # ★25 标签三目的静态策略与候选主题分类
     │   │   ├── pipeline/evidence_planner.py # ★dossier 绑定与一次性完整证据规划
     │   │   ├── pipeline/evidence_agent.py # ★策略执行、事实复用/工具缓存、finding 安全回退
+    │   │   ├── pipeline/candidate_dedup.py # ★候选语义归并（Coordinator fan-in 后）
     │   │   ├── pipeline/council_judge.py  # ★证据门槛、候选综合、固定策略定级与 survivor 映射
     │   │   ├── pipeline/council_metrics.py # ★ReviewCouncil 过程指标唯一计算入口
     │   │   ├── pipeline/discovery_tools.py # ★发现者级规范化去重、single-flight 与对话内短标记
