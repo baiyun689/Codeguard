@@ -1490,6 +1490,7 @@ def test_coordinator_batches_tag_resolution_and_emits_complete_trace(monkeypatch
     assert f"removed=['{second.id}']" in traces["candidate_dedup_group_accepted"]
     assert "reason=same defect" in traces["candidate_dedup_group_accepted"]
     assert "reason=empty_response" in traces["candidate_dedup_block_failed"]
+    assert "removed=1" in traces["candidate_dedup_completed"]
 
 
 def test_coordinator_scopes_large_diff_patch_before_classification_and_dedup(

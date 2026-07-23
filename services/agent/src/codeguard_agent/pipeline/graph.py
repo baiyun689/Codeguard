@@ -1067,6 +1067,7 @@ def _coordinator_node(effective_judge_llm):
                 event="candidate_dedup_completed",
                 detail=(
                     f"raw={result.raw_candidate_count} final={len(result.candidates)} "
+                    f"removed={result.raw_candidate_count - len(result.candidates)} "
                     f"blocks={result.block_count} multi={result.multi_member_block_count} "
                     f"llm_calls={result.llm_call_count} "
                     f"accepted_groups={len(result.accepted_groups)} "
