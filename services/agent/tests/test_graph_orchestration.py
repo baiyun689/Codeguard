@@ -1444,7 +1444,7 @@ def test_coordinator_batches_tag_resolution_and_emits_complete_trace(monkeypatch
 
     def resolve(dossiers, **kwargs):
         calls.append([dossier.candidate.id for dossier in dossiers])
-        assert kwargs["max_workers"] == 8
+        assert "max_workers" not in kwargs
         return {dossier.candidate.id: resolution for dossier in dossiers}
 
     monkeypatch.setattr(G, "resolve_candidate_tags", resolve)

@@ -1013,7 +1013,6 @@ def _coordinator_node(effective_judge_llm):
             assembly.dossiers,
             classifier_llm=effective_judge_llm,
             structured_method=structured_method,
-            max_workers=8,
         )
         for failure in assembly.failures:
             resolutions[failure.candidate.id] = CandidateTagResolution(

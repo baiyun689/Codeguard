@@ -256,23 +256,12 @@ def _apply_decision(
         if len(group_indices) > 1:
             overlapping_ids.add(member_id)
 
-    removed_ids: set[str] = set()
-    replacement_at_index: dict[int, CandidateIssue] = {}
-    index_by_id = {
-        candidate.id: index for index, candidate in enumerate(block.candidates)
-    }
-    candidate_by_id = {candidate.id: candidate for candidate in block.candidates}
     for group in decision.groups:
         reason = _group_rejection_reason(block, group, overlapping_ids)
         member_ids = tuple(group.member_ids)
         if reason is not None:
             rejected.append(RejectedCandidateGroup(member_ids, reason))
             continue
-        removed_ids.update(member_ids)
-        earliest_index = min(index_by_id[mid] for mid in member_ids)
-        replacement_at_index[earliest_index] = candidate_by_id[
-            group.representative_id
-        ]
         accepted.append(
             AcceptedCandidateGroup(
                 member_ids=member_ids,
@@ -282,20 +271,37 @@ def _apply_decision(
             )
         )
 
-    survivors: list[CandidateIssue] = []
-    for index, candidate in enumerate(block.candidates):
-        replacement = replacement_at_index.get(index)
-        if replacement is not None:
-            survivors.append(replacement)
-        if candidate.id in removed_ids:
-            continue
-        survivors.append(candidate)
-
     return _BlockApplyResult(
-        candidates=tuple(survivors),
+        candidates=_replay_accepted_groups(block.candidates, accepted),
         accepted_groups=tuple(accepted),
         rejected_groups=tuple(rejected),
     )
+
+
+def _replay_accepted_groups(
+    ordered: Sequence[CandidateIssue],
+    accepted_groups: Sequence[AcceptedCandidateGroup],
+) -> tuple[CandidateIssue, ...]:
+    """在组内最早位置回放代表，保留其余候选的全局相对顺序。"""
+    index_by_id = {
+        candidate.id: index for index, candidate in enumerate(ordered)
+    }
+    candidate_by_id = {candidate.id: candidate for candidate in ordered}
+    removed_ids: set[str] = set()
+    replacement_at_index: dict[int, CandidateIssue] = {}
+    for group in accepted_groups:
+        removed_ids.update(group.member_ids)
+        anchor = min(index_by_id[member_id] for member_id in group.member_ids)
+        replacement_at_index[anchor] = candidate_by_id[group.representative_id]
+
+    survivors: list[CandidateIssue] = []
+    for index, candidate in enumerate(ordered):
+        replacement = replacement_at_index.get(index)
+        if replacement is not None:
+            survivors.append(replacement)
+        if candidate.id not in removed_ids:
+            survivors.append(candidate)
+    return tuple(survivors)
 
 
 # ── 公开接口 ──
@@ -385,28 +391,10 @@ def deduplicate_candidates(
         all_rejected.extend(result.rejected_groups)
 
     # 按全局规范顺序重放接受组，避免连通分量把其间的其他块挪位。
-    index_by_id = {
-        candidate.id: index for index, candidate in enumerate(ordered)
-    }
-    candidate_by_id = {candidate.id: candidate for candidate in ordered}
-    removed_ids: set[str] = set()
-    replacement_at_index: dict[int, CandidateIssue] = {}
-    for group in all_accepted:
-        removed_ids.update(group.member_ids)
-        anchor = min(index_by_id[member_id] for member_id in group.member_ids)
-        replacement_at_index[anchor] = candidate_by_id[group.representative_id]
-
-    all_candidates: list[CandidateIssue] = []
-    for index, candidate in enumerate(ordered):
-        replacement = replacement_at_index.get(index)
-        if replacement is not None:
-            all_candidates.append(replacement)
-        if candidate.id in removed_ids:
-            continue
-        all_candidates.append(candidate)
+    all_candidates = _replay_accepted_groups(ordered, all_accepted)
 
     return CandidateDedupResult(
-        candidates=tuple(all_candidates),
+        candidates=all_candidates,
         raw_candidate_count=raw_count,
         block_count=len(blocks),
         multi_member_block_count=len(multi),
@@ -524,13 +512,5 @@ __all__ = [
     "CandidateDedupStats",
     "DuplicateGroup",
     "RejectedCandidateGroup",
-    "_CandidateBlock",
-    "_BlockApplyResult",
-    "_BlockDecisionOutcome",
-    "_apply_decision",
-    "_build_candidate_blocks",
-    "_build_user_prompt",
-    "_canonical_candidates",
-    "_invoke_block",
     "deduplicate_candidates",
 ]

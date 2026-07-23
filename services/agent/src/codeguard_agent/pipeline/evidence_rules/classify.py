@@ -18,6 +18,7 @@ from codeguard_agent.pipeline.evidence_rules.terms import (
 
 
 logger = logging.getLogger("codeguard")
+MAX_CANDIDATE_TAG_WORKERS = 8
 
 
 class CandidateTagResolution(BaseModel):
@@ -173,7 +174,7 @@ def resolve_candidate_tags(
     *,
     classifier_llm: Any,
     structured_method: str,
-    max_workers: int = 8,
+    max_workers: int = MAX_CANDIDATE_TAG_WORKERS,
 ) -> dict[str, CandidateTagResolution]:
     """批量解析候选证据主题标签，返回按输入顺序的 candidate_id → 标签映射。
 
@@ -190,7 +191,7 @@ def resolve_candidate_tags(
             classifier_llm,
             structured_method=structured_method,
         ),
-        max_workers=max(1, min(max_workers, 8)),
+        max_workers=max(1, min(max_workers, MAX_CANDIDATE_TAG_WORKERS)),
     )
     resolved: dict[str, CandidateTagResolution] = {}
     for dossier, outcome in zip(ordered, outcomes, strict=True):
