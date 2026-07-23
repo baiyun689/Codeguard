@@ -61,6 +61,23 @@ def _load_prompt(name: str) -> str:
     return (_PROMPT_DIR / name).read_text(encoding="utf-8")
 
 
+_DISCOVERY_CONTEXT_CONTRACT = "discovery-context-contract.txt"
+
+
+def build_reviewer_system_prompt(
+    reviewer: Reviewer,
+    task_knowledge: str = "",
+) -> str:
+    """组合角色方法论、共享上下文契约和 task-scoped 标签知识。"""
+    parts = [
+        _load_prompt(reviewer.prompt_file).strip(),
+        _load_prompt(_DISCOVERY_CONTEXT_CONTRACT).strip(),
+    ]
+    if task_knowledge.strip():
+        parts.append(task_knowledge.strip())
+    return "\n\n".join(parts)
+
+
 def _build_user_prompt(diff_text: str, summary: str = "") -> str:
     """构造 user 消息,带提示注入防御。
 

@@ -9,6 +9,7 @@ from codeguard_agent.pipeline.risk_rules.catalog import RISK_TAG_REVIEWERS
 from codeguard_agent.pipeline.stages.reviewer_stage import (
     DEFAULT_REVIEWERS,
     _build_user_prompt,
+    build_reviewer_system_prompt,
 )
 from evals.matcher import _JUDGE_CASE_PROMPT
 
@@ -226,3 +227,42 @@ def test_eval_judge_prompt_names_case_judgement_fields() -> None:
         for field in ("matches", "expected_id", "reported_id", "reason", "comment")
     )
     assert "每一条标准答案恰好一项" in _JUDGE_CASE_PROMPT
+
+
+def test_effective_reviewer_prompts_explain_prefetched_context_and_hard_tool_gate() -> None:
+    required = (
+        "task patch 是当前 hunk",
+        "不保证包含整个文件",
+        "AST structure",
+        "类、方法、方法行范围、控制流节点和可解析的调用边",
+        "sensitive API",
+        "不等于漏洞成立",
+        "find callers",
+        "未找到直接调用方",
+        "code metrics",
+        "不能仅凭指标阈值报告问题",
+        "风险画像是审查先验",
+        "标签知识是检查清单",
+        "truncated=true",
+        "明确当前候选缺少的具体事实",
+        "已有上下文为什么不能回答",
+        "每次工具调用都会增加",
+        "上下文充分时必须略过工具",
+    )
+    forbidden_reasons = ("重新确认", "了解完整代码", "看看还有没有其他问题")
+
+    for reviewer in DEFAULT_REVIEWERS:
+        text = build_reviewer_system_prompt(reviewer, "KNOWLEDGE_MARKER")
+        assert all(phrase in text for phrase in required)
+        assert all(reason in text for reason in forbidden_reasons)
+        assert text.count("KNOWLEDGE_MARKER") == 1
+
+
+def test_effective_reviewer_prompts_keep_domain_specific_context_gaps() -> None:
+    by_name = {
+        reviewer.name: build_reviewer_system_prompt(reviewer)
+        for reviewer in DEFAULT_REVIEWERS
+    }
+    assert "输入来源、传播路径、防护或敏感 sink" in by_name["ThreatModelAgent"]
+    assert "调用方契约、状态变化、错误路径或业务不变量" in by_name["BehaviorAgent"]
+    assert "复杂度、重复、资源所有权或跨文件设计" in by_name["MaintainabilityAgent"]

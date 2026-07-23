@@ -63,7 +63,7 @@ from codeguard_agent.pipeline.stages.reviewer_stage import (
     DEFAULT_REVIEWERS,
     Reviewer,
     _build_user_prompt,
-    _load_prompt,
+    build_reviewer_system_prompt,
 )
 from codeguard_agent.pipeline.stages.aggregation import deduplicate
 from codeguard_agent.pipeline.stages.summary import SummaryStage
@@ -534,9 +534,10 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
     from langgraph.graph import END, START, StateGraph
 
     def _system_prompt(state: ReviewerState) -> str:
-        base_prompt = _load_prompt(reviewer.prompt_file)
-        task_knowledge = state.get("task_knowledge") or ""
-        return f"{base_prompt}\n\n{task_knowledge}" if task_knowledge else base_prompt
+        return build_reviewer_system_prompt(
+            reviewer,
+            state.get("task_knowledge") or "",
+        )
 
     def _direct_fallback(state: ReviewerState) -> ReviewOutcome:
         return DirectEngine().review(
