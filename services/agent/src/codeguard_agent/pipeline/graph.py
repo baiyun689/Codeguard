@@ -145,57 +145,29 @@ def _candidate_dedup_reducer(existing: list | None, new: list | None) -> list:
                 used_ids.add(c.id)
                 break
 
-    # 层 2: 同文件+同根因合并（方法名匹配 + 邻行容差），
-    # 合并前提：归一化后的 type 相同，防止跨维度错误合并。
+    # 层 2: 同文件+同 type+邻行容差(±3)合并。
+    # 三个条件必须同时满足，防止跨维度错误合并和远距离误合并。
     if len(surviving) >= 2:
         final: list[CandidateIssue] = []
-        seen: list[tuple[str, int, CandidateIssue, set[str], str]] = []
+        seen: list[tuple[str, int, CandidateIssue, str]] = []
         for c in surviving:
             c_file = (c.file or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
-            c_tokens = _extract_identifier_tokens(c.claim)
             c_norm_type = _normalize_type(c.type)
             merged_into = None
-            for s_file, s_line, survivor, s_tokens, s_norm_type in seen:
+            for s_file, s_line, survivor, s_norm_type in seen:
                 if s_file != c_file:
                     continue
                 if c_norm_type != s_norm_type:
                     continue
-                # 同方法名/同变量名 → 同一根因（不管行号差多少）
-                if c_tokens and s_tokens and _share_key_identifier(c_tokens, s_tokens):
-                    merged_into = survivor
-                    break
-                # 邻行容差(±3)兜底：同文件+行号接近
                 if c.line > 0 and abs(c.line - s_line) <= 3:
                     merged_into = survivor
                     break
             if merged_into is None:
-                seen.append((c_file, c.line, c, c_tokens, c_norm_type))
+                seen.append((c_file, c.line, c, c_norm_type))
                 final.append(c)
         return final
 
     return surviving
-
-
-# ── 辅助：从 claim 文本中提取 Java 标识符（方法名/变量名）──
-
-def _extract_identifier_tokens(claim: str) -> set[str]:
-    """提取 claim 中疑似 Java 标识符的 token（camelCase 或 lower_case 模式）。"""
-    import re
-    if not claim:
-        return set()
-    # 匹配 camelCase（如 getUserDisplayName、findById）和 snake_case 标识符
-    idents = set(re.findall(r'\b[a-z_][a-zA-Z0-9_]*(?:[A-Z][a-z0-9_]+)+\b', claim))
-    # 也匹配被反引号/代码字体包裹的标识符
-    idents |= set(re.findall(r'`([a-zA-Z_][a-zA-Z0-9_]*)`', claim))
-    # 过滤掉过短/过泛的词
-    stop = {'the', 'and', 'for', 'get', 'set', 'has', 'is', 'not', 'new', 'try', 'all', 'any', 'the', 'this', 'that', 'with', 'from', 'into', 'null', 'true', 'false', 'when', 'case', 'line', 'file', 'code', 'diff', '非本次变更'}
-    return {t for t in idents if len(t) >= 4 and t.lower() not in stop}
-
-
-def _share_key_identifier(tokens_a: set[str], tokens_b: set[str]) -> bool:
-    """两组 token 是否共享至少一个「关键」标识符（长度 ≥ 5 且非泛词）。"""
-    shared = tokens_a & tokens_b
-    return any(len(t) >= 5 for t in shared)
 
 
 # ── 跨维度去重守卫：标准化 type 用于语义等价判断 ──

@@ -1438,15 +1438,15 @@ class TestDedupCrossDimension:
         result = G._candidate_dedup_reducer(existing, new)
         assert len(result) == 1
 
-    def test_shared_identifier_cross_dimension_not_merged(self):
-        """trace: threat_model NtfService:20 SSRF vs behavior NtfService:36 资源泄漏 共享 sendWebhook → 不应合并"""
+    def test_same_type_distant_lines_not_merged(self):
+        """同文件同 type 但行号差超过 ±3 → 不合并（不同位置的同类缺陷不应合并）"""
         existing = [
-            _c("behavior", "1", "NotificationService.java", 36, "RESOURCE_LIFECYCLE",
-               "sendWebhook 中 HttpURLConnection conn 未关闭"),
+            _c("behavior", "1", "XmlReportParser.java", 21, "资源泄漏",
+               "parseReport 中 FileReader 未关闭"),
         ]
         new = [
-            _c("threat_model", "2", "NotificationService.java", 20, "SSRF 服务端请求伪造",
-               "sendWebhook 方法 targetUrl 参数未校验导致 SSRF"),
+            _c("behavior", "2", "XmlReportParser.java", 39, "资源泄漏",
+               "readFirstSection 中 FileInputStream 未关闭"),
         ]
         result = G._candidate_dedup_reducer(existing, new)
         assert len(result) == 2
