@@ -40,6 +40,10 @@ from codeguard_agent.models.tasks import (
 from codeguard_agent.pipeline import context_rules, task_prep
 from codeguard_agent.pipeline.council_judge import judge_candidates
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
+from codeguard_agent.pipeline.discovery_tools import (
+    CoordinatedDiscoveryToolClient,
+    DiscoveryToolCoordinator,
+)
 from codeguard_agent.pipeline.knowledge_rules import load_knowledge
 from codeguard_agent.pipeline.large_diff_policy import LargeDiffPlan, plan_large_diff
 from codeguard_agent.pipeline.risk_routing import (
@@ -227,6 +231,7 @@ class ReviewerState(TypedDict, total=False):
     task_risk_context: str
     task_knowledge: str
     tier: str
+    review_tool_client: Any
 
     issues: list
     gathered_context: list
@@ -570,13 +575,14 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                 return {"outcome": ReviewOutcome(mock_review_result())}
             return {"outcome": ReviewOutcome(ReviewResult(summary=""))}
         tier = state.get("tier")
+        effective_tool_client = state.get("review_tool_client") or tool_client
         # tool_client=None 时 _make_engine 恒返回 DirectEngine，故意走同一工厂函数而不是
         # 直接 DirectEngine()，是为了保留 _make_engine 作为唯一的引擎选择入口
         # (可测试/可 monkeypatch 的 seam)，不是遗留笔误。
         engine = (
             _make_engine(state, tool_client=None)
             if tier == "direct"
-            else _make_engine(state, tool_client=tool_client)
+            else _make_engine(state, tool_client=effective_tool_client)
         )
         try:
             outcome = engine.review(
@@ -659,6 +665,14 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         tasks = state.get("review_tasks") or []
         profiles = state.get("risk_profiles") or {}
         selection = state.get("task_selection")
+
+        _coordinator = DiscoveryToolCoordinator() if tool_client is not None else None
+
+        def _task_tool_client():
+            if tool_client is None or _coordinator is None:
+                return None
+            return CoordinatedDiscoveryToolClient(tool_client, _coordinator)
+
         routed_ids = (
             set(routed_task_ids(reviewer.source_agent, tasks, profiles, selection))
             if selection is not None
@@ -695,6 +709,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     "diff_summary": state.get("diff_summary", ""),
                     "react_recursion_limit": state.get("react_recursion_limit", 24),
                     "context_bundle": state.get("context_bundle"),
+                    "review_tool_client": _task_tool_client(),
                 }
             )
             issues = list(result.get("issues") or [])
@@ -791,6 +806,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     "task_risk_context": task_risk_context,
                     "task_knowledge": task_knowledge,
                     "tier": tier,
+                    "review_tool_client": _task_tool_client(),
                 },
             )
             if profile is None:

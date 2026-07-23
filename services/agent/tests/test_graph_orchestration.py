@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Lock
 
 import codeguard_agent.pipeline.orchestrator as orchestrator_module
 from codeguard_agent.models.council import ContextBundle, ContextFact
@@ -14,6 +15,7 @@ from codeguard_agent.pipeline.engines import GatheredContext, ReviewOutcome
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
 from codeguard_agent.pipeline.stages.base import PipelineContext
 from codeguard_agent.pipeline.stages.context_provider import ContextProviderStage
+from codeguard_agent.tools.tool_client import ToolResponse
 
 
 def test_dedup_gathered_reducer_dedups_by_tool_args_keep_order():
@@ -1173,3 +1175,95 @@ def test_context_provider_node_does_not_store_failed_level1_response_as_fact():
     assert all("gateway timeout" not in fact.content for fact in facts)
 
     assert any("gateway timeout" in trace.detail for trace in out["council_trace"])
+
+
+# ── Task 3: 协调器接入测试 ──
+
+
+class _CountingFileClient:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.lock = Lock()
+
+    def get_file_content(self, file_path: str) -> ToolResponse:
+        with self.lock:
+            self.calls += 1
+        return ToolResponse(success=True, result="FULL BODY")
+
+
+def _two_behavior_task_state() -> dict:
+    tasks = [
+        G.ReviewTask(id="A.java#h0", file="A.java", patch="+a", changed_lines=[1]),
+        G.ReviewTask(id="B.java#h0", file="B.java", patch="+b", changed_lines=[1]),
+    ]
+    return {
+        "diff_text": "+a\n+b",
+        "review_tasks": tasks,
+        "risk_profiles": {
+            task.id: G.RiskProfile(
+                task_id=task.id,
+                tag_scores={RiskTag.NULL_STATE_SAFETY: 2},
+            )
+            for task in tasks
+        },
+        "task_selection": G.TaskSelection(
+            selected_task_ids=[task.id for task in tasks]
+        ),
+    }
+
+
+def test_make_reviewer_node_shares_tool_coordinator_between_its_tasks(monkeypatch):
+    raw_client = _CountingFileClient()
+    returned_bodies: list[str] = []
+    result_lock = Lock()
+
+    def _invoke(payload, config=None):  # noqa: ARG001
+        response = payload["review_tool_client"].get_file_content("Shared.java")
+        with result_lock:
+            returned_bodies.append(response.result or "")
+        return {"issues": [], "council_trace": []}
+
+    import types
+
+    monkeypatch.setattr(
+        G,
+        "build_reviewer_subgraph",
+        lambda *args, **kwargs: types.SimpleNamespace(invoke=_invoke),
+    )
+    node = G.make_reviewer_node(
+        G.DEFAULT_REVIEWERS[1], llm=_FakeLLM(), tool_client=raw_client
+    )
+
+    node(_two_behavior_task_state())
+
+    assert raw_client.calls == 1
+    assert sorted(returned_bodies) == ["FULL BODY", "FULL BODY"]
+
+
+def test_make_reviewer_node_does_not_cache_across_reviews(monkeypatch):
+    raw_client = _CountingFileClient()
+
+    def _invoke(payload, config=None):  # noqa: ARG001
+        payload["review_tool_client"].get_file_content("Shared.java")
+        return {"issues": [], "council_trace": []}
+
+    import types
+
+    monkeypatch.setattr(
+        G,
+        "build_reviewer_subgraph",
+        lambda *args, **kwargs: types.SimpleNamespace(invoke=_invoke),
+    )
+    node = G.make_reviewer_node(
+        G.DEFAULT_REVIEWERS[1], llm=_FakeLLM(), tool_client=raw_client
+    )
+
+    one_task = _two_behavior_task_state()
+    one_task["review_tasks"] = one_task["review_tasks"][:1]
+    first_id = one_task["review_tasks"][0].id
+    one_task["risk_profiles"] = {first_id: one_task["risk_profiles"][first_id]}
+    one_task["task_selection"] = G.TaskSelection(selected_task_ids=[first_id])
+    node(one_task)
+    node(one_task)
+
+    assert raw_client.calls == 2
