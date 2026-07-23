@@ -145,17 +145,20 @@ def _candidate_dedup_reducer(existing: list | None, new: list | None) -> list:
                 used_ids.add(c.id)
                 break
 
-    # 层 2: 同文件+同根因合并（方法名匹配 + 邻行容差）
+    # 层 2: 同文件+同根因合并（方法名匹配 + 邻行容差），
+    # 合并前提：归一化后的 type 相同，防止跨维度错误合并。
     if len(surviving) >= 2:
         final: list[CandidateIssue] = []
-        seen: list[tuple[str, int, CandidateIssue, set[str]]] = []
+        seen: list[tuple[str, int, CandidateIssue, set[str], str]] = []
         for c in surviving:
             c_file = (c.file or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
-            # 从 claim 中提取方法名/变量名作为根因锚点
             c_tokens = _extract_identifier_tokens(c.claim)
+            c_norm_type = _normalize_type(c.type)
             merged_into = None
-            for s_file, s_line, survivor, s_tokens in seen:
+            for s_file, s_line, survivor, s_tokens, s_norm_type in seen:
                 if s_file != c_file:
+                    continue
+                if c_norm_type != s_norm_type:
                     continue
                 # 同方法名/同变量名 → 同一根因（不管行号差多少）
                 if c_tokens and s_tokens and _share_key_identifier(c_tokens, s_tokens):
@@ -166,7 +169,7 @@ def _candidate_dedup_reducer(existing: list | None, new: list | None) -> list:
                     merged_into = survivor
                     break
             if merged_into is None:
-                seen.append((c_file, c.line, c, c_tokens))
+                seen.append((c_file, c.line, c, c_tokens, c_norm_type))
                 final.append(c)
         return final
 
@@ -193,6 +196,40 @@ def _share_key_identifier(tokens_a: set[str], tokens_b: set[str]) -> bool:
     """两组 token 是否共享至少一个「关键」标识符（长度 ≥ 5 且非泛词）。"""
     shared = tokens_a & tokens_b
     return any(len(t) >= 5 for t in shared)
+
+
+# ── 跨维度去重守卫：标准化 type 用于语义等价判断 ──
+
+_TYPE_ALIASES: dict[str, str] = {
+    # 资源泄漏
+    "资源泄漏": "resource_leak",
+    "resource_lifecycle": "resource_leak",
+    # 空指针
+    "空指针": "null_safety",
+    "空指针解引用": "null_safety",
+    "null_state_safety": "null_safety",
+    # 错误处理 / 异常吞没
+    "error_handling": "error_handling",
+    "异常信息静默吞没": "error_handling",
+    # 硬编码凭据 / 配置安全
+    "硬编码凭据": "hardcoded_credential",
+    "硬编码密码": "hardcoded_credential",
+    "config_security": "hardcoded_credential",
+    # API 契约
+    "api_contract": "api_contract",
+    "不安全的随机令牌生成": "api_contract",
+    # 敏感数据暴露
+    "data_exposure": "data_exposure",
+    "异常信息泄露（敏感数据暴露）": "data_exposure",
+    # 路径穿越、SSRF、XXE、令牌标识符暴露等安全域专用 type
+    # 无跨维度合并需求，统一留原值
+}
+
+
+def _normalize_type(raw_type: str) -> str:
+    """将不同 Agent 产出的 type 字符串映射到统一的语义分类，用于跨维度等价判断。"""
+    key = raw_type.strip().lower()
+    return _TYPE_ALIASES.get(key, key)
 
 
 def _discover_node_name(reviewer: Reviewer) -> str:

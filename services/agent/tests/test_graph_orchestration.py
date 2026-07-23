@@ -1372,3 +1372,117 @@ def test_make_reviewer_node_blocks_current_file_read_for_complete_new_file(monke
     assert returned == [
         "当前 task patch 已包含该新增文件的完整内容；请直接复用 patch，不要重复读取。"
     ]
+
+
+# ── 跨维度去重守卫测试 ──
+
+
+def _c(
+    agent: str,
+    fid: str,
+    file: str,
+    line: int,
+    typ: str,
+    claim: str = "test claim",
+) -> G.CandidateIssue:
+    return G.CandidateIssue(
+        id=f"{agent}-{fid}",
+        task_id=f"{file}#h0",
+        source_agent=agent,
+        file=file,
+        line=line,
+        type=typ,
+        severity_proposal="WARNING",
+        claim=claim,
+    )
+
+
+class TestDedupCrossDimension:
+    """验证 _candidate_dedup_reducer 不会跨维度错误合并候选。"""
+
+    def test_adjacent_line_different_agents_different_types_not_merged(self):
+        """trace: threat_model XmlParser:19 XXE CRITICAL vs behavior XmlParser:21 资源泄漏 → 不应合并"""
+        existing = [
+            _c("behavior", "1", "XmlReportParser.java", 21, "资源泄漏",
+               "parseReport 方法中 FileReader 未关闭导致资源泄漏"),
+        ]
+        new = [
+            _c("threat_model", "2", "XmlReportParser.java", 19, "XXE 注入",
+               "parseReport 使用默认 DocumentBuilderFactory 未禁用外部实体导致 XXE 注入"),
+        ]
+        result = G._candidate_dedup_reducer(existing, new)
+        assert len(result) == 2
+        assert {c.source_agent for c in result} == {"behavior", "threat_model"}
+
+    def test_same_agent_adjacent_line_different_types_not_merged(self):
+        """同 Agent 同文件相邻行但不同 type → 不合并（behavior-1 RESOURCE_LIFECYCLE vs behavior-2 DATA_EXPOSURE）"""
+        existing = [
+            _c("behavior", "1", "NotificationService.java", 36, "RESOURCE_LIFECYCLE"),
+        ]
+        new = [
+            _c("behavior", "2", "NotificationService.java", 35, "DATA_EXPOSURE"),
+        ]
+        result = G._candidate_dedup_reducer(existing, new)
+        assert len(result) == 2
+
+    def test_different_agents_same_normalized_type_merged(self):
+        """trace: maint-8 ERROR_HANDLING vs behavior-6 ERROR_HANDLING → 应合并（同一缺陷）"""
+        existing = [
+            _c("behavior", "1", "TokenService.java", 31, "ERROR_HANDLING",
+               "validateToken 空 catch 吞掉所有异常"),
+        ]
+        new = [
+            _c("maintainability", "2", "TokenService.java", 32, "ERROR_HANDLING",
+               "validateToken 空 catch 块增加未来维护成本"),
+        ]
+        result = G._candidate_dedup_reducer(existing, new)
+        assert len(result) == 1
+
+    def test_shared_identifier_cross_dimension_not_merged(self):
+        """trace: threat_model NtfService:20 SSRF vs behavior NtfService:36 资源泄漏 共享 sendWebhook → 不应合并"""
+        existing = [
+            _c("behavior", "1", "NotificationService.java", 36, "RESOURCE_LIFECYCLE",
+               "sendWebhook 中 HttpURLConnection conn 未关闭"),
+        ]
+        new = [
+            _c("threat_model", "2", "NotificationService.java", 20, "SSRF 服务端请求伪造",
+               "sendWebhook 方法 targetUrl 参数未校验导致 SSRF"),
+        ]
+        result = G._candidate_dedup_reducer(existing, new)
+        assert len(result) == 2
+
+    def test_different_agents_equivalent_types_merged(self):
+        """trace: maint-1 CONFIG_SECURITY vs threat_model-1 硬编码凭据 → 应合并（同一根因的硬编码问题）"""
+        existing = [
+            _c("maintainability", "1", "NotificationService.java", 16, "CONFIG_SECURITY",
+               "API_KEY 硬编码在源码中"),
+        ]
+        new = [
+            _c("threat_model", "2", "NotificationService.java", 17, "硬编码凭据",
+               "API_KEY 硬编码可被攻击者获取"),
+        ]
+        result = G._candidate_dedup_reducer(existing, new)
+        # 两个 type 在 _normalize_type 中都映射到 hardcoded_credential → 应合并
+        assert len(result) == 1
+
+    def test_exact_same_line_different_type_not_merged(self):
+        """同文件同行号但不同 type → 不合并（同一行可有资源泄漏+XXE 两个不同问题）"""
+        existing = [
+            _c("behavior", "1", "XmlReportParser.java", 21, "资源泄漏"),
+        ]
+        new = [
+            _c("threat_model", "2", "XmlReportParser.java", 21, "XXE 注入"),
+        ]
+        result = G._candidate_dedup_reducer(existing, new)
+        assert len(result) == 2
+
+    def test_different_files_not_merged(self):
+        """不同文件 → 不合并"""
+        existing = [
+            _c("behavior", "1", "OrderService.java", 16, "空指针解引用"),
+        ]
+        new = [
+            _c("behavior", "2", "XmlReportParser.java", 21, "资源泄漏"),
+        ]
+        result = G._candidate_dedup_reducer(existing, new)
+        assert len(result) == 2
