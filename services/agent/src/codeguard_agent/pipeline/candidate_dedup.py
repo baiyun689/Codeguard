@@ -6,9 +6,12 @@ LLM 语义归并在 deduplicate_candidates() 中通过可注入的 _invoke_block
 
 from __future__ import annotations
 
+import html
+import json
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -293,7 +296,6 @@ def deduplicate_candidates(
 
     # 4. 对多成员块调 LLM（单成员直接保留）
     multi = [b for b in blocks if len(b.candidates) >= 2]
-    singles = [b for b in blocks if len(b.candidates) == 1]
 
     block_decisions: dict[str, _BlockDecisionOutcome] = {}
     llm_call_count = 0
@@ -353,7 +355,67 @@ def deduplicate_candidates(
     )
 
 
-# ── LLM 适配器（Task 3 实现） ──
+# ── Prompt 渲染 ──
+
+_PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts"
+
+
+def _load_prompt(name: str) -> str:
+    return (_PROMPT_DIR / name).read_text(encoding="utf-8")
+
+
+def _build_user_prompt(
+    block: _CandidateBlock,
+    tasks_by_id: Mapping[str, ReviewTask],
+    tag_resolutions: Mapping[str, CandidateTagResolution],
+) -> str:
+    """把 block 候选和关联 task 渲染为 JSON 数据，html 转义后嵌入 user prompt。"""
+    payload: dict[str, Any] = {
+        "block_id": block.id,
+        "candidates": [
+            {
+                "candidate_id": candidate.id,
+                "source_agent": candidate.source_agent,
+                "file": context_rules.normalize_path(candidate.file),
+                "line": candidate.line,
+                "task_id": candidate.task_id,
+                "type": candidate.type,
+                "primary_risk_tag": (
+                    resolution.tag.value
+                    if (resolution := tag_resolutions.get(candidate.id))
+                    else RiskTag.GENERAL_REVIEW.value
+                ),
+                "tag_source": (
+                    resolution.source
+                    if (resolution := tag_resolutions.get(candidate.id))
+                    else "general"
+                ),
+                "tag_confidence": (
+                    resolution.confidence
+                    if (resolution := tag_resolutions.get(candidate.id))
+                    else 0.5
+                ),
+                "claim": candidate.claim,
+                "suggestion": candidate.suggestion,
+            }
+            for candidate in block.candidates
+        ],
+        "tasks": [
+            {
+                "task_id": task_id,
+                "patch": tasks_by_id[task_id].patch,
+                "patch_complete": tasks_by_id[task_id].patch_complete,
+            }
+            for task_id in sorted({c.task_id for c in block.candidates})
+            if task_id in tasks_by_id
+        ],
+    }
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    escaped = html.escape(serialized, quote=False)
+    return _load_prompt("candidate-dedup-user.txt").format(dedup_input=escaped)
+
+
+# ── LLM 适配器 ──
 
 
 def _invoke_block(
@@ -364,11 +426,29 @@ def _invoke_block(
     llm: Any,
     structured_method: str,
 ) -> _BlockDecisionOutcome:
-    """调用结构化 LLM 对单个 block 做语义归并。
+    """调用结构化 LLM 对单个 block 做语义归并。"""
+    from codeguard_agent.llm.client import invoke_with_retry
 
-    Task 2 阶段为 no-LLM 占位；Task 3 接入真实的 prompt + LLM 调用。
-    """
-    return _BlockDecisionOutcome(decision=None, failure="llm_not_configured")
+    try:
+        system_prompt = _load_prompt("candidate-dedup-system.txt")
+        user_prompt = _build_user_prompt(block, tasks_by_id, tag_resolutions)
+        structured = llm.with_structured_output(
+            CandidateDedupDecision,
+            method=structured_method,
+        )
+        result = invoke_with_retry(
+            structured,
+            [("system", system_prompt), ("human", user_prompt)],
+            max_retries=1,
+        )
+        if result is None:
+            return _BlockDecisionOutcome(decision=None, failure="empty_response")
+        if not isinstance(result, CandidateDedupDecision):
+            return _BlockDecisionOutcome(decision=None, failure="invalid_response")
+        return _BlockDecisionOutcome(decision=result)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("候选归并 LLM 调用失败: %s", exc)
+        return _BlockDecisionOutcome(decision=None, failure="llm_error")
 
 
 __all__ = [
@@ -385,6 +465,7 @@ __all__ = [
     "_BlockDecisionOutcome",
     "_apply_decision",
     "_build_candidate_blocks",
+    "_build_user_prompt",
     "_canonical_candidates",
     "_invoke_block",
     "deduplicate_candidates",
