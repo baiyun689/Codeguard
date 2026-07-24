@@ -8,7 +8,7 @@ ReAct(create_agent)的返回要稳健地落成结构化结果:优先用图内置
 from __future__ import annotations
 
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
-from codeguard_agent.pipeline.discovery_tools import COMPLETE_PATCH_RESULT
+from codeguard_agent.pipeline.risk.discovery import COMPLETE_PATCH_RESULT
 from codeguard_agent.pipeline.engines import (
     DirectEngine,
     ReviewOutcome,

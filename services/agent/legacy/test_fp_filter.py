@@ -13,9 +13,9 @@ from pathlib import Path
 
 from codeguard_agent.models.schemas import Issue, Severity
 from codeguard_agent.pipeline.fp_rules import FpRules, load_rules, match_exclusion
-from codeguard_agent.pipeline.stages.base import PipelineContext
+from codeguard_agent.pipeline.context.base import PipelineContext
 from codeguard_agent.pipeline.engines import GatheredContext
-from codeguard_agent.pipeline.stages.fp_filter import (
+from codeguard_agent.legacy.stages.fp_filter import (
     FalsePositiveFilterStage,
     FpVerdict,
     _render_context,

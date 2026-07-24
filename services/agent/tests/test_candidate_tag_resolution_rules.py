@@ -12,8 +12,8 @@ import pytest
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import RiskTag
-from codeguard_agent.pipeline.evidence_rules import resolve_candidate_evidence_tag
-from codeguard_agent.pipeline.evidence_rules.terms import CANDIDATE_TAG_TERMS
+from codeguard_agent.pipeline.evidence.rules import resolve_candidate_evidence_tag
+from codeguard_agent.pipeline.evidence.rules.terms import CANDIDATE_TAG_TERMS
 
 
 def _normalized(value: str) -> str:

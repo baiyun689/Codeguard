@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from codeguard_agent.models.tasks import ReviewBudget, RiskProfile, RiskSignal, ReviewTask, RiskTag
-from codeguard_agent.pipeline.task_prep import (
+from codeguard_agent.pipeline.risk.task_prep import (
     _changed_lines,
     _is_production_path,
     build_tasks,

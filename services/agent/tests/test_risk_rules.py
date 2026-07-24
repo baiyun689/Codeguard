@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 
 from codeguard_agent.models.tasks import RiskSignal, RiskTag, ReviewTask
-from codeguard_agent.pipeline.risk_rules import catalog
-from codeguard_agent.pipeline.risk_rules.features import DiffFeatures
-from codeguard_agent.pipeline.risk_rules.security import (
+from codeguard_agent.pipeline.risk.rules import catalog
+from codeguard_agent.pipeline.risk.rules.features import DiffFeatures
+from codeguard_agent.pipeline.risk.rules.security import (
     detect_authentication_session,
     detect_authorization,
     detect_config_security,
@@ -18,7 +18,7 @@ from codeguard_agent.pipeline.risk_rules.security import (
     detect_ssrf_outbound,
     detect_web_security_config,
 )
-from codeguard_agent.pipeline.risk_rules.behavior import (
+from codeguard_agent.pipeline.risk.rules.behavior import (
     detect_api_contract,
     detect_cache_consistency,
     detect_concurrency_consistency,
@@ -31,7 +31,7 @@ from codeguard_agent.pipeline.risk_rules.behavior import (
     detect_sql_data_access,
     detect_transaction_atomicity,
 )
-from codeguard_agent.pipeline.risk_rules.maintainability import (
+from codeguard_agent.pipeline.risk.rules.maintainability import (
     detect_complexity_control_flow,
     detect_duplication_design,
     detect_observability_testability,

@@ -13,8 +13,8 @@ from codeguard_agent.models.tasks import (
     RiskTag,
     TaskContextBundle,
 )
-from codeguard_agent.pipeline.risk_rules.catalog import RISK_TAG_REVIEWERS
-from codeguard_agent.pipeline.stages.reviewer_stage import (
+from codeguard_agent.pipeline.risk.rules.catalog import RISK_TAG_REVIEWERS
+from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
     _build_user_prompt,
     build_reviewer_user_prompt,

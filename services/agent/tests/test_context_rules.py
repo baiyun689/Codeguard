@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from codeguard_agent.models.council import ContextFact
 from codeguard_agent.models.tasks import ReviewTask, RiskProfile, RiskTag
-from codeguard_agent.pipeline.context_rules import (
+from codeguard_agent.pipeline.context.rules import (
     ContextLevel,
     ast_block_for_file,
     plan_context_calls,

@@ -10,7 +10,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from codeguard_agent.pipeline import evidence_planner
+from codeguard_agent.pipeline.evidence import planner as evidence_planner
 from codeguard_agent.models.council import (
     CandidateIssue,
     EvidenceNote,
@@ -23,11 +23,11 @@ from codeguard_agent.models.tasks import (
     RiskTag,
     TaskContextBundle,
 )
-from codeguard_agent.pipeline.evidence_planner import (
+from codeguard_agent.pipeline.evidence.planner import (
     CandidateDossier,
     plan_evidence,
 )
-from codeguard_agent.pipeline.evidence_rules import (
+from codeguard_agent.pipeline.evidence.rules import (
     STRATEGIES_BY_ID,
     CandidateTagResolution,
 )
@@ -96,7 +96,7 @@ def _resolution(
 def _force_resolution(monkeypatch: pytest.MonkeyPatch, resolution=None) -> None:
     chosen = resolution or _resolution()
     monkeypatch.setattr(
-        "codeguard_agent.pipeline.evidence_planner.resolve_candidate_tags",
+        "codeguard_agent.pipeline.evidence.planner.resolve_candidate_tags",
         lambda dossiers, **kwargs: {
             dossier.candidate.id: (
                 chosen(dossier) if callable(chosen) else chosen
@@ -165,7 +165,7 @@ def test_candidate_tag_resolution_runs_concurrently_and_keeps_plan_order(monkeyp
         return _resolution(reason=dossier.candidate.id)
 
     monkeypatch.setattr(
-        "codeguard_agent.pipeline.evidence_rules.classify.resolve_candidate_evidence_tag",
+        "codeguard_agent.pipeline.evidence.rules.classify.resolve_candidate_evidence_tag",
         resolve,
     )
     dossiers = [_dossier(30), _dossier(31), _dossier(32)]
@@ -498,13 +498,13 @@ def test_assemble_dossiers_reports_missing_task_and_file_mismatch():
 
 def test_plan_reuses_supplied_candidate_tag_resolution(monkeypatch):
     """已提供的 candidate_tag_resolutions 阻止重复分类。"""
-    from codeguard_agent.pipeline.evidence_rules import strategies_for
+    from codeguard_agent.pipeline.evidence.rules import strategies_for
 
     dossier = _dossier(70)
     supplied = {dossier.candidate.id: _resolution(RiskTag.RESOURCE_LIFECYCLE)}
 
     monkeypatch.setattr(
-        "codeguard_agent.pipeline.evidence_planner._resolve_dossiers",
+        "codeguard_agent.pipeline.evidence.planner._resolve_dossiers",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("supplied resolution must prevent reclassification")
         ),
@@ -535,7 +535,7 @@ def test_plan_only_resolves_missing_candidate_ids(monkeypatch):
         return [_resolution(RiskTag.ERROR_HANDLING) for _ in dossiers]
 
     monkeypatch.setattr(
-        "codeguard_agent.pipeline.evidence_planner._resolve_dossiers",
+        "codeguard_agent.pipeline.evidence.planner._resolve_dossiers",
         resolve_missing,
     )
 

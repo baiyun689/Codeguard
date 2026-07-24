@@ -7,7 +7,7 @@ import time
 from types import SimpleNamespace
 
 from codeguard_agent.models.tasks import RiskTag
-from codeguard_agent.pipeline.evidence_rules.classify import (
+from codeguard_agent.pipeline.evidence.rules.classify import (
     CandidateTagResolution,
     resolve_candidate_tags,
 )
@@ -49,7 +49,7 @@ def test_batch_candidate_tag_resolution_keeps_input_mapping_and_falls_back(monke
         )
 
     monkeypatch.setattr(
-        "codeguard_agent.pipeline.evidence_rules.classify.resolve_candidate_evidence_tag",
+        "codeguard_agent.pipeline.evidence.rules.classify.resolve_candidate_evidence_tag",
         fake_resolve,
     )
 
@@ -87,7 +87,7 @@ def test_batch_resolution_runs_concurrently_and_keeps_input_order(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "codeguard_agent.pipeline.evidence_rules.classify.resolve_candidate_evidence_tag",
+        "codeguard_agent.pipeline.evidence.rules.classify.resolve_candidate_evidence_tag",
         fake_resolve,
     )
 

@@ -16,8 +16,8 @@ from codeguard_agent.models.council import (
 )
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import ReviewTask, RiskProfile, RiskTag, TaskContextBundle
-from codeguard_agent.pipeline.evidence_planner import CandidateDossier, DossierAssembly
-from codeguard_agent.pipeline.evidence_rules import STRATEGIES_BY_ID
+from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
+from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID
 from codeguard_agent.tools.tool_client import ToolResponse
 
 
@@ -86,7 +86,7 @@ class _ToolClient:
 
 
 def _collect(dossiers, requests, *, client=None, enabled_tools=None):
-    evidence_agent = importlib.import_module("codeguard_agent.pipeline.evidence_agent")
+    evidence_agent = importlib.import_module("codeguard_agent.pipeline.evidence.agent")
     return evidence_agent.collect_evidence(
         dossiers,
         requests,
@@ -98,7 +98,7 @@ def _collect(dossiers, requests, *, client=None, enabled_tools=None):
 
 
 def _collect_with_llm(dossiers, requests, llm, *, client=None):
-    module = importlib.import_module("codeguard_agent.pipeline.evidence_agent")
+    module = importlib.import_module("codeguard_agent.pipeline.evidence.agent")
     return module.collect_evidence(
         dossiers,
         requests,
@@ -556,7 +556,7 @@ def _judge_evidence_batch(dossier: CandidateDossier, request: EvidenceRequest, b
         requests=(request,),
         notes=tuple(batch.notes),
     )
-    module = importlib.import_module("codeguard_agent.pipeline.council_judge")
+    module = importlib.import_module("codeguard_agent.pipeline.council.judge")
     return module.judge_candidates(
         DossierAssembly((judged,), (), ()),
         judge_llm=None,
@@ -875,7 +875,7 @@ def test_request_target_cannot_use_candidate_basename_to_bypass_task_path():
 
 
 def test_evidence_digest_has_unambiguous_part_boundaries():
-    module = importlib.import_module("codeguard_agent.pipeline.evidence_agent")
+    module = importlib.import_module("codeguard_agent.pipeline.evidence.agent")
 
     assert module._digest("ab", "c") != module._digest("a", "bc")
 

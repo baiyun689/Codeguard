@@ -22,7 +22,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from codeguard_agent.pipeline.fp_rules import FpRules, load_rules, match_exclusion
-from codeguard_agent.pipeline.stages.base import PipelineContext, PipelineStage
+from codeguard_agent.pipeline.context.base import PipelineContext, PipelineStage
 
 logger = logging.getLogger("codeguard")
 

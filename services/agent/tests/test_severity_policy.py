@@ -3,7 +3,7 @@
 from codeguard_agent.models.council import EvidenceFinding
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import RiskTag
-from codeguard_agent.pipeline.severity_policy import (
+from codeguard_agent.pipeline.council.severity import (
     SeverityFactorAssessment,
     factor_is_proven,
     policy_for,

@@ -38,17 +38,17 @@ from codeguard_agent.pipeline.engines import (
     ReviewOutcome,
     ToolAgentEngine,
 )
-from codeguard_agent.pipeline.stages.aggregation import AggregationStage
-from codeguard_agent.pipeline.stages.base import PipelineContext
-from codeguard_agent.pipeline.stages.fp_filter import FalsePositiveFilterStage
-from codeguard_agent.pipeline.stages.reviewer_stage import (
+from codeguard_agent.legacy.stages.aggregation import AggregationStage
+from codeguard_agent.pipeline.context.base import PipelineContext
+from codeguard_agent.legacy.stages.fp_filter import FalsePositiveFilterStage
+from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
     Reviewer,
     _build_user_prompt,
     _effective_diff,
     _load_prompt,
 )
-from codeguard_agent.pipeline.stages.summary import SummaryStage
+from codeguard_agent.pipeline.summary.summary import SummaryStage
 
 logger = logging.getLogger("codeguard")
 

@@ -1,6 +1,6 @@
 """context_provider AST 接入单测。"""
 
-from codeguard_agent.pipeline.stages.context_provider import _split_ast_blocks
+from codeguard_agent.pipeline.context.provider import _split_ast_blocks
 
 
 def test_split_ast_blocks_single_file():

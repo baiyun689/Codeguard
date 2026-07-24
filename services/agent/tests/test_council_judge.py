@@ -15,10 +15,10 @@ from codeguard_agent.models.council import (
 )
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import ReviewTask, RiskTag
-from codeguard_agent.pipeline.evidence_planner import CandidateDossier
-from codeguard_agent.pipeline.council_judge import judge_candidates as _judge_impl
-from codeguard_agent.pipeline.evidence_rules import STRATEGIES_BY_ID, strategies_for
-from codeguard_agent.pipeline.severity_policy import policy_for
+from codeguard_agent.pipeline.evidence.planner import CandidateDossier
+from codeguard_agent.pipeline.council.judge import judge_candidates as _judge_impl
+from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID, strategies_for
+from codeguard_agent.pipeline.council.severity import policy_for
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -482,7 +482,7 @@ def test_general_review_never_critical():
 
 
 def test_invalid_binding_drops():
-    from codeguard_agent.pipeline.evidence_planner import (
+    from codeguard_agent.pipeline.evidence.planner import (
         CandidateBindingFailure,
         DossierAssembly,
     )
@@ -499,7 +499,7 @@ def test_invalid_binding_drops():
 
 
 def _judge(dossiers, *, llm=None):
-    from codeguard_agent.pipeline.evidence_planner import DossierAssembly
+    from codeguard_agent.pipeline.evidence.planner import DossierAssembly
     assembly = DossierAssembly(tuple(dossiers), (), ())
     return _judge_impl(assembly, judge_llm=llm, structured_method="function_calling", max_retries=1)
 

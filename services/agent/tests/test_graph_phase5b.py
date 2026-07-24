@@ -8,7 +8,7 @@ import codeguard_agent.pipeline.graph as G
 from codeguard_agent.models.council import CandidateIssue, EvidenceRequest
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import ReviewTask, TaskSelection
-from codeguard_agent.pipeline.stages.reviewer_stage import DEFAULT_REVIEWERS
+from codeguard_agent.pipeline.reviewers.reviewers import DEFAULT_REVIEWERS
 
 
 def _request(index: int) -> EvidenceRequest:

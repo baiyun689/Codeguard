@@ -10,7 +10,7 @@ import pytest
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import RiskTag
-from codeguard_agent.pipeline.candidate_dedup import (
+from codeguard_agent.pipeline.council.dedup import (
     CandidateDedupDecision,
     DuplicateGroup,
     _build_candidate_blocks,
@@ -20,7 +20,7 @@ from codeguard_agent.pipeline.candidate_dedup import (
     _BlockDecisionOutcome,
     deduplicate_candidates,
 )
-from codeguard_agent.pipeline.evidence_rules.classify import CandidateTagResolution
+from codeguard_agent.pipeline.evidence.rules.classify import CandidateTagResolution
 
 
 def _candidate(
@@ -391,7 +391,7 @@ def test_block_prompt_serializes_dynamic_text_as_json_data():
     import json as json_mod
 
     from codeguard_agent.models.tasks import ReviewTask
-    from codeguard_agent.pipeline.candidate_dedup import _build_user_prompt
+    from codeguard_agent.pipeline.council.dedup import _build_user_prompt
 
     candidate = _candidate(
         "a",
@@ -529,7 +529,7 @@ def test_multi_member_blocks_run_in_parallel_and_reassemble_stably(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "codeguard_agent.pipeline.candidate_dedup._invoke_block",
+        "codeguard_agent.pipeline.council.dedup._invoke_block",
         invoke,
     )
     candidates = [

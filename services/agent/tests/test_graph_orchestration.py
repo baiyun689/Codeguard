@@ -14,8 +14,8 @@ from codeguard_agent.models.tasks import RiskSignal, RiskTag
 from codeguard_agent.pipeline import graph as G
 from codeguard_agent.pipeline.engines import GatheredContext, ReviewOutcome
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
-from codeguard_agent.pipeline.stages.base import PipelineContext
-from codeguard_agent.pipeline.stages.context_provider import ContextProviderStage
+from codeguard_agent.pipeline.context.base import PipelineContext
+from codeguard_agent.pipeline.context.provider import ContextProviderStage
 from codeguard_agent.tools.tool_client import ToolResponse
 
 
@@ -695,7 +695,7 @@ def test_build_graph_has_task_prep_nodes():
 
 
 def test_task_prep_nodes_populate_state():
-    from codeguard_agent.pipeline import task_prep
+    from codeguard_agent.pipeline.risk import task_prep
 
     tasks = task_prep.build_tasks(_DIFF)
     assert [t.id for t in tasks] == ["A.java#h0"]
@@ -705,8 +705,8 @@ def test_task_prep_nodes_populate_state():
 
 
 def test_risk_triage_node_emits_profile_and_rule_failure_trace(monkeypatch):
-    from codeguard_agent.pipeline import task_prep
-    from codeguard_agent.pipeline.risk_rules.catalog import (
+    from codeguard_agent.pipeline.risk import task_prep
+    from codeguard_agent.pipeline.risk.rules.catalog import (
         RuleDiagnostic,
         TriageResult,
     )
@@ -1419,7 +1419,7 @@ class TestCandidateCollectReducer:
 
 
 def test_coordinator_batches_tag_resolution_and_emits_complete_trace(monkeypatch):
-    from codeguard_agent.pipeline.candidate_dedup import (
+    from codeguard_agent.pipeline.council.dedup import (
         AcceptedCandidateGroup,
         CandidateBlockFailure,
         CandidateDedupResult,
@@ -1496,7 +1496,7 @@ def test_coordinator_batches_tag_resolution_and_emits_complete_trace(monkeypatch
 def test_coordinator_scopes_large_diff_patch_before_classification_and_dedup(
     monkeypatch,
 ):
-    from codeguard_agent.pipeline.candidate_dedup import CandidateDedupResult
+    from codeguard_agent.pipeline.council.dedup import CandidateDedupResult
 
     candidate = _c("behavior", "1", "OrderService.java", 30, "ERROR_HANDLING")
     original_patch = "+" + ("x" * 13_000)

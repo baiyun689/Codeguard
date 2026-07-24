@@ -10,13 +10,13 @@ from __future__ import annotations
 
 
 from codeguard_agent.models.schemas import Issue, Severity
-from codeguard_agent.pipeline.stages.aggregation import (
+from codeguard_agent.legacy.stages.aggregation import (
     AggregationStage,
     _MergeGroup,
     _MergePlan,
     _apply_merge_plan,
 )
-from codeguard_agent.pipeline.stages.base import PipelineContext
+from codeguard_agent.pipeline.context.base import PipelineContext
 
 
 def _issue(severity=Severity.WARNING, file="A.java", line=10, type="SQL注入",

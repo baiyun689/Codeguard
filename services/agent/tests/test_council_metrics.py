@@ -12,9 +12,9 @@ from codeguard_agent.models.council import (
 )
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import ReviewTask, RiskTag
-from codeguard_agent.pipeline.council_metrics import compute_council_run_stats
-from codeguard_agent.pipeline.evidence_planner import CandidateDossier, DossierAssembly
-from codeguard_agent.pipeline.evidence_rules import strategies_for
+from codeguard_agent.pipeline.council.metrics import compute_council_run_stats
+from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
+from codeguard_agent.pipeline.evidence.rules import strategies_for
 
 
 def _dossier(candidate_id: str, *, file: str | None = None) -> CandidateDossier:

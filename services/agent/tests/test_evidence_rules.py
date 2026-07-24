@@ -7,16 +7,16 @@ from types import SimpleNamespace
 import pytest
 
 from codeguard_agent.models.tasks import RiskTag
-from codeguard_agent.pipeline.evidence_rules import (
+from codeguard_agent.pipeline.evidence.rules import (
     STRATEGIES_BY_ID,
     STRATEGIES_BY_TAG,
     EvidenceStrategy,
     ToolCallSpec,
     strategies_for,
 )
-from codeguard_agent.pipeline.evidence_rules import _build_registry
-from codeguard_agent.pipeline.evidence_rules import recipes
-from codeguard_agent.pipeline.evidence_rules.recipes import callers_upstream
+from codeguard_agent.pipeline.evidence.rules import _build_registry
+from codeguard_agent.pipeline.evidence.rules import recipes
+from codeguard_agent.pipeline.evidence.rules.recipes import callers_upstream
 
 
 VALID_CONTEXT_KINDS = {

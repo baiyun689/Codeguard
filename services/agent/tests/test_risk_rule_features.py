@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from codeguard_agent.models.tasks import ReviewTask
-from codeguard_agent.pipeline.risk_rules.features import DiffFeatures, extract_features
+from codeguard_agent.pipeline.risk.rules.features import DiffFeatures, extract_features
 
 
 def test_extracts_added_only_hunk_with_new_file_line_numbers():

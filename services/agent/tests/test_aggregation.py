@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from codeguard_agent.models.schemas import Issue, Severity
-from codeguard_agent.pipeline.stages.aggregation import deduplicate
+from codeguard_agent.legacy.stages.aggregation import deduplicate
 
 
 def _issue(severity=Severity.WARNING, file="A.java", line=10, type="空指针",

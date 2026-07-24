@@ -1,6 +1,6 @@
 """Default discoverer prompt configuration tests."""
 
-from codeguard_agent.pipeline.stages.reviewer_stage import (
+from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
     _load_prompt,
 )

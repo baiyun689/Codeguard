@@ -7,9 +7,9 @@ from dataclasses import dataclass
 
 from codeguard_agent.models.council import CandidateIssue, Challenge, CouncilRunStats
 from codeguard_agent.models.schemas import Issue
-from codeguard_agent.pipeline.stages.aggregation import AggregationStage
-from codeguard_agent.pipeline.stages.base import PipelineContext, PipelineStage
-from codeguard_agent.pipeline.stages.fp_filter import FalsePositiveFilterStage
+from codeguard_agent.legacy.stages.aggregation import AggregationStage
+from codeguard_agent.pipeline.context.base import PipelineContext, PipelineStage
+from codeguard_agent.legacy.stages.fp_filter import FalsePositiveFilterStage
 
 logger = logging.getLogger("codeguard")
 

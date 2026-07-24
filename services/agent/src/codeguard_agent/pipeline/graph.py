@@ -40,21 +40,22 @@ from codeguard_agent.models.tasks import (
     TaskContextBundle,
     TaskSelection,
 )
-from codeguard_agent.pipeline import context_rules, task_prep
-from codeguard_agent.pipeline.council_judge import judge_candidates
-from codeguard_agent.pipeline.candidate_dedup import (
+from codeguard_agent.pipeline.context import rules as context_rules
+from codeguard_agent.pipeline.risk import task_prep
+from codeguard_agent.pipeline.council.judge import judge_candidates
+from codeguard_agent.pipeline.council.dedup import (
     CandidateDedupStats,
     deduplicate_candidates,
 )
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
-from codeguard_agent.pipeline.discovery_tools import (
+from codeguard_agent.pipeline.risk.discovery import (
     CoordinatedDiscoveryToolClient,
     DiscoveryToolCoordinator,
     canonical_tool_key,
 )
-from codeguard_agent.pipeline.knowledge_rules import load_knowledge
-from codeguard_agent.pipeline.large_diff_policy import LargeDiffPlan, plan_large_diff
-from codeguard_agent.pipeline.risk_routing import (
+from codeguard_agent.pipeline.risk.knowledge import load_knowledge
+from codeguard_agent.pipeline.risk.large_diff import LargeDiffPlan, plan_large_diff
+from codeguard_agent.pipeline.risk.routing import (
     plan_task_tiers,
     routed_task_ids,
 )
@@ -65,23 +66,23 @@ from codeguard_agent.pipeline.engines import (
     ReviewOutcome,
     ToolAgentEngine,
 )
-from codeguard_agent.pipeline.evidence_agent import collect_evidence
-from codeguard_agent.pipeline.council_metrics import compute_council_run_stats
-from codeguard_agent.pipeline.evidence_planner import assemble_dossiers, plan_evidence
-from codeguard_agent.pipeline.evidence_rules.classify import (
+from codeguard_agent.pipeline.evidence.agent import collect_evidence
+from codeguard_agent.pipeline.council.metrics import compute_council_run_stats
+from codeguard_agent.pipeline.evidence.planner import assemble_dossiers, plan_evidence
+from codeguard_agent.pipeline.evidence.rules.classify import (
     CandidateTagResolution,
     resolve_candidate_tags,
 )
-from codeguard_agent.pipeline.stages.base import PipelineContext
-from codeguard_agent.pipeline.stages.context_provider import ContextProviderStage
-from codeguard_agent.pipeline.stages.reviewer_stage import (
+from codeguard_agent.pipeline.context.base import PipelineContext
+from codeguard_agent.pipeline.context.provider import ContextProviderStage
+from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
     Reviewer,
     _build_user_prompt,
     build_reviewer_system_prompt,
     build_reviewer_user_prompt,
 )
-from codeguard_agent.pipeline.stages.summary import SummaryStage
+from codeguard_agent.pipeline.summary.summary import SummaryStage
 
 logger = logging.getLogger("codeguard")
 

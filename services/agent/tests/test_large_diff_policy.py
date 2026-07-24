@@ -1,5 +1,5 @@
 from codeguard_agent.models.tasks import ReviewBudget, ReviewTask, TaskSelection
-from codeguard_agent.pipeline.large_diff_policy import plan_large_diff
+from codeguard_agent.pipeline.risk.large_diff import plan_large_diff
 
 
 def _task(index: int, patch: str = "+x") -> ReviewTask:
