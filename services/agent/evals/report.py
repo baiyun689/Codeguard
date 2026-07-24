@@ -283,6 +283,26 @@ def render_report(
                 f"{c.actual_evidence_tool_calls}/{c.candidate_count} ({_fmt(c.average_evidence_tool_calls)}) |"
             )
 
+        lines += [
+            "",
+            "### 降级摘要",
+            "",
+            "| 用例 | ReAct→直连(递归) | ReAct→直连(空) | Direct 分派 | 发现者失败 | Task 失败 | Judge 失败 | 证据截断 |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for o in council_rows:
+            c = o.council_trace
+            lines.append(
+                f"| {o.case_id} | "
+                f"{c.react_degraded_recursion_count} | "
+                f"{c.react_degraded_empty_count} | "
+                f"{c.direct_tier_task_count} | "
+                f"{c.discoverer_failed_count} | "
+                f"{c.task_review_failed_count} | "
+                f"{c.judge_synthesis_failed_count} | "
+                f"{c.evidence_plan_skipped_count} |"
+            )
+
     # 规则尺 vs 裁判尺交叉校验:仅当本次确有用例走 LLM 主判时才有意义。
     # 主判(LLM)与规则尺判出的 TP/FP/FN 不一致的用例,正是"关键词撞词/漏配"被裁判纠正之处,
     # 也是核对裁判是否离谱、留存可复现凭证的地方。

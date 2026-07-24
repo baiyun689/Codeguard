@@ -258,6 +258,28 @@ class CouncilTraceStats(BaseModel):
         default=0.0, description="实际新证据工具调用数/候选数；无候选时为 0.0"
     )
     trace_events: int = 0
+    # ── 降级指标 ──
+    react_degraded_recursion_count: int = Field(
+        default=0, description="ReAct 撞递归上限降级 DirectEngine 的次数"
+    )
+    react_degraded_empty_count: int = Field(
+        default=0, description="ReAct 空结果降级 DirectEngine 的次数"
+    )
+    direct_tier_task_count: int = Field(
+        default=0, description="路由为 tier=direct（不使用 ReAct）的 task 数"
+    )
+    discoverer_failed_count: int = Field(
+        default=0, description="完全失败（异常跳过）的发现者调用次数"
+    )
+    task_review_failed_count: int = Field(
+        default=0, description="per-task 审查调用返回 None 的次数"
+    )
+    judge_synthesis_failed_count: int = Field(
+        default=0, description="CouncilJudge LLM synthesis 失败使用默认 severity 的次数"
+    )
+    evidence_plan_skipped_count: int = Field(
+        default=0, description="证据规划因超 cap 跳过的请求数"
+    )
 
 
 class MatchOutcome(BaseModel):
