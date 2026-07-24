@@ -17,6 +17,7 @@ from codeguard_agent.models.council import (
 )
 from codeguard_agent.models.schemas import Issue
 from codeguard_agent.models.tasks import RiskTag
+from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.evidence.agent import (
     BoundEvidence,
     bound_evidence,
@@ -100,43 +101,39 @@ def _gate_candidate(
 
 def _purpose_findings(
     dossier: CandidateDossier,
-    batch: JudgeBatch,
-) -> list[BoundEvidence]:
+) -> tuple[list[BoundEvidence], list[tuple[str, str]]]:
+    """返回 (有效findings, trace_events)。trace 改为返回而非副作用，以支持并行。"""
+    traces: list[tuple[str, str]] = []
+    def _add_trace(event: str, detail: dict[str, object]) -> None:
+        traces.append((event, _stable_json(detail)))
+
     request_by_id: dict[str, EvidenceRequest] = {}
     for request in dossier.requests:
         mismatch = request_strategy_mismatch(request, dossier)
         if mismatch is None:
             request_by_id[request.id] = request
         else:
-            _trace(
-                batch,
-                "invalid_evidence_request_ignored",
-                {
-                    "candidate_id": dossier.candidate.id,
-                    "request_id": request.id,
-                    "mismatch": mismatch,
-                },
-            )
+            _add_trace("invalid_evidence_request_ignored", {
+                "candidate_id": dossier.candidate.id,
+                "request_id": request.id,
+                "mismatch": mismatch,
+            })
     for note in dossier.notes:
         if note.candidate_id != dossier.candidate.id:
-            _trace(
-                batch,
-                "cross_candidate_evidence_ignored",
-                {
-                    "candidate_id": dossier.candidate.id,
-                    "note_candidate_id": note.candidate_id,
-                    "request_id": note.request_id,
-                },
-            )
+            _add_trace("cross_candidate_evidence_ignored", {
+                "candidate_id": dossier.candidate.id,
+                "note_candidate_id": note.candidate_id,
+                "request_id": note.request_id,
+            })
             continue
         bound_request = request_by_id.get(note.request_id)
         if bound_request is None:
-            _trace(
-                batch, "orphan_evidence_ignored",
-                {"candidate_id": dossier.candidate.id, "request_id": note.request_id},
-            )
+            _add_trace("orphan_evidence_ignored", {
+                "candidate_id": dossier.candidate.id,
+                "request_id": note.request_id,
+            })
             continue
-    return bound_evidence(dossier)
+    return bound_evidence(dossier), traces
 
 
 # ── synthesis payload ────────────────────────────────────────────────────────
@@ -239,6 +236,129 @@ def _findings_by_id(
 # ── main entry ───────────────────────────────────────────────────────────────
 
 
+def _judge_one_candidate(
+    dossier: CandidateDossier,
+    *,
+    judge_llm: Any,
+    structured_method: str,
+    max_retries: int,
+) -> tuple[Verdict, Issue | None, str, list[tuple[str, str]]]:
+    """对单个候选执行证据门控 → LLM 综合 → 裁决，返回 (verdict, issue, candidate_id, traces)。"""
+    traces: list[tuple[str, str]] = []
+    def _add_trace(event: str, detail: dict[str, object]) -> None:
+        traces.append((event, _stable_json(detail)))
+
+    findings, purpose_traces = _purpose_findings(dossier)
+    traces.extend(purpose_traces)
+
+    # Evidence gate
+    gate = _gate_candidate(findings)
+    if gate is not None:
+        reason_code, reason = gate
+        verdict = Verdict(dossier.candidate.id, "drop", reason_code, reason)
+        _add_trace("judge_verdict", {
+            "candidate_id": verdict.candidate_id, "action": "drop",
+            "reason_code": reason_code,
+        })
+        return verdict, None, "", traces
+
+    # LLM synthesis
+    primary = _primary_tag(dossier)
+    policy = policy_for(primary)
+    assessment = _synthesize(
+        dossier, findings,
+        judge_llm=judge_llm,
+        structured_method=structured_method,
+        max_retries=max_retries,
+    )
+
+    if assessment is None:
+        resolved_severity = policy.default_severity
+        verdict = Verdict(
+            dossier.candidate.id, "keep",
+            "severity_evidence_incomplete",
+            "LLM synthesis failed, using policy default severity",
+            resolved_severity=resolved_severity,
+        )
+        issue = dossier.candidate.to_issue().model_copy(
+            update={"severity": resolved_severity}
+        )
+        _add_trace("judge_verdict", {
+            "candidate_id": verdict.candidate_id, "action": "keep",
+            "reason_code": "severity_evidence_incomplete",
+            "resolved_severity": resolved_severity.value,
+        })
+        _add_trace("severity_resolved", {
+            "candidate_id": dossier.candidate.id,
+            "matched_rule": f"{primary.value.lower()}.default",
+            "severity": resolved_severity.value,
+        })
+        return verdict, issue, dossier.candidate.id, traces
+
+    findings_map = _findings_by_id(findings)
+    unknown_evidence_ids = sorted({
+        evidence_id
+        for factor in assessment.severity_factors
+        for evidence_id in factor.evidence_ids
+        if evidence_id not in findings_map
+    })
+    if unknown_evidence_ids:
+        _add_trace("unknown_evidence_citation_ignored", {
+            "candidate_id": dossier.candidate.id,
+            "evidence_ids": unknown_evidence_ids,
+        })
+
+    # Post-synthesis adjudication
+    if assessment.claim_status == "refuted" or assessment.counter_effect == "complete":
+        verdict = Verdict(
+            dossier.candidate.id, "drop",
+            "synthesized_counter_evidence",
+            assessment.reason or "synthesis refuted candidate",
+        )
+        _add_trace("judge_verdict", {
+            "candidate_id": verdict.candidate_id, "action": "drop",
+            "reason_code": "synthesized_counter_evidence",
+        })
+        return verdict, None, "", traces
+
+    if assessment.claim_status == "unresolved":
+        verdict = Verdict(
+            dossier.candidate.id, "drop",
+            "evidence_conflict_unresolved",
+            "; ".join(assessment.conflicts) or "evidence conflicts unresolved",
+        )
+        _add_trace("judge_verdict", {
+            "candidate_id": verdict.candidate_id, "action": "drop",
+            "reason_code": "evidence_conflict_unresolved",
+        })
+        return verdict, None, "", traces
+
+    # claim_status == "supported" → severity resolution
+    resolution = resolve_severity(primary, assessment.severity_factors, findings_map)
+    verdict = Verdict(
+        dossier.candidate.id, "keep",
+        "severity_resolved",
+        f"resolved to {resolution.severity.value} via {resolution.matched_rule}",
+        resolved_severity=resolution.severity,
+    )
+    issue = dossier.candidate.to_issue().model_copy(
+        update={"severity": resolution.severity}
+    )
+    _add_trace("judge_verdict", {
+        "candidate_id": verdict.candidate_id, "action": "keep",
+        "reason_code": "severity_resolved",
+        "resolved_severity": resolution.severity.value,
+    })
+    _add_trace("severity_resolved", {
+        "candidate_id": dossier.candidate.id,
+        "matched_rule": resolution.matched_rule,
+        "severity": resolution.severity.value,
+        "proven_factors": list(resolution.proven_factors),
+        "missing_critical_factors": list(resolution.missing_critical_factors),
+    })
+    return verdict, issue, dossier.candidate.id, traces
+
+
 def judge_candidates(
     assembly: DossierAssembly,
     *,
@@ -248,7 +368,7 @@ def judge_candidates(
 ) -> JudgeBatch:
     batch = JudgeBatch()
 
-    # Binding failures → drop
+    # Binding failures → drop（确定性，无需并行）
     for failure in assembly.failures:
         verdict = Verdict(
             failure.candidate.id,
@@ -263,135 +383,30 @@ def judge_candidates(
              "reason_code": verdict.reason_code},
         )
 
-    for dossier in assembly.dossiers:
-        findings = _purpose_findings(dossier, batch)
+    if not assembly.dossiers:
+        return batch
 
-        # Evidence gate
-        gate = _gate_candidate(findings)
-        if gate is not None:
-            reason_code, reason = gate
-            verdict = Verdict(dossier.candidate.id, "drop", reason_code, reason)
-            batch.verdicts.append(verdict)
-            _trace(
-                batch, "judge_verdict",
-                {"candidate_id": verdict.candidate_id, "action": "drop",
-                 "reason_code": reason_code},
-            )
-            continue
-
-        # LLM synthesis
-        primary = _primary_tag(dossier)
-        policy = policy_for(primary)
-        assessment = _synthesize(
-            dossier, findings,
+    # 候选并行裁决：每个候选独立执行证据门控 → LLM 综合 → 定级
+    def _invoke(dossier: CandidateDossier):
+        return _judge_one_candidate(
+            dossier,
             judge_llm=judge_llm,
             structured_method=structured_method,
             max_retries=max_retries,
         )
 
-        if assessment is None:
-            # Synthesis failed → default severity, keep
-            resolved_severity = policy.default_severity
-            verdict = Verdict(
-                dossier.candidate.id, "keep",
-                "severity_evidence_incomplete",
-                "LLM synthesis failed, using policy default severity",
-                resolved_severity=resolved_severity,
-            )
-            batch.verdicts.append(verdict)
-            issue = dossier.candidate.to_issue().model_copy(
-                update={"severity": resolved_severity}
-            )
-            batch.final_issues.append(issue)
-            batch.final_candidate_ids.append(dossier.candidate.id)
-            _trace(
-                batch, "judge_verdict",
-                {"candidate_id": verdict.candidate_id, "action": "keep",
-                 "reason_code": "severity_evidence_incomplete",
-                 "resolved_severity": resolved_severity.value},
-            )
-            _trace(
-                batch, "severity_resolved",
-                {"candidate_id": dossier.candidate.id,
-                 "matched_rule": f"{primary.value.lower()}.default",
-                 "severity": resolved_severity.value},
-            )
+    results = run_bounded_parallel(assembly.dossiers, _invoke, max_workers=6)
+
+    for result in results:
+        if result is None:
             continue
-
-        findings_map = _findings_by_id(findings)
-        unknown_evidence_ids = sorted({
-            evidence_id
-            for factor in assessment.severity_factors
-            for evidence_id in factor.evidence_ids
-            if evidence_id not in findings_map
-        })
-        if unknown_evidence_ids:
-            _trace(
-                batch,
-                "unknown_evidence_citation_ignored",
-                {
-                    "candidate_id": dossier.candidate.id,
-                    "evidence_ids": unknown_evidence_ids,
-                },
-            )
-
-        # Post-synthesis adjudication
-        if assessment.claim_status == "refuted" or assessment.counter_effect == "complete":
-            verdict = Verdict(
-                dossier.candidate.id, "drop",
-                "synthesized_counter_evidence",
-                assessment.reason or "synthesis refuted candidate",
-            )
-            batch.verdicts.append(verdict)
-            _trace(
-                batch, "judge_verdict",
-                {"candidate_id": verdict.candidate_id, "action": "drop",
-                 "reason_code": "synthesized_counter_evidence"},
-            )
-            continue
-
-        if assessment.claim_status == "unresolved":
-            verdict = Verdict(
-                dossier.candidate.id, "drop",
-                "evidence_conflict_unresolved",
-                "; ".join(assessment.conflicts) or "evidence conflicts unresolved",
-            )
-            batch.verdicts.append(verdict)
-            _trace(
-                batch, "judge_verdict",
-                {"candidate_id": verdict.candidate_id, "action": "drop",
-                 "reason_code": "evidence_conflict_unresolved"},
-            )
-            continue
-
-        # claim_status == "supported" → severity resolution
-        resolution = resolve_severity(primary, assessment.severity_factors, findings_map)
-        verdict = Verdict(
-            dossier.candidate.id, "keep",
-            "severity_resolved",
-            f"resolved to {resolution.severity.value} via {resolution.matched_rule}",
-            resolved_severity=resolution.severity,
-        )
+        verdict, issue, candidate_id, traces = result
         batch.verdicts.append(verdict)
-        issue = dossier.candidate.to_issue().model_copy(
-            update={"severity": resolution.severity}
-        )
-        batch.final_issues.append(issue)
-        batch.final_candidate_ids.append(dossier.candidate.id)
-        _trace(
-            batch, "judge_verdict",
-            {"candidate_id": verdict.candidate_id, "action": "keep",
-             "reason_code": "severity_resolved",
-             "resolved_severity": resolution.severity.value},
-        )
-        _trace(
-            batch, "severity_resolved",
-            {"candidate_id": dossier.candidate.id,
-             "matched_rule": resolution.matched_rule,
-             "severity": resolution.severity.value,
-             "proven_factors": list(resolution.proven_factors),
-             "missing_critical_factors": list(resolution.missing_critical_factors)},
-        )
+        if issue is not None:
+            batch.final_issues.append(issue)
+        if candidate_id:
+            batch.final_candidate_ids.append(candidate_id)
+        batch.trace.extend(traces)
 
     return batch
 
