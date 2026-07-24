@@ -81,6 +81,7 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
         + [review_council_step]
         + [coordination_loop_step]
     )
+    degradation = report.degradation
     return {
         "main_stages": _main_stages(
             node_steps_with_placeholders,
@@ -92,6 +93,19 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
         "steps": steps,
         "state_writes": _state_writes(steps, events_by_sequence),
         "integrity": _integrity(report.events),
+        "degradation": {
+            "is_clean": degradation.is_clean,
+            "total": degradation.total_degradations,
+            "items": [
+                {"label": "ReAct→直连(递归)", "count": degradation.react_degraded_recursion},
+                {"label": "ReAct→直连(空)", "count": degradation.react_degraded_empty},
+                {"label": "Direct分派", "count": degradation.direct_tier_tasks, "info": True},
+                {"label": "发现者失败", "count": degradation.discoverer_failed},
+                {"label": "Task失败", "count": degradation.task_review_failed},
+                {"label": "Judge失败", "count": degradation.judge_synthesis_failed},
+                {"label": "证据截断", "count": degradation.evidence_plan_skipped},
+            ],
+        },
     }
 
 

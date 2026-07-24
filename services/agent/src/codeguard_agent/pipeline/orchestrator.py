@@ -13,6 +13,7 @@ import uuid
 
 from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.models.tasks import ReviewBudget
+from codeguard_agent.observability.models import DegradationReport
 from codeguard_agent.pipeline.graph import (
     DEFAULT_RECURSION_LIMIT,
     ReviewState,
@@ -142,6 +143,7 @@ class PipelineOrchestrator:
             else:
                 try:
                     report = tracer.finalize()
+                    _inject_degradation(report, final_state)
                     render_dashboard_file(report, trace_dir, _run_id)
                 except Exception:
                     logger.warning("追踪报告生成失败", exc_info=True)
@@ -165,3 +167,35 @@ class PipelineOrchestrator:
             summary=final_state.get("summary", ""),
             issues=list(final_state.get("final_issues") or []),
         )
+
+
+def _inject_degradation(report: Any, final_state: dict) -> None:
+    """从 final_state 的 council_trace 和 council_stats 提取降级数据注入 TraceReport。"""
+    council_trace = final_state.get("council_trace") or []
+    report.degradation = DegradationReport(
+        react_degraded_recursion=sum(
+            t.event == "react_degraded_recursion" for t in council_trace
+        ),
+        react_degraded_empty=sum(
+            t.event == "react_degraded_empty" for t in council_trace
+        ),
+        direct_tier_tasks=sum(
+            t.event == "tier_direct" for t in council_trace
+        ),
+        discoverer_failed=sum(
+            t.event == "discover_failed" for t in council_trace
+        ),
+        task_review_failed=sum(
+            t.event == "task_review_failed" for t in council_trace
+        ),
+        judge_synthesis_failed=sum(
+            t.event == "severity_resolved" and "severity_evidence_incomplete" in str(t.detail)
+            for t in council_trace
+        ) or (
+            final_state.get("council_stats")
+            and getattr(final_state["council_stats"], "severity_defaulted_count", 0) or 0
+        ),
+        evidence_plan_skipped=sum(
+            t.event == "evidence_plan_skipped" for t in council_trace
+        ),
+    )

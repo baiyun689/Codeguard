@@ -22,6 +22,12 @@ body{display:flex;flex-direction:column;overflow:hidden}
 .metrics{margin-left:auto;gap:8px;flex-wrap:wrap}
 .metric{padding:4px 8px;border:1px solid var(--line);background:var(--panel2);
   border-radius:7px;color:var(--dim)}.metric b{color:var(--text)}
+.degradation-line{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.degradation{border-color:var(--orange);color:var(--orange)}
+.degradation b{color:var(--orange)}.degradation-item{padding:2px 6px;
+  border:1px solid var(--orange);border-radius:5px;font-size:11px;color:var(--orange)}
+.degradation-item.dim{border-color:var(--line);color:var(--dim);opacity:.7}
+.metric.ok{border-color:var(--green);color:var(--green)}
 .warning{color:var(--yellow)}.sensitive{color:var(--yellow)}
 .bar{display:flex;gap:12px;padding:8px 18px;background:#0f1628;
   border-bottom:1px solid var(--line)}.tabs{gap:4px}
@@ -130,6 +136,7 @@ body{display:flex;flex-direction:column;overflow:hidden}
   <div class="topline">
     <span class="brand">Codeguard Trace</span>
     <div class="metrics" id="metrics"></div>
+    <div class="degradation-line" id="degradation"></div>
   </div>
 </header>
 <div class="bar">
@@ -201,6 +208,18 @@ function renderMeta(){
     '</b> · 缺结束 '+Number(integrity.missing_end_count||0)+
     ' · 未关联 '+Number(integrity.unassociated_count||0)+'</span>'+
     '<span class="metric sensitive">⚠ 包含源码与模型上下文</span>'
+  var deg=VIEW.degradation||{},degItems=deg.items||[];
+  if(!deg.is_clean){
+    var degParts=['<span class="metric degradation">降级 <b>'+deg.total+'</b>'];
+    degItems.forEach(function(item){
+      if(item.count>0) degParts.push('<span class="degradation-item">'+esc(item.label)+' <b>'+item.count+'</b></span>');
+      else if(item.info) degParts.push('<span class="degradation-item dim">'+esc(item.label)+' <b>'+item.count+'</b></span>');
+    });
+    degParts.push('</span>');
+    document.getElementById("degradation").innerHTML=degParts.join("");
+  }else{
+    document.getElementById("degradation").innerHTML='<span class="metric ok">✓ 无降级</span>';
+  }
 }
 
 function bindGlobalControls(){

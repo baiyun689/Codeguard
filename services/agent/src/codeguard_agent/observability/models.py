@@ -64,6 +64,33 @@ class TraceSummary(BaseModel):
     node_timeline: list[NodeStats] = Field(default_factory=list)
 
 
+class DegradationReport(BaseModel):
+    """降级事件汇总，供 trace 仪表盘展示。"""
+
+    react_degraded_recursion: int = 0
+    react_degraded_empty: int = 0
+    direct_tier_tasks: int = 0
+    discoverer_failed: int = 0
+    task_review_failed: int = 0
+    judge_synthesis_failed: int = 0
+    evidence_plan_skipped: int = 0
+
+    @property
+    def total_degradations(self) -> int:
+        return (
+            self.react_degraded_recursion
+            + self.react_degraded_empty
+            + self.discoverer_failed
+            + self.task_review_failed
+            + self.judge_synthesis_failed
+            + self.evidence_plan_skipped
+        )
+
+    @property
+    def is_clean(self) -> bool:
+        return self.total_degradations == 0
+
+
 class TraceReport(BaseModel):
     """一次审查的完整追踪报告。"""
 
@@ -72,3 +99,4 @@ class TraceReport(BaseModel):
     diff_size: int = 0
     events: list[TraceEvent] = Field(default_factory=list)
     summary: TraceSummary = Field(default_factory=TraceSummary)
+    degradation: DegradationReport = Field(default_factory=DegradationReport)
