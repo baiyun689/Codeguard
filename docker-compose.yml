@@ -1,4 +1,22 @@
 services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
+      MYSQL_DATABASE: codeguard
+      MYSQL_USER: codeguard
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-codeguard}
+    ports:
+      - "${MYSQL_HOST_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   codeguard:
     image: ghcr.io/baiyun689/codeguard:${CODEGUARD_IMAGE_TAG:-latest}
     build:
@@ -14,7 +32,9 @@ services:
       CODEGUARD_GITHUB_PRIVATE_KEY_FILE: /run/secrets/github_app_private_key
       CODEGUARD_TOOL_SERVER_URL: http://localhost:9090
       CODEGUARD_TOOL_SERVER_PORT: "9090"
-      CODEGUARD_JOB_DB_PATH: /app/data/codeguard-jobs
+      CODEGUARD_JOB_DB_URL: jdbc:mysql://mysql:3306/codeguard
+      CODEGUARD_JOB_DB_USER: codeguard
+      CODEGUARD_JOB_DB_PASSWORD: ${MYSQL_PASSWORD:-codeguard}
       CODEGUARD_WORKSPACE_DIR: /tmp/codeguard-jobs
       CODEGUARD_TRACE_DIR: /app/trace
     secrets:
@@ -25,6 +45,9 @@ services:
       - gateway-data:/app/data
       - job-workspaces:/tmp/codeguard-jobs
       - ./trace:/app/trace
+    depends_on:
+      mysql:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9090/health/ready"]
@@ -38,5 +61,6 @@ secrets:
     file: ${CODEGUARD_GITHUB_PRIVATE_KEY_FILE:-./secrets/github-app.pem}
 
 volumes:
+  mysql-data:
   gateway-data:
   job-workspaces:

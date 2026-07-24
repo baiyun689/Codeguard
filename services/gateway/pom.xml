@@ -24,6 +24,8 @@
         <javaparser.version>3.26.2</javaparser.version>
         <guava.version>33.2.1-jre</guava.version>
         <h2.version>2.3.232</h2.version>
+        <mysql.connector.version>8.3.0</mysql.connector.version>
+        <hikaricp.version>6.2.1</hikaricp.version>
         <junit.version>5.10.2</junit.version>
         <micrometer.version>1.13.2</micrometer.version>
     </properties>
@@ -60,11 +62,25 @@
             <artifactId>guava</artifactId>
             <version>${guava.version}</version>
         </dependency>
-        <!-- Job 持久化: H2 -->
+        <!-- Job 持久化: MySQL（生产）+ H2（仅测试） -->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <version>${mysql.connector.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- HikariCP 连接池 -->
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+            <version>${hikaricp.version}</version>
+        </dependency>
+        <!-- H2 仅测试：快速、零依赖，无需 Docker -->
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
             <version>${h2.version}</version>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>io.micrometer</groupId>

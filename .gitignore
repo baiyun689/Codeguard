@@ -38,6 +38,7 @@ services/agent/evals/runs/
 
 # 审查过程 trace(每次跑生成的 HTML 追踪文件,本地累积,不入库)
 services/agent/trace/
+trace/
 
 # CI Gateway
 services/gateway/data/

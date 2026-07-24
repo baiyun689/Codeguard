@@ -4,7 +4,7 @@ import java.time.Instant;
 import java.util.Objects;
 
 /**
- * 审查 job 实体。持久化到 H2，重启不丢。
+ * 审查 job 实体。持久化到 MySQL，重启不丢。
  */
 public class ReviewJob {
     public enum Status { PENDING, RUNNING, RETRYING, DONE, FAILED }

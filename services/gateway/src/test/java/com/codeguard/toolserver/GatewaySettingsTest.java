@@ -23,8 +23,10 @@ class GatewaySettingsTest {
         assertEquals(Duration.ofSeconds(600), settings.reviewTimeout());
         assertEquals(Duration.ofSeconds(30), settings.retryDelay());
         assertEquals(Duration.ofSeconds(30), settings.shutdownGrace());
-        assertEquals(Path.of("./data/codeguard-jobs"), settings.jobDbPath());
         assertEquals(Path.of("tmp", "codeguard-jobs"), settings.workspaceDir());
+        assertEquals("jdbc:mysql://localhost:3306/codeguard", settings.jobDbUrl());
+        assertEquals("codeguard", settings.jobDbUser());
+        assertEquals("codeguard", settings.jobDbPassword());
     }
 
     @Test

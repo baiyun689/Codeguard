@@ -84,7 +84,7 @@ GitHub PR opened/synchronize/reopened
       │                                       │
       ├─ WebhookVerifier (HMAC-SHA256 验签)    │
       ├─ GitHubWebhookController (事件过滤)    │
-      ├─ JobRepository H2 (幂等去重+持久化)    │
+      ├─ JobRepository MySQL (幂等去重+持久化)    │
       ├─ JobScheduler (有界队列+并发信号量)    │
       ├─ ReviewExecutor (git clone+Python CLI) │
       ├─ ResultFeedback (Check Runs+行评论)    │
@@ -149,7 +149,7 @@ Codeguard/
     │   ├── tests/                 # pytest:测工程正确性
     │   └── evals/                 # ★审查质量评测框架(量化效果,见 §5)
     └── gateway/                   # ★Java Gateway(护栏 + 地面真值层 + CI 入口)
-        ├── pom.xml               # Maven;Javalin + Jackson + SLF4J + Guava + H2;fat jar 独立启动
+        ├── pom.xml               # Maven;Javalin + Jackson + SLF4J + Guava + MySQL (HikariCP);fat jar 独立启动
         ├── start-ci.ps1          # ★本地一键启动 CI Gateway 脚本
         └── src/main/java/com/codeguard/
             ├── agent/core/       # AgentTool 接口 / ToolResult 信封 / AgentContext
@@ -159,7 +159,7 @@ Codeguard/
             ├── ci/               # ★CI 集成(GitHub PR 自动审查):
             │   ├── model/        #   WebhookPayload / ReviewJob 数据模型
             │   ├── webhook/      #   GitHubWebhookController(验签+事件过滤+幂等)
-            │   ├── job/          #   JobRepository(H2 持久化) / JobScheduler(有界队列+信号量)
+            │   ├── job/          #   JobRepository(MySQL 持久化) / JobScheduler(有界队列+信号量)
             │   ├── executor/     #   ReviewExecutor(ProcessBuilder+异步IO+超时) / ResultFeedback(Check Runs+行评论)
             │   ├── github/       #   GitHubClient(App JWT+Check Runs API+PR Comments)
             │   └── guard/        #   ReviewGuard(令牌桶限流+大diff降级+重试判定)

@@ -42,7 +42,7 @@ public final class ToolServerApp {
 
     private void configureCi() {
         if (settings.webhookSecret().isBlank()) return;
-        jobRepository = new JobRepository(settings.jobDbPath().toString());
+        jobRepository = JobRepository.mysql(settings.jobDbUrl(), settings.jobDbUser(), settings.jobDbPassword());
         GitHubClient githubClient = null;
         if (!settings.githubAppId().isBlank() && !settings.githubPrivateKey().isBlank()) {
             githubClient = new GitHubClient(settings.githubAppId(), settings.githubPrivateKey());
@@ -91,7 +91,7 @@ public final class ToolServerApp {
     public void stop() {
         app.stop(); // reject new webhooks before draining review workers
         if (scheduler != null) scheduler.close();
-        else if (jobRepository != null) jobRepository.close();
+        if (jobRepository != null) jobRepository.close();
         log.info("Codeguard 工具服务已停止");
     }
 

@@ -2,7 +2,10 @@ package com.codeguard.ci.job;
 
 import com.codeguard.ci.model.ReviewJob;
 import com.codeguard.ci.model.ReviewJob.Status;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 
+import javax.sql.DataSource;
 import java.sql.*;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -10,27 +13,52 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * H2 文件模式持久化 ReviewJob。
- * 支持幂等插入（MERGE INTO）和启动恢复（findUnfinished）。
+ * 审查 Job 持久化。生产用 MySQL（HikariCP 连接池），测试用 H2 文件模式（MySQL 兼容模式）。
  */
 public class JobRepository implements AutoCloseable {
 
-    private final Connection conn;
-    private boolean closed;
+    private final DataSource dataSource;
+    private final boolean ownsPool;
 
     /**
-     * @param dbPath H2 数据库文件路径（不含 jdbc:h2:file: 前缀）
+     * 测试用：H2 文件模式（MySQL 兼容模式，DDL 与生产一致）。
      */
     public JobRepository(String dbPath) {
-        try {
-            this.conn = DriverManager.getConnection("jdbc:h2:file:" + dbPath + ";DB_CLOSE_DELAY=-1");
-            initTable();
-        } catch (SQLException e) {
-            throw new RuntimeException("无法打开 H2 数据库: " + dbPath, e);
-        }
+        this(h2Pool(dbPath), true);
     }
 
-    private void initTable() throws SQLException {
+    /**
+     * 生产用：MySQL 连接池。
+     */
+    public static JobRepository mysql(String url, String user, String password) {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(url);
+        config.setUsername(user);
+        config.setPassword(password);
+        config.setMaximumPoolSize(5);
+        config.addDataSourceProperty("cachePrepStmts", "true");
+        config.addDataSourceProperty("prepStmtCacheSize", "25");
+        config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
+        return new JobRepository(new HikariDataSource(config), true);
+    }
+
+    private JobRepository(DataSource dataSource, boolean ownsPool) {
+        this.dataSource = dataSource;
+        this.ownsPool = ownsPool;
+        initTable();
+    }
+
+    private static DataSource h2Pool(String dbPath) {
+        HikariConfig config = new HikariConfig();
+        // MODE=MySQL 使 H2 兼容 LONGTEXT / INSERT ... ON DUPLICATE KEY UPDATE 等语法
+        config.setJdbcUrl("jdbc:h2:file:" + dbPath + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
+        config.setUsername("sa");
+        config.setPassword("");
+        config.setMaximumPoolSize(1);
+        return new HikariDataSource(config);
+    }
+
+    private void initTable() {
         String sql = """
             CREATE TABLE IF NOT EXISTS review_jobs (
                 id              BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -41,39 +69,41 @@ public class JobRepository implements AutoCloseable {
                 clone_url       VARCHAR(512),
                 installation_id BIGINT,
                 status          VARCHAR(20) NOT NULL DEFAULT 'PENDING',
-                result_json     CLOB,
+                result_json     LONGTEXT,
                 retry_count     INT DEFAULT 0,
                 error_message   VARCHAR(1024),
-                diff_text       CLOB,
+                diff_text       LONGTEXT,
                 created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (repo, pr_number, head_sha)
             )
             """;
-        try (Statement stmt = conn.createStatement()) {
+        try (Connection conn = dataSource.getConnection();
+             Statement stmt = conn.createStatement()) {
             stmt.execute(sql);
+        } catch (SQLException e) {
+            throw new RuntimeException("建表失败", e);
         }
     }
 
     /**
-     * 幂等插入。使用 MERGE INTO 保证同一 (repo, pr_number, head_sha) 只存一行。
+     * 幂等插入。通过先查后插 + 捕获竞态异常保证重复安全。
      *
      * @param job 待插入的 ReviewJob
-     * @return 如果新行被创建返回包含 job 的 Optional；如果已存在（重复）返回 Optional.empty()
+     * @return 新插入成功返回含 job 的 Optional，重复则返回 Optional.empty()
      */
-    public synchronized Optional<ReviewJob> insert(ReviewJob job) {
-        // 先检查是否已存在，用于区分"新建"和"重复"
+    public Optional<ReviewJob> insert(ReviewJob job) {
         if (findByDedupKey(job.getRepo(), job.getPrNumber(), job.getHeadSha()).isPresent()) {
             return Optional.empty();
         }
 
         String sql = """
-            MERGE INTO review_jobs (repo, pr_number, head_sha, base_ref, clone_url, installation_id,
-                                    status, result_json, retry_count, error_message, diff_text, created_at, updated_at)
-            KEY (repo, pr_number, head_sha)
+            INSERT INTO review_jobs (repo, pr_number, head_sha, base_ref, clone_url, installation_id,
+                                      status, result_json, retry_count, error_message, diff_text, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
-        try (PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
             ps.setString(1, job.getRepo());
             ps.setInt(2, job.getPrNumber());
             ps.setString(3, job.getHeadSha());
@@ -91,21 +121,26 @@ public class JobRepository implements AutoCloseable {
             ps.executeUpdate();
             try (ResultSet keys = ps.getGeneratedKeys()) {
                 if (keys.next()) {
-                    job.setId(keys.getLong(1));
+                    job.setIdFromDb(keys.getLong(1));
                 }
             }
         } catch (SQLException e) {
+            // 竞态条件：并发插入相同去重键
+            if (isDuplicateKeyError(e)) {
+                return Optional.empty();
+            }
             throw new RuntimeException("插入 ReviewJob 失败: " + job.dedupKey(), e);
         }
         return Optional.of(job);
     }
 
     /**
-     * 按去重键查询，用于幂等性检查。
+     * 按去重键查询。
      */
-    public synchronized Optional<ReviewJob> findByDedupKey(String repo, int prNumber, String headSha) {
+    public Optional<ReviewJob> findByDedupKey(String repo, int prNumber, String headSha) {
         String sql = "SELECT * FROM review_jobs WHERE repo = ? AND pr_number = ? AND head_sha = ?";
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, repo);
             ps.setInt(2, prNumber);
             ps.setString(3, headSha);
@@ -121,16 +156,16 @@ public class JobRepository implements AutoCloseable {
     }
 
     /**
-     * 更新 job 的状态、结果、重试次数、错误信息和更新时间。
-     * 按 id 定位。
+     * 更新 job 的状态、结果、重试次数、错误信息和更新时间，按 id 定位。
      */
-    public synchronized void update(ReviewJob job) {
+    public void update(ReviewJob job) {
         String sql = """
             UPDATE review_jobs
             SET status = ?, result_json = ?, retry_count = ?, error_message = ?, diff_text = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, job.getStatus().name());
             ps.setString(2, job.getResultJson());
             ps.setInt(3, job.getRetryCount());
@@ -146,10 +181,11 @@ public class JobRepository implements AutoCloseable {
     /**
      * 查找所有未完成的 job（PENDING / RUNNING / RETRYING），用于启动恢复。
      */
-    public synchronized List<ReviewJob> findUnfinished() {
+    public List<ReviewJob> findUnfinished() {
         String sql = "SELECT * FROM review_jobs WHERE status IN ('PENDING', 'RUNNING', 'RETRYING')";
         List<ReviewJob> jobs = new ArrayList<>();
-        try (PreparedStatement ps = conn.prepareStatement(sql);
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql);
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
                 jobs.add(mapRow(rs));
@@ -160,10 +196,24 @@ public class JobRepository implements AutoCloseable {
         return jobs;
     }
 
-    /**
-     * 将 ResultSet 当前行映射为 ReviewJob。
-     * 使用 package-private 构造器和 setter，不使用反射。
-     */
+    public boolean ping() {
+        try (Connection conn = dataSource.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT 1")) {
+            return rs.next() && rs.getInt(1) == 1;
+        } catch (SQLException ignored) {
+            return false;
+        }
+    }
+
+    @Override
+    public void close() {
+        if (ownsPool && dataSource instanceof HikariDataSource ds) {
+            ds.close();
+        }
+    }
+
+    /** ResultSet 当前行映射为 ReviewJob。使用 package-private 构造器和 setter，不使用反射。 */
     private ReviewJob mapRow(ResultSet rs) throws SQLException {
         ReviewJob job = new ReviewJob(
             rs.getString("repo"),
@@ -191,26 +241,10 @@ public class JobRepository implements AutoCloseable {
         return job;
     }
 
-    public synchronized boolean ping() {
-        if (closed) return false;
-        try (Statement statement = conn.createStatement();
-             ResultSet result = statement.executeQuery("SELECT 1")) {
-            return result.next() && result.getInt(1) == 1;
-        } catch (SQLException ignored) {
-            return false;
-        }
-    }
-
-    @Override
-    public synchronized void close() {
-        if (closed) return;
-        try {
-            if (conn != null && !conn.isClosed()) {
-                conn.close();
-            }
-            closed = true;
-        } catch (SQLException e) {
-            throw new RuntimeException("关闭数据库连接失败", e);
-        }
+    private static boolean isDuplicateKeyError(SQLException e) {
+        String msg = e.getMessage();
+        if (msg == null) return false;
+        return msg.contains("Unique") || msg.contains("unique")
+            || msg.contains("Duplicate") || msg.contains("duplicate");
     }
 }
