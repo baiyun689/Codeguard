@@ -156,6 +156,26 @@ def compute_council_run_stats(
     )
     candidate_dedup_llm_calls = dedup.get("llm_call_count", 0)
     candidate_dedup_block_failure_count = dedup.get("block_failure_count", 0)
+
+    # ── 降级指标：从 council_trace 事件中计数 ──
+    react_degraded_recursion_count = sum(
+        trace.event == "react_degraded_recursion" for trace in council_trace
+    )
+    react_degraded_empty_count = sum(
+        trace.event == "react_degraded_empty" for trace in council_trace
+    )
+    direct_tier_task_count = sum(
+        trace.event == "tier_direct" for trace in council_trace
+    )
+    discoverer_failed_count = sum(
+        trace.event == "discover_failed" for trace in council_trace
+    )
+    task_review_failed_count = sum(
+        trace.event == "task_review_failed" for trace in council_trace
+    )
+    evidence_plan_skipped_count = sum(
+        trace.event == "evidence_plan_skipped" for trace in council_trace
+    )
     return CouncilRunStats(
         candidate_count=candidate_count,
         candidate_count_by_agent=by_agent,
@@ -201,6 +221,13 @@ def compute_council_run_stats(
         average_evidence_tool_calls=(
             actual_tool_calls / candidate_count if candidate_count else 0.0
         ),
+        react_degraded_recursion_count=react_degraded_recursion_count,
+        react_degraded_empty_count=react_degraded_empty_count,
+        direct_tier_task_count=direct_tier_task_count,
+        discoverer_failed_count=discoverer_failed_count,
+        task_review_failed_count=task_review_failed_count,
+        judge_synthesis_failed_count=severity_defaulted,
+        evidence_plan_skipped_count=evidence_plan_skipped_count,
     )
 
 

@@ -623,14 +623,19 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
             return {"outcome": ReviewOutcome(ReviewResult(summary=""))}
         tier = state.get("tier")
         effective_tool_client = state.get("review_tool_client") or tool_client
-        # tool_client=None 时 _make_engine 恒返回 DirectEngine，故意走同一工厂函数而不是
-        # 直接 DirectEngine()，是为了保留 _make_engine 作为唯一的引擎选择入口
-        # (可测试/可 monkeypatch 的 seam)，不是遗留笔误。
         engine = (
             _make_engine(state, tool_client=None)
             if tier == "direct"
             else _make_engine(state, tool_client=effective_tool_client)
         )
+        review_traces: list[CouncilTrace] = []
+        if tier == "direct":
+            task = state.get("review_task")
+            task_id = task.id if task is not None else ""
+            review_traces.append(
+                CouncilTrace(node=reviewer.source_agent, event="tier_direct", detail=task_id)
+            )
+
         try:
             outcome = engine.review(
                 llm,
@@ -646,6 +651,13 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
 
             if isinstance(exc, GraphRecursionError):
                 logger.warning("[%s] 发现者撞递归上限,降级直连: %s", reviewer.name, exc)
+                review_traces.append(
+                    CouncilTrace(
+                        node=reviewer.source_agent,
+                        event="react_degraded_recursion",
+                        detail=str(exc)[:200],
+                    )
+                )
                 outcome = _direct_fallback(state)
             else:
                 logger.warning("[%s] 发现者失败,跳过: %s", reviewer.name, exc)
@@ -658,15 +670,21 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
 
         # ReAct 跑完但未产出任何 issue → LLM 偶发空响应（DeepSeek 已知问题），
         # 降级为 DirectEngine 直连复审以保住该域覆盖率。
-        # tier=="direct" 时空结果是低风险任务的正确结论（不是故障），且本就已经是
-        # DirectEngine 跑的，同引擎重跑一次不会改变结果，只会白白翻倍成本——跳过降级。
-        # tier is None（selection is None 的旧兼容路径不设置 tier）保持历史行为不变：
-        # 无条件降级复审。
         if tier != "direct" and not outcome.result.issues:
             logger.warning(
                 "[%s] ReAct 未产出 issue,降级直连复审以保住该域覆盖", reviewer.name
             )
+            review_traces.append(
+                CouncilTrace(
+                    node=reviewer.source_agent,
+                    event="react_degraded_empty",
+                    detail="empty result",
+                )
+            )
             outcome = _direct_fallback(state)
+
+        if review_traces:
+            return {"outcome": outcome, "council_trace": review_traces}
         return {"outcome": outcome}
 
     def _collect(state: ReviewerState) -> dict:
