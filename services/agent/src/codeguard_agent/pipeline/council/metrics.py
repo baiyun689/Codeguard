@@ -59,7 +59,7 @@ def compute_council_run_stats(
     council_trace: Sequence[CouncilTrace],
     candidate_dedup_stats: Mapping[str, int] | CandidateDedupStats | None = None,
 ) -> CouncilRunStats:
-    """从稳定候选映射和结构化证据计算 Phase 5 过程指标。"""
+    """从稳定候选映射和结构化证据计算审查过程指标。"""
     final_ids = set(final_candidate_ids)
     findings_by_candidate = {
         dossier.candidate.id: _valid_findings(dossier)

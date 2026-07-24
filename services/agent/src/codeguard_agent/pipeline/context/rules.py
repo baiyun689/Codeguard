@@ -1,7 +1,7 @@
-"""阶段3：RiskTag → 上下文策略映射 + 调用计划（纯函数，不碰 tool_client）。
+"""RiskTag → 上下文策略映射 + 调用计划（纯函数，不碰 tool_client）。
 
-Level0 的既有事实切片和每任务预算由后续任务实现；本模块当前只规划按 RiskTag
-定向调用的 Level1 工具。GENERAL_REVIEW 未注册策略，因此天然不触发 Level1。
+按 RiskTag 定向规划 Level1 工具调用。GENERAL_REVIEW 未注册策略，天然不触发 Level1。
+Level0 既有事实切片和每任务预算由 task_prep 模块负责。
 """
 
 from __future__ import annotations

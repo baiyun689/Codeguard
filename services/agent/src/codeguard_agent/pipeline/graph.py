@@ -1,15 +1,11 @@
 
-"""ADR-032 ReviewCouncil 编排图。
+"""ReviewCouncil 编排图。
 
 默认拓扑:
 
     START → diff_task_builder → risk_triage → task_rank → [summary]
               → context_provider → discover_* → council_coordinator(fan-in)
               → evidence_planner → evidence_agent → council_judge → END
-
-旧 LLM Supervisor 图已迁移到 `services/agent/legacy/supervisor_graph/graph.py`,
-仅作历史参考,不再作为主编排运行回退。
-challenge_agent 和 self_checker 节点已合并为 council_judge(规则+LLM 混合裁决)。
 """
 
 from __future__ import annotations
@@ -150,7 +146,7 @@ def _discover_node_name(reviewer: Reviewer) -> str:
 
 
 class ReviewState(TypedDict, total=False):
-    """ADR-032 图共享状态。"""
+    """审查图共享状态。"""
 
     diff_text: str
     enabled_tools: Any
@@ -313,7 +309,7 @@ def _risk_triage_node():
 
 
 def _task_rank_node():
-    """TaskRank：根据画像与预算选择进入深审的任务（Phase 1 全选）。"""
+    """TaskRank：根据画像与预算选择进入深审的任务。"""
 
     def _node(state: ReviewState) -> dict:
         tasks = state.get("review_tasks") or []
@@ -665,7 +661,7 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
         # tier=="direct" 时空结果是低风险任务的正确结论（不是故障），且本就已经是
         # DirectEngine 跑的，同引擎重跑一次不会改变结果，只会白白翻倍成本——跳过降级。
         # tier is None（selection is None 的旧兼容路径不设置 tier）保持历史行为不变：
-        # 无条件降级复审，与 Phase4 之前完全一致。
+        # 无条件降级复审。
         if tier != "direct" and not outcome.result.issues:
             logger.warning(
                 "[%s] ReAct 未产出 issue,降级直连复审以保住该域覆盖", reviewer.name
@@ -822,7 +818,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     out[key] = result[key]
             return out
 
-        # Phase4：每个路由到的 task 独立调用，task 间并发派发。
+        # 每个路由到的 task 独立调用，task 间并发派发。
         task_by_id = {t.id: t for t in tasks}
         task_context_bundles = state.get("task_context_bundles") or {}
         ordered_ids = list(routed_task_ids(reviewer.source_agent, tasks, profiles, selection))
@@ -1254,7 +1250,7 @@ def _council_judge_node(llm, judge_llm=None):
 
 
 def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=None, fp_verify_llm=None, tool_client=None):
-    """编译 ADR-032 审查状态图（一次性证据 + 固定策略定级）。
+    """编译审查状态图。
 
     拓扑:
         diff_task_builder → risk_triage → task_rank → summary? → context_provider

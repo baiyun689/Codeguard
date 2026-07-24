@@ -1,4 +1,7 @@
-"""Deterministic routing from risk profiles to reviewer task scopes."""
+"""确定性路由：RiskProfile → 发现者任务分派范围。
+
+供单 task 调用和 render_task_scope 共用，避免两处重复实现。
+"""
 
 from __future__ import annotations
 
@@ -55,7 +58,7 @@ def routed_task_ids(
 
 def render_single_task_risk(task: ReviewTask, profile: RiskProfile) -> str:
     """渲染单个 task 的风险标签块(<task><risk_tags><risk_signals><patch>),
-    供 Phase4 单 task 调用和 render_task_scope 共用,避免两处重复实现。"""
+    供单 task 调用和 render_task_scope 共用，避免两处重复实现。"""
     tags = sorted(tag.value for tag, score in profile.tag_scores.items() if score > 0)
     signals = [
         f"{signal.source}:{signal.reason}"

@@ -1,4 +1,8 @@
-"""Risk-rule registry and deterministic task triage for Phase 2."""
+"""风险规则注册表与确定性任务分派。
+
+汇总安全、行为、可维护性三条规则线的信号检测函数，对外暴露统一的 triage_tasks
+和按标签查发现者的查询接口。
+"""
 
 from __future__ import annotations
 

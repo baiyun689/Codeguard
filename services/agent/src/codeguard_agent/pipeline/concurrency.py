@@ -1,10 +1,6 @@
-"""通用有界并行派发(阶段3引入,供 ContextProvider Level1 工具调用复用)。
+"""通用有界并行派发，供 ContextProvider Level1 工具调用等场景复用。
 
-只做"有界线程池 + 单项失败隔离 + 按输入顺序回收结果"这一件事,不为假设中的 async
-迁移预留双接口——若后续阶段的并发形状变成需要全局限流的二维 fan-out,那是 ROADMAP
-"chunking 前不切 async"岔路口登记的切换时机,届时另行设计(见
-docs/superpowers/specs/2026-07-11-risk-aware-context-provider-design.md §"不是为后续
-阶段的 async 迁移预留双接口")。
+只做"有界线程池 + 单项故障隔离 + 按输入顺序回收结果"这一件事。
 """
 
 from __future__ import annotations

@@ -1,14 +1,13 @@
-"""任务准备纯函数（Phase 1 薄实现）。
+"""任务准备纯函数。
 
-职责边界（spec §4.2/§4.3/§4.4）：
+职责：
 - build_tasks：解析 unified diff → 每 hunk 一个 ReviewTask；无 hunk（含删除文件、
   纯重命名）退化为文件级 fallback task。不判断风险、不读仓库文件、不调 LLM。
-- triage_tasks：调用 Phase 2 风险规则目录，产出画像和规则诊断。
-- rank_tasks：按 RiskProfile 派生排序分数，并应用 Phase 2 预算。
+- triage_tasks：调用风险规则目录，产出画像和规则诊断。
+- rank_tasks：按 RiskProfile 派生排序分数并应用预算。
 - map_candidate_to_task：候选(file, line) → task_id 的确定性映射。必须能绑定到具体
   changed 区域（命中 changed line、落在 hunk 覆盖范围、或该文件的明确文件级 fallback），
-  否则返回 None（spec §3.2「无法映射的候选不得进入共享黑板」/§4.9「无法绑定 changed
-  line → drop」）。绝不把无法绑定的候选硬塞给"第一个" task。
+  否则返回 None。绝不把无法绑定的候选硬塞给"第一个" task。
 """
 
 from __future__ import annotations
@@ -42,7 +41,7 @@ def _basename(path: str) -> str:
 def file_matches_task(file: str, task: ReviewTask) -> bool:
     """候选文件是否属于该 task 的文件（全路径精确匹配优先，退化到 basename）。
 
-    Phase4 单 task 调用不再做行号级映射（prompt 本来就只含这一个 task），但仍需要
+    单 task 调用不再做行号级映射（prompt 只含这一个 task），但仍需要
     这道最基本的一致性校验，防止模型报告了完全无关的文件却被直接绑定到该 task。
     """
     return _norm(file) == _norm(task.file) or _basename(file) == _basename(task.file)
@@ -193,7 +192,7 @@ def build_tasks(diff_text: str) -> list[ReviewTask]:
 
 
 def triage_tasks(tasks: list[ReviewTask]) -> TriageResult:
-    """Phase 2：按注册表聚合风险信号并保留规则失败诊断。"""
+    """按注册表聚合风险信号并保留规则失败诊断。"""
     return _triage_tasks(tasks)
 
 

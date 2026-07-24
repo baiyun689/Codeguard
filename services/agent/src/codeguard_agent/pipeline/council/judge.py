@@ -1,4 +1,4 @@
-"""Evidence-gate → LLM synthesis → severity-policy CouncilJudge (ADR-032)."""
+"""裁决节点：证据门控 → LLM 语义综合 → 严重度策略定级。"""
 
 from __future__ import annotations
 

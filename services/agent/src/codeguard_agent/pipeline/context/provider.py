@@ -1,4 +1,8 @@
-"""ADR-032 ContextProvider:在 ReviewCouncil 前构造共享事实包。"""
+"""ContextProvider：在 ReviewCouncil 前构造共享事实包。
+
+负责解析 diff AST、规划并执行 Level-1/Level-2 上下文调用，产出 ContextBundle
+供后续发现者和裁决节点共享使用。
+"""
 
 from __future__ import annotations
 
@@ -100,7 +104,7 @@ class ContextProviderStage(PipelineStage):
         context.gathered_context.extend(gathered)
         fact_sources = sorted({fact.source for fact in facts} | {"diff"})
         logger.info(
-            "管线阶段 [context_provider]:%d 个文件,%d 条事实,来源=%s",
+            "[context_provider] %d 个文件，%d 条事实，来源=%s",
             len(changed_files),
             len(facts),
             fact_sources,

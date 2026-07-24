@@ -1,13 +1,11 @@
-"""摘要阶段。
+"""变更摘要。
 
-放在 ReviewCouncil 之前,用一次结构化 LLM 调用产出本次变更的摘要。
-摘要只作为背景透传给后续节点,不再承担文件分派或风险分类职责。
+放在 ReviewCouncil 之前，用一次结构化 LLM 调用产出本次变更的摘要。
+摘要只作为背景透传给后续节点，不再承担文件分派或风险分类职责。
 
-健壮性(沿用本项目 None 防御惯例):
-- mock 模式不发起真实调用,直接跳过;
-- LLM 调用失败 / 返回 None / 结果非法 → 一律退回"无摘要"路径,绝不中断管线。
-
-与现有 stage 一致是同步 execute,不引入 async。
+健壮性（沿用本项目 None 防御惯例）：
+- mock 模式不发起真实调用，直接跳过；
+- LLM 调用失败 / 返回 None / 结果非法 → 一律退回"无摘要"路径，绝不中断管线。
 """
 
 from __future__ import annotations
@@ -22,11 +20,11 @@ from codeguard_agent.pipeline.context.base import PipelineContext, PipelineStage
 
 logger = logging.getLogger("codeguard")
 
-# prompts/ 目录在 codeguard_agent 包下(同 reviewer_stage 的定位方式)。
+# prompts/ 目录在 codeguard_agent 包下（同 reviewers 的定位方式）。
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
 
 class _DiffSummary(BaseModel):
-    """摘要阶段的结构化产出。"""
+    """摘要的结构化产出。"""
 
     summary: str = ""
 
@@ -36,13 +34,13 @@ def _load_prompt(name: str) -> str:
 
 
 def _build_user_prompt(diff_text: str) -> str:
-    """构造摘要阶段的 user 消息,带提示注入防御(diff 包进标签、声明为数据非指令)。"""
+    """构造摘要的 user 消息，带提示注入防御（diff 包进标签、声明为数据非指令）。"""
     tpl = _load_prompt("summary-user.txt")
     return tpl.replace("{{diff}}", diff_text)
 
 
 class SummaryStage(PipelineStage):
-    """前置摘要阶段。"""
+    """前置摘要：一次 LLM 调用产出变更摘要，透传给后续节点作为背景。"""
 
     @property
     def name(self) -> str:
@@ -55,7 +53,7 @@ class SummaryStage(PipelineStage):
 
         # mock 模式:不发起真实调用,跳过摘要。
         if context.llm is None:
-            logger.info("mock 模式,跳过摘要阶段(不发起真实 LLM 调用)")
+            logger.info("mock 模式，跳过摘要（不发起真实 LLM 调用）")
             return context
 
         system = _load_prompt("summary-system.txt")
@@ -71,14 +69,14 @@ class SummaryStage(PipelineStage):
                 max_retries=context.max_retries,
             )
         except Exception as exc:  # noqa: BLE001 摘要失败不应拖垮整条管线
-            logger.warning("摘要阶段调用失败,退回无摘要路径: %s", exc)
+            logger.warning("摘要调用失败，退回无摘要路径：%s", exc)
             return context
 
         # None 防御:结构化输出可能返回 None / 非预期类型 —— 退回无摘要路径。
         if result is None or not isinstance(result, _DiffSummary):
-            logger.warning("摘要阶段未返回有效结果,退回无摘要路径")
+            logger.warning("摘要未返回有效结果，退回无摘要路径")
             return context
 
         context.diff_summary = result.summary
-        logger.info("管线阶段 [summary]:摘要长度=%d", len(context.diff_summary))
+        logger.info("[summary] 摘要长度=%d", len(context.diff_summary))
         return context

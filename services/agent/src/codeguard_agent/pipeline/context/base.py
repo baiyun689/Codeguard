@@ -1,12 +1,9 @@
-"""管线阶段抽象 + 阶段间传递的上下文。
+"""审查上下文抽象：PipelineContext + PipelineStage。
 
-设计要点(刻意从简):
-- 用 PipelineStage 抽象 + 共享 PipelineContext,把"一次审查"拆成可组合、可增删的环节。
-- 阶段间传**类型化对象**(Issue / ReviewResult),不传 JSON 字符串——比传字符串更不易出错。
-- 阶段 1 不引入 async、不引入 chunking、不引入工具会话:那些是后续阶段/过度工程,现在不要。
-
-PipelineContext 当前是一个扁平 dataclass。等阶段数变多(摘要/审查/聚合各有产出)再考虑
-拆成子对象避免 god object——现在只有一个 stage,扁平就够。
+设计要点：
+- 用 PipelineStage 抽象 + 共享 PipelineContext，把一次审查拆成可组合、可增删的环节。
+- 环节间传类型化对象（Issue / ReviewResult），不传 JSON 字符串。
+- PipelineContext 是扁平 dataclass，各环节按需读写。
 """
 
 from __future__ import annotations
@@ -33,10 +30,10 @@ class PipelineContext:
     llm: Any = None  # LangChain Chat 模型;None 表示 mock 模式(由下游识别)
     max_retries: int = 3
     structured_method: str = "function_calling"
-    # 阶段 3:工具调用上下文(见 design.md D6)。
-    # repo_path:被审仓库根(绝对路径),供工具会话/沙箱解析文件;
-    # allowed_files:本次 diff 涉及的文件集合,沙箱据此授权;
-    # tool_client:绑定到工具会话的客户端。三者均为 None/空表示"无工具",审查员走直连基准。
+    # 工具调用上下文。
+    # repo_path：被审仓库根（绝对路径），供工具会话/沙箱解析文件；
+    # allowed_files：本次 diff 涉及的文件集合，沙箱据此授权；
+    # tool_client：绑定到工具会话的客户端。三者均为 None/空表示"无工具"，审查员走直连基准。
     repo_path: str | None = None
     allowed_files: list[str] = field(default_factory=list)
     tool_client: Any = None
@@ -44,10 +41,10 @@ class PipelineContext:
     # 唯一变量、对照可控)。None 表示暴露所有已实现工具(CLI 默认行为)。
     enabled_tools: list[str] | None = None
     # 误报过滤第二段的验证模型;为 None 时回退到 llm。
-    # 应尽量与审查器**异源**,避免"同一模型核查自己刚报的结论"的自我确认偏差(见 ADR-005)。
+    # 应尽量与审查器异源，避免"同一模型核查自己刚报的结论"的自我确认偏差。
     fp_verify_llm: Any = None
 
-    # --- 摘要阶段产出(SummaryStage 写入,ReviewerStage 读取)---
+    # --- 摘要产出（SummaryStage 写入，ReviewerStage 读取）---
     # diff_summary:结构化变更摘要文本,作为背景透传给各审查员的 user 输入({{summary}})。
     #   与下面的 summary(面向人的最终审查摘要)是两个不同概念,刻意分开两个字段。
     diff_summary: str = ""
@@ -59,23 +56,23 @@ class PipelineContext:
     # 供误报过滤第二段复核做实证判定(查而非猜,见 fp-verify-reviewer-context)。
     # 元素为 engines.GatheredContext;用 Any 避免 base 反向依赖 engines。无工具档恒为空。
     gathered_context: list[Any] = field(default_factory=list)
-    # 误报过滤阶段写入的统计(FilterStats);None 表示该阶段未运行。
+    # 误报过滤写入的统计（FilterStats）；None 表示该环节未运行。
     # 用 Any 避免 base 反向依赖 fp_filter(后者要 import 本模块的 PipelineStage)。
     filter_stats: Any = None
-    # ADR-032:ContextProvider 写入的共享事实包。用 Any 避免 base 反向依赖 council 模型。
+    # ContextProvider 写入的共享事实包。用 Any 避免 base 反向依赖 council 模型。
     context_bundle: Any = None
     # ContextProvider 工具失败/不可用诊断；失败信封不得伪装成 ContextFact。
     context_diagnostics: dict[str, str] = field(default_factory=dict)
 
 
 class PipelineStage(ABC):
-    """单个管线阶段的抽象基类。"""
+    """管线环节的抽象基类。"""
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """阶段标识,用于日志。"""
+        """环节标识，用于日志。"""
 
     @abstractmethod
     def execute(self, context: PipelineContext) -> PipelineContext:
-        """执行本阶段:从 context 读取所需输入,把产出写回 context 并返回。"""
+        """执行本环节：从 context 读取所需输入，把产出写回 context 并返回。"""

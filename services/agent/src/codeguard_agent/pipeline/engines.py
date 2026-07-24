@@ -1,12 +1,10 @@
-"""审查员执行引擎(可插拔接缝)。
+"""审查员执行引擎（可插拔接缝）。
 
-同一个领域审查员(security/logic/quality)可以用不同方式执行:
-- DirectEngine:单次结构化 LLM 调用,无工具——这是阶段 1/2 的方式,留作"无工具"对照基准。
-- ToolAgentEngine:ReAct Agent,可经 Java 工具服务自主获取 diff 之外的上下文(阶段 3)。
+同一个领域审查员可以用不同方式执行：
+- DirectEngine：单次结构化 LLM 调用，无工具——"无工具"对照基准。
+- ToolAgentEngine：ReAct Agent，可经 Java 工具服务自主获取 diff 之外的上下文。
 
-ReviewerStage 按 `context.tool_client` 是否存在选择引擎(见 design.md D1)。
-把"执行方式"抽成引擎,是为了阶段 4 用 LangGraph 重构编排时只需新增一个引擎实现,
-不动 ReviewerStage(扩展接缝①)。
+调用方按 tool_client 是否存在选择引擎。
 """
 
 from __future__ import annotations
@@ -36,7 +34,7 @@ class GatheredContext:
     """审查员经工具获取的一段 diff 之外上下文(供下游误报复核实证判定)。
 
     tool:工具名(如 get_file_content);args:入参摘要(用于去重与展示);content:工具返回内容。
-    只在管线上下文流转,绝不进 Issue(守 ADR-001)。
+    只在管线上下文流转，不进入 Issue 结构体。
     """
 
     tool: str
@@ -77,7 +75,7 @@ class ReviewEngine(ABC):
 
 
 class DirectEngine(ReviewEngine):
-    """单次直接结构化调用——无工具的对照基准(行为与阶段 2 一致)。"""
+    """单次直接结构化调用——无工具对照基准。"""
 
     def review(
         self,
@@ -110,7 +108,7 @@ class ToolAgentEngine(ReviewEngine):
     基于 langchain v1 的 ``create_agent``(langgraph 预构建图):
     - 工具循环 + 停止条件由图托管,无需手写 AgentExecutor;
     - ``response_format=ReviewResult`` 让图内置结构化收口,免去"逼 prompt 吐 JSON 再正则解析";
-    - 这条路与 ROADMAP 阶段4「用 LangGraph 重构编排」同源,是提前铺路(见 design.md D5)。
+    - 与图编排同源，均基于 LangGraph 预构建图。
 
     与 DirectEngine 同构地返回 ReviewResult;拿不到结构化结果时一律兜底为空并告警,绝不抛断
     (见 spec「ReAct 审查结果的结构化与健壮性」)。
@@ -145,14 +143,13 @@ class ToolAgentEngine(ReviewEngine):
         try:
             raw = self._run_agent(llm, system_prompt, user_prompt)
         except GraphRecursionError:
-            # HITL 开启时不吞异常,让它传播到上层 _review 节点的 interrupt handler,
-            # 由人决定 continue/retry/skip(修 ADR-018 死代码问题:此前 ToolAgentEngine
-            # 内部捕获了异常,上层 HITL handler 永远收不到)。
+            # HITL 开启时不吞异常，让它传播到上层 _review 节点的 interrupt handler，
+            # 由人决定 continue/retry/skip。
             if enable_hitl:
                 raise
             # ReAct 在 recursion_limit 步内没收敛(绕的难例 / 工具反复绕)。不让该域被静默丢弃
             # (那会直接丢失这一维度的发现、压低 recall),而是降级为无工具直连复审一次,至少
-            # 据 diff 产出一份结论(见 ADR-017"审查员无工具调用预算"残留)。直连无工具不会再循环。
+            # 据 diff 产出一份结论。直连无工具不会再循环。
             logger.warning(
                 "[%s] ReAct 撞递归上限(%d 步未收敛),降级为无工具直连复审以保住该域产出",
                 reviewer_name,

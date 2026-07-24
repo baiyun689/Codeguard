@@ -1,8 +1,8 @@
 """审查编排器门面。
 
-ADR-032 默认路径内部执行 ReviewCouncil 图:
+内部执行 ReviewCouncil 图：
 summary? → context_provider → review_council → council_judge → END。
-对外仍返回稳定的 `ReviewResult`。
+对外返回稳定的 `ReviewResult`。
 """
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ class PipelineOrchestrator:
         fp_verify_llm:裁决模型(异源千问 temperature=0);None 时回退到主 llm。
         tool_client 非 None 时发现者走 ReAct(可调工具),否则走直连基准。
         enabled_tools:暴露给审查员的工具白名单(评测 profile 控制);None=全开(CLI 默认)。
-        trace_sink / metadata_sink:可选 eval 侧信道,刻意不进 ReviewResult(守 ADR-001)。
+        trace_sink / metadata_sink：可选 eval 侧信道，不进入 ReviewResult 对外接口。
         thread_id:可选的检查点线程标识,用于中断恢复。
         """
         if not diff_text.strip():
@@ -148,7 +148,7 @@ class PipelineOrchestrator:
         else:
             final_state = graph.invoke(initial, config=invoke_config)
 
-        # 侧信道:把工具上下文交给评测层(不进 ReviewResult,守 ADR-001)。
+        # 侧信道：把工具上下文交给评测层（不进入 ReviewResult 对外接口）。
         if trace_sink is not None:
             trace_sink.extend(final_state.get("gathered_context") or [])
         if metadata_sink is not None:

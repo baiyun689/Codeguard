@@ -1,8 +1,7 @@
-"""Load deterministic RiskTag-scoped domain knowledge fragments.
+"""按 RiskTag 加载确定性的领域知识片段。
 
-Knowledge is injected directly rather than exposed as a tool: Phase 4 direct
-reviews have no tool loop, and the relevant tags are already deterministic
-signals from the task's ``RiskProfile``.
+知识直接注入审查员 prompt（不走工具循环），相关的 RiskTag 已由任务 RiskProfile
+确定性给出——无需审查员自行判断需要哪类知识。
 """
 
 from __future__ import annotations
