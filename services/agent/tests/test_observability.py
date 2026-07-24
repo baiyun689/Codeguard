@@ -348,10 +348,10 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
     )
 
     assert [stage["code_name"] for stage in view["main_stages"]] == [
-        "summary",
         "diff_task_builder",
         "risk_triage",
         "task_rank",
+        "summary",
         "context_provider",
         "review_council",
         "coordination_loop",

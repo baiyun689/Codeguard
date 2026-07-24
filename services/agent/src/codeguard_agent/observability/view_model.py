@@ -244,7 +244,6 @@ def _main_stages(
         by_name[step["code_name"]].append(step)
 
     stages: list[dict[str, Any]] = []
-    stages.append(_main_stage("summary", "变更摘要", by_name.get("summary")))
     for code_name, title in (
         ("diff_task_builder", "审查任务构建"),
         ("risk_triage", "风险分诊"),
@@ -252,6 +251,7 @@ def _main_stages(
     ):
         if code_name in by_name:
             stages.append(_main_stage(code_name, title, by_name[code_name]))
+    stages.append(_main_stage("summary", "变更摘要", by_name.get("summary")))
     stages.append(_main_stage(
         "context_provider",
         "上下文构建",

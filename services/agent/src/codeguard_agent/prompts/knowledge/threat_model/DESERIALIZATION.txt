@@ -1,0 +1,29 @@
+## 反序列化（不可信数据是否直接进入对象反序列化入口，可能导致任意代码执行）
+
+### 典型模式
+```java
+ObjectInputStream ois = new ObjectInputStream(inputStream);
+Object obj = ois.readObject();
+
+XMLDecoder decoder = new XMLDecoder(input);
+Object obj = decoder.readObject();
+
+XStream xstream = new XStream();
+Object obj = xstream.fromXML(input);
+
+Kryo kryo = new Kryo();
+Object obj = kryo.readObject(input, SomeClass.class);
+```
+还包括 `ObjectInput.readObject`、`readUnshared`、`readExternal`、`readResolve` 等入口。共同点是不可信字节流进入对象构造过程，可能触发 gadget chain。
+
+### 判定要点
+追踪反序列化入口的输入来源（HTTP body、消息队列、文件上传、RMI/JNDI），确认是否有类型白名单（`ObjectInputFilter`、XStream 的 `allowTypes`、Kryo 的 `setRegistrationRequired(true)`）。Java 17+ 的 `ObjectInputFilter` 上下文级配置也视为有效防护。仅"关键字出现"不足以报告。
+
+### 严重级别参考
+CRITICAL：接收不可信输入且无反序列化过滤器或类型白名单。WARNING：存在基础过滤但白名单范围过宽（如允许 `java.util.*`）、或输入来源可控性未完全确认。INFO：内部管理接口且已配置严格白名单时仅提示加固建议。
+
+### 已知误报判例
+`ObjectInputStream` 仅用于读取已知安全类型且有 `ObjectInputFilter` 配置；XStream 已配置 `allowTypesByWildcard` 严格模式；Kryo 已设置 `setRegistrationRequired(true)` 且注册类均为安全类型；`readResolve` 仅用于单例模式不涉及外部输入。
+
+### 排除项
+JSON 反序列化（Jackson/Gson）归 INJECTION 或 DATA_EXPOSURE 处理；JNDI lookup 归 INJECTION；文件路径的上传和读写归 FILE_PATH_IO。
