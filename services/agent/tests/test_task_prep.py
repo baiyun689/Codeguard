@@ -207,7 +207,7 @@ def test_build_tasks_creates_fallback_for_pure_rename():
     assert [t.id for t in tasks] == ["New.java#file"]
 
 
-def test_build_tasks_creates_fallback_for_binary_and_mode_only_changes():
+def test_build_tasks_filters_build_artifacts_but_keeps_source():
     diff = (
         "diff --git a/logo.png b/logo.png\n"
         "index 111..222 100644\n"
@@ -215,9 +215,12 @@ def test_build_tasks_creates_fallback_for_binary_and_mode_only_changes():
         "diff --git a/script.sh b/script.sh\n"
         "old mode 100644\n"
         "new mode 100755\n"
+        "diff --git a/target/classes/Foo.class b/target/classes/Foo.class\n"
+        "Binary files a/target/classes/Foo.class and b/target/classes/Foo.class differ\n"
     )
     tasks = build_tasks(diff)
-    assert [task.id for task in tasks] == ["logo.png#file", "script.sh#file"]
+    # .png 和 .class (target/) 是构建产物，应过滤；.sh 是源码，应保留
+    assert [task.id for task in tasks] == ["script.sh#file"]
 
 
 def test_changed_lines_ignores_no_newline_marker():

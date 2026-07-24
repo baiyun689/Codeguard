@@ -12,7 +12,36 @@
 
 from __future__ import annotations
 
+import logging
 import re
+
+logger = logging.getLogger("codeguard")
+
+# 构建产物的目录前缀和文件后缀——这些文件不是源代码，审查它们毫无意义。
+_BUILD_DIR_PREFIXES = (
+    "target/", "build/", "out/", "dist/", "node_modules/",
+    ".gradle/", "__pycache__/", ".mvn/", "bin/",
+)
+_NON_SOURCE_SUFFIXES = (
+    ".class", ".jar", ".war", ".ear", ".zip", ".tar", ".gz",
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+    ".min.js", ".min.css", ".map",
+)
+
+def _is_build_artifact(file_path: str) -> bool:
+    """判断文件是否为构建产物或二进制文件，不应作为审查任务。"""
+    normalized = file_path.replace("\\", "/").lower()
+    for prefix in _BUILD_DIR_PREFIXES:
+        if normalized.startswith(prefix):
+            return True
+    for suffix in _NON_SOURCE_SUFFIXES:
+        if normalized.endswith(suffix):
+            return True
+    # Maven/Gradle 生成的列表文件
+    if normalized.endswith("/createdfiles.lst") or normalized.endswith("/inputfiles.lst"):
+        return True
+    return False
 
 from codeguard_agent.git.diff_collector import split_diff_by_file
 from codeguard_agent.models.tasks import (
@@ -164,7 +193,11 @@ def build_tasks(diff_text: str) -> list[ReviewTask]:
     """
     tasks: list[ReviewTask] = []
     seen_files: set[str] = set()
+    skipped_artifacts = 0
     for file, section in split_diff_by_file(diff_text).items():
+        if _is_build_artifact(file):
+            skipped_artifacts += 1
+            continue
         seen_files.add(file)
         hunks = _split_hunks(section)
         if not hunks:
@@ -183,11 +216,13 @@ def build_tasks(diff_text: str) -> list[ReviewTask]:
                 )
             )
     for path, section in _fallback_targets(diff_text).items():
-        if path in seen_files:
+        if path in seen_files or _is_build_artifact(path):
             continue
         tasks.append(
             ReviewTask(id=f"{path}#file", file=path, patch=section, changed_lines=[])
         )
+    if skipped_artifacts:
+        logger.info("build_tasks: 跳过 %d 个构建产物文件", skipped_artifacts)
     return tasks
 
 
