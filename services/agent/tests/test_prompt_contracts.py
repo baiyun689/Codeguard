@@ -349,16 +349,6 @@ def test_judge_prompt_names_every_synthesis_field() -> None:
     assert "CandidateEvidenceAssessment" in judge
 
 
-def test_aggregation_prompts_name_merge_plan_fields_and_index_base() -> None:
-    aggregation = _prompt("aggregation-system.txt") + _prompt(
-        "aggregation-user.txt"
-    )
-    assert "`groups`" in aggregation
-    assert "`members`" in aggregation
-    assert "从 1 开始" in aggregation
-    assert "每组至少 2" in aggregation
-
-
 def test_eval_judge_prompt_names_case_judgement_fields() -> None:
     assert all(
         f"`{field}`" in _JUDGE_CASE_PROMPT

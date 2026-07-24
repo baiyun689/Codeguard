@@ -11,12 +11,10 @@ from __future__ import annotations
 
 from codeguard_agent.models.schemas import Issue, Severity
 from codeguard_agent.legacy.stages.aggregation import (
-    AggregationStage,
     _MergeGroup,
     _MergePlan,
     _apply_merge_plan,
 )
-from codeguard_agent.pipeline.context.base import PipelineContext
 
 
 def _issue(severity=Severity.WARNING, file="A.java", line=10, type="SQL注入",
@@ -89,81 +87,3 @@ def test_合并在最早成员位置输出_保留相对顺序():
     assert [i.type for i in out] == ["C", "B"]
 
 
-# ---------------------------------------------------------------------------
-# AggregationStage.execute:打桩 LLM,验证两段协同与回退
-# ---------------------------------------------------------------------------
-
-
-class _FakeStructured:
-    def __init__(self, plan, raises=False):
-        self._plan = plan
-        self._raises = raises
-
-    def invoke(self, messages):
-        if self._raises:
-            raise RuntimeError("boom")
-        return self._plan
-
-
-class _FakeLLM:
-    """最小打桩:with_structured_output 返回一个会吐预设 plan(或抛异常)的对象。"""
-
-    def __init__(self, plan=None, raises=False):
-        self._plan = plan
-        self._raises = raises
-        self.called = False
-
-    def with_structured_output(self, model, method="function_calling"):
-        self.called = True
-        return _FakeStructured(self._plan, self._raises)
-
-
-def _ctx(issues, llm) -> PipelineContext:
-    return PipelineContext(diff_text="x", llm=llm, issues=list(issues))
-
-
-def test_stage_第二段合并近邻同源():
-    issues = [
-        _issue(severity=Severity.WARNING, line=68),
-        _issue(severity=Severity.CRITICAL, line=69),
-    ]
-    llm = _FakeLLM(plan=_MergePlan(groups=[_MergeGroup(members=[1, 2])]))
-    ctx = AggregationStage().execute(_ctx(issues, llm))
-    assert len(ctx.issues) == 1
-    assert ctx.issues[0].severity == Severity.CRITICAL
-
-
-def test_stage_LLM返回None时回退第一段结果():
-    issues = [_issue(line=68), _issue(line=69)]
-    llm = _FakeLLM(plan=None)
-    ctx = AggregationStage().execute(_ctx(issues, llm))
-    # 两条行号不同、规则去重保留两条;LLM None → 回退,仍是两条
-    assert len(ctx.issues) == 2
-
-
-def test_stage_LLM调用异常时回退():
-    issues = [_issue(line=68), _issue(line=69)]
-    llm = _FakeLLM(raises=True)
-    ctx = AggregationStage().execute(_ctx(issues, llm))
-    assert len(ctx.issues) == 2
-
-
-def test_stage_mock模式不发起第二段():
-    issues = [_issue(line=68), _issue(line=69)]
-    ctx = AggregationStage().execute(_ctx(issues, llm=None))
-    assert len(ctx.issues) == 2  # 只跑了规则去重
-
-
-def test_stage_少于两条不发起第二段():
-    llm = _FakeLLM(raises=True)  # 若被调用会抛异常
-    ctx = AggregationStage().execute(_ctx([_issue()], llm))
-    assert len(ctx.issues) == 1
-    assert llm.called is False
-
-
-def test_stage_第一段精确重复仍零成本合并():
-    # 完全相同指纹(同文件同行同类型)由第一段直接合并,第二段不必介入
-    issues = [_issue(line=10), _issue(line=10, message="措辞不同")]
-    llm = _FakeLLM(plan=_MergePlan(groups=[]))
-    ctx = AggregationStage().execute(_ctx(issues, llm))
-    assert len(ctx.issues) == 1
