@@ -178,6 +178,48 @@ def build_reviewer_user_prompt(
             _text(task_knowledge.strip()),
             "  </tag_knowledge>",
         ])
+    parts.extend([
+        "",
+        "  <context_guide> 下面是对你可能收到的各种上下文的简要说明，帮助你正确理解和加权:",
+        "",
+        "  - <change_summary role=\"orientation_not_evidence\">:",
+        "      本次 PR 的整体变更摘要，让你对全貌有个方向感，属于**背景信息**。",
+        "      如果你发现的问题仅基于摘要推断，无法在当前 task patch 里找到对应代码，那就**不要报告**——"
+        "      它不提供证据，只提供方向。",
+        "",
+        "  - <task_patch>: 你**唯一**的审查目标。所有 Issue 必须能由这里的新增/修改代码支撑，"
+        "      file 字段必须填当前任务文件路径。这是你下结论的根基，其他上下文都是辅助。",
+        "",
+        "  - <risk_profile role=\"routing_prior_not_evidence\">:",
+        "      <risk_tags> 是本 task 在分派阶段命中的风险标签，"
+        "      <risk_signal> 是触发该标签的**具体原因**（哪段代码、哪个模式触发了规则）。",
+        "      它告诉你「为什么把这个 task 交给了你」，是你排查的**优先线索**——重点审查信号指向的代码位置和问题类型。",
+        "      但它只是分派依据，**不等于漏洞已确认**：你仍须用当前 task patch 和工具事实独立验证。",
+        "",
+        "  - <prefetched_context>: 工具预取的代码事实，帮你减少反复查工具。每个 <fact> 的属性含义:",
+        "      kind:   事实类型——ast_structure(当前文件的类/方法骨架，理解代码结构用)、",
+        "              sensitive_api(命中的敏感API调用点，如SQL执行/命令执行/文件操作，检查是否安全使用)、",
+        "              find_callers(受影响的当前方法的直接调用方，评估修改影响面)、",
+        "              get_code_metrics(当前文件/方法的圈复杂度等度量，辅助判断维护风险)",
+        "      source: 产生该事实的工具名(如 get_diff_ast / find_sensitive_apis / find_callers / get_code_metrics)",
+        "      scope:  事实的覆盖范围——task_scoped 是当前任务文件内的事实；cross_file 是跨文件获取的外部事实，"
+        "              只能作为辅助证据，不能作为新 Issue 的定位。current_file 限定在当前文件。",
+        "      truncated: true 表示内容因长度限制被截断，可考虑用工具补全",
+        "      注意: prefetched_context 是你在拿到 task patch 之前就预先获取的，可能覆盖了更广的范围。"
+        "      以 task patch 为准——Issue 必须落在 task patch 的变更行上，不要因为看到了整个文件的 AST 或"
+        "      所有 sensitive API 就把 Issue 定位到未变更的代码。",
+        "",
+        "  - <context_status>: 各类上下文获取的结果状态: ok=已获取, unavailable=工具不可用(如未注册该工具), "
+        "      empty=查询无结果(如当前文件无敏感API命中)。empty 和 unavailable 的上下文在当前审查中不可用，"
+        "      不要假设它们的内容；但也不需要为「无法获取」而反复调用工具。",
+        "",
+        "  - <tag_knowledge role=\"methodology_not_repository_fact\">:",
+        "      你命中的风险标签对应的**领域知识图谱**——不是当前仓库的代码事实，而是教你「这类问题通常长什么样、怎么识别」。",
+        "      把它当成分析框架和排查清单，用于引导你的审查思路；但它不包含当前仓库的任何具体信息，"
+        "      你不能引用 tag_knowledge 里的示例代码或假设场景作为证据——所有证据必须来自 task patch 和工具返回的事实。",
+        "",
+        "  </context_guide>",
+    ])
     parts.append("</review_input>")
     return "\n".join(parts)
 
