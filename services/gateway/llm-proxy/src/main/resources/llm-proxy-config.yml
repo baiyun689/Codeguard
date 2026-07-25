@@ -1,0 +1,40 @@
+# LLM Proxy 配置 —— 多提供商路由 + 降级链 + 韧性参数
+#
+# ${VAR_NAME} 格式的值会从环境变量读取。
+
+providers:
+  deepseek:
+    url: https://api.deepseek.com/v1
+    key: ${DEEPSEEK_API_KEY}
+  qwen:
+    url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    key: ${DASHSCOPE_API_KEY}
+  claude:
+    url: https://api.anthropic.com
+    key: ${ANTHROPIC_API_KEY}
+
+# 路由表：model 名 → 降级链（主 provider 优先，依次 fallback）
+routes:
+  deepseek-chat:
+    chain: [deepseek, qwen]
+  deepseek-reasoner:
+    chain: [deepseek, qwen]
+  claude-sonnet-5-20250901:
+    chain: [claude, deepseek]
+  claude-opus-4-8:
+    chain: [claude, deepseek]
+  qwen-max:
+    chain: [qwen, deepseek]
+
+resilience:
+  rate-limit:
+    permits-per-second: 10        # 令牌桶速率
+  circuit-breaker:
+    failure-rate-threshold: 50    # 失败率阈值（%）
+    wait-duration-in-open-state-seconds: 30
+    permitted-calls-in-half-open: 3
+    sliding-window-size: 10
+    minimum-number-of-calls: 5
+  retry:
+    max-attempts: 3               # 最多重试次数
+    wait-duration-ms: 500          # 初始等待（指数退避 + jitter）
