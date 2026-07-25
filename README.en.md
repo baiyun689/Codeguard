@@ -4,11 +4,13 @@
 
 AI-powered pull request review with risk-aware multi-agent analysis.
 
-Codeguard receives GitHub pull request events, analyzes the exact code change with a Python review council, and reports structured findings through GitHub Check Runs and pull request comments. A Java Gateway owns webhook verification, job persistence, isolated workspaces, retries, and code-access guardrails.
+Codeguard receives GitHub pull request events, analyzes the exact code change with a Python review council, and reports structured findings through GitHub Check Runs and pull request comments. The Java Gateway splits into three independent services: an LLM proxy (multi-provider routing with circuit breaker / rate limiting / retry), an Agent tool server (file sandbox + AST analysis), and a CI webhook pipeline (signature verification + idempotent scheduling + Check Runs feedback).
 
 ## Features
 
 - Reviews pull requests for security, behavioral, and maintainability risks.
+- Built-in OpenAI-compatible LLM proxy gateway automatically routes model names to DeepSeek/Claude/Qwen with fallback chains and Resilience4j circuit breaker / rate limiter / retry.
+- Python Agent holds no provider API keys—all credentials are centralized in the LLM Proxy.
 - Routes changed hunks by risk before running task-scoped specialist reviewers.
 - Gives reviewers explicit task-scoped summaries, risk profiles, AST, sensitive APIs, callers, and metrics, including source, scope, truncation, and unavailable reasons.
 - Coalesces concurrent and repeated tool calls within one reviewer to avoid duplicate file reads and context injection while keeping reviewers isolated.
@@ -25,18 +27,27 @@ Codeguard receives GitHub pull request events, analyzes the exact code change wi
 GitHub pull_request webhook
         |
         v
-Java Gateway
-  verify signature -> persist/deduplicate -> schedule -> prepare SHA workspace
+┌─ Java Gateway (single JVM, three services)────┐
+│  CI Webhook (:8080)                            │
+│    verify -> persist/dedup -> schedule ->      │
+│    SHA workspace -> ProcessBuilder run Python  │
+│  LLM Proxy (:9091)                             │
+│    OpenAI-compatible → multi-provider route →  │
+│    rate-limit/circuit-break/retry → fallback   │
+│  Tool Server (:9090)                           │
+│    file sandbox + AST + callers + sensitive API│
+└────────────────────────────────────────────────┘
         |
         v
 Python Agent
   diff tasks -> risk routing -> specialist discovery -> evidence -> council verdict
+  LLM calls routed through LLM Proxy or direct to provider
         |
         v
 GitHub Check Run, annotations, and pull request comments
 ```
 
-The Python Agent owns review reasoning and orchestration. The Java Gateway owns deterministic facts and operational guardrails; it does not call an LLM or decide whether a finding is valid.
+The Python Agent owns review reasoning and orchestration. The Java Gateway is three independent services: LLM Proxy handles multi-provider routing and resilience (protocol forwarding, no semantic judgment), Tool Server collects deterministic code facts with file-access guardrails, and CI Webhook manages GitHub event ingestion and review job scheduling.
 
 During discovery, the system prompt defines stable context semantics and the tool-use gate. Each task's actual patch, risk profile, prefetched facts, availability status, and tag knowledge are injected dynamically in the user message. A reviewer must skip tools when those facts are sufficient. Concurrent tasks within one reviewer may share review-scoped tool results, but no cache is shared with another reviewer or another review.
 
@@ -133,7 +144,22 @@ Your webhook endpoint must be reachable from GitHub over HTTPS. If Codeguard is 
 
 ## Configure the LLM
 
-The default provider is OpenAI:
+### LLM Gateway mode (recommended)
+
+All LLM calls route through the local LLM Proxy. The Python Agent holds no provider credentials:
+
+```dotenv
+CODEGUARD_PROVIDER=openai
+CODEGUARD_API_BASE_URL=http://localhost:9091/v1
+CODEGUARD_API_KEY=dummy            # Gateway does not validate on localhost; ChatOpenAI requires a non-empty value
+CODEGUARD_MODEL=deepseek-chat      # or any model name; Gateway routes by model
+```
+
+The LLM Proxy reads multi-provider routing and resilience configuration from `llm-proxy-config.yml`, which is pre-configured in the Compose deployment.
+
+### Direct mode
+
+Bypass the Gateway and let the Python Agent call LLM providers directly:
 
 ```dotenv
 CODEGUARD_PROVIDER=openai
@@ -144,7 +170,7 @@ CODEGUARD_API_KEY=replace-with-your-key
 For an OpenAI-compatible endpoint, also set:
 
 ```dotenv
-CODEGUARD_API_BASE_URL=https://provider.example/v1
+CODEGUARD_API_BASE_URL=https://api.deepseek.com
 CODEGUARD_STRUCTURED_METHOD=function_calling
 ```
 
@@ -223,14 +249,22 @@ Compose sets container-only paths and ports for the bundled deployment. Do not c
 
 Codeguard currently supports a single Gateway instance. H2 persistence and the scheduler recover jobs within that instance, but the deployment does not implement multi-instance leader election, distributed locking, or shared-workspace coordination. Do not scale the Compose service above one replica.
 
-Operational endpoints:
+The Java Gateway runs three services on separate ports within a single JVM:
+
+| Service | Default Port | Purpose |
+|---|---|---|
+| CI Webhook | 8080 | GitHub webhook ingestion + review scheduling |
+| Tool Server | 9090 | Agent tool service + file sandbox |
+| LLM Proxy | 9091 | OpenAI-compatible LLM gateway |
+
+Operational endpoints (available on all three services for `/health` and `/health/live`):
 
 | Endpoint | Meaning |
 |---|---|
 | `GET /health` | Compatibility health endpoint; reports process liveness |
 | `GET /health/live` | Liveness probe |
-| `GET /health/ready` | Readiness of H2, the scheduler, and Python initialization; returns `503` when unavailable |
-| `GET /metrics` | Prometheus text exposition |
+| `GET /health/ready` | CI service: readiness of H2, the scheduler, and Python initialization; returns `503` when unavailable |
+| `GET /metrics` | Prometheus text exposition (CI service and Tool Server) |
 
 Compose persists the H2 database in `gateway-data` and temporary SHA-scoped review workspaces in `job-workspaces`. Stop the service with `docker compose down`. Add `--volumes` only when you intentionally want to delete persisted job state and workspaces.
 
@@ -258,7 +292,7 @@ Java checks:
 
 ```bash
 cd services/gateway
-mvn --batch-mode verify
+mvn --batch-mode verify    # Builds all 4 submodules: shared, tool-server, ci-webhook, llm-proxy
 ```
 
 Container build:

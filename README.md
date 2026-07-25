@@ -4,11 +4,13 @@
 
 基于风险感知多 Agent 分析的 AI Pull Request 审查系统。
 
-Codeguard 接收 GitHub Pull Request 事件，由 Python 审查委员会分析本次代码变更，再通过 GitHub Check Run 和 PR 评论输出结构化问题。Java Gateway 负责 Webhook 校验、任务持久化、独立工作区、重试与代码访问护栏。
+Codeguard 接收 GitHub Pull Request 事件，由 Python 审查委员会分析本次代码变更，再通过 GitHub Check Run 和 PR 评论输出结构化问题。Java Gateway 拆分为三个独立服务：LLM 代理网关（多提供商路由 + 熔断/限流/重试）、Agent 工具服务（文件沙箱 + AST 分析）和 CI Webhook 链路（验签 + 幂等调度 + Check Runs 回写）。
 
 ## 功能特性
 
 - 从安全、行为正确性和可维护性三个维度审查 Pull Request。
+- 内置 OpenAI 兼容 LLM 代理网关，按 model 名自动路由到 DeepSeek/Claude/千问，支持降级链、Resilience4j 熔断/限流/重试。
+- Python Agent 无需持有 LLM 提供商密钥——所有密钥集中由 LLM Proxy 管理。
 - 先按风险对变更片段进行路由，再由任务级专业审查员分析。
 - 向审查员显式提供当前任务的摘要、风险画像、AST、敏感 API、调用方和代码指标，并标明来源、范围、截断及不可用原因。
 - 在单个审查员范围内合并并发和重复工具调用，避免重复文件读取和重复上下文注入；不同审查员保持隔离。
@@ -25,18 +27,27 @@ Codeguard 接收 GitHub Pull Request 事件，由 Python 审查委员会分析�
 GitHub pull_request Webhook
         |
         v
-Java Gateway
-  校验签名 -> 持久化/去重 -> 调度 -> 准备 SHA 独立工作区
+┌─ Java Gateway（单 JVM 三服务）─────────────┐
+│  CI Webhook (:8080)                        │
+│    校验签名 -> 持久化/去重 -> 调度 ->       │
+│    SHA 独立工作区 -> ProcessBuilder 调 Python│
+│  LLM Proxy (:9091)                         │
+│    OpenAI 兼容端点 -> 多提供商路由 ->        │
+│    限流/熔断/重试 -> 降级链透明切换          │
+│  Tool Server (:9090)                       │
+│    文件沙箱 + AST + 调用链 + 危险 API 扫描    │
+└────────────────────────────────────────────┘
         |
         v
 Python Agent
   Diff 任务 -> 风险路由 -> 专业审查 -> 证据收集 -> 委员会裁决
+  LLM 调用经 LLM Proxy 或直连提供商
         |
         v
 GitHub Check Run、Diff Annotation 和 PR 评论
 ```
 
-Python Agent 负责审查推理与编排。Java Gateway 负责确定性事实和运行护栏；Java 侧不调用 LLM，也不判断候选问题是否成立。
+Python Agent 负责审查推理与编排。Java Gateway 拆为三个独立服务：LLM Proxy 负责多提供商路由和韧性策略（协议转发，不做语义判断），Tool Server 负责确定性代码事实采集和文件访问护栏，CI Webhook 负责 GitHub 事件接入和审查作业调度。
 
 发现阶段的 system prompt 只定义稳定的上下文语义和工具调用门槛；每个 task 的实际 patch、风险画像、预取事实、缺失状态及标签知识通过 user 消息动态注入。上下文已经回答候选所需事实时，发现者必须略过工具。单个发现者的并发 task 共享一次审查内的工具结果，但不会与另外两个发现者或下一次审查共享。
 
@@ -133,7 +144,22 @@ Webhook 端点必须能通过 HTTPS 被 GitHub 访问。如果 Codeguard 位于�
 
 ## 配置 LLM
 
-默认服务商为 OpenAI：
+### LLM Gateway 模式（推荐）
+
+所有 LLM 调用经本地 LLM Proxy 统一路由，Python Agent 无需持有提供商密钥：
+
+```dotenv
+CODEGUARD_PROVIDER=openai
+CODEGUARD_API_BASE_URL=http://localhost:9091/v1
+CODEGUARD_API_KEY=dummy           # Gateway localhost 不验证，但 ChatOpenAI 要求非空
+CODEGUARD_MODEL=deepseek-chat     # 或其他 model 名，Gateway 按 model 路由
+```
+
+LLM Proxy 通过 `llm-proxy-config.yml` 配置多提供商路由和韧性策略。Compose 部署时该配置已内置。
+
+### 直连模式
+
+绕过 Gateway，Python Agent 直连 LLM 提供商：
 
 ```dotenv
 CODEGUARD_PROVIDER=openai
@@ -144,7 +170,7 @@ CODEGUARD_API_KEY=replace-with-your-key
 使用 OpenAI 兼容接口时，还需设置：
 
 ```dotenv
-CODEGUARD_API_BASE_URL=https://provider.example/v1
+CODEGUARD_API_BASE_URL=https://api.deepseek.com
 CODEGUARD_STRUCTURED_METHOD=function_calling
 ```
 
@@ -223,14 +249,22 @@ Compose 会设置打包部署所需的容器内部路径和端口。除非维护
 
 Codeguard 当前只支持单 Gateway 实例。H2 持久化和调度器可以在该实例内恢复任务，但尚未实现多实例选主、分布式锁或共享工作区协调。不要将 Compose 服务扩容到一个以上副本。
 
-运维端点：
+Java Gateway 三个服务各监听独立端口：
+
+| 服务 | 默认端口 | 用途 |
+|---|---|---|
+| CI Webhook | 8080 | GitHub Webhook 接入 + 审查调度 |
+| Tool Server | 9090 | Agent 工具服务 + 文件沙箱 |
+| LLM Proxy | 9091 | OpenAI 兼容 LLM 代理 |
+
+运维端点（所有服务均提供 `/health` 和 `/health/live`）：
 
 | 端点 | 含义 |
 |---|---|
 | `GET /health` | 兼容健康检查端点，报告进程存活状态 |
 | `GET /health/live` | 存活探针 |
-| `GET /health/ready` | 检查 H2、调度器和 Python 初始化状态；不可用时返回 `503` |
-| `GET /metrics` | Prometheus 文本格式指标 |
+| `GET /health/ready` | CI 服务：检查 H2、调度器和 Python 初始化状态；不可用时返回 `503` |
+| `GET /metrics` | Prometheus 文本格式指标（CI 服务和 Tool Server 均提供） |
 
 Compose 将 H2 数据库持久化到 `gateway-data`，将按 SHA 隔离的临时审查工作区保存到 `job-workspaces`。使用 `docker compose down` 停止服务；只有在明确需要删除持久化任务状态和工作区时才添加 `--volumes`。
 
@@ -258,7 +292,7 @@ Java 检查：
 
 ```bash
 cd services/gateway
-mvn --batch-mode verify
+mvn --batch-mode verify     # 构建全部四个子模块：shared、tool-server、ci-webhook、llm-proxy
 ```
 
 容器构建：

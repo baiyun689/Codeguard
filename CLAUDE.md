@@ -13,29 +13,42 @@ Codeguard 是一个 **AI 代码审查引擎**,以 Agent 为最终核心,双语�
 审查核心为证据驱动的 ReviewCouncil 多 Agent 编排；GitHub PR 自动审查链路由 Java Gateway 接收 webhook、调度 Python Agent，并把结果回写到 GitHub。
 
 ```
-START → [summary] → context_provider ─┬─ parse_changed_files
-                                       ├─ find_sensitive_apis
-                                       ├─ get_diff_ast ★
-                                       └─→ ContextBundle
-                                             │
-          ┌──────────────────────────────────┼──────────────────────────────┐
-          ▼                                  ▼                              ▼
- discover_threat_model             discover_behavior           discover_maintainability
-          │                                  │                              │
-          └──────────────────────────────────┼──────────────────────────────┘
-                                             ▼
-                                       fan-in (dedup reducer)
-                                             │
-                                  council_coordinator ←──┐
-                                       │                  │
-                                  evidence_agent ─────────┘
-                                       │
-                                  council_judge (7规则+去重+LLM终审)
-                                       │
-                                      END
+START → diff_task_builder → risk_triage → task_rank ─┬─ summary(可选) → context_provider
+                                                      │                    │
+                                                      └─ (无摘要时直达) →──┘
+                                                                           │
+                          ┌────────────────────────────────────────────────┤
+                          ▼                        ▼                       ▼
+                 discover_threat_model    discover_behavior     discover_maintainability
+                          │                        │                       │
+                          └────────────────────────┼───────────────────────┘
+                                                   ▼
+                                           council_coordinator ★
+                                           (fan-in + RiskTag 解析
+                                            + 保守语义归并 + 去重)
+                                                   │
+                                                   ▼
+                                           evidence_planner
+                                           (为每个候选规划取证策略)
+                                                   │
+                                                   ▼
+                                           evidence_agent ★
+                                           (调 Java 工具 → LLM 证据分析
+                                            → SUPPORTS/CONTRADICTS/INSUFFICIENT)
+                                                   │
+                                                   ▼
+                                           council_judge ★
+                                           (证据门控 → LLM 语义综合
+                                            → 严重度策略定级 → 最终 Issue)
+                                                   │
+                                                  END
 ```
 
-三个发现者 Agent 各自配备专属工具（`find_sensitive_apis` / `find_callers` / `get_code_metrics`）+ 共享 `get_file_content`，走 ReAct 引擎。`context_provider` 通过 `get_diff_ast` 为所有 Agent 提供共享的代码骨架（类层次/方法签名+可见性+注解/控制流/调用边），减少冗余 `get_file_content` 调用。每个 Agent 的 prompt 包含 ~220 行领域知识图谱（漏洞分类/缺陷模式/判例），合计 ~690 行——拆分是为分摊上下文压力。去重采用"根因标识符主键 + 行号 ±3 兜底"的 5 层体系。裁决节点合并了旧 challenge_agent + self_checker，用异源千问（temperature=0）做语义综合与终审。
+管线入口由 `diff_task_builder` 将 diff 拆为审查任务，经 `risk_triage` 标定每项任务的风险标签，由 `task_rank` 排序限流后，可选经 `summary` 产出变更摘要作为背景。`context_provider` 通过 `get_diff_ast` 等工具为后续所有 Agent 预取共享上下文（类层次/方法签名+可见性+注解/控制流/调用边/敏感 API），减少各发现者冗余的工具调用。
+
+三个发现者 Agent（ThreatModel / Behavior / Maintainability）并行运行，各自配备专属工具（`find_sensitive_apis` / `find_callers` / `get_code_metrics`）+ 共享 `get_file_content`，走 ReAct 引擎。每个 Agent 的 prompt 含 ~100 行领域知识图谱（漏洞分类/缺陷模式/判例/共享上下文契约），三个合计 ~300 行——拆分是为分摊上下文压力，重叠是多角度验证。
+
+三路输出在 `council_coordinator` 处 fan-in：解析 RiskTag → 按文件路径和局部位置构建连通候选块 → 最多 8 个并行 LLM 调用做保守语义归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会去重；非法、低置信或失败结果一律完整保留。去重后经 `evidence_planner` 为每个候选按 RiskTag 匹配取证策略（counter + support + severity），`evidence_agent` 调 Java 工具获取原始事实并调 LLM 分析证据含义（SUPPORTS/CONTRADICTS/INSUFFICIENT），最后由 `council_judge` 做三阶段裁决：证据门控（3 条确定性规则，零 LLM 成本淘汰）→ LLM 语义综合 → 严重度策略定级。
 
 旧 supervisor 调度图已迁移到 `services/agent/legacy/supervisor_graph/graph.py`，仅作历史参考。
 
@@ -46,10 +59,20 @@ START → [summary] → context_provider ─┬─ parse_changed_files
 ### 组件边界
 
 ```
-┌─────────────────┐     HTTP / 工具调用      ┌──────────────────┐
-│  Python Agent   │ ──────────────────────> │  Java Gateway    │
-│  (审查管线/编排)  │ <────────────────────── │  (AST/调用图/RAG) │
-└─────────────────┘     代码上下文工具         └──────────────────┘
+                    ┌──────────────────────────────────────────┐
+                    │         Java Gateway（单 JVM 三服务）      │
+                    │                                           │
+  ┌──────────┐  LLM │  LLM Proxy (:9091)    ──→ DeepSeek/Claude │
+  │ Python   │ ────→│  · OpenAI 兼容 API     · 多提供商路由      │
+  │ Agent    │      │  · 限流 + 熔断 + 重试  · 降级链透明切换    │
+  │          │ 工具 │                                           │
+  │ (审查编排)│ ────→│  Tool Server (:9090)  ──→ 磁盘/AST/调用图  │
+  │          │      │  · 文件沙箱 + 护栏    · Agent 工具服务      │
+  └──────────┘      │                                           │
+                    │  CI Webhook (:8080)   ←── GitHub Webhook  │
+                    │  · 验签 + 幂等调度    → ProcessBuilder     │
+                    │  · Job 持久化 + 重试  → Check Runs 回写   │
+                    └──────────────────────────────────────────┘
 ```
 
 ### 默认审查流
@@ -57,9 +80,12 @@ START → [summary] → context_provider ─┬─ parse_changed_files
 Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执行方式按是否配置工具服务分流:
 
 ```
-管线(无工具):git diff → [摘要/软分派] → 并行三审查员(直连) → 两段式聚合 → 误报过滤 → 打印
+管线(无工具):git diff → [摘要] → 并行三审查员(直连) → 两段式聚合 → 误报过滤 → 打印
 管线(有工具):配置 CODEGUARD_TOOL_SERVER_URL 后,审查员改走 ReAct,
-              可调 Java 工具(get_file_content / get_repo_map)获取 diff 之外上下文,其余阶段不变
+              可调 Java 工具(get_file_content / find_sensitive_apis 等)获取 diff 之外上下文
+
+LLM 调用路径:Python → LLM Proxy(:9091) → 按 model 路由 → DeepSeek/Claude/千问
+              (或直连:Python → CODEGUARD_API_BASE_URL → LLM 提供商)
 ```
 
 当前审查核心是 ReviewCouncil 多 Agent 编排：
@@ -108,7 +134,11 @@ docker compose up -d
 
 审查员的"执行方式"抽成可插拔引擎(`pipeline/engines.py`):`DirectEngine`(无工具基准)/ `ToolAgentEngine`(ReAct,基于 langchain v1 `create_agent`)。`ReviewerStage` 按 `tool_client` 是否存在分流。
 
-**职责边界**:Python = 智能编排(推理 / 编排 / 对结论加工);Java = 护栏 + 地面真值(安全沙箱 / 重静态计算)。四条不变量:Python 调 Java 单向、Java 不碰 LLM;代码探索只走 Java 沙箱;不确定性只在 Python;Java 不判断"是不是问题"。
+**职责边界**:Python = 智能编排(推理 / 编排 / 对结论加工);Java = 三大独立服务:
+- **LLM Proxy (:9091)**:OpenAI 兼容代理,统一管理多提供商路由、熔断/限流/重试、API key。Python 侧无提供商密钥,只看到一个本地端点。
+- **Tool Server (:9090)**:Agent 工具服务 + 文件访问沙箱 + AST 分析 + 调用链 + 危险 API 扫描。
+- **CI Webhook (:8080)**:GitHub PR 自动审查链路——验签、幂等调度、git clone、Python 子进程调用、Check Runs 回写。
+四条不变量:Python 调 Java 单向;代码探索只走 Java 沙箱;不确定性只在 Python;Java 不判断"是不是问题"(LLM Proxy 仅协议转发,不做语义判断)。
 
 误报过滤两段式:确定性规则(零成本)+ 可选 LLM 验证(默认关,开启时优先异源模型,见 ADR-008)。
 
@@ -148,22 +178,39 @@ Codeguard/
     │   ├── config/false-positive-rules.yaml  # 误报过滤的确定性规则配置(YAML)
     │   ├── tests/                 # pytest:测工程正确性
     │   └── evals/                 # ★审查质量评测框架(量化效果,见 §5)
-    └── gateway/                   # ★Java Gateway(护栏 + 地面真值层 + CI 入口)
-        ├── pom.xml               # Maven;Javalin + Jackson + SLF4J + Guava + MySQL (HikariCP);fat jar 独立启动
+    └── gateway/                   # ★Java Gateway——四模块 Maven 多模块项目
+        ├── pom.xml               # 父 POM(管理 shared/tool-server/ci-webhook/llm-proxy 四个子模块)
         ├── start-ci.ps1          # ★本地一键启动 CI Gateway 脚本
-        └── src/main/java/com/codeguard/
-            ├── agent/core/       # AgentTool 接口 / ToolResult 信封 / AgentContext
-            ├── agent/ast/        # ★get_diff_ast:DiffASTResult / DiffASTAnalyzer(JavaParser 完整 AST 提取) / ASTContextFormatter(LLM 文本+两级裁剪)
-            ├── agent/tools/      # ToolRegistry / FileAccessSandbox(护栏)/ GetFileContentTool / FindCallersTool / FindSensitiveApisTool / GetCodeMetricsTool / GetDiffASTTool
-            ├── legacy/repomap/   # get_repo_map 已下线，实现保留备参考(ADR-020/036)
-            ├── ci/               # ★CI 集成(GitHub PR 自动审查):
-            │   ├── model/        #   WebhookPayload / ReviewJob 数据模型
-            │   ├── webhook/      #   GitHubWebhookController(验签+事件过滤+幂等)
-            │   ├── job/          #   JobRepository(MySQL 持久化) / JobScheduler(有界队列+信号量)
-            │   ├── executor/     #   ReviewExecutor(ProcessBuilder+异步IO+超时) / ResultFeedback(Check Runs+行评论)
-            │   ├── github/       #   GitHubClient(App JWT+Check Runs API+PR Comments)
-            │   └── guard/        #   ReviewGuard(令牌桶限流+大diff降级+重试判定)
-            └── toolserver/       # ToolServerApp + Controller(通用 /tools/{name} 分发)+ SessionManager + Main
+        ├── shared/               # 共用基础设施
+        │   └── src/.../common/   #   GatewayMetrics / OperationalController
+        ├── tool-server/          # Agent 工具服务(:9090)
+        │   └── src/.../
+        │       ├── toolserver/   #   ToolServerApp / ToolServerController / ToolSessionManager / GatewaySettings
+        │       └── agent/
+        │           ├── core/     #   AgentTool 接口 / ToolResult 信封 / AgentContext
+        │           ├── ast/      # ★ DiffASTAnalyzer / DiffASTResult / ASTContextFormatter
+        │           └── tools/    #   ToolRegistry / FileAccessSandbox / GetFileContentTool / FindCallersTool
+        │                         #   / FindSensitiveApisTool / GetCodeMetricsTool / GetDiffASTTool
+        ├── ci-webhook/           # GitHub PR 自动审查链路(:8080)
+        │   └── src/.../
+        │       ├── Main.java     # ★ 统一入口(同时启动三个服务)
+        │       └── ci/
+        │           ├── model/    #   WebhookPayload / ReviewJob 数据模型
+        │           ├── webhook/  #   WebhookVerifier / GitHubWebhookController(验签+事件过滤+幂等)
+        │           ├── job/      #   JobRepository(MySQL 持久化) / JobScheduler(有界队列+信号量)
+        │           ├── executor/ #   ReviewExecutor(ProcessBuilder+异步IO+超时) / ResultFeedback(Check Runs+行评论)
+        │           ├── github/   #   GitHubClient(App JWT+Check Runs API+PR Comments)
+        │           └── guard/    #   ReviewGuard(令牌桶限流)
+        ├── llm-proxy/            # ★ LLM 代理网关(:9091)——OpenAI 兼容端点，多提供商路由 + Resilience4j 韧性
+        │   └── src/.../proxy/
+        │       ├── ProxyServer.java
+        │       ├── handler/      #   ChatCompletionsHandler(验证→路由→降级链→协议转换)
+        │       ├── router/       #   ProviderRouter(model 名→adapter 链)
+        │       ├── adapter/      #   DeepSeekAdapter / ClaudeAdapter / QwenAdapter(协议转换+透传)
+        │       ├── model/        #   OpenAiChatRequest / OpenAiChatResponse(Jackson record)
+        │       ├── config/       #   ProxyConfig(YAML 加载+环境变量替换)
+        │       └── resilience/   #   ResilienceService(限流→熔断 per-provider→重试 指数退避+jitter)
+        └── src/                  # 旧单体代码(已不参与构建,保留参考)
 ```
 
 带 ★ 的是改动时最需要小心的核心文件。
