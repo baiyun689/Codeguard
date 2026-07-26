@@ -308,6 +308,8 @@ Container build:
 docker build -t codeguard:local .
 ```
 
+The interview-grade quality evaluation uses 60 Java cases pinned to exact repository revisions. It compares direct diff review, ReviewCouncil, Council with the code graph, and the full evidence pipeline, then supports provisional DeepSeek judging followed by two-person blind adjudication. See [`services/agent/evals/INTERVIEW_EVAL.md`](services/agent/evals/INTERVIEW_EVAL.md).
+
 ## Contributing
 
 Issues and pull requests are welcome. Keep changes focused, add deterministic tests for code changes, and run the relevant Python, Java, and container checks before submitting.

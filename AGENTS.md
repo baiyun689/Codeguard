@@ -109,7 +109,7 @@ Codeguard/
     │   │   ├── runtime_archive/   # 旧 stages/prompts/fp rules
     │   │   └── tests/             # 对应历史测试
     │   ├── tests/                 # pytest:测工程正确性
-    │   └── evals/                 # ★审查质量评测框架(量化效果,见 §5)
+    │   └── evals/                 # ★质量评测:60例真实仓库、四档消融与人工盲审(见 §5)
     └── gateway/                   # ★Java Gateway(护栏 + 地面真值层)
         ├── pom.xml                # Maven 四模块 parent
         ├── shared/                # 指标、健康检查和共享配置
@@ -163,8 +163,8 @@ conda run -n codeguard python -m pytest tests/ -q          # 全部单测(工程
 conda run -n codeguard python -m pytest tests/test_xxx.py::test_name   # 跑单个测试
 conda run -n codeguard ruff check src/                     # lint
 conda run -n codeguard mypy src/                           # 类型检查
-conda run -n codeguard python -m evals.runner --mode pipeline --judge --runs 3   # 评测
-conda run -n codeguard python -m evals.runner --profile pipeline-file --runs 1   # 按 profile 评测(见 evals/profiles.yaml)
+conda run -n codeguard python -m evals.runner --profile eval-codeguard-full --judge --runs 3  # 单 profile
+conda run -n codeguard python -m evals.interview_eval run --workspace <dir> --cache <dir> --runs 3 --judge  # 面试版四档
 
 # —— Java Gateway(services/gateway 工具服务)——
 mvn package                # 跑单测 + 出 fat jar
@@ -200,16 +200,14 @@ cd services/agent && conda run -n codeguard python -m pytest tests/ -q
 
 ### 评测框架(审查质量,量化"效果")★
 
-`evals/` 用"带标注的数据集 + 统计指标"量化审查质量,在统一数据集上对照各 profile(无工具 / 文件工具 / repo-map)的增益。详见 `evals/README.md`。
+`evals/` 用"精确版本的真实仓库数据 + 自动暂定评分 + 双人人工盲审"量化审查质量。冻结的 `interview-v1` 含 60 例(Vul4J 25、GitBug-Java 35)，四档只改变编排/图谱/举证能力。详见 `evals/INTERVIEW_EVAL.md`。
 
 ```bash
 cd services/agent && pip install -e . pyyaml
-python -m evals.runner --runs 3          # 跑评测,3 次统计方差
-python -m evals.runner --runs 3 --judge  # 额外开 LLM-as-judge
+python -m evals.interview_eval run --workspace ../../.eval-work/interview-v1 --cache ../../.eval-cache/interview-v1 --runs 3 --judge
 ```
 
-产出 `evals/reports/pipeline.md`,核心指标:Precision / Recall / F1 / 误报率 / 定位准确率 / 级别准确率;**复杂用例行为诊断**(ADR-013):诱饵命中率 / vuln 噪音/条 / 报告膨胀比 / 主项 recall(CRITICAL)/ 次项 recall(WARNING+INFO)/ 裁判↔规则一致率。
-加用例只需往 `evals/dataset/vuln`(有漏洞)或 `evals/dataset/clean`(无问题、测误报)丢一个 YAML,无需改代码;**复杂用例**(一份 diff 多个植入问题 + `distractors` 诱饵)指标只有开 `--judge` 才完全可信(规则尺在多问题下偏乐观)。
+产出四档原始归档、`provisional-report.md` 和来源盲化任务池。当前 DeepSeek 同源 Judge 只形成 `automatic-provisional`；两位 reviewer 一致裁决（分歧由第三人仲裁）后，离线生成 `human-adjudicated-final`。额外合理发现会成为所有 profile 的共享补充标答。核心指标包括 Precision/Recall/F1、case-cluster bootstrap 95% CI、稳定/最差轮 Recall、检出集合 Jaccard、clean 误报和 P95 时延。
 
 ### 环境变量(完整列表见 `.env.example`)
 

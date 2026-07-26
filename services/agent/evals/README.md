@@ -1,7 +1,11 @@
 # Codeguard 评测(eval)框架
 
 > 用「带标注的数据集 + 统计指标」量化审查质量,而不是用 `assert` 死磕不确定的 LLM 输出。
-> 跑出的指标用于在统一数据集上对照各 profile(ADR-032 smoke / 无工具 / 文件工具 / 调用方工具)的审查质量。
+> 跑出的指标用于在统一数据集上对照各 profile 的审查质量。
+
+正式的 60 例真实仓库评测、四档消融、同源 Judge 暂定评分和双人人工盲审流程见
+[`INTERVIEW_EVAL.md`](INTERVIEW_EVAL.md)。`runner` 仍是单 profile 的底层执行器，
+`interview_eval` 是可以直接准备数据、依次运行四档并生成最终结果的一站式入口。
 
 ## 为什么需要它
 
@@ -68,11 +72,11 @@ Phase 2 最小样本包括：删除 `@PreAuthorize`、新增 repository update�
 > 工具增益要测得出,前提是用例**真的需要该能力**(diff-only 看着没问题、读了文件/上下文才暴露)。
 > 若一条用例从 diff 本身就能猜中,开/关工具指标会一样——那是用例不够"难",不是工具没用。
 
-## ⚠️ 工具开档(`--tools`)与数据集的现状错配
+## 合成回归集与真实仓库集
 
-`--tools` 让审查员走 ReAct、可调 `get_file_content`。但**当前数据集是合成 diff,磁盘上没有对应的真实文件**,所以工具开档下 `get_file_content` 基本只会返回"文件不存在",agent 退回只看 diff——这导致"工具开 vs 关"在本数据集上是**结构性无效**的对照(测的是数据集喂不了工具,不是工具有没有用,见 `DECISIONS.md` ADR-009)。
+`evals/dataset` 中的旧合成案例继续用于廉价工程回归，其中没有 `repo_path` 的案例不能量化项目图工具增益。严格工具 profile 遇到这类案例会直接失败，不会静默降级。
 
-工具的真实价值已在 repo 上**定性坐实**(审查员会自主读整文件再推理)。要**量化**工具增益,需补一批 **repo-backed 评测用例**(每条用例带一个真实小仓库,diff 改动其中文件,关键上下文在 diff 之外)——这是下一步该补的数据集工作,不是工具本身的问题。`--tools` 的 harness 已就位,数据集补上即可直接量化。
+`evals/suites/interview-v1.yaml` 定义 60 个 repo-backed 真实案例。`interview_suite` 按精确 SHA 缓存上游 Git 对象，生成漏洞/修复版本快照并验证 HEAD、diff 与标答文件；只有清单中人工给出并通过 hunk/HEAD 校验的行号才进入定位准确率，自动准备不会用首个变更行伪造根因位置。缓存和 prepared workspace 都不进入 Git。
 
 ## 指标含义
 
@@ -202,9 +206,12 @@ expected:
 | `metrics.py` | 聚合 precision/recall/F1/误报率/方差 |
 | `report.py` | 渲染 Markdown 报告 |
 | `runner.py` | CLI 跑批入口 |
+| `interview_suite.py` | 按精确 revision 准备/校验 60 例真实仓库快照 |
+| `interview_eval.py` | 四档统一运行、横向报告与人工终评入口 |
+| `adjudication.py` | 未匹配发现池化、双人盲审、冲突仲裁与离线重评分 |
 
 ## 路线图衔接
 
 每加一个工具 / 换一种编排,只需新增一个 profile,**用同一条命令再跑一份报告**,
-和已有 profile(无工具 / 文件工具 / repo-map)并排对比 —— Recall 提升多少、误报降多少,
+和已有 profile(直接 diff / Council / 代码图谱 / 完整举证)并排对比 —— Recall 提升多少、误报降多少,
 就是该能力的价值证明。

@@ -313,6 +313,8 @@ mvn --batch-mode verify     # 构建全部四个子模块：shared、tool-server
 docker build -t codeguard:local .
 ```
 
+真实质量评测使用 60 个精确 revision 的 Java 仓库案例，对照“单模型 diff、Council、Council + 代码图谱、完整举证”四档，并支持 DeepSeek 自动暂定评分和双人人工盲审终评。执行方法见 [`services/agent/evals/INTERVIEW_EVAL.md`](services/agent/evals/INTERVIEW_EVAL.md)。
+
 ## 参与贡献
 
 欢迎提交 Issue 和 Pull Request。代码改动应保持聚焦、添加确定性测试，并在提交前运行相应的 Python、Java 和容器检查。
