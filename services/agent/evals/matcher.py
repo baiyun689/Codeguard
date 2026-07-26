@@ -215,6 +215,11 @@ def _build_outcome(
         is_clean=case.is_clean,
         expected_total=len(case.expected),
         reported_total=len(reported),
+        reported_issues=reported,
+        gold_issue_ids=[
+            expected.id or f"E{index}"
+            for index, expected in enumerate(case.expected)
+        ],
         primary_judge=judged_by,
     )
     matched_reports: set[int] = set()
@@ -229,6 +234,9 @@ def _build_outcome(
                 outcome.fn_secondary += 1
             continue
         matched_reports.add(rep_idx)
+        expected_id = expected.id or f"E{exp_idx}"
+        outcome.matched_expected_by_report[rep_idx] = expected_id
+        outcome.detected_issue_ids.append(expected_id)
         outcome.true_positives += 1
         if tier == "primary":
             outcome.tp_primary += 1
@@ -236,8 +244,10 @@ def _build_outcome(
             outcome.tp_secondary += 1
         issue = reported[rep_idx]
         # 定位准确率:命中项里行号也对得上的(expected.line>0 才计)
-        if expected.line > 0 and abs(issue.line - expected.line) <= expected.tolerance:
-            outcome.localization_hits += 1
+        if expected.line > 0:
+            outcome.localization_checked += 1
+            if abs(issue.line - expected.line) <= expected.tolerance:
+                outcome.localization_hits += 1
         # 级别准确率:仅对标注了 severity 的标准答案统计
         if expected.severity is not None:
             outcome.severity_checked += 1
@@ -252,6 +262,9 @@ def _build_outcome(
                 "match": "✓" if hit else "✗",
             })
     outcome.false_positives = len(reported) - len(matched_reports)
+    outcome.unmatched_report_indices = [
+        idx for idx in range(len(reported)) if idx not in matched_reports
+    ]
 
     # 误报归类:未被任何标答认领的报告里,落在某条诱饵上的算"中诱饵"(被骗),其余即"凭空乱报"。
     # 复用 rule_match(file+行号+关键词);Distractor 与 ExpectedIssue 同构故可直接传入。

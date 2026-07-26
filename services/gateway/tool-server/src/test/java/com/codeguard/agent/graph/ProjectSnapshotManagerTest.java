@@ -15,6 +15,29 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 class ProjectSnapshotManagerTest {
 
     @Test
+    void parsesModernJavaSyntaxWithoutDowngradingSnapshot(@TempDir Path repo) throws Exception {
+        Files.writeString(repo.resolve("Modern.java"), """
+                record Modern(int value) {
+                    static int classify(Object input) {
+                        if (input instanceof String text && !text.isBlank()) {
+                            return switch (text.length()) {
+                                case 1, 2 -> 1;
+                                default -> 2;
+                            };
+                        }
+                        return 0;
+                    }
+                }
+                """);
+
+        ProjectSnapshot snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "modern")).join();
+
+        assertEquals(1, snapshot.astUnits().size());
+        assertTrue(snapshot.diagnostics().isEmpty());
+    }
+
+    @Test
     void buildsOneCompleteSnapshotWithCallAndSpringEntrypoint(@TempDir Path repo) throws Exception {
         Path sourceRoot = repo.resolve("src/main/java/com/example");
         Files.createDirectories(sourceRoot);

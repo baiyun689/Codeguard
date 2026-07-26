@@ -83,10 +83,10 @@ class ContextProviderStage(PipelineStage):
                                 truncated=truncated,
                             )
                         )
-                    if payload.get("status") == "unknown":
+                    if payload.get("status") in {"unknown", "partial"}:
                         diagnostics["symbol_context"] = "; ".join(
                             str(value) for value in payload.get("limitations", [])
-                        ) or "graph_coverage_unknown"
+                        ) or f"graph_coverage_{payload.get('status')}"
                     gathered.append(
                         GatheredContext(
                             "resolve_change_context",

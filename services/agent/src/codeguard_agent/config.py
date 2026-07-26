@@ -56,6 +56,9 @@ class Settings:
     disable_thinking: bool  # 是否禁用思考模式(DeepSeek 等推理模型需要)
     # 阶段 3:Java 工具服务地址。非空 → 发现者走 ReAct(可调工具);空 → 走直连基准。
     tool_server_url: str = ""
+    # 首次语义工具调用需要等待 Java 异步 ProjectSnapshot 构建完成；客户端预算
+    # 与 Gateway 使用同一配置，并在调用处额外留出网络缓冲。
+    graph_build_timeout_seconds: int = 120
     # 前置摘要阶段开关:默认开。关闭时审查员不收到 diff_summary 背景。
     enable_summary: bool = True
     # 大 diff 覆盖预算；普通 diff 默认全选。
@@ -115,6 +118,9 @@ class Settings:
         max_review_tasks = _positive_int_env("CODEGUARD_MAX_REVIEW_TASKS", 100)
         max_tasks_per_file = _positive_int_env("CODEGUARD_MAX_TASKS_PER_FILE", 10)
         max_react_tasks = _positive_int_env("CODEGUARD_MAX_REACT_TASKS", 20)
+        graph_build_timeout_seconds = _positive_int_env(
+            "CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS", 120
+        )
         checkpoint_backend = os.environ.get("CODEGUARD_CHECKPOINT_BACKEND", "").strip().lower()
         checkpoint_db = os.environ.get("CODEGUARD_CHECKPOINT_DB", "codeguard_checkpoints.db").strip()
         react_recursion_limit = int(os.environ.get("CODEGUARD_REACT_RECURSION_LIMIT", "48"))
@@ -136,6 +142,7 @@ class Settings:
             structured_method=structured_method,
             disable_thinking=disable_thinking,
             tool_server_url=os.environ.get("CODEGUARD_TOOL_SERVER_URL", "").strip(),
+            graph_build_timeout_seconds=graph_build_timeout_seconds,
             enable_summary=enable_summary,
             max_review_tasks=max_review_tasks,
             max_tasks_per_file=max_tasks_per_file,

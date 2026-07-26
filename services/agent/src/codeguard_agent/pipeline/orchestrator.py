@@ -87,6 +87,8 @@ class PipelineOrchestrator:
         allowed_files: list[str] | None = None,
         tool_client=None,
         enabled_tools: list[str] | None = None,
+        enabled_evidence_tools: list[str] | None = None,
+        allow_direct_fallback: bool = True,
         trace_enabled: bool = False,
         trace_dir: str = "trace",
         trace_max_llm_content: int = 0,
@@ -99,6 +101,8 @@ class PipelineOrchestrator:
         fp_verify_llm:裁决模型(异源千问 temperature=0);None 时回退到主 llm。
         tool_client 非 None 时发现者走 ReAct(可调工具),否则走直连基准。
         enabled_tools:暴露给审查员的工具白名单(评测 profile 控制);None=全开(CLI 默认)。
+        enabled_evidence_tools:EvidenceAgent 的独立白名单；None 时沿用 enabled_tools。
+        allow_direct_fallback:ReAct 失败/空结果时是否允许无工具直连复审；严格 eval 关闭。
         trace_sink / metadata_sink：可选 eval 侧信道，不进入 ReviewResult 对外接口。
         thread_id:可选的检查点线程标识,用于中断恢复。
         """
@@ -120,8 +124,11 @@ class PipelineOrchestrator:
             "max_retries": max_retries,
             "structured_method": structured_method,
             "react_recursion_limit": self._react_recursion_limit,
+            "allow_direct_fallback": allow_direct_fallback,
             "review_budget": self._review_budget,
         }
+        if enabled_evidence_tools is not None:
+            initial["enabled_evidence_tools"] = enabled_evidence_tools
         invoke_config: dict = {"recursion_limit": self._recursion_limit}
         if self._checkpointer is not None:
             effective_thread_id = thread_id or str(uuid.uuid4())
@@ -162,6 +169,9 @@ class PipelineOrchestrator:
             else:
                 metadata_sink["council"] = stats
             metadata_sink["council_trace_events"] = len(final_state.get("council_trace") or [])
+            metadata_sink["context_diagnostics"] = dict(
+                final_state.get("context_diagnostics") or {}
+            )
 
         return ReviewResult(
             summary=final_state.get("summary", ""),

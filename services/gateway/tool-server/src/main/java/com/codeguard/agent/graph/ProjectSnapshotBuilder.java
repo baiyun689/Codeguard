@@ -61,6 +61,7 @@ final class ProjectSnapshotBuilder {
         CombinedTypeSolver solvers = new CombinedTypeSolver(new ReflectionTypeSolver(false));
         discoverSourceRoots(root, javaFiles).forEach(path -> solvers.add(new JavaParserTypeSolver(path)));
         JavaParser parser = new JavaParser(new ParserConfiguration()
+                .setLanguageLevel(ParserConfiguration.LanguageLevel.BLEEDING_EDGE)
                 .setStoreTokens(true)
                 .setAttributeComments(true)
                 .setSymbolResolver(new JavaSymbolSolver(solvers)));

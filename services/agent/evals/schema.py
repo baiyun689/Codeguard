@@ -15,7 +15,7 @@ import logging
 
 from pydantic import BaseModel, Field, field_validator
 
-from codeguard_agent.models.schemas import Severity
+from codeguard_agent.models.schemas import Issue, Severity
 
 logger = logging.getLogger("codeguard.evals")
 
@@ -26,7 +26,31 @@ logger = logging.getLogger("codeguard.evals")
 #   ast        需单文件结构/方法签名(未来 get_method_definition)
 #   call-graph 需跨文件调用/影响关系(未来 get_call_graph / get_related_files)
 #   rag        需按语义检索项目别处实现(未来 semantic_search)
-VALID_CAPABILITIES = ("diff-only", "file", "repo-map", "ast", "call-graph", "rag")
+VALID_CAPABILITIES = (
+    "diff-only",
+    "file",
+    "repo-map",
+    "ast",
+    "call-graph",
+    "rag",
+    "whole-file",
+    "call-path",
+    "framework-entry",
+    "inheritance",
+    "state-impact",
+    "structural",
+)
+
+
+class CaseProvenance(BaseModel):
+    """可复现评测用例的来源与精确版本。"""
+
+    source: str = ""
+    repository_url: str = ""
+    base_revision: str = ""
+    head_revision: str = ""
+    patch_direction: str = "natural"
+    license: str = ""
 
 
 class ExpectedIssue(BaseModel):
@@ -38,6 +62,7 @@ class ExpectedIssue(BaseModel):
       3. 报告的 type/message 命中 type_keywords 里任一关键词(忽略大小写)。
     """
 
+    id: str = Field(default="", description="标答在用例内的稳定 ID")
     type_keywords: list[str] = Field(
         description="问题类型关键词,报告命中其一即视为类型对上,如 ['sql', '注入', 'injection']"
     )
@@ -48,6 +73,13 @@ class ExpectedIssue(BaseModel):
         default=None, description="期望级别(弱约束,仅用于统计级别准确率,不影响命中)"
     )
     note: str = Field(default="", description="给人看的说明,如'用户输入直接拼进 SQL'")
+    root_cause: str = Field(default="", description="与措辞无关的规范化根因")
+    cwe: str = Field(default="", description="可选 CWE 编号")
+    risk_tag: str = Field(default="", description="可选 Codeguard RiskTag")
+    evidence_anchors: list[str] = Field(
+        default_factory=list,
+        description="可接受的符号、source/sink 或源码位置锚点",
+    )
 
 
 class Distractor(BaseModel):
@@ -83,6 +115,13 @@ class EvalCase(BaseModel):
     )
     language: str = Field(default="java", description="代码语言")
     description: str = Field(default="", description="这条用例考的是什么")
+    ground_truth_mode: str = Field(
+        default="exhaustive",
+        pattern="^(exhaustive|known-issue-only)$",
+        description="exhaustive 可直接判断未匹配项；known-issue-only 需人工裁决额外发现",
+    )
+    difficulty: str = Field(default="standard", description="难度或能力场景标签")
+    provenance: CaseProvenance = Field(default_factory=CaseProvenance)
     diff: str = Field(description="unified diff 文本,喂给审查管线的输入")
     expected: list[ExpectedIssue] = Field(
         default_factory=list, description="标准答案;clean 样本留空"
@@ -292,7 +331,36 @@ class MatchOutcome(BaseModel):
     false_positives: int = Field(default=0, description="报了但对不上任何标准答案的数量")
     expected_total: int = Field(default=0, description="该用例标准答案总数")
     reported_total: int = Field(default=0, description="该用例报告问题总数")
+    total_duration_ms: float = Field(default=0.0, description="单例端到端审查耗时")
+    reported_issues: list[Issue] = Field(
+        default_factory=list,
+        description="原始最终报告；人工盲审和无 LLM 重评分的事实来源",
+    )
+    matched_expected_by_report: dict[int, str] = Field(
+        default_factory=dict,
+        description="报告序号到稳定标答 ID 的一对一配对",
+    )
+    unmatched_report_indices: list[int] = Field(
+        default_factory=list,
+        description="尚未命中原始标答、需要池化或人工裁决的报告序号",
+    )
+    gold_issue_ids: list[str] = Field(
+        default_factory=list,
+        description="本轮评分使用的原始与补充标答 ID",
+    )
+    detected_issue_ids: list[str] = Field(
+        default_factory=list,
+        description="本轮实际命中的标答 ID；稳定性统计不使用多轮并集冒充单轮结果",
+    )
+    novel_valid_count: int = Field(default=0, description="人工确认的额外真实问题数")
+    duplicate_report_count: int = Field(default=0, description="同一根因的重复最终报告数")
+    invalid_report_count: int = Field(default=0, description="人工确认的错误报告数")
+    out_of_scope_count: int = Field(default=0, description="与本次变更无关的报告数")
     localization_hits: int = Field(default=0, description="命中项里行号也对上的数量")
+    localization_checked: int = Field(
+        default=0,
+        description="命中且标答提供人工校验行号的数量",
+    )
     severity_hits: int = Field(default=0, description="命中项里级别也对上的数量(仅标了 severity 的)")
     severity_checked: int = Field(default=0, description="参与级别校验的命中项数量")
     severity_detail: list[dict[str, str]] = Field(
@@ -359,6 +427,10 @@ class AggregateMetrics(BaseModel):
 
     false_positives_on_clean: float = Field(description="干净样本上平均每条 diff 误报几个")
     localization_accuracy: float = Field(description="命中项里行号也对上的比例")
+    localization_checked: int = Field(
+        default=0,
+        description="参与定位准确率计算的命中项数量；0 表示该指标不适用",
+    )
     severity_accuracy: float = Field(description="命中项里级别也对上的比例")
 
     recall_std: float = Field(default=0.0, description="recall 在多次跑测间的标准差")
@@ -405,3 +477,12 @@ class AggregateMetrics(BaseModel):
     judge_rule_agreement: float | None = Field(
         default=None, description="裁判↔规则一致率 = 两尺判定全等的 LLM 主判用例数 / LLM 主判用例数;无 LLM 主判时 None"
     )
+
+
+class StabilityMetrics(BaseModel):
+    runs: int
+    issue_detection_frequency: dict[str, float] = Field(default_factory=dict)
+    stable_recall: float = 0.0
+    always_detected_recall: float = 0.0
+    worst_run_recall: float = 0.0
+    mean_pairwise_jaccard: float = 0.0

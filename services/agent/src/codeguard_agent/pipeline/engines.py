@@ -122,12 +122,14 @@ class ToolAgentEngine(ReviewEngine):
         tool_client: Any,
         recursion_limit: int = 12,
         enabled_tools: list[str] | None = None,
+        allow_direct_fallback: bool = True,
     ) -> None:
         self._tool_client = tool_client
         # langgraph 用 recursion_limit 约束图的总步数,间接限制工具调用轮数,防止失控。
         self._recursion_limit = recursion_limit
         # 工具白名单:None=暴露所有已实现工具;否则只暴露列出的(profile 控制,对照可控)。
         self._enabled_tools = enabled_tools
+        self._allow_direct_fallback = allow_direct_fallback
 
     def review(
         self,
@@ -149,6 +151,8 @@ class ToolAgentEngine(ReviewEngine):
             # HITL 开启时不吞异常，让它传播到上层 _review 节点的 interrupt handler，
             # 由人决定 continue/retry/skip。
             if enable_hitl:
+                raise
+            if not self._allow_direct_fallback:
                 raise
             # ReAct 在 recursion_limit 步内没收敛(绕的难例 / 工具反复绕)。不让该域被静默丢弃
             # (那会直接丢失这一维度的发现、压低 recall),而是降级为无工具直连复审一次,至少

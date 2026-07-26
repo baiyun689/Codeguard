@@ -30,11 +30,14 @@ class Profile:
     # 旧 supervisor 智能调度开关已退役。字段暂留兼容历史 profile,ADR-032 默认路径忽略它。
     enable_supervisor: bool = False
     orchestration: str = "adr-032"
+    execution: str = "pipeline"
+    evidence_tools: list[str] | None = None
+    strict_tools: bool = False
 
     @property
     def wants_tools(self) -> bool:
         """该 profile 是否意图启用工具(pipeline + 非空工具集才有意义)。"""
-        return self.mode == "pipeline" and bool(self.tools)
+        return self.execution == "pipeline" and self.mode == "pipeline" and bool(self.tools)
 
 
 def load_profiles(path: Path | None = None) -> dict[str, Profile]:
@@ -54,6 +57,13 @@ def load_profiles(path: Path | None = None) -> dict[str, Profile]:
             fp_verify=bool(cfg.get("fp_verify", False)),
             enable_supervisor=bool(cfg.get("enable_supervisor", False)),
             orchestration=cfg.get("orchestration", "adr-032"),
+            execution=cfg.get("execution", "pipeline"),
+            evidence_tools=(
+                list(cfg.get("evidence_tools") or [])
+                if "evidence_tools" in cfg
+                else None
+            ),
+            strict_tools=bool(cfg.get("strict_tools", False)),
         )
     return profiles
 

@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
-from evals.metrics import aggregate
+from evals.metrics import aggregate, compute_stability
+from codeguard_agent.models.schemas import Issue, Severity
+
 from evals.schema import CouncilTraceStats, MatchOutcome
 
 
@@ -22,13 +24,95 @@ def _clean(**kw) -> MatchOutcome:
     return MatchOutcome(**base)
 
 
+def test_stability_scores_each_run_independently_instead_of_using_union() -> None:
+    runs = [
+        [
+            _vuln(
+                case_id="a",
+                expected_total=1,
+                true_positives=1,
+                gold_issue_ids=["E1"],
+                detected_issue_ids=["E1"],
+            )
+        ],
+        [
+            _vuln(
+                case_id="a",
+                expected_total=1,
+                false_negatives=1,
+                gold_issue_ids=["E1"],
+                detected_issue_ids=[],
+            )
+        ],
+        [
+            _vuln(
+                case_id="a",
+                expected_total=1,
+                true_positives=1,
+                gold_issue_ids=["E1"],
+                detected_issue_ids=["E1"],
+            )
+        ],
+    ]
+
+    stability = compute_stability(runs)
+
+    assert stability.issue_detection_frequency == {"a:E1": 2 / 3}
+    assert stability.stable_recall == 1.0
+    assert stability.always_detected_recall == 0.0
+    assert stability.worst_run_recall == 0.0
+
+
+def test_stability_jaccard_includes_unmatched_report_noise() -> None:
+    def issue(message: str) -> Issue:
+        return Issue(
+            severity=Severity.WARNING,
+            file="A.java",
+            line=9,
+            type="quality",
+            message=message,
+        )
+
+    runs = [
+        [
+            _vuln(
+                case_id="a",
+                true_positives=1,
+                false_positives=1,
+                gold_issue_ids=["E1"],
+                detected_issue_ids=["E1"],
+                reported_issues=[issue("gold finding"), issue("first noise")],
+                matched_expected_by_report={0: "E1"},
+                unmatched_report_indices=[1],
+            )
+        ],
+        [
+            _vuln(
+                case_id="a",
+                true_positives=1,
+                false_positives=1,
+                gold_issue_ids=["E1"],
+                detected_issue_ids=["E1"],
+                reported_issues=[issue("gold finding"), issue("second noise")],
+                matched_expected_by_report={0: "E1"},
+                unmatched_report_indices=[1],
+            )
+        ],
+    ]
+
+    stability = compute_stability(runs)
+
+    assert stability.mean_pairwise_jaccard == 1 / 3
+
+
 # ---- 既有六项指标口径不变(回归) ----
 
 def test_既有指标口径不变():
     # 2 TP, 1 FP, 1 FN → P=2/3, R=2/3;clean 1 条 2 误报 → 误报率 2.0
     run = [
         _vuln(expected_total=3, reported_total=3, true_positives=2, false_positives=1, false_negatives=1,
-              localization_hits=2, severity_hits=1, severity_checked=2),
+              localization_hits=2, localization_checked=2,
+              severity_hits=1, severity_checked=2),
         _clean(reported_total=2, false_positives=2),
     ]
     m = aggregate([run])

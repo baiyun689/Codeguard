@@ -148,10 +148,13 @@ class ReviewState(TypedDict, total=False):
 
     diff_text: str
     enabled_tools: Any
+    enabled_evidence_tools: Any
+    context_diagnostics: dict[str, str]
 
     max_retries: int
     structured_method: str
     react_recursion_limit: int
+    allow_direct_fallback: bool
     diff_summary: str
 
     review_budget: ReviewBudget
@@ -188,6 +191,7 @@ class ReviewerState(TypedDict, total=False):
     structured_method: str
     diff_summary: str
     react_recursion_limit: int
+    allow_direct_fallback: bool
     task_knowledge: str
     review_task: ReviewTask
     risk_profile: RiskProfile
@@ -211,6 +215,7 @@ def _make_engine(state: ReviewState | ReviewerState, tool_client=None) -> Review
             tool_client,
             recursion_limit=state.get("react_recursion_limit", 24),
             enabled_tools=state.get("enabled_tools"),
+            allow_direct_fallback=state.get("allow_direct_fallback", True),
         )
     return DirectEngine()
 
@@ -440,6 +445,7 @@ def _context_provider_node(tool_client):
 
         return {
             "context_bundle": bundle,
+            "context_diagnostics": dict(ctx.context_diagnostics),
             "gathered_context": gathered,
             "task_context_bundles": task_bundles,
 
@@ -524,6 +530,11 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                         detail=str(exc)[:200],
                     )
                 )
+                if not state.get("allow_direct_fallback", True):
+                    return {
+                        "outcome": ReviewOutcome(ReviewResult(summary="")),
+                        "council_trace": review_traces,
+                    }
                 outcome = _direct_fallback(state)
             else:
                 logger.warning("[%s] 发现者失败,跳过: %s", reviewer.name, exc)
@@ -536,7 +547,11 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
 
         # ReAct 跑完但未产出任何 issue → LLM 偶发空响应（DeepSeek 已知问题），
         # 降级为 DirectEngine 直连复审以保住该域覆盖率。
-        if tier != "direct" and not outcome.result.issues:
+        if (
+            tier != "direct"
+            and not outcome.result.issues
+            and state.get("allow_direct_fallback", True)
+        ):
             logger.warning(
                 "[%s] ReAct 未产出 issue,降级直连复审以保住该域覆盖", reviewer.name
             )
@@ -686,6 +701,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     "structured_method": state.get("structured_method", "function_calling"),
                     "diff_summary": state.get("diff_summary", ""),
                     "react_recursion_limit": state.get("react_recursion_limit", 24),
+                    "allow_direct_fallback": state.get("allow_direct_fallback", True),
                     "review_task": scoped_task,
                     "risk_profile": profile,
                     "task_context_bundle": bundle,
@@ -1016,7 +1032,10 @@ def _evidence_agent_node(tool_client=None, judge_llm=None):
             tool_client=tool_client,
             analyst_llm=judge_llm,
             structured_method=state.get("structured_method", "function_calling"),
-            enabled_tools=state.get("enabled_tools"),
+            enabled_tools=state.get(
+                "enabled_evidence_tools",
+                state.get("enabled_tools"),
+            ),
         )
         trace = [
             CouncilTrace(node="evidence_agent", event=event, detail=detail)

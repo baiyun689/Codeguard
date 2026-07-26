@@ -75,6 +75,7 @@ def test_算分_定位与级别命中():
     reported = [_issue(line=12, severity=Severity.CRITICAL)]  # 行差2,容差默认3 → 定位命中
     outcome = _build_outcome(case, reported, {0: 0}, "rule")
     assert outcome.localization_hits == 1
+    assert outcome.localization_checked == 1
     assert outcome.severity_checked == 1
     assert outcome.severity_hits == 1
 

@@ -14,9 +14,11 @@ LLM 输出有随机性,只报单次数字没意义,必须带方差。
 
 from __future__ import annotations
 
+import re
+from itertools import combinations
 from statistics import mean, pstdev
 
-from evals.schema import AggregateMetrics, MatchOutcome
+from evals.schema import AggregateMetrics, MatchOutcome, StabilityMetrics
 
 
 def _safe_div(a: float, b: float) -> float:
@@ -27,12 +29,74 @@ def _f1(precision: float, recall: float) -> float:
     return _safe_div(2 * precision * recall, precision + recall)
 
 
+def _normalise_finding_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().lower())
+
+
 def aggregate_run(outcomes: list[MatchOutcome]) -> tuple[float, float]:
     """对单次跑测的所有用例,算 (precision, recall)。"""
     tp = sum(o.true_positives for o in outcomes)
     fp = sum(o.false_positives for o in outcomes)
     fn = sum(o.false_negatives for o in outcomes)
     return _safe_div(tp, tp + fp), _safe_div(tp, tp + fn)
+
+
+def compute_stability(runs: list[list[MatchOutcome]]) -> StabilityMetrics:
+    """逐轮独立评分后统计命中频率，绝不把多轮输出并集当作单轮成绩。"""
+    if not runs:
+        raise ValueError("没有任何跑测结果可计算稳定性")
+    run_count = len(runs)
+    gold: set[str] = set()
+    reported_by_run: list[set[str]] = []
+    hit_counts: dict[str, int] = {}
+    recalls: list[float] = []
+    for run in runs:
+        detected: set[str] = set()
+        reported: set[str] = set()
+        tp = fn = 0
+        for outcome in run:
+            gold.update(f"{outcome.case_id}:{item}" for item in outcome.gold_issue_ids)
+            detected.update(
+                f"{outcome.case_id}:{item}" for item in outcome.detected_issue_ids
+            )
+            for issue in outcome.reported_issues:
+                reported.add(
+                    ":".join(
+                        (
+                            outcome.case_id,
+                            issue.file.replace("\\", "/").lower(),
+                            str(max(0, issue.line) // 3),
+                            _normalise_finding_text(issue.type),
+                            _normalise_finding_text(issue.message),
+                        )
+                    )
+                )
+            tp += outcome.true_positives
+            fn += outcome.false_negatives
+        reported_by_run.append(reported or detected)
+        recalls.append(_safe_div(tp, tp + fn))
+        for item in detected:
+            hit_counts[item] = hit_counts.get(item, 0) + 1
+
+    frequencies = {
+        item: _safe_div(hit_counts.get(item, 0), run_count)
+        for item in sorted(gold)
+    }
+    majority = (run_count // 2) + 1
+    stable = sum(hit_counts.get(item, 0) >= majority for item in gold)
+    always = sum(hit_counts.get(item, 0) == run_count for item in gold)
+    jaccards = []
+    for left, right in combinations(reported_by_run, 2):
+        union = left | right
+        jaccards.append(_safe_div(len(left & right), len(union)) if union else 1.0)
+    return StabilityMetrics(
+        runs=run_count,
+        issue_detection_frequency=frequencies,
+        stable_recall=_safe_div(stable, len(gold)),
+        always_detected_recall=_safe_div(always, len(gold)),
+        worst_run_recall=min(recalls),
+        mean_pairwise_jaccard=mean(jaccards) if jaccards else 1.0,
+    )
 
 
 def aggregate_by_capability(
@@ -89,9 +153,10 @@ def aggregate(runs: list[list[MatchOutcome]]) -> AggregateMetrics:
 
     # 定位 / 级别准确率(分母是命中项)
     loc_hits = sum(o.localization_hits for run in runs for o in run)
+    loc_checked = sum(o.localization_checked for run in runs for o in run)
     sev_hits = sum(o.severity_hits for run in runs for o in run)
     sev_checked = sum(o.severity_checked for run in runs for o in run)
-    localization_acc = _safe_div(loc_hits, tp)
+    localization_acc = _safe_div(loc_hits, loc_checked)
     severity_acc = _safe_div(sev_hits, sev_checked)
 
     # LLM-as-judge 质量分(若有)
@@ -190,6 +255,7 @@ def aggregate(runs: list[list[MatchOutcome]]) -> AggregateMetrics:
         f1=_f1(precision, recall),
         false_positives_on_clean=fp_on_clean,
         localization_accuracy=localization_acc,
+        localization_checked=loc_checked,
         severity_accuracy=severity_acc,
         recall_std=pstdev(recalls) if len(recalls) > 1 else 0.0,
         precision_std=pstdev(precisions) if len(precisions) > 1 else 0.0,

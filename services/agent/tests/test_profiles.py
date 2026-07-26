@@ -145,3 +145,18 @@ def test_case_repo_root_合成用例可由显式base启用():
     # 用户显式断言 diff 对应某真实工程时,才用 repo_base(转绝对路径)。
     import os
     assert case_repo_root(None, ".") == os.path.abspath(".")
+
+
+def test_interview_profiles_separate_direct_discovery_and_evidence_capabilities():
+    direct = resolve_profile("eval-direct-diff")
+    graph = resolve_profile("eval-council-codegraph")
+    full = resolve_profile("eval-codeguard-full")
+
+    assert direct.execution == "direct"
+    assert direct.tools == []
+    assert graph.execution == "pipeline"
+    assert graph.tools
+    assert graph.evidence_tools == []
+    assert graph.strict_tools is True
+    assert full.evidence_tools == full.tools
+    assert full.strict_tools is True

@@ -77,10 +77,16 @@ class GraphToolsTest {
 
         ToolResult impact = new InspectChangeImpactTool(snapshot)
                 .execute("java:Partial#missing()", context);
+        ToolResult contextResult = new ResolveChangeContextTool(snapshot).execute(
+                """
+                {"changes":[{"file":"Partial.java","lines":[2]}]}
+                """, context);
 
         assertTrue(impact.isSuccess(), impact.getError());
         assertTrue(impact.getResult().contains("\"status\":\"unknown\""), impact.getResult());
         assertTrue(impact.getResult().contains("\"coverage\":\"partial\""), impact.getResult());
+        assertTrue(contextResult.getResult().contains("\"status\":\"confirmed\""),
+                contextResult.getResult());
     }
 
     @Test

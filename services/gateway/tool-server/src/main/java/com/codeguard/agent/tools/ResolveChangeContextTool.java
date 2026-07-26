@@ -37,7 +37,10 @@ public final class ResolveChangeContextTool implements AgentTool {
             ProjectSnapshot value = GraphToolSupport.await(snapshot);
             JsonNode request = GraphToolSupport.JSON.readTree(input);
             ObjectNode result = GraphToolSupport.JSON.createObjectNode();
-            result.put("status", value.complete() ? "confirmed" : "unknown");
+            // 这里回答的是“变更行能否定位到项目符号”，不能因为项目中任意外部
+            // 调用未解析就把所有已定位符号降为 unknown。查询级工具仍会按具体
+            // 关系返回 unknown/partial；解析诊断则代表快照本身不完整。
+            result.put("status", value.diagnostics().isEmpty() ? "confirmed" : "partial");
             result.put("coverage", value.coverageStatus());
             ArrayNode contexts = result.putArray("contexts");
             for (JsonNode change : request.path("changes")) {

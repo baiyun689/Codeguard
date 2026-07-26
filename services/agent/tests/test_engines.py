@@ -7,6 +7,8 @@ ReAct(create_agent)的返回要稳健地落成结构化结果:优先用图内置
 
 from __future__ import annotations
 
+import pytest
+
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
 from codeguard_agent.pipeline.risk.discovery import COMPLETE_PATCH_RESULT
 from codeguard_agent.pipeline.engines import (
@@ -304,3 +306,22 @@ def test_撞递归上限降级为无工具直连_不静默丢弃该域产出():
     assert out.result.summary == "降级直连产出"
     # 降级走的是 DirectEngine(无工具),故 gathered_context 恒空。
     assert out.gathered_context == []
+
+
+def test_严格工具档递归失败不混入无工具直连结果():
+    from langgraph.errors import GraphRecursionError
+
+    engine = _RecursingEngine(
+        tool_client=object(),
+        allow_direct_fallback=False,
+    )
+
+    with pytest.raises(GraphRecursionError):
+        engine.review(
+            _FakeLLM(ReviewResult(summary="不应使用")),
+            system_prompt="s",
+            user_prompt="u",
+            reviewer_name="logic",
+            max_retries=1,
+            structured_method="function_calling",
+        )

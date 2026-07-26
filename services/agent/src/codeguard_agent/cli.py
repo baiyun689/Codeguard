@@ -123,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
                     settings.tool_server_url,
                     repo_abspath,
                     allowed_files,
+                    timeout=settings.graph_build_timeout_seconds + 15,
                     revision=f"{head_revision}:{working_tree_digest}",
                 )
                 logger.info(

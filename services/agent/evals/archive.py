@@ -46,6 +46,7 @@ def _metrics_dict(m: AggregateMetrics) -> dict:
         "f1": m.f1,
         "false_positives_on_clean": m.false_positives_on_clean,
         "localization_accuracy": m.localization_accuracy,
+        "localization_checked": m.localization_checked,
         "severity_accuracy": m.severity_accuracy,
         "precision_std": m.precision_std,
         "recall_std": m.recall_std,
@@ -56,27 +57,9 @@ def _metrics_dict(m: AggregateMetrics) -> dict:
 
 
 def _outcome_dict(o: MatchOutcome) -> dict:
-    d = {
-        "case_id": o.case_id,
-        "is_clean": o.is_clean,
-        "expected_total": o.expected_total,
-        "reported_total": o.reported_total,
-        "true_positives": o.true_positives,
-        "false_positives": o.false_positives,
-        "false_negatives": o.false_negatives,
-    }
-    # 工具使用画像随逐用例一并归档(仅工具档有);留存"工具有没有用上"的可复现凭证。
-    if o.tool_usage is not None:
-        d["tool_usage"] = {
-            "tool_calls": o.tool_usage.tool_calls,
-            "tools_used": o.tool_usage.tools_used,
-            "repomap_called": o.tool_usage.repomap_called,
-            "repomap_caller_section_read": o.tool_usage.repomap_caller_section_read,
-            "files_read": o.tool_usage.files_read,
-        }
-    if o.council_trace is not None:
-        d["council_trace"] = o.council_trace.model_dump()
-    return d
+    # 完整保存公开 MatchOutcome 契约，保证离线盲审/重评分可以无损恢复，
+    # 同时避免新增指标字段时归档悄悄丢数据。
+    return o.model_dump(mode="json")
 
 
 def build_archive_record(
@@ -93,8 +76,14 @@ def build_archive_record(
     metrics: AggregateMetrics,
     by_capability: dict[str, AggregateMetrics],
     last_run: list[MatchOutcome],
+    all_runs: list[list[MatchOutcome]] | None = None,
     git_sha: str,
     timestamp: str,
+    judge_provider: str = "",
+    judge_model: str = "",
+    judge_same_source: bool | None = None,
+    dataset_digest: str = "",
+    code_digest: str = "",
 ) -> dict:
     """构造一条归档记录(纯函数)。`tools_enabled` 如实记录本次工具是否真正启用。"""
     return {
@@ -110,10 +99,30 @@ def build_archive_record(
         },
         "provider": provider,
         "model": model,
+        "assessment": {
+            "status": "automatic-provisional",
+            "judge_provider": judge_provider,
+            "judge_model": judge_model,
+            "judge_same_source": judge_same_source,
+        },
+        "experiment": {
+            "dataset_digest": dataset_digest,
+            "code_digest": code_digest,
+            "git_sha": git_sha,
+            "provider": provider,
+            "model": model,
+            "judge_provider": judge_provider,
+            "judge_model": judge_model,
+            "runs": runs,
+        },
         "runs": runs,
         "metrics": _metrics_dict(metrics),
         "by_capability": {tag: _metrics_dict(m) for tag, m in by_capability.items()},
         "cases": [_outcome_dict(o) for o in last_run],
+        "run_outcomes": [
+            [_outcome_dict(outcome) for outcome in run]
+            for run in (all_runs or [last_run])
+        ],
     }
 
 
