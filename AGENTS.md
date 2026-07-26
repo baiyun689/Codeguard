@@ -60,7 +60,7 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 - **ReviewCouncilSubgraph**:三个 task-scoped 发现者 fan-out 产出 raw `CandidateIssue`;system prompt 定义稳定的上下文语义与工具门槛，user prompt 动态携带本 task 的 patch、风险画像、预取事实、缺失/失败状态和标签知识。`CouncilCoordinator` 在显式 fan-in 后批量解析 RiskTag、构建局部候选块并保守归并。
 - **发现者工具协调**:`pipeline/discovery_tools.py` 在单次 review 的单个 reviewer node 内按规范化工具参数执行 single-flight/cache；不同 task 首次复用完整结果，同一 ReAct 对话重复调用只返回短标记，最终 gathered context 也按相同 canonical key 去重，三个发现者之间及跨 review 不共享。只有未被大 diff 策略截断的完整新增文件 patch 才可代替 `get_file_content`。
 - **EvidencePlanner**:复用 Coordinator 已解析的 candidate evidence tag；仅当兼容调用缺少预解析结果时才通过同一批量接口补齐。随后按全量静态注册表一次性规划完整的 counter/support/severity 请求，结果按候选稳定顺序进入规划。
-- **EvidenceAgent**:校验请求的 strategy/purpose/target/question/tools/profile allowlist，优先复用 task/context facts（完整新增文件的 task patch 直接满足当前文件内容请求），只为缺失事实调用 Gateway；跨请求先按工具名与规范化参数去重，再以最多 8 个线程并发执行唯一工具调用和事实关系分析，最终按请求/事实原顺序组装；失败/空/截断/None 均为 insufficient。
+- **EvidenceAgent**:校验请求的 strategy/purpose/target/question/tools/profile allowlist，优先复用 task/context facts（完整新增文件的 task patch 直接满足当前文件内容请求），只为缺失事实调用 Gateway；跨请求先按工具名与规范化参数去重并并发执行唯一工具调用，再以一个 `EvidenceRequest` 一次结构化 LLM 调用批量判断其全部局部事实，按 `evidence_id` 严格对齐并恢复原顺序；未知/重复/遗漏 ID、失败/空/截断/None 均安全降级为 insufficient。Trace 独立记录发现者和 Evidence 的每次工具输入、输出、耗时、复用与失败，不依赖上下文去重结果。
 - **CouncilJudge**:外层唯一最终裁决节点；先以已正确绑定的 support/counter finding 执行确定性证据门槛，再由 LLM 综合候选主张与 severity factor，最后按 primary RiskTag 固定策略解析危险等级并输出 `ReviewResult` / `Issue`。Judge 不补证、不合并，也不接受 LLM 直接选择危险等级。
 
 审查员的"执行方式"抽成可插拔引擎(`pipeline/engines.py`):`DirectEngine`(无工具基准)/ `ToolAgentEngine`(ReAct,基于 langchain v1 `create_agent`)。`ReviewerStage` 按 `tool_client` 是否存在分流。

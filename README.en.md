@@ -223,6 +223,8 @@ Set `CODEGUARD_PROVIDER=mock` for a zero-cost pipeline smoke test. Configure `CO
 
 With the Tool Server enabled, each review asynchronously builds an immutable Java `ProjectSnapshot` for the exact revision. It retains all source text, complete JavaParser ASTs, a symbol index, and a Spring-aware semantic graph. ContextProvider injects only grounded `symbol_id` values; the three reviewers query bounded facts through `inspect_security_path`, `inspect_change_impact`, and `inspect_structure`, while EvidenceAgent reuses the same snapshot. Graph results distinguish `confirmed`, `not_found`, and `unknown`.
 
+EvidenceAgent analyzes the local facts for one `EvidenceRequest` in a single structured model call instead of invoking the model once per patch or symbol fact, and aligns every result by stable `evidence_id`. When the local HTML Trace is enabled, each reviewer and EvidenceAgent tool input, output, duration, reuse, and failure appears as an independent tool step; the Evidence node also reports request, fact, model-call, tool, and analysis timing metrics.
+
 ## Configuration
 
 Deployment settings:

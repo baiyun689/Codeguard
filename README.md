@@ -53,6 +53,8 @@ Python Agent 负责审查推理与编排。Java Gateway 拆为三个独立服务
 
 配置工具服务后，每次审查会按精确 revision 异步构建完整、只读的 Java `ProjectSnapshot`，缓存全部源码、JavaParser AST、符号索引和 Spring 感知语义图。ContextProvider 只注入变更所属的稳定 `symbol_id`；三路审查员分别通过 `inspect_security_path`、`inspect_change_impact`、`inspect_structure` 查询有限局部子图，EvidenceAgent 复用同一快照。图谱明确区分 `confirmed/not_found/unknown`，静态分析未知不会被解释为不可达。
 
+EvidenceAgent 以单个 `EvidenceRequest` 为批次一次性判断该请求的局部事实，不再为每条 patch/符号事实分别调用模型；输出按稳定 `evidence_id` 对齐。开启本地 HTML Trace 后，审查员和 EvidenceAgent 的每次工具输入、输出、耗时、复用及失败会作为独立工具步骤展示，Evidence 节点同时展示请求数、事实数、模型调用数和工具/分析阶段耗时。
+
 三路发现者只按 ID 汇集原始候选。CouncilCoordinator 在 fan-in 后批量解析候选 RiskTag，按完整 Git 路径和局部位置构建连通候选块，并以最多 8 个并行结构化 LLM 调用执行保守归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会删除重复候选；非法、低置信或失败结果一律完整保留。EvidencePlanner 直接复用归并阶段已解析的 RiskTag。
 
 ## 使用 Docker Compose 快速开始
