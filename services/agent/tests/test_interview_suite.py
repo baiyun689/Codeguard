@@ -11,6 +11,7 @@ import pytest
 
 from evals.dataset import load_cases
 from evals.interview_suite import (
+    _cache_key,
     load_suite_manifest,
     prepare_suite,
     validate_prepared_suite,
@@ -121,10 +122,14 @@ def test_prepare_reversed_fix_case_creates_vulnerable_snapshot_and_review_diff(
     )
 
     output = tmp_path / "prepared"
+    cache = tmp_path / "cache"
+    interrupted_mirror = cache / "repositories" / _cache_key(str(upstream))
+    interrupted_mirror.parent.mkdir(parents=True)
+    _git(tmp_path, "init", "--bare", str(interrupted_mirror))
     prepare_suite(
         manifest,
         output,
-        tmp_path / "cache",
+        cache,
         case_ids={"real-null-001"},
     )
 

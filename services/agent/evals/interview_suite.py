@@ -72,7 +72,22 @@ def _ensure_revision_cache(spec: SuiteCaseSpec, cache_root: Path) -> tuple[Path,
     mirror = repositories / _cache_key(spec.repository_url)
     if not mirror.is_dir():
         _run_git("init", "--bare", str(mirror))
+    try:
+        configured_origin = _run_git(
+            "--git-dir", str(mirror), "config", "--get", "remote.origin.url"
+        ).strip()
+    except RuntimeError:
         _run_git("--git-dir", str(mirror), "remote", "add", "origin", spec.repository_url)
+    else:
+        if configured_origin != spec.repository_url:
+            _run_git(
+                "--git-dir",
+                str(mirror),
+                "remote",
+                "set-url",
+                "origin",
+                spec.repository_url,
+            )
 
     revisions = [spec.fix_revision]
     if spec.parent_revision:
