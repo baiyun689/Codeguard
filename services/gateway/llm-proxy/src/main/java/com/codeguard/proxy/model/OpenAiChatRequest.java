@@ -20,6 +20,12 @@ public record OpenAiChatRequest(
     @JsonProperty("response_format") Map<String, Object> responseFormat,
     Boolean stream
 ) {
+    public OpenAiChatRequest withModel(String providerModel) {
+        return new OpenAiChatRequest(
+            providerModel, messages, temperature, maxTokens, tools, toolChoice, responseFormat, stream
+        );
+    }
+
     @JsonIgnoreProperties(ignoreUnknown = true)
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Message(

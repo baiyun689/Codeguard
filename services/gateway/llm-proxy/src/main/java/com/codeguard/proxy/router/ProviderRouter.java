@@ -17,22 +17,28 @@ import java.util.Map;
 public final class ProviderRouter {
     private static final Logger log = LoggerFactory.getLogger(ProviderRouter.class);
 
-    private final Map<String, List<LlmAdapter>> routes;
-    private final List<LlmAdapter> defaultFallback;
+    public record RouteTarget(LlmAdapter adapter, String model) {}
+
+    private final Map<String, List<RouteTarget>> routes;
+    private final List<RouteTarget> defaultFallback;
 
     public ProviderRouter(ProxyConfig config, Map<String, LlmAdapter> adapters) {
         // Build route map from config
-        var routeMap = new java.util.LinkedHashMap<String, List<LlmAdapter>>();
+        var routeMap = new java.util.LinkedHashMap<String, List<RouteTarget>>();
         for (var entry : config.routes().entrySet()) {
             String modelName = entry.getKey();
-            List<String> chain = entry.getValue().chain();
-            List<LlmAdapter> adapterChain = new ArrayList<>();
-            for (String providerName : chain) {
-                LlmAdapter adapter = adapters.get(providerName);
+            List<ProxyConfig.RouteTargetConfig> chain = entry.getValue().chain();
+            List<RouteTarget> adapterChain = new ArrayList<>();
+            for (ProxyConfig.RouteTargetConfig configuredTarget : chain) {
+                LlmAdapter adapter = adapters.get(configuredTarget.provider());
                 if (adapter != null) {
-                    adapterChain.add(adapter);
+                    String providerModel = configuredTarget.model().isBlank()
+                        ? modelName
+                        : configuredTarget.model();
+                    adapterChain.add(new RouteTarget(adapter, providerModel));
                 } else {
-                    log.warn("路由 {} 引用了未知 provider '{}', 已跳过", modelName, providerName);
+                    log.warn("路由 {} 引用了未知 provider '{}', 已跳过",
+                        modelName, configuredTarget.provider());
                 }
             }
             if (!adapterChain.isEmpty()) {
@@ -42,13 +48,15 @@ public final class ProviderRouter {
         this.routes = Collections.unmodifiableMap(routeMap);
 
         // Default fallback: if no specific route, try all configured adapters
-        this.defaultFallback = List.copyOf(adapters.values());
+        this.defaultFallback = adapters.values().stream()
+            .map(adapter -> new RouteTarget(adapter, ""))
+            .toList();
 
         log.info("路由表已加载: {} 条路由, {} 个 provider",
             routes.size(), adapters.size());
         for (var entry : routes.entrySet()) {
             List<String> names = entry.getValue().stream()
-                .map(LlmAdapter::providerName).toList();
+                .map(target -> target.adapter().providerName() + ":" + target.model()).toList();
             log.info("  {} → [{}]", entry.getKey(), String.join(", ", names));
         }
     }
@@ -57,11 +65,11 @@ public final class ProviderRouter {
      * 解析 model 对应的降级链。
      * @return 有序的 adapter 列表（主 → fallback1 → fallback2），未匹配时返回默认全链
      */
-    public List<LlmAdapter> resolveChain(String modelName) {
+    public List<RouteTarget> resolveChain(String modelName) {
         if (modelName == null || modelName.isBlank()) {
             return defaultFallback;
         }
-        List<LlmAdapter> chain = routes.get(modelName);
+        List<RouteTarget> chain = routes.get(modelName);
         if (chain != null && !chain.isEmpty()) {
             return chain;
         }
@@ -73,8 +81,10 @@ public final class ProviderRouter {
             }
         }
         log.warn("未知 model '{}', 使用默认全链 fallback ({} providers)", modelName, defaultFallback.size());
-        return defaultFallback;
+        return defaultFallback.stream()
+            .map(target -> new RouteTarget(target.adapter(), modelName))
+            .toList();
     }
 
-    public Map<String, List<LlmAdapter>> routes() { return routes; }
+    public Map<String, List<RouteTarget>> routes() { return routes; }
 }

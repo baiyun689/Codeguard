@@ -45,6 +45,7 @@ public final class DeepSeekAdapter implements LlmAdapter {
             byte[] body = MAPPER.writeValueAsBytes(request);
             return HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/chat/completions"))
+                .timeout(Duration.ofSeconds(60))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + apiKey)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body))

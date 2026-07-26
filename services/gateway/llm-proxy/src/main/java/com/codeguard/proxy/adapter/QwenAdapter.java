@@ -42,6 +42,7 @@ public final class QwenAdapter implements LlmAdapter {
             String url = baseUrl.contains("/chat/completions") ? baseUrl : baseUrl + "/chat/completions";
             return HttpRequest.newBuilder()
                 .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(60))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + apiKey)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body))

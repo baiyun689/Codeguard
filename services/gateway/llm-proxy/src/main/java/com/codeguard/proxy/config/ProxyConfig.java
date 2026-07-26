@@ -5,6 +5,8 @@ import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
@@ -40,7 +42,9 @@ public final class ProxyConfig {
 
     public record ProviderConfig(String url, String key) {}
 
-    public record RouteConfig(List<String> chain) {}
+    public record RouteTargetConfig(String provider, String model) {}
+
+    public record RouteConfig(List<RouteTargetConfig> chain) {}
 
     public record ResilienceConfig(
         RateLimitConfig rateLimit,
@@ -61,8 +65,17 @@ public final class ProxyConfig {
     // ---- loader ----
 
     public static ProxyConfig load() {
-        String configPath = System.getenv().getOrDefault("CODEGUARD_LLM_CONFIG", "llm-proxy-config.yml");
-        return load(Path.of(configPath));
+        String configuredPath = System.getenv("CODEGUARD_LLM_CONFIG");
+        if (configuredPath != null && !configuredPath.isBlank()) {
+            return load(Path.of(configuredPath));
+        }
+
+        Path workingDirectoryConfig = Path.of("llm-proxy-config.yml");
+        if (Files.exists(workingDirectoryConfig)) {
+            return load(workingDirectoryConfig);
+        }
+
+        return loadResource("llm-proxy-config.yml");
     }
 
     @SuppressWarnings("unchecked")
@@ -83,6 +96,28 @@ public final class ProxyConfig {
         }
     }
 
+    static ProxyConfig loadResource(String resourceName) {
+        try (InputStream input = ProxyConfig.class.getClassLoader().getResourceAsStream(resourceName)) {
+            if (input == null) {
+                log.warn("JAR 内置 LLM 代理配置不存在 ({}), 使用空配置", resourceName);
+                return empty();
+            }
+            String raw = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            return parseYaml(raw);
+        } catch (IOException e) {
+            log.error("读取 JAR 内置 LLM 代理配置失败: {}", resourceName, e);
+            return empty();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ProxyConfig parseYaml(String raw) {
+        Yaml yaml = new Yaml();
+        Map<String, Object> data = yaml.load(raw);
+        if (data == null) return empty();
+        return parse(data);
+    }
+
     @SuppressWarnings("unchecked")
     private static ProxyConfig parse(Map<String, Object> data) {
         // providers
@@ -100,7 +135,11 @@ public final class ProxyConfig {
         Map<String, Object> routeData = (Map<String, Object>) data.getOrDefault("routes", Map.of());
         for (var entry : routeData.entrySet()) {
             Map<String, Object> cfg = (Map<String, Object>) entry.getValue();
-            List<String> chain = (List<String>) cfg.getOrDefault("chain", List.of());
+            List<Object> rawChain = (List<Object>) cfg.getOrDefault("chain", List.of());
+            List<RouteTargetConfig> chain = rawChain.stream()
+                .map(ProxyConfig::parseRouteTarget)
+                .filter(java.util.Objects::nonNull)
+                .toList();
             routes.put(entry.getKey(), new RouteConfig(chain));
         }
 
@@ -132,6 +171,23 @@ public final class ProxyConfig {
             return System.getenv().getOrDefault(varName, "");
         }
         return value;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static RouteTargetConfig parseRouteTarget(Object value) {
+        if (value instanceof String provider) {
+            return new RouteTargetConfig(provider, "");
+        }
+        if (value instanceof Map<?, ?> raw) {
+            Map<String, Object> target = (Map<String, Object>) raw;
+            String provider = String.valueOf(target.getOrDefault("provider", ""));
+            String model = String.valueOf(target.getOrDefault("model", ""));
+            if (!provider.isBlank()) {
+                return new RouteTargetConfig(provider, model);
+            }
+        }
+        log.warn("忽略非法 LLM 路由目标: {}", value);
+        return null;
     }
 
     private static int toInt(Object value, int fallback) {

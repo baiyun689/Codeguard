@@ -128,6 +128,7 @@ public final class ClaudeAdapter implements LlmAdapter {
             byte[] body = MAPPER.writeValueAsBytes(anthropic);
             return HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/v1/messages"))
+                .timeout(Duration.ofSeconds(60))
                 .header("Content-Type", "application/json")
                 .header("x-api-key", apiKey)
                 .header("anthropic-version", "2023-06-01")

@@ -13,7 +13,7 @@ mkdir -p secrets
 docker compose up -d
 ```
 
-The published image defaults to `ghcr.io/baiyun689/codeguard:latest`. The Gateway listens on port `9090` inside the container; `CODEGUARD_HOST_PORT` controls the host mapping.
+The published image defaults to `ghcr.io/baiyun689/codeguard:latest`. The public CI webhook listens on port `8080` inside the container; `CODEGUARD_HOST_PORT` controls its host mapping. The internal Tool Server and LLM Proxy listen on `9090` and `9091`.
 
 See the root [README](../../README.md) for complete GitHub App, LLM, private-repository, image-tag, and reverse-proxy configuration.
 
@@ -52,7 +52,7 @@ mvn --batch-mode verify
 Run the packaged JAR:
 
 ```bash
-java -jar target/codeguard-gateway.jar
+java -jar ci-webhook/target/codeguard-gateway.jar
 ```
 
 On Windows, the helper script loads only missing `CODEGUARD_*` values from the repository-root `.env` and starts an already-built JAR:
@@ -70,7 +70,9 @@ Without `CODEGUARD_WEBHOOK_SECRET`, the Gateway starts its tool and operational 
 ## Runtime Notes
 
 - The Gateway is single-instance. Do not run multiple replicas against the same H2 database or workspace volumes.
+- `CODEGUARD_CI_PORT` defaults to `8080`; Compose publishes this port through `CODEGUARD_HOST_PORT`.
 - `CODEGUARD_TOOL_SERVER_PORT` defaults to `9090` for direct JAR execution.
+- `CODEGUARD_LLM_PROXY_PORT` defaults to `9091`.
 - `CODEGUARD_JOB_DB_PATH` defaults to `./data/codeguard-jobs`.
 - `CODEGUARD_WORKSPACE_DIR` defaults to a directory under the system temporary directory.
 - On shutdown, the HTTP server stops accepting webhooks before the scheduler drains active work.

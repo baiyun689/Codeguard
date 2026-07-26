@@ -116,7 +116,9 @@ docker compose up -d
 docker compose up -d --build
 ```
 
-Gateway 在容器内始终监听 `9090`。如需修改宿主机端口，只设置 `CODEGUARD_HOST_PORT`：
+容器内用于接收 GitHub Webhook 的 CI 服务固定监听 `8080`；Tool Server 与 LLM Proxy
+分别监听内部端口 `9090` 和 `9091`。如需修改对外发布的 Webhook 宿主机端口，只设置
+`CODEGUARD_HOST_PORT`：
 
 ```dotenv
 CODEGUARD_HOST_PORT=8080
@@ -228,7 +230,7 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 | 变量 | 默认值 | 用途 |
 |---|---|---|
 | `CODEGUARD_IMAGE_TAG` | `latest` | `ghcr.io/baiyun689/codeguard` 下的镜像标签 |
-| `CODEGUARD_HOST_PORT` | `9090` | 映射到容器固定端口 `9090` 的宿主机端口 |
+| `CODEGUARD_HOST_PORT` | `9090` | 映射到容器 CI Webhook 端口 `8080` 的宿主机端口 |
 | `CODEGUARD_WEBHOOK_SECRET` | 必填 | 校验 GitHub Webhook 签名的 Secret |
 | `CODEGUARD_GITHUB_APP_ID` | 必填 | 用于 installation 认证的 GitHub App ID |
 | `CODEGUARD_GITHUB_PRIVATE_KEY_FILE` | `./secrets/github-app.pem` | Compose 挂载的 App 私钥宿主机路径 |
@@ -243,7 +245,10 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 | `CODEGUARD_SHUTDOWN_GRACE_SECONDS` | `30` | 停机时等待活动任务结束的最长时间 |
 | `CODEGUARD_WEBHOOK_RATE_LIMIT` | `0.5` | 每秒接收的 Webhook 请求数；`0` 表示关闭限流 |
 
-Compose 会设置打包部署所需的容器内部路径和端口。除非维护自定义部署，否则不要修改 `CODEGUARD_TOOL_SERVER_PORT`、`CODEGUARD_TOOL_SERVER_URL`、`CODEGUARD_JOB_DB_PATH` 或 `CODEGUARD_WORKSPACE_DIR`。
+Compose 会设置打包部署所需的容器内部路径和端口，并在未显式设置时将
+`CODEGUARD_API_BASE_URL` 指向容器内的 LLM Proxy。除非维护自定义部署，否则不要修改
+`CODEGUARD_CI_PORT`、`CODEGUARD_TOOL_SERVER_PORT`、`CODEGUARD_TOOL_SERVER_URL`、
+`CODEGUARD_LLM_PROXY_PORT`、`CODEGUARD_JOB_DB_PATH` 或 `CODEGUARD_WORKSPACE_DIR`。
 
 ## 运维与可观测性
 

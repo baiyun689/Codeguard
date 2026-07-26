@@ -16,15 +16,25 @@ providers:
 # 路由表：model 名 → 降级链（主 provider 优先，依次 fallback）
 routes:
   deepseek-chat:
-    chain: [deepseek, qwen]
+    chain:
+      - { provider: deepseek, model: deepseek-chat }
+      - { provider: qwen, model: qwen-max }
   deepseek-reasoner:
-    chain: [deepseek, qwen]
+    chain:
+      - { provider: deepseek, model: deepseek-reasoner }
+      - { provider: qwen, model: qwen-max }
   claude-sonnet-5-20250901:
-    chain: [claude, deepseek]
+    chain:
+      - { provider: claude, model: claude-sonnet-5-20250901 }
+      - { provider: deepseek, model: deepseek-chat }
   claude-opus-4-8:
-    chain: [claude, deepseek]
+    chain:
+      - { provider: claude, model: claude-opus-4-8 }
+      - { provider: deepseek, model: deepseek-chat }
   qwen-max:
-    chain: [qwen, deepseek]
+    chain:
+      - { provider: qwen, model: qwen-max }
+      - { provider: deepseek, model: deepseek-chat }
 
 resilience:
   rate-limit:

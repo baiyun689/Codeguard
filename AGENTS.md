@@ -169,7 +169,7 @@ conda run -n codeguard python -m evals.runner --profile pipeline-file --runs 1  
 # —— Java Gateway(services/gateway 工具服务)——
 mvn package                # 跑单测 + 出 fat jar
 mvn test                   # 只跑单测
-java -jar target/codeguard-gateway.jar    # 启动工具服务(默认 9090,CODEGUARD_TOOL_SERVER_PORT 可覆盖)
+java -jar ci-webhook/target/codeguard-gateway.jar  # 同 JVM 启动 CI(8080)/工具(9090)/LLM Proxy(9091)
 
 # —— 真实 ReAct 审查(工具开档:先起 Java 工具服务,再设 URL)——
 $env:CODEGUARD_TOOL_SERVER_URL="http://localhost:9090"
@@ -219,7 +219,7 @@ python -m evals.runner --runs 3 --judge  # 额外开 LLM-as-judge
 | `CODEGUARD_MODEL` | 按 provider 回退 | 留空自动选默认模型 |
 | `CODEGUARD_API_KEY` | 空(Compose 必填) | openai/claude 必填 |
 | `CODEGUARD_IMAGE_TAG` | `latest` | Compose 部署使用的 `ghcr.io/baiyun689/codeguard` 镜像标签 |
-| `CODEGUARD_HOST_PORT` | `9090` | Compose 发布到宿主机的端口；容器内 Gateway 固定监听 9090 |
+| `CODEGUARD_HOST_PORT` | `9090` | Compose 发布到宿主机的 Webhook 端口；映射到容器内 CI 服务 8080 |
 | `CODEGUARD_WEBHOOK_SECRET` | 空(Compose 必填) | GitHub App webhook HMAC 验签密钥 |
 | `CODEGUARD_GITHUB_APP_ID` | 空(Compose 必填) | 用于 installation 认证和结果回写的 GitHub App ID |
 | `CODEGUARD_GITHUB_PRIVATE_KEY_FILE` | `./secrets/github-app.pem` | GitHub App 私钥的宿主机路径；Compose 以只读 secret 挂载 |

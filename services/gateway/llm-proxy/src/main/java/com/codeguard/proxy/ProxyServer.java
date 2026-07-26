@@ -28,6 +28,7 @@ public final class ProxyServer {
 
     private final Javalin app;
     private final int port;
+    private final boolean ready;
 
     public ProxyServer() {
         this(ProxyConfig.load());
@@ -68,6 +69,7 @@ public final class ProxyServer {
 
         // Build router
         ProviderRouter router = new ProviderRouter(config, adapters);
+        this.ready = !adapters.isEmpty() && !router.routes().isEmpty();
 
         // Build app
         this.app = Javalin.create(cfg -> {
@@ -88,7 +90,7 @@ public final class ProxyServer {
     }
 
     private boolean ready() {
-        return true; // LLM Proxy is always ready if it started
+        return ready;
     }
 
     public void start() {

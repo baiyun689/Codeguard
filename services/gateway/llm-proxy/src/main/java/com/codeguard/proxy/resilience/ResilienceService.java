@@ -70,6 +70,11 @@ public final class ResilienceService {
                 .permittedNumberOfCallsInHalfOpenState(cbConf.permittedCallsInHalfOpen())
                 .slidingWindowSize(cbConf.slidingWindowSize())
                 .minimumNumberOfCalls(cbConf.minimumNumberOfCalls())
+                .ignoreException(error ->
+                    error instanceof AdapterException adapterError
+                        && adapterError.httpStatus() >= 400
+                        && adapterError.httpStatus() < 500
+                        && adapterError.httpStatus() != 429)
                 .build();
             CircuitBreaker breaker = CircuitBreaker.of("llm-" + name, cb);
             breaker.getEventPublisher().onStateTransition(event ->

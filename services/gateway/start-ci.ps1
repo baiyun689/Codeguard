@@ -20,7 +20,7 @@ if (Test-Path $envFile) {
     Write-Warning ".env 文件不存在: $envFile；将只使用当前 shell 环境变量。"
 }
 
-$jar = Join-Path $PSScriptRoot "target\codeguard-gateway.jar"
+$jar = Join-Path $PSScriptRoot "ci-webhook\target\codeguard-gateway.jar"
 if (-not (Test-Path $jar)) {
     throw "Gateway JAR 不存在，请先在 services/gateway 执行 mvn package"
 }

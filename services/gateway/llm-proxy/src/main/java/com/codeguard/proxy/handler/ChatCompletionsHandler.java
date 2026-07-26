@@ -6,6 +6,7 @@ import com.codeguard.proxy.model.OpenAiChatRequest;
 import com.codeguard.proxy.model.OpenAiChatResponse;
 import com.codeguard.proxy.resilience.ResilienceService;
 import com.codeguard.proxy.router.ProviderRouter;
+import com.codeguard.proxy.router.ProviderRouter.RouteTarget;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.javalin.http.Context;
@@ -65,7 +66,7 @@ public final class ChatCompletionsHandler implements Handler {
         }
 
         // 3. Route
-        List<LlmAdapter> chain = router.resolveChain(request.model());
+        List<RouteTarget> chain = router.resolveChain(request.model());
         if (chain.isEmpty()) {
             ctx.status(404).json(OpenAiChatResponse.error(
                 "unknown model: " + request.model(), "invalid_request_error", "404"));
@@ -74,7 +75,9 @@ public final class ChatCompletionsHandler implements Handler {
 
         // 4. Try chain with fallback
         Exception lastError = null;
-        for (LlmAdapter adapter : chain) {
+        for (RouteTarget target : chain) {
+            LlmAdapter adapter = target.adapter();
+            OpenAiChatRequest providerRequest = request.withModel(target.model());
             CircuitBreaker cb = adapter.getCircuitBreaker();
 
             // Skip if circuit breaker is open
@@ -86,7 +89,7 @@ public final class ChatCompletionsHandler implements Handler {
             try {
                 OpenAiChatResponse response = resilience.executeLlmCall(() -> {
                     try {
-                        var httpReq = adapter.translateRequest(request);
+                        var httpReq = adapter.translateRequest(providerRequest);
                         var httpResp = httpClient.send(httpReq, HttpResponse.BodyHandlers.ofString());
                         return adapter.translateResponse(httpResp.body(), httpResp.statusCode());
                     } catch (AdapterException e) {
@@ -130,7 +133,7 @@ public final class ChatCompletionsHandler implements Handler {
         // 5. All providers failed
         String detail = lastError != null ? lastError.getMessage() : "all providers unavailable";
         log.error("所有 provider 尝试失败: model={}, chain={}",
-            request.model(), chain.stream().map(LlmAdapter::providerName).toList());
+            request.model(), chain.stream().map(target -> target.adapter().providerName()).toList());
         ctx.status(502).json(OpenAiChatResponse.error(
             detail, "proxy_error", "502"));
     }
