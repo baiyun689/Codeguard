@@ -491,19 +491,29 @@ class _ValueStub:
         return self.value
 
 
-class _CouncilLLM:
-    """Return valid evidence/synthesis structures for graph wiring tests."""
-
-    def with_structured_output(self, schema, *args, **kwargs):
-        if schema.__name__ == "_EvidenceAnalysis":
-            return _ValueStub(
+class _EvidenceBatchStub:
+    def invoke(self, messages):
+        payload = json.loads(messages[-1][1])
+        return {
+            "findings": [
                 {
+                    "evidence_id": fact["evidence_id"],
                     "relation": "supports",
                     "strength": "contextual",
                     "observation": "the changed task patch supports the candidate",
                     "limitation": "",
                 }
-            )
+                for fact in payload["facts"]
+            ]
+        }
+
+
+class _CouncilLLM:
+    """Return valid evidence/synthesis structures for graph wiring tests."""
+
+    def with_structured_output(self, schema, *args, **kwargs):
+        if schema.__name__ == "_EvidenceAnalysisBatch":
+            return _EvidenceBatchStub()
         if schema.__name__ == "CandidateEvidenceAssessment":
             return _ValueStub(
                 {

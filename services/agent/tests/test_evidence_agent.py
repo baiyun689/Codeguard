@@ -400,7 +400,237 @@ class _StructuredLLM:
         self.messages.append(messages)
         if self.error is not None:
             raise self.error
+        if (
+            isinstance(self.result, dict)
+            and "relation" in self.result
+            and getattr(self.schema, "__name__", "") == "_EvidenceAnalysisBatch"
+        ):
+            payload = json.loads(messages[-1][1])
+            return {
+                "findings": [
+                    {"evidence_id": fact["evidence_id"], **self.result}
+                    for fact in payload["facts"]
+                ]
+            }
         return self.result
+
+
+class _RequestBatchLLM(_StructuredLLM):
+    """同时理解旧逐事实和新请求级 prompt，供公共接缝红测使用。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    def invoke(self, messages):
+        self.messages.append(messages)
+        payload = json.loads(messages[-1][1])
+        facts = payload.get("facts")
+        if facts is None:
+            return {
+                "relation": "supports",
+                "strength": "contextual",
+                "observation": "single fact",
+                "limitation": "",
+            }
+        return {
+            "findings": [
+                {
+                    "evidence_id": fact["evidence_id"],
+                    "relation": "supports",
+                    "strength": "contextual",
+                    "observation": f"checked {fact['source']}",
+                    "limitation": "",
+                }
+                for fact in facts
+            ]
+        }
+
+
+def test_one_request_batches_all_analyzable_facts_into_one_llm_call():
+    dossier = _dossier()
+    request = _request(dossier)
+    llm = _RequestBatchLLM()
+
+    batch = _collect_with_llm(
+        [dossier],
+        [request],
+        llm,
+        client=_ToolClient("class Service { void update() { save(); } }"),
+    )
+
+    assert len(llm.messages) == 1
+    assert len(batch.notes) == 1
+    assert len(batch.notes[0].findings) == 4
+    assert {
+        finding.source for finding in batch.notes[0].findings
+    } == {
+        "task_patch",
+        "context:symbol_context",
+        "tool:get_file_content",
+        "tool:inspect_security_path",
+    }
+    metrics = next(
+        json.loads(detail)
+        for event, detail in batch.trace
+        if event == "evidence_batch_metrics"
+    )
+    assert metrics["request_count"] == 1
+    assert metrics["fact_count"] == 4
+    assert metrics["llm_analysis_calls"] == 1
+
+
+def test_request_only_receives_changed_symbol_and_its_owner_type_context():
+    task = _dossier().task
+    context = TaskContextBundle(
+        task_id=task.id,
+        facts=[
+            ContextFact(
+                source="tool:resolve_change_context",
+                kind="symbol_context",
+                content=json.dumps(payload),
+            )
+            for payload in (
+                {
+                    "file": task.file,
+                    "symbol_id": "java:Service",
+                    "kind": "type",
+                    "start_line": 1,
+                    "end_line": 50,
+                    "owner_type": "",
+                },
+                {
+                    "file": task.file,
+                    "symbol_id": "java:Service#update()",
+                    "kind": "method",
+                    "start_line": 9,
+                    "end_line": 12,
+                    "owner_type": "java:Service",
+                },
+                {
+                    "file": task.file,
+                    "symbol_id": "java:Service#unrelated()",
+                    "kind": "method",
+                    "start_line": 20,
+                    "end_line": 30,
+                    "owner_type": "java:Service",
+                },
+            )
+        ],
+    )
+    dossier = _dossier(task=task, context=context)
+    llm = _RequestBatchLLM()
+
+    _collect_with_llm(
+        [dossier],
+        [_request(dossier)],
+        llm,
+        client=_ToolClient(),
+    )
+
+    prompt = json.loads(llm.messages[0][-1][1])
+    symbol_ids = {
+        json.loads(fact["raw"])["symbol_id"]
+        for fact in prompt["facts"]
+        if fact["source"] == "context:symbol_context"
+    }
+    assert symbol_ids == {"java:Service", "java:Service#update()"}
+
+
+def test_unresolved_symbol_location_keeps_one_file_fallback_as_insufficient():
+    task = _dossier().task
+    context = TaskContextBundle(
+        task_id=task.id,
+        facts=[
+            ContextFact(
+                source="tool:resolve_change_context",
+                kind="symbol_context",
+                content=json.dumps(
+                    {
+                        "file": task.file,
+                        "symbol_id": "java:Service",
+                        "kind": "type",
+                        "start_line": 20,
+                        "end_line": 30,
+                    }
+                ),
+            ),
+            ContextFact(
+                source="tool:resolve_change_context",
+                kind="symbol_context",
+                content=json.dumps(
+                    {
+                        "file": task.file,
+                        "symbol_id": "java:Service#unrelated()",
+                        "kind": "method",
+                        "start_line": 40,
+                        "end_line": 45,
+                    }
+                ),
+            ),
+        ],
+    )
+    dossier = _dossier(task=task, context=context)
+
+    batch = _collect_with_llm(
+        [dossier],
+        [_request(dossier)],
+        _RequestBatchLLM(),
+        client=_ToolClient(),
+    )
+
+    symbol_findings = [
+        finding
+        for finding in batch.notes[0].findings
+        if finding.source == "context:symbol_context"
+    ]
+    assert len(symbol_findings) == 1
+    assert symbol_findings[0].relation == "insufficient"
+    assert symbol_findings[0].limitation == "symbol_context_location_unresolved"
+
+
+class _InvalidBatchIdsLLM(_StructuredLLM):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def invoke(self, messages):
+        self.messages.append(messages)
+        facts = json.loads(messages[-1][1])["facts"]
+        valid = {
+            "evidence_id": facts[0]["evidence_id"],
+            "relation": "supports",
+            "strength": "contextual",
+            "observation": "first valid result",
+            "limitation": "",
+        }
+        return {
+            "findings": [
+                valid,
+                {**valid, "observation": "duplicate must be ignored"},
+                {**valid, "evidence_id": "invented-evidence"},
+            ]
+        }
+
+
+def test_batch_analysis_rejects_unknown_and_duplicate_ids_and_fills_omissions():
+    dossier = _dossier()
+    batch = _collect_with_llm(
+        [dossier],
+        [_request(dossier)],
+        _InvalidBatchIdsLLM(),
+        client=_ToolClient(),
+    )
+
+    findings = batch.notes[0].findings
+    assert len(findings) == 4
+    assert findings[0].observation == "first valid result"
+    assert all(
+        finding.limitation == "analysis_missing_evidence"
+        for finding in findings[1:]
+    )
+    events = [event for event, _ in batch.trace]
+    assert events.count("analyst_duplicate_evidence_ignored") == 1
+    assert events.count("analyst_unknown_evidence_ignored") == 1
+    assert events.count("analyst_missing_evidence") == 3
 
 
 def test_analyst_none_and_exception_are_insufficient():

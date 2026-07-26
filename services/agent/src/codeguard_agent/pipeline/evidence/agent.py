@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel
@@ -70,10 +71,22 @@ class _RequestWork:
 
 
 class _EvidenceAnalysis(BaseModel):
+    evidence_id: str
     relation: Literal["supports", "contradicts", "insufficient"]
     strength: Literal["direct", "contextual"]
     observation: str = ""
     limitation: str = ""
+
+
+class _EvidenceAnalysisBatch(BaseModel):
+    findings: list[_EvidenceAnalysis]
+
+
+@dataclass(frozen=True)
+class _RequestAnalysis:
+    findings: tuple[EvidenceFinding, ...]
+    trace: tuple[tuple[str, str], ...] = ()
+    llm_called: bool = False
 
 
 def _stable_json(value: object) -> str:
@@ -155,6 +168,104 @@ def bound_evidence(dossier: CandidateDossier) -> list[BoundEvidence]:
     ]
 
 
+def _symbol_line(payload: dict[str, Any], field_name: str) -> int:
+    try:
+        return int(payload.get(field_name, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _selected_symbol_contexts(dossier: CandidateDossier) -> dict[int, str]:
+    """选择候选局部符号；值为空或明确的保守分析限制。"""
+    bundle = dossier.context_bundle
+    if bundle is None:
+        return {}
+    parsed: list[tuple[int, dict[str, Any]]] = []
+    malformed: list[int] = []
+    task_file = context_rules.normalize_path(dossier.task.file)
+    for fact in bundle.facts:
+        if fact.kind != "symbol_context":
+            continue
+        try:
+            payload = json.loads(fact.content)
+            if not isinstance(payload, dict):
+                malformed.append(id(fact))
+                continue
+            fact_file = context_rules.normalize_path(str(payload.get("file", "")))
+            if fact_file and fact_file != task_file:
+                continue
+            parsed.append((id(fact), payload))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            malformed.append(id(fact))
+
+    line = dossier.candidate.line
+    covering = [
+        (fact_id, payload)
+        for fact_id, payload in parsed
+        if _symbol_line(payload, "start_line")
+        <= line
+        <= _symbol_line(payload, "end_line")
+    ]
+    local = [
+        (fact_id, payload)
+        for fact_id, payload in covering
+        if str(payload.get("kind", "")).lower()
+        in {"method", "constructor", "field"}
+    ]
+    selected: dict[int, str] = {}
+    owner_ids: set[str] = set()
+    if local:
+        minimum_span = min(
+            _symbol_line(payload, "end_line") - _symbol_line(payload, "start_line")
+            for _, payload in local
+        )
+        for fact_id, payload in local:
+            span = _symbol_line(payload, "end_line") - _symbol_line(
+                payload, "start_line"
+            )
+            if span != minimum_span:
+                continue
+            selected[fact_id] = ""
+            owner = str(payload.get("owner_type") or "")
+            if owner:
+                owner_ids.add(owner)
+    elif covering:
+        minimum_span = min(
+            _symbol_line(payload, "end_line") - _symbol_line(payload, "start_line")
+            for _, payload in covering
+        )
+        for fact_id, payload in covering:
+            if (
+                _symbol_line(payload, "end_line")
+                - _symbol_line(payload, "start_line")
+                == minimum_span
+            ):
+                selected[fact_id] = ""
+    elif parsed:
+        file_fallbacks = [
+            (fact_id, payload)
+            for fact_id, payload in parsed
+            if str(payload.get("kind", "")).lower() == "type"
+        ] or parsed
+        fallback_id, _ = min(
+            file_fallbacks,
+            key=lambda item: (
+                _symbol_line(item[1], "end_line")
+                - _symbol_line(item[1], "start_line"),
+                str(item[1].get("symbol_id") or ""),
+            ),
+        )
+        selected[fallback_id] = "symbol_context_location_unresolved"
+    elif malformed:
+        selected[malformed[0]] = "invalid_symbol_context"
+
+    if owner_ids:
+        for fact_id, payload in parsed:
+            if str(payload.get("symbol_id") or "") in owner_ids:
+                selected[fact_id] = ""
+    return selected
+
+
 def _base_facts(dossier: CandidateDossier, request: EvidenceRequest) -> list[_RawFact]:
     facts = [
         _RawFact(
@@ -166,16 +277,25 @@ def _base_facts(dossier: CandidateDossier, request: EvidenceRequest) -> list[_Ra
     strategy = STRATEGIES_BY_ID[request.strategy_id]
     bundle = dossier.context_bundle
     if bundle is not None:
+        selected_symbol_contexts = _selected_symbol_contexts(dossier)
         for fact in bundle.facts:
             if fact.kind not in strategy.context_kinds and fact.kind != "symbol_context":
                 continue
+            if (
+                fact.kind == "symbol_context"
+                and id(fact) not in selected_symbol_contexts
+            ):
+                continue
             truncated = bundle.truncated or fact.truncated
+            selection_limitation = selected_symbol_contexts.get(id(fact), "")
             facts.append(
                 _RawFact(
                     evidence_id=_digest(fact.source, fact.kind, fact.content),
                     source=f"context:{fact.kind}",
                     raw=fact.content,
-                    limitation="context_truncated" if truncated else "",
+                    limitation=(
+                        "context_truncated" if truncated else selection_limitation
+                    ),
                 )
             )
     planned_tools = {
@@ -232,37 +352,39 @@ def _has_fact_for_tool(
     )
 
 
-def _call_tool(tool_client: Any, call: ToolCallSpec) -> tuple[str, str]:
+def _call_tool(tool_client: Any, call: ToolCallSpec) -> tuple[str, str, float]:
     kwargs = dict(call.arguments)
+    started = perf_counter()
     try:
         response = getattr(tool_client, call.tool_name)(**kwargs)
     except Exception as exc:  # noqa: BLE001 - 单次工具异常收敛为不足证据
-        return "", f"tool_error:{exc}"
+        return "", f"tool_error:{exc}", (perf_counter() - started) * 1000
+    duration_ms = (perf_counter() - started) * 1000
     success = bool(getattr(response, "success", True))
     raw = getattr(response, "result", None)
     if raw is None and hasattr(response, "as_tool_output"):
         raw = response.as_tool_output()
     text = str(raw or "")
     if not success:
-        return text, "tool_failed"
+        return text, "tool_failed", duration_ms
     if not text.strip():
-        return "", "tool_empty"
+        return "", "tool_empty", duration_ms
     if call.tool_name.startswith("inspect_"):
         try:
             payload = json.loads(text)
             expected_subject = kwargs.get("symbol_id", "")
             actual_subject = str(payload.get("subject_symbol_id", ""))
             if expected_subject and actual_subject and actual_subject != expected_subject:
-                return text, "graph_subject_mismatch"
+                return text, "graph_subject_mismatch", duration_ms
             status = payload.get("status")
             coverage = payload.get("coverage")
             if status == "unknown" or coverage == "partial":
-                return text, "graph_unknown"
+                return text, "graph_unknown", duration_ms
             if status not in {"confirmed", "not_found"}:
-                return text, "invalid_graph_status"
+                return text, "invalid_graph_status", duration_ms
         except (TypeError, ValueError, json.JSONDecodeError):
-            return text, "invalid_graph_response"
-    return text, ""
+            return text, "invalid_graph_response", duration_ms
+    return text, "", duration_ms
 
 
 def _strip_comments_and_strings(source: str) -> str:
@@ -484,7 +606,7 @@ def _direct_counter_finding(
 def _analysis_user_prompt(
     dossier: CandidateDossier,
     request: EvidenceRequest,
-    fact: _RawFact,
+    facts: list[_RawFact],
 ) -> str:
     profile = dossier.risk_profile
     risk = {
@@ -506,42 +628,101 @@ def _analysis_user_prompt(
             if dossier.context_bundle is not None
             else None
         ),
-        "fact": {
-            "source": fact.source,
-            "raw": fact.raw,
-            "limitation": fact.limitation,
-        },
+        "facts": [
+            {
+                "evidence_id": fact.evidence_id,
+                "source": fact.source,
+                "raw": fact.raw,
+                "limitation": fact.limitation,
+            }
+            for fact in facts
+        ],
     }
     return _stable_json(payload)
 
 
-def _analyze_fact(
-    dossier: CandidateDossier,
+def _finding_from_analysis(
     request: EvidenceRequest,
     fact: _RawFact,
-    analyst_llm: Any,
-    structured_method: str,
+    result: _EvidenceAnalysis,
 ) -> EvidenceFinding:
-    if fact.prior_finding is not None:
-        prior = fact.prior_finding
+    if result.relation == "insufficient":
         return EvidenceFinding(
             evidence_id=fact.evidence_id,
             source=fact.source,
-            observation=prior.observation,
-            relation=prior.relation,
-            strength=prior.strength,
-            limitation=prior.limitation,
+            observation=result.observation,
+            relation="insufficient",
+            strength="contextual",
+            limitation=result.limitation.strip() or "analyst_insufficient",
         )
-    if fact.limitation:
-        return _finding_from_fact(fact)
-    direct = _direct_counter_finding(dossier, request, fact)
-    if direct is not None:
-        return direct
+    strength = result.strength
+    if (
+        strength == "direct"
+        and request.purpose == "counter"
+        and request.strategy_id.startswith(
+            ("authorization.", "transaction_atomicity.")
+        )
+    ):
+        strength = "contextual"
+    return EvidenceFinding(
+        evidence_id=fact.evidence_id,
+        source=fact.source,
+        observation=result.observation,
+        relation=result.relation,
+        strength=strength,
+        limitation=result.limitation,
+    )
+
+
+def _analyze_request(
+    dossier: CandidateDossier,
+    request: EvidenceRequest,
+    facts: list[_RawFact],
+    analyst_llm: Any,
+    structured_method: str,
+) -> _RequestAnalysis:
+    resolved: dict[str, EvidenceFinding] = {}
+    analyzable: list[_RawFact] = []
+    for fact in facts:
+        if fact.prior_finding is not None:
+            prior = fact.prior_finding
+            resolved[fact.evidence_id] = EvidenceFinding(
+                evidence_id=fact.evidence_id,
+                source=fact.source,
+                observation=prior.observation,
+                relation=prior.relation,
+                strength=prior.strength,
+                limitation=prior.limitation,
+            )
+            continue
+        if fact.limitation:
+            resolved[fact.evidence_id] = _finding_from_fact(fact)
+            continue
+        direct = _direct_counter_finding(dossier, request, fact)
+        if direct is not None:
+            resolved[fact.evidence_id] = direct
+            continue
+        analyzable.append(fact)
+
+    if not analyzable:
+        return _RequestAnalysis(
+            tuple(resolved[fact.evidence_id] for fact in facts)
+        )
     if analyst_llm is None:
-        return _mock_finding_from_fact(request, fact)
+        resolved.update(
+            {
+                fact.evidence_id: _mock_finding_from_fact(request, fact)
+                for fact in analyzable
+            }
+        )
+        return _RequestAnalysis(
+            tuple(resolved[fact.evidence_id] for fact in facts)
+        )
+
+    trace: list[tuple[str, str]] = []
     try:
         structured = analyst_llm.with_structured_output(
-            _EvidenceAnalysis,
+            _EvidenceAnalysisBatch,
             method=structured_method,
         )
         raw_result = invoke_with_retry(
@@ -551,46 +732,79 @@ def _analyze_fact(
                     "system",
                     (_PROMPT_DIR / "evidence-analysis.txt").read_text(encoding="utf-8"),
                 ),
-                ("user", _analysis_user_prompt(dossier, request, fact)),
+                ("user", _analysis_user_prompt(dossier, request, analyzable)),
             ],
             max_retries=1,
         )
         if raw_result is None:
             raise ValueError("structured evidence analysis returned None")
-        result = (
+        batch_result = (
             raw_result
-            if isinstance(raw_result, _EvidenceAnalysis)
-            else _EvidenceAnalysis.model_validate(raw_result)
+            if isinstance(raw_result, _EvidenceAnalysisBatch)
+            else _EvidenceAnalysisBatch.model_validate(raw_result)
         )
-        if result.relation == "insufficient":
-            return EvidenceFinding(
-                evidence_id=fact.evidence_id,
-                source=fact.source,
-                observation=result.observation,
-                relation="insufficient",
-                strength="contextual",
-                limitation=result.limitation.strip() or "analyst_insufficient",
+        facts_by_id = {fact.evidence_id: fact for fact in analyzable}
+        seen_ids: set[str] = set()
+        for result in batch_result.findings:
+            matched_fact = facts_by_id.get(result.evidence_id)
+            if matched_fact is None:
+                trace.append(
+                    (
+                        "analyst_unknown_evidence_ignored",
+                        _stable_json(
+                            {
+                                "request_id": request.id,
+                                "evidence_id": result.evidence_id,
+                            }
+                        ),
+                    )
+                )
+                continue
+            if result.evidence_id in seen_ids:
+                trace.append(
+                    (
+                        "analyst_duplicate_evidence_ignored",
+                        _stable_json(
+                            {
+                                "request_id": request.id,
+                                "evidence_id": result.evidence_id,
+                            }
+                        ),
+                    )
+                )
+                continue
+            seen_ids.add(result.evidence_id)
+            resolved[result.evidence_id] = _finding_from_analysis(
+                request, matched_fact, result
             )
-        strength = result.strength
-        if (
-            strength == "direct"
-            and request.purpose == "counter"
-            and request.strategy_id.startswith(
-                ("authorization.", "transaction_atomicity.")
+        for fact in analyzable:
+            if fact.evidence_id in resolved:
+                continue
+            resolved[fact.evidence_id] = _analysis_missing_finding(fact)
+            trace.append(
+                (
+                    "analyst_missing_evidence",
+                    _stable_json(
+                        {
+                            "request_id": request.id,
+                            "evidence_id": fact.evidence_id,
+                        }
+                    ),
+                )
             )
-        ):
-            strength = "contextual"
-        return EvidenceFinding(
-            evidence_id=fact.evidence_id,
-            source=fact.source,
-            observation=result.observation,
-            relation=result.relation,
-            strength=strength,
-            limitation=result.limitation,
-        )
     except Exception as exc:  # noqa: BLE001 - 结构化输出失败安全降级
         logger.warning("EvidenceAgent 关系分析失败，降级 insufficient: %s", exc)
-        return _analysis_error_finding(fact)
+        resolved.update(
+            {
+                fact.evidence_id: _analysis_error_finding(fact)
+                for fact in analyzable
+            }
+        )
+    return _RequestAnalysis(
+        tuple(resolved[fact.evidence_id] for fact in facts),
+        tuple(trace),
+        True,
+    )
 
 
 def _finding_from_fact(fact: _RawFact) -> EvidenceFinding:
@@ -630,6 +844,17 @@ def _analysis_error_finding(fact: _RawFact) -> EvidenceFinding:
         relation="insufficient",
         strength="contextual",
         limitation="analyst_error",
+    )
+
+
+def _analysis_missing_finding(fact: _RawFact) -> EvidenceFinding:
+    return EvidenceFinding(
+        evidence_id=fact.evidence_id,
+        source=fact.source,
+        observation="",
+        relation="insufficient",
+        strength="contextual",
+        limitation="analysis_missing_evidence",
     )
 
 
@@ -714,25 +939,42 @@ def collect_evidence(
 
     # 第二遍并发执行唯一工具调用，结果仍按首次出现顺序回收。
     call_items = list(unique_calls.items())
+    tool_started = perf_counter()
     call_outcomes = run_bounded_parallel(
         call_items,
         lambda item: _call_tool(tool_client, item[1]),
     )
-    cache: dict[tuple[str, str], tuple[str, str]] = {}
+    tool_collection_ms = (perf_counter() - tool_started) * 1000
+    cache: dict[tuple[str, str], tuple[str, str, float]] = {}
+    first_call_ids: dict[tuple[str, str], str] = {}
     for (cache_key, call), tool_outcome in zip(
         call_items, call_outcomes, strict=True
     ):
-        raw, limitation = (
+        raw, limitation, duration_ms = (
             tool_outcome
             if tool_outcome is not None
-            else ("", "tool_error:parallel_execution_failed")
+            else ("", "tool_error:parallel_execution_failed", 0.0)
         )
-        cache[cache_key] = (raw, limitation)
+        cache[cache_key] = (raw, limitation, duration_ms)
+        first_call_ids[cache_key] = _digest(
+            "evidence-tool-call", cache_key[0], cache_key[1]
+        )
         batch.gathered_context.append(
-            GatheredContext(call.tool_name, cache_key[1], raw or limitation)
+            GatheredContext(
+                call.tool_name,
+                cache_key[1],
+                raw or limitation,
+                duration_ms=duration_ms,
+                status=(
+                    "failed"
+                    if limitation.startswith(("tool_error", "tool_failed"))
+                    else "complete"
+                ),
+            )
         )
 
     # 第三遍把共享工具结果按请求作用域切片并回填，不改变请求/事实顺序。
+    fact_preparation_started = perf_counter()
     for work in works:
         if work.ready_note is not None:
             continue
@@ -741,8 +983,9 @@ def collect_evidence(
         assert dossier is not None
         for use in work.tool_uses:
             call = use.call
-            raw, limitation = cache[use.key]
+            raw, limitation, duration_ms = cache[use.key]
             arguments = dict(call.arguments)
+            reuse_key = f"{use.key[0]}:{use.key[1]}"
             if use.first_use:
                 work.tool_trace.append(
                     (
@@ -751,9 +994,12 @@ def collect_evidence(
                             {
                                 "request_id": request.id,
                                 "candidate_id": request.candidate_id,
+                                "call_id": first_call_ids[use.key],
+                                "reuse_key": reuse_key,
                                 "tool": call.tool_name,
                                 "arguments": arguments,
                                 "limitation": limitation,
+                                "duration_ms": round(duration_ms, 3),
                             }
                         ),
                     )
@@ -776,8 +1022,18 @@ def collect_evidence(
                             {
                                 "request_id": request.id,
                                 "candidate_id": request.candidate_id,
+                                "call_id": _digest(
+                                    "evidence-tool-reuse",
+                                    request.id,
+                                    use.key[0],
+                                    use.key[1],
+                                ),
+                                "reuse_key": reuse_key,
+                                "reused_from_call_id": first_call_ids[use.key],
                                 "tool": call.tool_name,
+                                "arguments": arguments,
                                 "evidence_id": evidence_id,
+                                "output": raw or limitation,
                             }
                         ),
                     )
@@ -792,37 +1048,45 @@ def collect_evidence(
             )
 
         work.facts = _unique_facts(work.facts)
+    fact_preparation_ms = (perf_counter() - fact_preparation_started) * 1000
 
-    # 最后把所有需要判断的事实扁平化后受控并发分析，再按原坐标稳定组装。
-    analysis_items: list[tuple[int, _RequestWork, _RawFact]] = []
-    for work_index, work in enumerate(works):
-        if work.ready_note is not None:
-            continue
-        for fact in work.facts:
-            analysis_items.append((work_index, work, fact))
+    # 最后按请求批量分析全部事实，避免同一请求重复发送候选和 task 上下文。
+    analysis_items: list[tuple[int, _RequestWork]] = [
+        (work_index, work)
+        for work_index, work in enumerate(works)
+        if work.ready_note is None
+    ]
+    analysis_started = perf_counter()
     analysis_outcomes = run_bounded_parallel(
         analysis_items,
-        lambda item: _analyze_fact(
+        lambda item: _analyze_request(
             cast(CandidateDossier, item[1].dossier),
             item[1].request,
-            item[2],
+            item[1].facts,
             analyst_llm,
             structured_method,
         ),
     )
+    fact_analysis_ms = (perf_counter() - analysis_started) * 1000
     findings_by_work: dict[int, list[EvidenceFinding]] = {}
-    for (work_index, _, fact), analysis_outcome in zip(
+    analysis_trace_by_work: dict[int, list[tuple[str, str]]] = {}
+    for (work_index, work), analysis_outcome in zip(
         analysis_items, analysis_outcomes, strict=True
     ):
-        findings_by_work.setdefault(work_index, []).append(
+        outcome = (
             analysis_outcome
             if analysis_outcome is not None
-            else _analysis_error_finding(fact)
+            else _RequestAnalysis(
+                tuple(_analysis_error_finding(fact) for fact in work.facts)
+            )
         )
+        findings_by_work[work_index] = list(outcome.findings)
+        analysis_trace_by_work[work_index] = list(outcome.trace)
 
     for work_index, work in enumerate(works):
         request = work.request
         batch.trace.extend(work.tool_trace)
+        batch.trace.extend(analysis_trace_by_work.get(work_index, ()))
         if work.ready_note is not None:
             batch.notes.append(work.ready_note)
             continue
@@ -855,6 +1119,34 @@ def collect_evidence(
                     ),
                 )
             )
+    batch.trace.append(
+        (
+            "evidence_batch_metrics",
+            _stable_json(
+                {
+                    "request_count": len(pending_requests),
+                    "fact_count": sum(
+                        len(work.facts)
+                        for work in works
+                        if work.ready_note is None
+                    ),
+                    "llm_analysis_calls": sum(
+                        outcome is not None and outcome.llm_called
+                        for outcome in analysis_outcomes
+                    ),
+                    "tool_unique_calls": len(call_items),
+                    "tool_reused_calls": sum(
+                        not use.first_use
+                        for work in works
+                        for use in work.tool_uses
+                    ),
+                    "tool_collection_ms": round(tool_collection_ms, 3),
+                    "fact_preparation_ms": round(fact_preparation_ms, 3),
+                    "fact_analysis_ms": round(fact_analysis_ms, 3),
+                }
+            ),
+        )
+    )
     return batch
 
 
