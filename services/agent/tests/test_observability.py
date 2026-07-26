@@ -279,7 +279,13 @@ def test_trace_view_groups_reviewer_react_steps_and_state_writes():
     assert [
         view["steps"][step_id]["kind"]
         for step_id in threat["step_ids"]
-    ] == ["node", "llm", "tool_call", "tool_result", "node"]
+    ] == ["node", "llm", "tool", "node"]
+    assert threat["tool_call_count"] == 1
+    assert threat["tool_step_ids"] == ["tool:tool-run"]
+    tool_step = view["steps"][threat["tool_step_ids"][0]]
+    assert tool_step["start_sequence"] == 10
+    assert tool_step["end_sequence"] == 11
+    assert tool_step["duration_ms"] == 10.0
     assert view["state_writes"]["raw_candidate_issues"][0]["step_id"]
     assert view["integrity"]["missing_end_count"] == 0
 
@@ -358,6 +364,11 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
         "council_judge",
     ]
     assert all(section["step_ids"] for section in view["reviewer_sections"])
+    assert all(
+        section["tool_call_count"] == 0
+        and section["tool_step_ids"] == []
+        for section in view["reviewer_sections"]
+    )
     assert {
         view["steps"][step_id]["code_name"]
         for step_id in view["coordination_steps"]
@@ -447,6 +458,54 @@ def test_trace_view_reports_missing_and_unassociated_events():
         for stage in view["main_stages"]
     )
     assert view["steps"]["placeholder:council_judge"]["status"] == "missing"
+
+
+def test_trace_view_treats_tool_error_as_a_completed_failed_call():
+    report = TraceReport(
+        run_id="tool-error-run",
+        timestamp="2026-07-26T00:00:00",
+        events=[
+            _flow_event(
+                1,
+                "tool_start",
+                "review",
+                "discover_behavior/review",
+                "tool-run",
+                detail={
+                    "tool_name": "find_callers",
+                    "input": {"symbol": "execute"},
+                },
+            ),
+            _flow_event(
+                2,
+                "tool_error",
+                "review",
+                "discover_behavior/review",
+                "tool-run",
+                detail={
+                    "tool_name": "find_callers",
+                    "output": {
+                        "type": "RuntimeError",
+                        "message": "gateway unavailable",
+                    },
+                },
+            ),
+        ],
+    )
+
+    view = build_trace_view(report)
+    behavior = next(
+        section
+        for section in view["reviewer_sections"]
+        if section["key"] == "behavior"
+    )
+    tool_step = view["steps"][behavior["tool_step_ids"][0]]
+
+    assert behavior["tool_call_count"] == 1
+    assert tool_step["status"] == "failed"
+    assert tool_step["start_sequence"] == 1
+    assert tool_step["end_sequence"] == 2
+    assert view["integrity"]["status"] == "complete"
 
 
 def test_dashboard_payload_keeps_raw_report_and_adds_flow_view():
@@ -848,10 +907,168 @@ class TestCollectorLineage:
         llm = next(event for event in events if event.event_type == "llm_start")
         tool = next(event for event in events if event.event_type == "tool_start")
 
-        assert llm.node_path == "review"
+        assert llm.node_path == "discover_threat_model/review"
         assert llm.detail["messages"][0]["content"] == "prompt" * 1000
-        assert tool.node_path == "review"
+        assert tool.node_path == "discover_threat_model/review"
         assert tool.detail["input"]["content"] == "x" * 5000
+
+    def test_tool_errors_are_collected_as_visible_outputs(self):
+        collector = _TraceCollector("diff", "trace-run")
+        collector._handle_event(_chain_event(
+            "on_chain_start",
+            name="review",
+            run_id="review-run",
+            parent_ids=["root", "discover-run", "subgraph-root"],
+            node_name="review",
+            checkpoint_ns="discover_behavior:uuid|review:uuid",
+            data={"input": {"user_prompt": "review me"}},
+        ))
+        collector._handle_event({
+            "event": "on_tool_error",
+            "name": "find_callers",
+            "run_id": "tool-run",
+            "parent_ids": ["root", "review-run"],
+            "metadata": {},
+            "data": {"error": RuntimeError("gateway unavailable")},
+        })
+
+        error = next(
+            event
+            for event in collector.finalize().events
+            if event.event_type == "tool_error"
+        )
+
+        assert error.node_path == "discover_behavior/review"
+        assert error.detail["output"]["type"] == "RuntimeError"
+        assert error.detail["output"]["message"] == "gateway unavailable"
+
+    def test_all_reviewers_keep_multiple_tool_inputs_and_outputs_in_dashboard(
+        self,
+    ):
+        collector = _TraceCollector("diff", "trace-run")
+        reviewers = (
+            "discover_threat_model",
+            "discover_behavior",
+            "discover_maintainability",
+        )
+        for reviewer in reviewers:
+            reviewer_run = f"{reviewer}-run"
+            review_run = f"{reviewer}-review-run"
+            collector._handle_event(_chain_event(
+                "on_chain_start",
+                name=reviewer,
+                run_id=reviewer_run,
+                parent_ids=["root"],
+                node_name=reviewer,
+                data={"input": {}},
+            ))
+            collector._handle_event(_chain_event(
+                "on_chain_start",
+                name="review",
+                run_id=review_run,
+                parent_ids=["root", reviewer_run, "subgraph-root"],
+                node_name="review",
+                checkpoint_ns=f"{reviewer}:uuid|review:uuid",
+                data={"input": {"reviewer": reviewer}},
+            ))
+            for index, tool_name in enumerate(
+                ("get_file_content", "find_callers"),
+                start=1,
+            ):
+                tool_run = f"{reviewer}-tool-{index}"
+                collector._handle_event({
+                    "event": "on_tool_start",
+                    "name": tool_name,
+                    "run_id": tool_run,
+                    "parent_ids": ["root", reviewer_run, review_run],
+                    "metadata": {},
+                    "data": {
+                        "input": {
+                            "reviewer": reviewer,
+                            "call": index,
+                        }
+                    },
+                })
+                terminal_event = (
+                    {
+                        "event": "on_tool_end",
+                        "data": {
+                            "output": {
+                                "reviewer": reviewer,
+                                "result": index,
+                            }
+                        },
+                    }
+                    if index == 1
+                    else {
+                        "event": "on_tool_error",
+                        "data": {
+                            "error": RuntimeError(
+                                f"{reviewer} gateway unavailable"
+                            )
+                        },
+                    }
+                )
+                collector._handle_event({
+                    **terminal_event,
+                    "name": tool_name,
+                    "run_id": tool_run,
+                    "parent_ids": ["root", reviewer_run, review_run],
+                    "metadata": {},
+                })
+            collector._handle_event(_chain_event(
+                "on_chain_end",
+                name="review",
+                run_id=review_run,
+                parent_ids=["root", reviewer_run, "subgraph-root"],
+                node_name="review",
+                checkpoint_ns=f"{reviewer}:uuid|review:uuid",
+                data={"output": {}},
+            ))
+            collector._handle_event(_chain_event(
+                "on_chain_end",
+                name=reviewer,
+                run_id=reviewer_run,
+                parent_ids=["root"],
+                node_name=reviewer,
+                data={"output": {}},
+            ))
+
+        report = collector.finalize()
+        payload = _extract_trace_payload(render_dashboard(report))
+        view = payload["view"]
+        events_by_sequence = {
+            event["sequence"]: event for event in payload["events"]
+        }
+
+        for section in view["reviewer_sections"]:
+            assert section["tool_call_count"] == 2
+            tool_steps = [
+                view["steps"][step_id]
+                for step_id in section["tool_step_ids"]
+            ]
+            assert [step["code_name"] for step in tool_steps] == [
+                "get_file_content",
+                "find_callers",
+            ]
+            assert [step["status"] for step in tool_steps] == [
+                "complete",
+                "failed",
+            ]
+            first_input = events_by_sequence[
+                tool_steps[0]["start_sequence"]
+            ]["detail"]["input"]
+            first_output = events_by_sequence[
+                tool_steps[0]["end_sequence"]
+            ]["detail"]["output"]
+            failed_output = events_by_sequence[
+                tool_steps[1]["end_sequence"]
+            ]["detail"]["output"]
+            assert first_input["call"] == 1
+            assert first_output["result"] == 1
+            assert failed_output["type"] == "RuntimeError"
+            assert "gateway unavailable" in failed_output["message"]
+        assert view["integrity"]["status"] == "complete"
 
 
 class _FakeGraph:
@@ -959,6 +1176,14 @@ class TestDashboard:
         assert "renderReviewerSection" in template
         assert "renderStateEvolution" in template
         assert "renderRawEvents" in template
+
+    def test_reviewer_cards_render_tool_counts_inputs_and_outputs(self):
+        template = _dashboard_template()
+
+        assert "tool_call_count" in template
+        assert "renderToolPayloads" in template
+        assert "工具入参" in template
+        assert "工具输出" in template
 
     def test_preserves_reading_position_for_local_updates(self):
         template = _dashboard_template()

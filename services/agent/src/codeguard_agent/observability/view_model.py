@@ -176,29 +176,82 @@ def _step_from_pair(
 def _tool_event_steps(
     events: Iterable[TraceEvent],
 ) -> list[dict[str, Any]]:
+    starts = {
+        event.run_id: event
+        for event in events
+        if event.event_type == "tool_start" and event.run_id
+    }
+    ends = {
+        event.run_id: event
+        for event in events
+        if event.event_type in {"tool_end", "tool_error"} and event.run_id
+    }
     result: list[dict[str, Any]] = []
     for event in events:
-        if event.event_type not in {"tool_start", "tool_end"}:
+        if event.event_type != "tool_start":
             continue
-        is_start = event.event_type == "tool_start"
-        tool_name = str(event.detail.get("tool_name") or event.node_name)
-        kind = "tool_call" if is_start else "tool_result"
-        result.append({
-            "id": f"{kind}:{event.sequence}",
-            "sequence": event.sequence,
-            "kind": kind,
-            "title": "工具调用" if is_start else "工具结果",
-            "code_name": tool_name,
-            "node_path": event.node_path or event.node_name,
-            "invocation_id": event.invocation_id,
-            "pair_id": event.run_id,
-            "start_sequence": event.sequence if is_start else None,
-            "end_sequence": event.sequence if not is_start else None,
-            "duration_ms": 0.0,
-            "status": "complete",
-            "summary": event.summary,
-        })
+        end = ends.get(event.run_id)
+        result.append(_tool_step(event, end))
+    for event in events:
+        if (
+            event.event_type not in {"tool_end", "tool_error"}
+            or event.run_id in starts
+        ):
+            continue
+        result.append(_tool_step(None, event))
     return result
+
+
+def _tool_step(
+    start: TraceEvent | None,
+    end: TraceEvent | None,
+) -> dict[str, Any]:
+    event = start or end
+    assert event is not None
+    sequence = start.sequence if start is not None else event.sequence
+    run_id = event.run_id
+    failed = end is not None and end.event_type == "tool_error"
+    duration_ms = (
+        max(0.0, end.timestamp_ms - start.timestamp_ms)
+        if start is not None and end is not None
+        else 0.0
+    )
+    tool_name = str(event.detail.get("tool_name") or event.node_name)
+    return {
+        "id": f"tool:{run_id or sequence}",
+        "sequence": sequence,
+        "kind": "tool",
+        "title": "工具调用",
+        "code_name": tool_name,
+        "node_path": event.node_path or event.node_name,
+        "reviewer_root": _reviewer_root_for_event(event),
+        "invocation_id": event.invocation_id,
+        "pair_id": run_id,
+        "start_sequence": start.sequence if start is not None else None,
+        "end_sequence": end.sequence if end is not None else None,
+        "duration_ms": duration_ms,
+        "status": (
+            "failed"
+            if failed
+            else "complete"
+            if start is not None and end is not None
+            else "missing"
+        ),
+        "summary": end.summary if end is not None else event.summary,
+    }
+
+
+def _reviewer_root_for_event(event: TraceEvent) -> str:
+    path_root = str(event.node_path).split("/", 1)[0]
+    if path_root in REVIEWERS:
+        return path_root
+    metadata = event.detail.get("metadata")
+    if isinstance(metadata, dict):
+        namespace = str(metadata.get("langgraph_checkpoint_ns") or "")
+        for path_root in REVIEWERS:
+            if path_root in namespace:
+                return path_root
+    return ""
 
 
 def _is_visible_node_step(step: dict[str, Any]) -> bool:
@@ -441,7 +494,10 @@ def _reviewer_sections(
         owned = [
             step
             for step in steps.values()
-            if str(step["node_path"]).split("/", 1)[0] == path_root
+            if (
+                str(step["node_path"]).split("/", 1)[0] == path_root
+                or step.get("reviewer_root") == path_root
+            )
             and not step.get("hidden")
         ]
         if not owned:
@@ -467,6 +523,12 @@ def _reviewer_sections(
             "code_name": code_name,
             "path_root": path_root,
             "step_ids": [step["id"] for step in owned],
+            "tool_step_ids": [
+                step["id"] for step in owned if step["kind"] == "tool"
+            ],
+            "tool_call_count": sum(
+                step["kind"] == "tool" for step in owned
+            ),
         })
     return sections
 
@@ -513,7 +575,10 @@ def _integrity(events: Iterable[TraceEvent]) -> dict[str, Any]:
     ends = {
         event.run_id
         for event in event_list
-        if event.event_type.endswith("_end")
+        if (
+            event.event_type.endswith("_end")
+            or event.event_type == "tool_error"
+        )
     }
     missing_end = starts - ends
     missing_start = ends - starts

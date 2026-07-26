@@ -225,6 +225,8 @@ class _TraceCollector:
             self._on_tool_start(event)
         elif event_type == "on_tool_end":
             self._on_tool_end(event)
+        elif event_type == "on_tool_error":
+            self._on_tool_error(event)
 
     @staticmethod
     def _is_real_node_event(event: dict[str, Any]) -> bool:
@@ -243,9 +245,9 @@ class _TraceCollector:
         node_path = (
             f"{parent.node_path}/{node_name}"
             if parent is not None
-            else node_name
+            else _checkpoint_node_path(metadata, node_name)
         )
-        depth = parent.depth + 1 if parent is not None else 0
+        depth = node_path.count("/")
         node_run = _NodeRun(
             run_id=run_id,
             node_name=node_name,
@@ -285,16 +287,17 @@ class _TraceCollector:
         node_run = self._node_runs.get(run_id)
         if node_run is None:
             parent = self._nearest_node_run(_parent_ids(event))
+            node_path = (
+                f"{parent.node_path}/{node_name}"
+                if parent is not None
+                else _checkpoint_node_path(metadata, node_name)
+            )
             node_run = _NodeRun(
                 run_id=run_id,
                 node_name=node_name,
                 parent_run_id=parent.run_id if parent is not None else "",
-                node_path=(
-                    f"{parent.node_path}/{node_name}"
-                    if parent is not None
-                    else node_name
-                ),
-                depth=parent.depth + 1 if parent is not None else 0,
+                node_path=node_path,
+                depth=node_path.count("/"),
                 start_ms=self._elapsed_ms(),
             )
             self._node_runs[run_id] = node_run
@@ -463,6 +466,35 @@ class _TraceCollector:
             invocation_id=owner_id,
         )
 
+    def _on_tool_error(self, event: dict[str, Any]) -> None:
+        data = event.get("data") or {}
+        metadata = event.get("metadata") or {}
+        owner = self._owner_for(event)
+        owner_id = owner.run_id if owner is not None else ""
+        node_name = owner.node_name if owner is not None else "unknown"
+        node_path = owner.node_path if owner is not None else "unknown"
+        tool_name = str(event.get("name") or "")
+        error = data.get("error")
+        output = {
+            "type": type(error).__name__,
+            "message": str(error),
+        }
+        self._add_event(
+            event_type="tool_error",
+            node_name=node_name,
+            node_path=node_path,
+            phase=self._phase_for_path(node_path, node_name),
+            depth=(owner.depth + 1 if owner is not None else 0),
+            summary=f"失败: {output['type']}: {output['message']}",
+            detail={
+                "tool_name": tool_name,
+                "output": output,
+                "metadata": serialize_trace_value(metadata),
+            },
+            raw_event=event,
+            invocation_id=owner_id,
+        )
+
     def _nearest_node_run(
         self,
         parent_ids: list[str],
@@ -544,6 +576,26 @@ def _event_id(value: Any) -> str:
 
 def _parent_ids(event: dict[str, Any]) -> list[str]:
     return [_event_id(item) for item in (event.get("parent_ids") or [])]
+
+
+def _checkpoint_node_path(
+    metadata: dict[str, Any],
+    node_name: str,
+) -> str:
+    """父 run 缺失时从 LangGraph checkpoint namespace 恢复审查员路径。"""
+    namespace = str(metadata.get("langgraph_checkpoint_ns") or "")
+    names = [
+        segment.split(":", 1)[0]
+        for segment in namespace.split("|")
+        if segment
+    ]
+    reviewer = next(
+        (name for name in names if name.startswith("discover_")),
+        "",
+    )
+    if reviewer and reviewer != node_name:
+        return f"{reviewer}/{node_name}"
+    return node_name
 
 
 def _token_usage_from(

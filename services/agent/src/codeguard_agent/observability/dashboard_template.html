@@ -70,8 +70,8 @@ body{display:flex;flex-direction:column;overflow:hidden}
   border-left:4px solid var(--blue);border-radius:8px;background:#0d1425;cursor:pointer}
 .step:after{content:"↓";position:absolute;left:50%;bottom:-21px;color:#52617f}
 .step:last-child:after{display:none}.step.llm{border-left-color:var(--purple)}
-.step.tool_call{border-left-color:var(--orange)}
-.step.tool_result{border-left-color:var(--cyan)}
+.step.tool{border-left-color:var(--orange)}
+.step.tool.failed{border-color:var(--red)}
 .step.output{border-left-color:var(--green)}.step.missing{border-color:var(--red)}
 .step.dimmed{opacity:.3}.step.neighbor{outline:1px dashed #6680aa}
 .step-top{gap:7px}.kind{padding:1px 6px;border-radius:999px;background:#252e47;
@@ -79,6 +79,11 @@ body{display:flex;flex-direction:column;overflow:hidden}
 .step-name{font-weight:750;flex:1}.duration{color:var(--dim);
   font:10px Consolas,monospace}.step-summary{margin-top:5px;color:var(--dim);
   font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tool-payloads{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:9px}
+.tool-payload{min-width:0;border:1px solid var(--line);border-radius:6px;
+  background:#080d19;overflow:hidden}.tool-payload>summary{padding:6px 8px;
+  color:var(--cyan);cursor:pointer;font-size:10px}.tool-payload .json-tree{
+  max-height:320px;border-top:1px solid var(--line)}
 .inspect-head{padding:15px;border-bottom:1px solid var(--line);position:sticky;
   top:0;background:#0e1526;z-index:4}.inspect-head h2{margin:4px 0 2px;font-size:17px}
 .inspect-tabs{display:flex;overflow:auto;padding:8px 10px;border-bottom:1px solid var(--line)}
@@ -327,6 +332,7 @@ function renderReviewerSection(section){
   return'<section class="story-section" id="reviewer-'+esc(section.key)+'">'+
     '<header class="section-head"><span><h2>'+esc(section.title)+'</h2>'+
     '<div class="code">'+esc(section.code_name)+'</div></span><span>'+
+    '工具调用 '+section.tool_call_count+' 次 · '+
     visibleIds.length+' / '+section.step_ids.length+' 步</span></header>'+
     (cards||'<div class="empty">没有匹配的执行步骤</div>')+'</section>'
 }
@@ -351,17 +357,26 @@ function stepMatchesSearch(stepId){
 }
 function renderStepCard(step){
   if(!step)return"";var selected=step.id===selectedStepId?" selected":"";
-  var missing=step.status==="missing"?" missing":"",kind=step.kind.replace("_"," ");
+  var missing=step.status==="missing"?" missing":"",
+    failed=step.status==="failed"?" failed":"",kind=step.kind.replace("_"," ");
   var relation=stepRelationClass(step);
   var input=stepInput(step),output=stepOutput(step);
-  return'<div class="step '+esc(step.kind)+selected+missing+relation+'" data-step-id="'+
+  return'<div class="step '+esc(step.kind)+selected+missing+failed+relation+
+    '" data-step-id="'+
     esc(step.id)+'"><div class="step-top"><span class="seq">#'+step.sequence+
     '</span><span class="kind">'+esc(kind)+'</span><span class="step-name">'+
     esc(step.title)+'</span><span class="duration">'+formatMs(step.duration_ms)+
     '</span></div><div class="code">'+esc(step.code_name)+(step.round?
       ' · 第 '+step.round+' 轮':"")+'</div><div class="step-summary">'+
     esc(step.summary)+' · 输入 '+esc(countValue(input))+' → 输出 '+
-    esc(countValue(output))+'</div></div>'
+    esc(countValue(output))+'</div>'+
+    (step.kind==="tool"?renderToolPayloads(input,output):"")+'</div>'
+}
+function renderToolPayloads(input,output){
+  return'<div class="tool-payloads"><details class="tool-payload"><summary>'+
+    '工具入参 · '+esc(countValue(input))+'</summary>'+renderJsonTree(input)+
+    '</details><details class="tool-payload"><summary>工具输出 · '+
+    esc(countValue(output))+'</summary>'+renderJsonTree(output)+'</details></div>'
 }
 function stepRelationClass(step){
   var selected=selectedStep();
@@ -379,7 +394,7 @@ function stepRelationClass(step){
 function stepInput(step){
   var start=eventAt(step.start_sequence),end=eventAt(step.end_sequence);
   if(step.kind==="llm")return start&&start.detail?start.detail.messages:null;
-  if(step.kind==="tool_call")return start&&start.detail?start.detail.input:null;
+  if(step.kind==="tool")return start&&start.detail?start.detail.input:null;
   return start&&start.detail&&start.detail.input!==undefined?start.detail.input:
     end&&end.detail?end.detail.input:null
 }
