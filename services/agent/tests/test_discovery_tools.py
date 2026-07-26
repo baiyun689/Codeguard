@@ -117,6 +117,33 @@ def test_empty_success_is_not_cached() -> None:
     assert raw.calls == 2
 
 
+def test_path_guard_rejection_and_missing_file_have_domain_statuses() -> None:
+    raw = _FakeClient(
+        [
+            ToolResponse(False, error="unconfirmed_path: GuessedController.java"),
+            ToolResponse(False, error="文件不存在: Deleted.java"),
+        ]
+    )
+    client = CoordinatedDiscoveryToolClient(raw, DiscoveryToolCoordinator())
+
+    client.get_file_content("GuessedController.java")
+    client.get_file_content("Deleted.java")
+
+    assert [record.status for record in client.trace_records] == [
+        "rejected",
+        "not_found",
+    ]
+
+
+def test_transport_or_protocol_failure_keeps_failed_status() -> None:
+    raw = _FakeClient([ToolResponse(False, error="HTTP 503")])
+    client = CoordinatedDiscoveryToolClient(raw, DiscoveryToolCoordinator())
+
+    client.get_file_content("src/A.java")
+
+    assert client.trace_records[0].status == "failed"
+
+
 def test_different_arguments_execute_separately() -> None:
     raw = _FakeClient()
     coordinator = DiscoveryToolCoordinator()

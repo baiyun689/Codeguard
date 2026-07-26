@@ -567,6 +567,15 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
             outcome.gathered_context.extend(react_outcome.gathered_context)
             outcome.tool_trace_records.extend(react_outcome.tool_trace_records)
 
+        for event in outcome.execution_events:
+            review_traces.append(
+                CouncilTrace(
+                    node=reviewer.source_agent,
+                    event=event,
+                    detail="bounded ReAct exploration synthesized from gathered tool facts",
+                )
+            )
+
         if review_traces:
             return {"outcome": outcome, "council_trace": review_traces}
         return {"outcome": outcome}

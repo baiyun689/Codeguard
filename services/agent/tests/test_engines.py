@@ -309,10 +309,48 @@ def test_撞递归上限降级为无工具直连_不静默丢弃该域产出():
 
 
 def test_严格工具档递归失败不混入无工具直连结果():
+    engine = _RecursingEngine(
+        tool_client=type(
+            "Client",
+            (),
+            {
+                "trace_records": [
+                    type(
+                        "Record",
+                        (),
+                        {
+                            "tool": "inspect_change_impact",
+                            "arguments": {"symbol_id": "method:A#m()"},
+                            "output": "A#m() 被 Controller 调用",
+                            "duration_ms": 3.0,
+                            "status": "complete",
+                        },
+                    )()
+                ]
+            },
+        )(),
+        allow_direct_fallback=False,
+    )
+
+    outcome = engine.review(
+        _FakeLLM(ReviewResult(summary="基于图谱事实收束")),
+        system_prompt="s",
+        user_prompt="u",
+        reviewer_name="logic",
+        max_retries=1,
+        structured_method="function_calling",
+    )
+
+    assert outcome.result.summary == "基于图谱事实收束"
+    assert outcome.execution_events == ["react_bounded_synthesis"]
+    assert outcome.gathered_context[0].content == "A#m() 被 Controller 调用"
+
+
+def test_严格工具档递归且无事实时仍失败():
     from langgraph.errors import GraphRecursionError
 
     engine = _RecursingEngine(
-        tool_client=object(),
+        tool_client=type("Client", (), {"trace_records": []})(),
         allow_direct_fallback=False,
     )
 

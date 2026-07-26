@@ -73,6 +73,17 @@ def _cacheable(response: ToolResponse) -> bool:
     return response.success and bool((response.result or "").strip())
 
 
+def _response_status(response: ToolResponse) -> str:
+    if response.success:
+        return "complete"
+    error = (response.error or "").strip()
+    if error.startswith("unconfirmed_path:"):
+        return "rejected"
+    if error.startswith("文件不存在:"):
+        return "not_found"
+    return "failed"
+
+
 class DiscoveryToolCoordinator:
     def __init__(self) -> None:
         self._lock = Lock()
@@ -237,7 +248,7 @@ class CoordinatedDiscoveryToolClient:
     ) -> None:
         canonical_arguments = _canonical_arguments(arguments)
         key = canonical_tool_key(tool_name, canonical_arguments)
-        effective_status = status or ("complete" if response.success else "failed")
+        effective_status = status or _response_status(response)
         with self._lock:
             effective_call_id = call_id or f"discovery-tool-{uuid4()}"
             first_call_id = (

@@ -54,6 +54,7 @@ class ReviewOutcome:
     result: ReviewResult
     gathered_context: list[GatheredContext] = field(default_factory=list)
     tool_trace_records: list[Any] = field(default_factory=list)
+    execution_events: list[str] = field(default_factory=list)
 
 
 class ReviewEngine(ABC):
@@ -152,8 +153,29 @@ class ToolAgentEngine(ReviewEngine):
             # 由人决定 continue/retry/skip。
             if enable_hitl:
                 raise
-            if not self._allow_direct_fallback:
+            tool_records = list(getattr(self._tool_client, "trace_records", ()))
+            gathered = _gathered_context_from_records(tool_records)
+            if not self._allow_direct_fallback and not gathered:
                 raise
+            if gathered:
+                logger.warning(
+                    "[%s] ReAct 达到 %d 步上限，使用已取得的 %d 条工具事实结构化收束",
+                    reviewer_name,
+                    self._recursion_limit,
+                    len(gathered),
+                )
+                synthesis = DirectEngine().review(
+                    llm,
+                    system_prompt=system_prompt,
+                    user_prompt=_bounded_synthesis_prompt(user_prompt, gathered),
+                    reviewer_name=reviewer_name,
+                    max_retries=max_retries,
+                    structured_method=structured_method,
+                )
+                synthesis.tool_trace_records.extend(tool_records)
+                synthesis.gathered_context.extend(gathered)
+                synthesis.execution_events.append("react_bounded_synthesis")
+                return synthesis
             # ReAct 在 recursion_limit 步内没收敛(绕的难例 / 工具反复绕)。不让该域被静默丢弃
             # (那会直接丢失这一维度的发现、压低 recall),而是降级为无工具直连复审一次,至少
             # 据 diff 产出一份结论。直连无工具不会再循环。
@@ -366,6 +388,31 @@ def _gathered_context_from_records(tool_records: Any) -> list[GatheredContext]:
             )
         )
     return gathered
+
+
+def _bounded_synthesis_prompt(
+    user_prompt: str,
+    gathered: list[GatheredContext],
+    *,
+    max_chars: int = 12_000,
+) -> str:
+    """把有界探索已取得的事实交给一次结构化综合，不再开放工具循环。"""
+    blocks: list[str] = []
+    used = 0
+    for item in gathered:
+        block = f"[{item.tool} 入参={item.args}]\n{item.content}".strip()
+        remaining = max_chars - used
+        if remaining <= 0:
+            break
+        blocks.append(block[:remaining])
+        used += min(len(block), remaining)
+    facts = "\n\n".join(blocks)
+    return (
+        f"{user_prompt}\n\n"
+        "工具探索已达到本次有界预算。请停止调用工具，仅依据原始变更与以下已取得的"
+        "项目事实完成结构化审查；未被事实覆盖的关系必须按未知处理，不得猜测。\n\n"
+        f"{facts}"
+    )
 
 
 def _summarize_args(args: Any) -> str:
