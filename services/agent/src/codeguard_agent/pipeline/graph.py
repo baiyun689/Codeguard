@@ -172,6 +172,7 @@ class ReviewState(TypedDict, total=False):
     truncated_candidates: Annotated[int, operator.add]
 
     gathered_context: Annotated[list, dedup_gathered_reducer]
+    tool_trace_records: Annotated[list, operator.add]
     review_summaries: Annotated[list, operator.add]
 
     final_issues: list
@@ -199,6 +200,7 @@ class ReviewerState(TypedDict, total=False):
 
     issues: list
     gathered_context: list
+    tool_trace_records: list
     review_summaries: list
     council_trace: Annotated[list[CouncilTrace], operator.add]
 
@@ -576,7 +578,10 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                     detail="empty result",
                 )
             )
+            react_outcome = outcome
             outcome = _direct_fallback(state)
+            outcome.gathered_context.extend(react_outcome.gathered_context)
+            outcome.tool_trace_records.extend(react_outcome.tool_trace_records)
 
         if review_traces:
             return {"outcome": outcome, "council_trace": review_traces}
@@ -595,6 +600,8 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
         out["issues"] = list(outcome.result.issues)
         if outcome.gathered_context:
             out["gathered_context"] = list(outcome.gathered_context)
+        if outcome.tool_trace_records:
+            out["tool_trace_records"] = list(outcome.tool_trace_records)
         if outcome.result.summary:
             out["review_summaries"] = (
                 [outcome.result.summary]
@@ -726,7 +733,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 "truncated_candidates": truncated_candidates,
                 "council_trace": trace,
             }
-            for key in ("gathered_context", "review_summaries"):
+            for key in ("gathered_context", "tool_trace_records", "review_summaries"):
                 if result.get(key):
                     out[key] = result[key]
             return out
@@ -805,6 +812,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             for task_id in ordered_ids
         ]
         gathered_context: list = []
+        tool_trace_records: list = []
         review_summaries: list = []
         for task_id, result in zip(ordered_ids, task_results):
             if result is None:
@@ -821,6 +829,8 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             trace.extend(result.get("council_trace") or [])
             if result.get("gathered_context"):
                 gathered_context.extend(result["gathered_context"])
+            if result.get("tool_trace_records"):
+                tool_trace_records.extend(result["tool_trace_records"])
             if result.get("review_summaries"):
                 review_summaries.extend(result["review_summaries"])
 
@@ -870,6 +880,8 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         }
         if gathered_context:
             routed_out["gathered_context"] = gathered_context
+        if tool_trace_records:
+            routed_out["tool_trace_records"] = tool_trace_records
         if review_summaries:
             routed_out["review_summaries"] = review_summaries
         return routed_out

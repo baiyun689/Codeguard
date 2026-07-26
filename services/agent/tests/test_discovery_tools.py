@@ -42,6 +42,10 @@ def test_same_conversation_repeated_read_returns_short_marker() -> None:
     assert first.result == "FULL BODY"
     assert second.result == REPEATED_TOOL_RESULT
     assert raw.calls == 1
+    records = client.trace_records
+    assert [record.status for record in records] == ["complete", "reused"]
+    assert records[1].reuse_key == records[0].reuse_key
+    assert records[1].reused_from_call_id == records[0].call_id
 
 
 def test_complete_patch_file_read_returns_marker_without_delegate_call() -> None:
@@ -67,6 +71,12 @@ def test_parallel_task_clients_share_single_flight_but_both_receive_full_result(
         results = list(pool.map(lambda c: c.get_file_content("src/A.java"), clients))
     assert [result.result for result in results] == ["FULL BODY", "FULL BODY"]
     assert raw.calls == 1
+    records = [record for client in clients for record in client.trace_records]
+    assert sorted(record.status for record in records) == ["complete", "reused"]
+    first = next(record for record in records if record.status == "complete")
+    reused = next(record for record in records if record.status == "reused")
+    assert reused.duration_ms == 0.0
+    assert reused.reused_from_call_id == first.call_id
 
 
 def test_same_conversation_parallel_duplicate_returns_one_short_marker() -> None:

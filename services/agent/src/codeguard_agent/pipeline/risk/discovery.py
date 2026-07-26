@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import posixpath
+from dataclasses import dataclass
 from collections.abc import Callable
 from concurrent.futures import Future
 from threading import Lock
+from time import perf_counter
 from typing import Any
+from uuid import uuid4
 
 from codeguard_agent.tools.tool_client import ToolResponse
 
@@ -25,6 +28,18 @@ COMPLETE_PATCH_RESULT = (
     "当前 task patch 已包含该新增文件的完整内容；请直接复用 patch，不要重复读取。"
 )
 ToolKey = tuple[str, str]
+
+
+@dataclass(frozen=True)
+class DiscoveryToolRecord:
+    call_id: str
+    tool: str
+    arguments: dict[str, Any]
+    output: str
+    duration_ms: float
+    status: str
+    reuse_key: str
+    reused_from_call_id: str = ""
 
 
 def _normalize_path(value: str) -> str:
@@ -61,26 +76,36 @@ def _cacheable(response: ToolResponse) -> bool:
 class DiscoveryToolCoordinator:
     def __init__(self) -> None:
         self._lock = Lock()
-        self._completed: dict[ToolKey, ToolResponse] = {}
-        self._in_flight: dict[ToolKey, Future[ToolResponse]] = {}
+        self._completed: dict[ToolKey, tuple[ToolResponse, str]] = {}
+        self._in_flight: dict[ToolKey, Future[tuple[ToolResponse, str]]] = {}
 
     def execute(
         self,
         key: ToolKey,
         call: Callable[[], ToolResponse],
     ) -> ToolResponse:
+        response, _, _ = self.execute_with_trace(key, call)
+        return response
+
+    def execute_with_trace(
+        self,
+        key: ToolKey,
+        call: Callable[[], ToolResponse],
+    ) -> tuple[ToolResponse, bool, str]:
         with self._lock:
             cached = self._completed.get(key)
             if cached is not None:
-                return cached
+                return cached[0], True, cached[1]
             future = self._in_flight.get(key)
             leader = future is None
             if future is None:
                 future = Future()
                 self._in_flight[key] = future
+                first_call_id = f"discovery-tool-{uuid4()}"
 
         if not leader:
-            return future.result()
+            response, first_call_id = future.result()
+            return response, True, first_call_id
 
         try:
             try:
@@ -89,11 +114,11 @@ class DiscoveryToolCoordinator:
                 response = ToolResponse(success=False, error=str(exc))
             with self._lock:
                 if _cacheable(response):
-                    self._completed[key] = response
-            future.set_result(response)
+                    self._completed[key] = (response, first_call_id)
+            future.set_result((response, first_call_id))
             with self._lock:
                 self._in_flight.pop(key, None)
-            return response
+            return response, False, first_call_id
         except BaseException as exc:
             future.set_exception(exc)
             with self._lock:
@@ -114,6 +139,8 @@ class CoordinatedDiscoveryToolClient:
         self._lock = Lock()
         self._seen: set[ToolKey] = set()
         self._in_flight: dict[ToolKey, Future[ToolResponse]] = {}
+        self._records: list[DiscoveryToolRecord] = []
+        self._first_call_ids: dict[ToolKey, str] = {}
         self._complete_patch_keys = {
             canonical_tool_key("get_file_content", {"file_path": path})
             for path in complete_patch_files
@@ -126,40 +153,136 @@ class CoordinatedDiscoveryToolClient:
         call: Callable[[], ToolResponse],
     ) -> ToolResponse:
         key = canonical_tool_key(tool_name, arguments)
+        started = perf_counter()
         with self._lock:
-            if key in self._seen:
-                return ToolResponse(success=True, result=REPEATED_TOOL_RESULT)
-            future = self._in_flight.get(key)
-            leader = future is None
-            if future is None:
-                future = Future()
-                self._in_flight[key] = future
+            already_seen = key in self._seen
+            if already_seen:
+                future = None
+                leader = False
+            else:
+                future = self._in_flight.get(key)
+                leader = future is None
+                if future is None:
+                    future = Future()
+                    self._in_flight[key] = future
+
+        if already_seen:
+            response = ToolResponse(success=True, result=REPEATED_TOOL_RESULT)
+            self._record(
+                tool_name,
+                arguments,
+                response,
+                started,
+                "reused",
+                reused_from_call_id=self._first_call_ids.get(key, ""),
+            )
+            return response
 
         if not leader:
+            assert future is not None
             response = future.result()
             if _cacheable(response):
-                return ToolResponse(success=True, result=REPEATED_TOOL_RESULT)
+                repeated = ToolResponse(success=True, result=REPEATED_TOOL_RESULT)
+                self._record(
+                    tool_name,
+                    arguments,
+                    repeated,
+                    started,
+                    "reused",
+                    reused_from_call_id=self._first_call_ids.get(key, ""),
+                )
+                return repeated
+            self._record(tool_name, arguments, response, started)
             return response
 
         try:
-            response = self._coordinator.execute(key, call)
+            assert future is not None
+            response, coordinator_reused, first_call_id = (
+                self._coordinator.execute_with_trace(key, call)
+            )
             with self._lock:
                 if _cacheable(response):
                     self._seen.add(key)
+                    self._first_call_ids[key] = first_call_id
+            self._record(
+                tool_name,
+                arguments,
+                response,
+                started,
+                "reused" if coordinator_reused else None,
+                call_id=(None if coordinator_reused else first_call_id),
+                reused_from_call_id=(first_call_id if coordinator_reused else ""),
+            )
             future.set_result(response)
             with self._lock:
                 self._in_flight.pop(key, None)
             return response
         except BaseException as exc:
-            future.set_exception(exc)
+            if future is not None and not future.done():
+                future.set_exception(exc)
             with self._lock:
                 self._in_flight.pop(key, None)
             raise
 
+    def _record(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        response: ToolResponse,
+        started: float,
+        status: str | None = None,
+        *,
+        call_id: str | None = None,
+        reused_from_call_id: str = "",
+    ) -> None:
+        canonical_arguments = _canonical_arguments(arguments)
+        key = canonical_tool_key(tool_name, canonical_arguments)
+        effective_status = status or ("complete" if response.success else "failed")
+        with self._lock:
+            effective_call_id = call_id or f"discovery-tool-{uuid4()}"
+            first_call_id = (
+                reused_from_call_id or self._first_call_ids.get(key, "")
+            )
+            if not first_call_id and effective_status != "reused":
+                self._first_call_ids[key] = effective_call_id
+            record = DiscoveryToolRecord(
+                call_id=effective_call_id,
+                tool=tool_name,
+                arguments=canonical_arguments,
+                output=response.as_tool_output(),
+                duration_ms=(
+                    0.0
+                    if effective_status == "reused"
+                    else (perf_counter() - started) * 1000
+                ),
+                status=effective_status,
+                reuse_key=f"{key[0]}:{key[1]}",
+                reused_from_call_id=(
+                    first_call_id
+                    if effective_status == "reused"
+                    else ""
+                ),
+            )
+            self._records.append(record)
+
+    @property
+    def trace_records(self) -> tuple[DiscoveryToolRecord, ...]:
+        with self._lock:
+            return tuple(self._records)
+
     def get_file_content(self, file_path: str) -> ToolResponse:
         key = canonical_tool_key("get_file_content", {"file_path": file_path})
         if key in self._complete_patch_keys:
-            return ToolResponse(success=True, result=COMPLETE_PATCH_RESULT)
+            response = ToolResponse(success=True, result=COMPLETE_PATCH_RESULT)
+            self._record(
+                "get_file_content",
+                {"file_path": file_path},
+                response,
+                perf_counter(),
+                "reused",
+                reused_from_call_id="task_patch",
+            )
+            return response
         return self._invoke(
             "get_file_content",
             {"file_path": file_path},

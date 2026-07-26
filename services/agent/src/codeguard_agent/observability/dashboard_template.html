@@ -392,6 +392,7 @@ function stepRelationClass(step){
 }
 
 function stepInput(step){
+  if(step&&step.input!==undefined)return step.input;
   var start=eventAt(step.start_sequence),end=eventAt(step.end_sequence);
   if(step.kind==="llm")return start&&start.detail?start.detail.messages:null;
   if(step.kind==="tool")return start&&start.detail?start.detail.input:null;
@@ -399,6 +400,7 @@ function stepInput(step){
     end&&end.detail?end.detail.input:null
 }
 function stepOutput(step){
+  if(step&&step.output!==undefined)return step.output;
   var end=eventAt(step.end_sequence);
   if(!end||!end.detail)return null;
   if(step.kind==="llm")return end.detail.response;

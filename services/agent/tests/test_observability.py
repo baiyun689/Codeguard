@@ -508,6 +508,257 @@ def test_trace_view_treats_tool_error_as_a_completed_failed_call():
     assert view["integrity"]["status"] == "complete"
 
 
+def test_trace_view_builds_reviewer_tool_steps_from_node_output_without_native_events():
+    report = TraceReport(
+        run_id="application-tool-run",
+        timestamp="2026-07-26T00:00:00",
+        events=[
+            _flow_event(
+                1,
+                "node_start",
+                "discover_behavior",
+                "discover_behavior",
+                "discover-run",
+            ),
+            _flow_event(
+                2,
+                "node_end",
+                "discover_behavior",
+                "discover_behavior",
+                "discover-run",
+                detail={
+                    "output": {
+                        "gathered_context": [
+                            {
+                                "tool": "inspect_change_impact",
+                                "args": '{"symbol_id":"java:demo.OrderService"}',
+                                "content": '{"status":"confirmed"}',
+                            }
+                        ]
+                    }
+                },
+            ),
+        ],
+    )
+
+    view = build_trace_view(report)
+    behavior = next(
+        section
+        for section in view["reviewer_sections"]
+        if section["key"] == "behavior"
+    )
+    tool_step = view["steps"][behavior["tool_step_ids"][0]]
+
+    assert behavior["tool_call_count"] == 1
+    assert tool_step["code_name"] == "inspect_change_impact"
+    assert tool_step["input"] == {"symbol_id": "java:demo.OrderService"}
+    assert tool_step["output"] == '{"status":"confirmed"}'
+    assert tool_step["status"] == "complete"
+
+
+def test_trace_view_keeps_each_reviewer_tool_record_including_reuse():
+    report = TraceReport(
+        run_id="reviewer-tool-reuse",
+        timestamp="2026-07-26T00:00:00",
+        events=[
+            _flow_event(
+                1,
+                "node_start",
+                "discover_behavior",
+                "discover_behavior",
+                "discover-run",
+            ),
+            _flow_event(
+                2,
+                "node_end",
+                "discover_behavior",
+                "discover_behavior",
+                "discover-run",
+                detail={
+                    "output": {
+                        "tool_trace_records": [
+                            {
+                                "call_id": "call-1",
+                                "tool": "inspect_change_impact",
+                                "arguments": {"symbol_id": "java:demo.Service"},
+                                "output": '{"status":"confirmed"}',
+                                "duration_ms": 4.0,
+                                "status": "complete",
+                                "reuse_key": "impact:service",
+                                "reused_from_call_id": "",
+                            },
+                            {
+                                "call_id": "call-2",
+                                "tool": "inspect_change_impact",
+                                "arguments": {"symbol_id": "java:demo.Service"},
+                                "output": "reuse marker",
+                                "duration_ms": 0.1,
+                                "status": "reused",
+                                "reuse_key": "impact:service",
+                                "reused_from_call_id": "call-1",
+                            },
+                        ]
+                    }
+                },
+            ),
+        ],
+    )
+
+    view = build_trace_view(report)
+    behavior = next(
+        section
+        for section in view["reviewer_sections"]
+        if section["key"] == "behavior"
+    )
+    tool_steps = [
+        view["steps"][step_id] for step_id in behavior["tool_step_ids"]
+    ]
+
+    assert behavior["tool_call_count"] == 2
+    assert [step["status"] for step in tool_steps] == ["complete", "reused"]
+    assert tool_steps[1]["reuse_key"] == "impact:service"
+    assert tool_steps[1]["reused_from_call_id"] == "call-1"
+
+
+def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
+    report = TraceReport(
+        run_id="evidence-tool-reuse",
+        timestamp="2026-07-26T00:00:00",
+        events=[
+            _flow_event(
+                1,
+                "node_start",
+                "evidence_agent",
+                "evidence_agent",
+                "evidence-run",
+            ),
+            _flow_event(
+                2,
+                "node_end",
+                "evidence_agent",
+                "evidence_agent",
+                "evidence-run",
+                detail={
+                    "output": {
+                        "gathered_context": [
+                            {
+                                "tool": "inspect_security_path",
+                                "args": '{"symbol_id":"java:demo.Service"}',
+                                "content": '{"status":"confirmed"}',
+                                "duration_ms": 4.5,
+                                "status": "complete",
+                            }
+                        ],
+                        "council_trace": [
+                            {
+                                "node": "evidence_agent",
+                                "event": "evidence_tool_called",
+                                "detail": json.dumps(
+                                    {
+                                        "call_id": "evidence-call-1",
+                                        "tool": "inspect_security_path",
+                                        "arguments": {
+                                            "symbol_id": "java:demo.Service"
+                                        },
+                                        "reuse_key": "security:service",
+                                    }
+                                ),
+                            },
+                            {
+                                "node": "evidence_agent",
+                                "event": "evidence_tool_reused",
+                                "detail": json.dumps(
+                                    {
+                                        "tool": "inspect_security_path",
+                                        "arguments": {
+                                            "symbol_id": "java:demo.Service"
+                                        },
+                                        "evidence_id": "evidence-1",
+                                        "reuse_key": "security:service",
+                                        "reused_from_call_id": "evidence-call-1",
+                                        "output": '{"status":"confirmed"}',
+                                    }
+                                ),
+                            }
+                        ],
+                    }
+                },
+            ),
+        ],
+    )
+
+    view = build_trace_view(report)
+    tool_steps = [
+        view["steps"][step_id]
+        for step_id in view["coordination_steps"]
+        if view["steps"][step_id]["kind"] == "tool"
+    ]
+
+    assert [step["status"] for step in tool_steps] == ["complete", "reused"]
+    assert tool_steps[0]["duration_ms"] == 4.5
+    assert tool_steps[0]["pair_id"] == "evidence-call-1"
+    assert tool_steps[0]["reuse_key"] == "security:service"
+    assert tool_steps[1]["input"] == {"symbol_id": "java:demo.Service"}
+    assert tool_steps[1]["output"] == '{"status":"confirmed"}'
+    assert tool_steps[1]["reuse_key"] == "security:service"
+    assert tool_steps[1]["reused_from_call_id"] == "evidence-call-1"
+
+
+def test_trace_view_exposes_evidence_batch_phase_metrics():
+    metrics = {
+        "request_count": 68,
+        "fact_count": 121,
+        "llm_analysis_calls": 68,
+        "tool_unique_calls": 7,
+        "tool_reused_calls": 16,
+        "tool_collection_ms": 5.0,
+        "fact_preparation_ms": 2.0,
+        "fact_analysis_ms": 32000.0,
+    }
+    report = TraceReport(
+        run_id="evidence-metrics",
+        timestamp="2026-07-26T00:00:00",
+        events=[
+            _flow_event(
+                1,
+                "node_start",
+                "evidence_agent",
+                "evidence_agent",
+                "evidence-run",
+            ),
+            _flow_event(
+                2,
+                "node_end",
+                "evidence_agent",
+                "evidence_agent",
+                "evidence-run",
+                detail={
+                    "output": {
+                        "council_trace": [
+                            {
+                                "node": "evidence_agent",
+                                "event": "evidence_batch_metrics",
+                                "detail": json.dumps(metrics),
+                            }
+                        ]
+                    }
+                },
+            ),
+        ],
+    )
+
+    view = build_trace_view(report)
+    step = next(
+        item
+        for item in view["steps"].values()
+        if item["code_name"] == "evidence_agent"
+    )
+
+    assert step["metrics"] == metrics
+    assert "68 次 LLM" in step["summary"]
+    assert "32.000s" in step["summary"]
+
+
 def test_dashboard_payload_keeps_raw_report_and_adds_flow_view():
     report = _flow_report_fixture()
 

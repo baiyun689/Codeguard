@@ -40,6 +40,8 @@ class GatheredContext:
     tool: str
     args: str
     content: str
+    duration_ms: float = 0.0
+    status: str = "complete"
 
 
 @dataclass
@@ -51,6 +53,7 @@ class ReviewOutcome:
 
     result: ReviewResult
     gathered_context: list[GatheredContext] = field(default_factory=list)
+    tool_trace_records: list[Any] = field(default_factory=list)
 
 
 class ReviewEngine(ABC):
@@ -155,7 +158,7 @@ class ToolAgentEngine(ReviewEngine):
                 reviewer_name,
                 self._recursion_limit,
             )
-            return DirectEngine().review(
+            fallback = DirectEngine().review(
                 llm,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -163,9 +166,19 @@ class ToolAgentEngine(ReviewEngine):
                 max_retries=max_retries,
                 structured_method=structured_method,
             )
+            tool_records = list(getattr(self._tool_client, "trace_records", ()))
+            fallback.tool_trace_records.extend(tool_records)
+            fallback.gathered_context.extend(
+                _gathered_context_from_records(tool_records)
+            )
+            return fallback
         result = self._extract_result(raw, reviewer_name)
-        gathered = _extract_gathered_context(raw)
-        return ReviewOutcome(result, gathered)
+        tool_records = list(getattr(self._tool_client, "trace_records", ()))
+        gathered = _extract_gathered_context(
+            raw,
+            tool_records=tool_records,
+        )
+        return ReviewOutcome(result, gathered, tool_records)
 
     def _run_agent(self, llm: Any, system_prompt: str, user_prompt: str) -> Any:
         """构建 ReAct agent 并执行,返回原始状态。
@@ -248,7 +261,11 @@ class ToolAgentEngine(ReviewEngine):
         return ReviewResult(summary="")
 
 
-def _extract_gathered_context(raw: Any) -> list[GatheredContext]:
+def _extract_gathered_context(
+    raw: Any,
+    *,
+    tool_records: Any = (),
+) -> list[GatheredContext]:
     """从 create_agent 返回状态的消息流里抽取工具返回的上下文(ToolMessage)。
 
     工具入参在调用它的 AIMessage.tool_calls 里,故先建 tool_call_id → (name, args) 映射,
@@ -259,6 +276,14 @@ def _extract_gathered_context(raw: Any) -> list[GatheredContext]:
         if not isinstance(raw, dict):
             return []
         messages = raw.get("messages") or []
+        records_by_key: dict[ToolKey, Any] = {}
+        for record in tool_records or ():
+            arguments = getattr(record, "arguments", {})
+            if not isinstance(arguments, dict):
+                continue
+            key = canonical_tool_key(str(getattr(record, "tool", "")), arguments)
+            if getattr(record, "status", "") != "reused":
+                records_by_key.setdefault(key, record)
         # tool_call_id → (工具名, 入参摘要)
         call_meta: dict[str, tuple[str, str, ToolKey]] = {}
         for msg in messages:
@@ -296,11 +321,47 @@ def _extract_gathered_context(raw: Any) -> list[GatheredContext]:
             if content in {COMPLETE_PATCH_RESULT, REPEATED_TOOL_RESULT}:
                 continue
             seen.add(key)
-            gathered.append(GatheredContext(tool=name, args=args, content=content))
+            record = records_by_key.get(key)
+            gathered.append(
+                GatheredContext(
+                    tool=name,
+                    args=args,
+                    content=content,
+                    duration_ms=float(getattr(record, "duration_ms", 0.0)),
+                    status=str(getattr(record, "status", "complete")),
+                )
+            )
         return gathered
     except Exception as exc:  # noqa: BLE001 上下文捕获失败不应影响审查
         logger.warning("[engines] 抽取工具上下文失败,本次按空处理: %s", exc)
         return []
+
+
+def _gathered_context_from_records(tool_records: Any) -> list[GatheredContext]:
+    gathered: list[GatheredContext] = []
+    seen: set[ToolKey] = set()
+    for record in tool_records or ():
+        arguments = getattr(record, "arguments", {})
+        tool_name = str(getattr(record, "tool", ""))
+        output = str(getattr(record, "output", ""))
+        if not isinstance(arguments, dict) or tool_name not in DISCOVERY_GATEWAY_TOOLS:
+            continue
+        if output in {COMPLETE_PATCH_RESULT, REPEATED_TOOL_RESULT}:
+            continue
+        key = canonical_tool_key(tool_name, arguments)
+        if key in seen:
+            continue
+        seen.add(key)
+        gathered.append(
+            GatheredContext(
+                tool=tool_name,
+                args=_summarize_args(arguments),
+                content=output,
+                duration_ms=float(getattr(record, "duration_ms", 0.0)),
+                status=str(getattr(record, "status", "complete")),
+            )
+        )
+    return gathered
 
 
 def _summarize_args(args: Any) -> str:
