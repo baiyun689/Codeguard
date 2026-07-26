@@ -27,6 +27,9 @@ class GatewaySettingsTest {
         assertEquals("jdbc:mysql://localhost:3306/codeguard", settings.jobDbUrl());
         assertEquals("codeguard", settings.jobDbUser());
         assertEquals("codeguard", settings.jobDbPassword());
+        assertEquals(4, settings.graphCacheMaxSnapshots());
+        assertEquals(Duration.ofMinutes(30), settings.graphCacheTtl());
+        assertEquals(Duration.ofSeconds(120), settings.graphBuildTimeout());
     }
 
     @Test

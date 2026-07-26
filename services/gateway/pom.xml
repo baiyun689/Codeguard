@@ -76,6 +76,11 @@
                 <artifactId>javaparser-core</artifactId>
                 <version>${javaparser.version}</version>
             </dependency>
+            <dependency>
+                <groupId>com.github.javaparser</groupId>
+                <artifactId>javaparser-symbol-solver-core</artifactId>
+                <version>${javaparser.version}</version>
+            </dependency>
             <!-- 限流工具 -->
             <dependency>
                 <groupId>com.google.guava</groupId>

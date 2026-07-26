@@ -8,6 +8,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.CompletableFuture;
+import com.codeguard.agent.graph.ProjectSnapshot;
 
 /**
  * 读取仓库内指定文件的完整内容。
@@ -22,9 +24,19 @@ public final class GetFileContentTool implements AgentTool {
     private static final long MAX_FILE_SIZE_BYTES = 100_000L;
 
     private final FileAccessSandbox sandbox;
+    private final CompletableFuture<ProjectSnapshot> snapshot;
 
     public GetFileContentTool(FileAccessSandbox sandbox) {
         this.sandbox = sandbox;
+        this.snapshot = null;
+    }
+
+    public GetFileContentTool(
+            FileAccessSandbox sandbox,
+            CompletableFuture<ProjectSnapshot> snapshot
+    ) {
+        this.sandbox = sandbox;
+        this.snapshot = snapshot;
     }
 
     @Override
@@ -40,6 +52,9 @@ public final class GetFileContentTool implements AgentTool {
     @Override
     public ToolResult execute(String input, AgentContext context) {
         String filePath = input == null ? "" : input.trim();
+        if (filePath.startsWith("file:")) {
+            filePath = filePath.substring("file:".length());
+        }
         if (filePath.isEmpty()) {
             return ToolResult.error("文件路径不能为空");
         }
@@ -62,8 +77,33 @@ public final class GetFileContentTool implements AgentTool {
             return ToolResult.error("文件类型不可读(仅限源码文件): " + filePath);
         }
 
+        if (snapshot != null) {
+            try {
+                ProjectSnapshot value = GraphToolSupport.await(snapshot);
+                String normalized = filePath.replace('\\', '/');
+                if (!context.getAllowedFiles().contains(normalized)
+                        && !value.sources().containsKey(normalized)) {
+                    return ToolResult.error("unconfirmed_path: " + filePath);
+                }
+                String cached = value.sources().get(normalized);
+                if (cached != null) {
+                    long size = cached.getBytes(StandardCharsets.UTF_8).length;
+                    if (size > MAX_FILE_SIZE_BYTES) {
+                        return ToolResult.error(
+                                "文件过大 (" + size + " 字节,上限 "
+                                        + MAX_FILE_SIZE_BYTES + "),请聚焦具体方法/片段再查");
+                    }
+                    return ToolResult.ok("文件: " + normalized + "\n" + cached);
+                }
+            } catch (Exception exception) {
+                return ToolResult.error("graph_unavailable: " + exception.getMessage());
+            }
+        }
+
         if (!Files.isRegularFile(fullPath)) {
-            return ToolResult.error("文件不存在: " + filePath);
+            return ToolResult.error(snapshot == null
+                    ? "文件不存在: " + filePath
+                    : "unconfirmed_path: " + filePath);
         }
 
         try {

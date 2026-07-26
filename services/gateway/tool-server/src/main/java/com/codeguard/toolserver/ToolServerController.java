@@ -34,15 +34,24 @@ public final class ToolServerController {
     private static final String SESSION_HEADER = "X-Session-Id";
 
     private final ObjectMapper mapper = new ObjectMapper();
-    private final ToolSessionManager sessionManager = new ToolSessionManager();
+    private final ToolSessionManager sessionManager;
     private final GatewayMetrics metrics;
 
     public ToolServerController() {
-        this(new GatewayMetrics());
+        this(new GatewayMetrics(), GatewaySettings.fromEnv());
     }
 
     public ToolServerController(GatewayMetrics metrics) {
+        this(metrics, GatewaySettings.fromEnv());
+    }
+
+    public ToolServerController(GatewayMetrics metrics, GatewaySettings settings) {
         this.metrics = metrics;
+        this.sessionManager = new ToolSessionManager(
+                new com.codeguard.agent.graph.ProjectSnapshotManager(
+                        settings.graphCacheMaxSnapshots(),
+                        settings.graphCacheTtl(),
+                        settings.graphBuildTimeout()));
         metrics.gaugeToolSessions(sessionManager, ToolSessionManager::activeSessionCount);
     }
 
@@ -68,7 +77,8 @@ public final class ToolServerController {
                 arr.forEach(n -> allowedFiles.add(n.asText()));
             }
 
-            String sessionId = sessionManager.create(Path.of(repoDir), allowedFiles);
+            String revision = textOrEmpty(body, "revision");
+            String sessionId = sessionManager.create(Path.of(repoDir), allowedFiles, revision);
             log.info("创建工具会话: {}(允许文件 {} 个)", sessionId, allowedFiles.size());
 
             ObjectNode resp = success(null);

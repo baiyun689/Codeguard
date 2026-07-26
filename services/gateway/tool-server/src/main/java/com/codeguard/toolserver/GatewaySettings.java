@@ -21,7 +21,10 @@ public record GatewaySettings(
     String githubToken,
     String githubAppId,
     String githubPrivateKey,
-    double webhookRateLimit
+    double webhookRateLimit,
+    int graphCacheMaxSnapshots,
+    Duration graphCacheTtl,
+    Duration graphBuildTimeout
 ) {
     public static GatewaySettings fromEnv() {
         return from(System.getenv(), Path.of(System.getProperty("java.io.tmpdir", "/tmp")));
@@ -43,7 +46,10 @@ public record GatewaySettings(
             env.getOrDefault("CODEGUARD_GITHUB_TOKEN", ""),
             env.getOrDefault("CODEGUARD_GITHUB_APP_ID", ""),
             githubPrivateKey(env),
-            nonNegativeDouble(env, "CODEGUARD_WEBHOOK_RATE_LIMIT", 0.5));
+            nonNegativeDouble(env, "CODEGUARD_WEBHOOK_RATE_LIMIT", 0.5),
+            positiveInt(env, "CODEGUARD_GRAPH_CACHE_MAX_SNAPSHOTS", 4),
+            Duration.ofMinutes(positiveInt(env, "CODEGUARD_GRAPH_CACHE_TTL_MINUTES", 30)),
+            Duration.ofSeconds(positiveInt(env, "CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS", 120)));
     }
 
     private static String githubPrivateKey(Map<String, String> env) {

@@ -25,7 +25,7 @@ public final class ToolServerApp {
             cfg.showJavalinBanner = false;
             cfg.http.maxRequestSize = 10_000_000L;
         });
-        new ToolServerController(metrics).registerRoutes(app);
+        new ToolServerController(metrics, settings).registerRoutes(app);
         new OperationalController(this::ready, metrics).register(app);
     }
 

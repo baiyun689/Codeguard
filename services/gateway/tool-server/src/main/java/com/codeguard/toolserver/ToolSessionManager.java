@@ -2,18 +2,23 @@ package com.codeguard.toolserver;
 
 import com.codeguard.agent.core.AgentContext;
 import com.codeguard.agent.core.AgentTool;
+import com.codeguard.agent.graph.ProjectKey;
+import com.codeguard.agent.graph.ProjectSnapshot;
+import com.codeguard.agent.graph.ProjectSnapshotManager;
 import com.codeguard.agent.tools.FileAccessSandbox;
-import com.codeguard.agent.tools.FindCallersTool;
-import com.codeguard.agent.tools.FindSensitiveApisTool;
-import com.codeguard.agent.tools.GetCodeMetricsTool;
-import com.codeguard.agent.tools.GetDiffASTTool;
+import com.codeguard.agent.tools.GraphCompatibilityTool;
 import com.codeguard.agent.tools.GetFileContentTool;
+import com.codeguard.agent.tools.InspectChangeImpactTool;
+import com.codeguard.agent.tools.InspectSecurityPathTool;
+import com.codeguard.agent.tools.InspectStructureTool;
+import com.codeguard.agent.tools.ResolveChangeContextTool;
 import com.codeguard.agent.tools.ToolRegistry;
 
 import java.nio.file.Path;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * 工具会话管理器。
@@ -22,9 +27,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * 会话超过 TTL 自动过期回收。所有工具调用经 {@code X-Session-Id} 关联到会话,
  * 会话不存在/过期则被上层拒绝。
  * <p>
- * 扩展接缝(design.md D3):后续 AST / 调用图 / 语义检索 / 记忆等**重资源**需要"一次审查内、
- * 甚至跨会话按仓库共享"。预留的挂载点见下方 {@code // TODO(阶段3后段)} 注释——
- * 本期 get_file_content 是无状态只读,不需要共享缓存,故只立结构、不填充。
+ * 项目级 AST 和语义图由 {@link ProjectSnapshotManager} 跨同版本会话共享；
+ * Session 持有 future 的直接引用，缓存淘汰不会中断活动审查。
  */
 public final class ToolSessionManager {
 
@@ -32,33 +36,50 @@ public final class ToolSessionManager {
     private static final long SESSION_TTL_MS = 10 * 60 * 1000L;
 
     private final ConcurrentHashMap<String, Session> sessions = new ConcurrentHashMap<>();
+    private final ProjectSnapshotManager snapshotManager;
 
-    // TODO(阶段3后段):按 repoRoot 共享的重资源缓存挂这里,例如
-    //   private final ConcurrentHashMap<Path, SharedProjectResources> projectResources = ...;
-    // SharedProjectResources 持有 CallGraph / 向量索引等,供同仓库的多个会话复用。
-    // 本期不实现共享,仅预留位置,避免后续加重型工具时回头改会话层。
+    public ToolSessionManager() {
+        this(new ProjectSnapshotManager());
+    }
+
+    ToolSessionManager(ProjectSnapshotManager snapshotManager) {
+        this.snapshotManager = snapshotManager;
+    }
 
     /** 单次审查会话:不可变的范围信息 + 工具实例 + 创建时间。 */
     public static final class Session {
         private final String id;
         private final AgentContext context;
         private final ToolRegistry registry;
+        private final ProjectKey projectKey;
+        private final CompletableFuture<ProjectSnapshot> snapshot;
         private final long createdAt;
 
-        Session(String id, Path repoRoot, Set<String> allowedFiles) {
+        Session(
+                String id,
+                Path repoRoot,
+                Set<String> allowedFiles,
+                String revision,
+                ProjectSnapshotManager snapshotManager
+        ) {
             this.id = id;
             this.context = new AgentContext(repoRoot, allowedFiles);
             this.createdAt = System.currentTimeMillis();
+            this.projectKey = ProjectKey.of(repoRoot, revision);
+            this.snapshot = snapshotManager.getOrBuild(projectKey);
 
             FileAccessSandbox sandbox = new FileAccessSandbox(repoRoot, allowedFiles);
             this.registry = new ToolRegistry();
             // 加工具 = 在这里 register 一个实现即可,无需改协议(扩展接缝 design.md D2)。
-            this.registry.register(new GetFileContentTool(sandbox));
-            // 专属工具:每人一个,不可替代(spec asymmetric-agent-tools)
-            this.registry.register(new FindSensitiveApisTool(sandbox));
-            this.registry.register(new FindCallersTool(sandbox));
-            this.registry.register(new GetCodeMetricsTool(sandbox));
-            this.registry.register(new GetDiffASTTool(sandbox));
+            this.registry.register(new GetFileContentTool(sandbox, snapshot));
+            this.registry.register(new ResolveChangeContextTool(snapshot));
+            this.registry.register(new InspectSecurityPathTool(snapshot));
+            this.registry.register(new InspectChangeImpactTool(snapshot));
+            this.registry.register(new InspectStructureTool(snapshot));
+            for (String legacy : Set.of(
+                    "find_sensitive_apis", "find_callers", "get_code_metrics", "get_diff_ast")) {
+                this.registry.register(new GraphCompatibilityTool(legacy, snapshot));
+            }
         }
 
         public String getId() {
@@ -73,6 +94,14 @@ public final class ToolSessionManager {
             return registry.get(name);
         }
 
+        public CompletableFuture<ProjectSnapshot> getSnapshot() {
+            return snapshot;
+        }
+
+        ProjectKey getProjectKey() {
+            return projectKey;
+        }
+
         boolean isExpired() {
             return System.currentTimeMillis() - createdAt > SESSION_TTL_MS;
         }
@@ -80,9 +109,14 @@ public final class ToolSessionManager {
 
     /** 创建会话,返回唯一 session id。 */
     public String create(Path repoRoot, Set<String> allowedFiles) {
+        return create(repoRoot, allowedFiles, "working-tree");
+    }
+
+    public String create(Path repoRoot, Set<String> allowedFiles, String revision) {
         cleanupExpired();
         String id = UUID.randomUUID().toString();
-        sessions.put(id, new Session(id, repoRoot, allowedFiles));
+        sessions.put(id, new Session(
+                id, repoRoot, allowedFiles, revision, snapshotManager));
         return id;
     }
 
@@ -104,7 +138,10 @@ public final class ToolSessionManager {
 
     public void remove(String id) {
         if (id != null) {
-            sessions.remove(id);
+            Session removed = sessions.remove(id);
+            if (removed != null) {
+                snapshotManager.release(removed.getProjectKey());
+            }
         }
     }
 

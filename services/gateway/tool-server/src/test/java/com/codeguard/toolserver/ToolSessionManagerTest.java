@@ -29,6 +29,11 @@ class ToolSessionManagerTest {
         assertEquals(id, s.getId());
         // 本期唯一工具应已注册到会话。
         assertNotNull(s.getTool("get_file_content"));
+        assertNotNull(s.getTool("resolve_change_context"));
+        assertNotNull(s.getTool("inspect_security_path"));
+        assertNotNull(s.getTool("inspect_change_impact"));
+        assertNotNull(s.getTool("inspect_structure"));
+        assertNotNull(s.getSnapshot());
         // 未注册的工具返回 null,由控制器转成结构化错误。
         assertNull(s.getTool("get_call_graph"));
     }
