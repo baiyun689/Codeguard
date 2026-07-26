@@ -115,3 +115,54 @@ def make_metrics_tool(client: ToolClient):
             "入参:文件路径(如 src/main/java/com/example/OrderService.java)。"
         ),
     )
+
+
+def make_security_path_tool(client: ToolClient):
+    from langchain_core.tools import StructuredTool
+
+    def _inspect_security_path(symbol_id: str) -> str:
+        """查询当前变更符号的框架入口、敏感 API 路径与解析限制。"""
+        return client.inspect_security_path(symbol_id).as_tool_output()
+
+    return StructuredTool.from_function(
+        func=_inspect_security_path,
+        name="inspect_security_path",
+        description=(
+            "按 prefetched_context 给出的稳定 symbol_id 查询框架入口、敏感 API 调用"
+            "和静态分析限制。不得自行编造 symbol_id 或文件名。"
+        ),
+    )
+
+
+def make_change_impact_tool(client: ToolClient):
+    from langchain_core.tools import StructuredTool
+
+    def _inspect_change_impact(symbol_id: str) -> str:
+        """查询当前变更符号的真实调用方、框架入口与影响关系。"""
+        return client.inspect_change_impact(symbol_id).as_tool_output()
+
+    return StructuredTool.from_function(
+        func=_inspect_change_impact,
+        name="inspect_change_impact",
+        description=(
+            "按 prefetched_context 给出的稳定 symbol_id 查询调用方、框架入口、"
+            "继承影响和解析覆盖。不得用惯用类名猜测路径。"
+        ),
+    )
+
+
+def make_structure_tool(client: ToolClient):
+    from langchain_core.tools import StructuredTool
+
+    def _inspect_structure(symbol_id: str) -> str:
+        """查询当前变更符号的声明、依赖、继承和耦合事实。"""
+        return client.inspect_structure(symbol_id).as_tool_output()
+
+    return StructuredTool.from_function(
+        func=_inspect_structure,
+        name="inspect_structure",
+        description=(
+            "按 prefetched_context 给出的稳定 symbol_id 查询声明、调用耦合、"
+            "继承和字段关系。度量与关系必须结合当前 diff 解读。"
+        ),
+    )

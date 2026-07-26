@@ -19,7 +19,7 @@ from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.engines import GatheredContext
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID
-from codeguard_agent.pipeline.evidence.rules.types import ToolCallSpec
+from codeguard_agent.pipeline.evidence.rules.types import ToolCallSpec, as_capability
 
 logger = logging.getLogger("codeguard")
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
@@ -125,9 +125,16 @@ def request_strategy_mismatch(
     if not request.question.strip() or request.question != strategy.question_template:
         return "question"
     calls = strategy.build_tool_calls(dossier)
-    if request.preferred_tools != _expected_tools(calls):
+    accepted_preferred_tools = [
+        _expected_tools(calls),
+        list(strategy.allowed_tools),
+    ]
+    if request.preferred_tools not in accepted_preferred_tools:
         return "preferred_tools"
-    if any(call.tool_name not in strategy.allowed_tools for call in calls):
+    if any(
+        as_capability(call.capability) not in strategy.allowed_capabilities
+        for call in calls
+    ):
         return "tool_allowlist"
     return None
 
@@ -160,7 +167,7 @@ def _base_facts(dossier: CandidateDossier, request: EvidenceRequest) -> list[_Ra
     bundle = dossier.context_bundle
     if bundle is not None:
         for fact in bundle.facts:
-            if fact.kind not in strategy.context_kinds:
+            if fact.kind not in strategy.context_kinds and fact.kind != "symbol_context":
                 continue
             truncated = bundle.truncated or fact.truncated
             facts.append(
@@ -202,6 +209,9 @@ def _has_fact_for_tool(
     dossier: CandidateDossier,
 ) -> bool:
     source_markers = {
+        "inspect_security_path": ("inspect_security_path",),
+        "inspect_change_impact": ("inspect_change_impact",),
+        "inspect_structure": ("inspect_structure",),
         "find_sensitive_apis": ("sensitive_api", "find_sensitive_apis"),
         "find_callers": ("find_callers",),
         "get_code_metrics": ("get_code_metrics",),
@@ -237,6 +247,21 @@ def _call_tool(tool_client: Any, call: ToolCallSpec) -> tuple[str, str]:
         return text, "tool_failed"
     if not text.strip():
         return "", "tool_empty"
+    if call.tool_name.startswith("inspect_"):
+        try:
+            payload = json.loads(text)
+            expected_subject = kwargs.get("symbol_id", "")
+            actual_subject = str(payload.get("subject_symbol_id", ""))
+            if expected_subject and actual_subject and actual_subject != expected_subject:
+                return text, "graph_subject_mismatch"
+            status = payload.get("status")
+            coverage = payload.get("coverage")
+            if status == "unknown" or coverage == "partial":
+                return text, "graph_unknown"
+            if status not in {"confirmed", "not_found"}:
+                return text, "invalid_graph_status"
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return text, "invalid_graph_response"
     return text, ""
 
 
@@ -308,21 +333,46 @@ def _resolved_method(dossier: CandidateDossier) -> tuple[str, int, int, str] | N
     if bundle is None:
         return None
     for context_fact in bundle.facts:
+        if context_fact.kind == "symbol_context" and not context_fact.truncated:
+            try:
+                payload = json.loads(context_fact.content)
+                if payload.get("kind") not in {"method", "constructor"}:
+                    continue
+                symbol_id = str(payload.get("symbol_id", ""))
+                method_name = symbol_id.rsplit("#", 1)[-1].split("(", 1)[0]
+                return (
+                    method_name,
+                    int(payload.get("start_line", 0)),
+                    int(payload.get("end_line", 0)),
+                    " ".join(
+                        [
+                            *(
+                                f"@{name}"
+                                for name in payload.get("annotations", [])
+                            ),
+                            str(payload.get("signature", "")),
+                        ]
+                    ).strip(),
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
         if context_fact.kind != "ast_structure" or context_fact.truncated:
             continue
-        method_name = context_rules.resolve_method_name(context_fact.content, dossier.task)
-        if method_name is None:
+        legacy_method_name = context_rules.resolve_method_name(
+            context_fact.content, dossier.task
+        )
+        if legacy_method_name is None:
             continue
         task_span = context_rules._task_span(dossier.task)
         if task_span is None:
             return None
         for line in context_fact.content.splitlines():
             match = _METHOD_RANGE.search(line.strip())
-            if not match or match.group(1) != method_name:
+            if not match or match.group(1) != legacy_method_name:
                 continue
             start, end = int(match.group(2)), int(match.group(3))
             if start <= task_span[1] and end >= task_span[0]:
-                return method_name, start, end, line.strip()
+                return legacy_method_name, start, end, line.strip()
     return None
 
 

@@ -40,6 +40,8 @@ class PipelineContext:
     # 工具白名单:暴露给 ReAct 审查员的工具名集合(由评测 profile 控制,确保"开哪些工具"是
     # 唯一变量、对照可控)。None 表示暴露所有已实现工具(CLI 默认行为)。
     enabled_tools: list[str] | None = None
+    # ContextProvider 可直接消费已选 task 的精确文件/变更行，避免重新解析裁剪后的 diff。
+    change_locations: list[dict[str, object]] = field(default_factory=list)
     # 误报过滤第二段的验证模型;为 None 时回退到 llm。
     # 应尽量与审查器异源，避免"同一模型核查自己刚报的结论"的自我确认偏差。
     fp_verify_llm: Any = None

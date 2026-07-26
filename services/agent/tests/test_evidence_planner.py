@@ -13,6 +13,7 @@ import pytest
 from codeguard_agent.pipeline.evidence import planner as evidence_planner
 from codeguard_agent.models.council import (
     CandidateIssue,
+    ContextFact,
     EvidenceNote,
     EvidenceRequest,
 )
@@ -72,7 +73,25 @@ def _dossier(
         candidate=candidate,
         task=task,
         risk_profile=profile,
-        context_bundle=None,
+        context_bundle=TaskContextBundle(
+            task_id=task.id,
+            facts=[
+                ContextFact(
+                    source="tool:resolve_change_context",
+                    kind="symbol_context",
+                    content=json.dumps(
+                        {
+                            "file": file,
+                            "symbol_id": f"java:{file}#authorize()",
+                            "kind": "method",
+                            "start_line": 1,
+                            "end_line": 999,
+                            "resolution": "resolved",
+                        }
+                    ),
+                )
+            ],
+        ),
         requests=requests,
         notes=notes,
     )
@@ -236,7 +255,7 @@ def test_request_fields_come_from_strategy_and_id_is_stable(monkeypatch):
 
     assert first.target == dossier.task.file
     assert first.question == strategy.question_template
-    assert first.preferred_tools == ["get_file_content", "find_sensitive_apis"]
+    assert first.preferred_tools == ["get_file_content", "inspect_security_path"]
     assert first.strategy_id == strategy.id
     assert first.purpose == strategy.purpose
     assert first.id == second.id

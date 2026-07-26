@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import httpx
 
 from codeguard_agent.tools.tool_client import (
@@ -43,6 +44,34 @@ def test_find_sensitive_apis_无入参_打到正确路径():
     resp = _mock_client(handler).find_sensitive_apis()
     assert resp.success is True
     assert "敏感 API" in resp.as_tool_output()
+
+
+def test_resolve_change_context_发送结构化变更():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/tools/resolve_change_context"
+        query = json.loads(json.loads(request.content)["query"])
+        assert query["changes"][0] == {
+            "file": "src/A.java",
+            "lines": [3, 4],
+        }
+        return httpx.Response(200, json={"success": True, "result": "{}"})
+
+    response = _mock_client(handler).resolve_change_context(
+        [{"file": "src/A.java", "lines": [3, 4]}]
+    )
+    assert response.success is True
+
+
+def test_inspect_change_impact_使用稳定符号():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/tools/inspect_change_impact"
+        assert json.loads(request.content)["query"] == "java:demo.Service#run()"
+        return httpx.Response(200, json={"success": True, "result": "{}"})
+
+    response = _mock_client(handler).inspect_change_impact(
+        "java:demo.Service#run()"
+    )
+    assert response.success is True
 
 
 def test_find_callers_传参查询():

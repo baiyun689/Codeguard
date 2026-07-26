@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.evidence.rules.recipes import callers_upstream, file_metrics
-from codeguard_agent.pipeline.evidence.rules.types import EvidenceStrategy, ToolName
+from codeguard_agent.pipeline.evidence.rules.types import (
+    EvidenceCapability,
+    EvidenceStrategy,
+)
 
 
 def _strategies(
@@ -17,9 +20,9 @@ def _strategies(
     upstream_question: str | None = None,
 ) -> list[EvidenceStrategy]:
     slug = tag.value.lower()
-    allowed_tools: tuple[ToolName, ...] = (
-        "get_file_content",
-        "get_code_metrics",
+    allowed_capabilities = (
+        EvidenceCapability.CURRENT_IMPLEMENTATION,
+        EvidenceCapability.STRUCTURAL_METRICS,
     )
     result = [
         EvidenceStrategy(
@@ -29,7 +32,7 @@ def _strategies(
             10,
             counter,
             context_kinds,
-            allowed_tools,
+            allowed_capabilities,
             file_metrics,
         ),
         EvidenceStrategy(
@@ -39,7 +42,7 @@ def _strategies(
             20,
             support,
             context_kinds,
-            allowed_tools,
+            allowed_capabilities,
             file_metrics,
         ),
     ]
@@ -52,7 +55,7 @@ def _strategies(
                 30,
                 upstream_question,
                 context_kinds,
-                ("find_callers",),
+                (EvidenceCapability.UPSTREAM_REACHABILITY,),
                 callers_upstream,
             )
         )
@@ -64,7 +67,7 @@ def _strategies(
             40,
             severity,
             context_kinds,
-            allowed_tools,
+            allowed_capabilities,
             file_metrics,
         )
     )

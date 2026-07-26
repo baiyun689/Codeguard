@@ -57,7 +57,6 @@ from codeguard_agent.pipeline.risk.routing import (
 )
 from codeguard_agent.pipeline.engines import (
     DirectEngine,
-    GatheredContext,
     ReviewEngine,
     ReviewOutcome,
     ToolAgentEngine,
@@ -366,58 +365,33 @@ def _execute_level1_call(
 
 
 def _context_provider_node(tool_client):
-    """为选中任务装配 Level0 切片和按风险定向的 Level1 事实。"""
+    """为选中任务装配图谱解析后的稳定符号上下文。"""
 
     def _node(state: ReviewState) -> dict:
         scope = _scope_plan(state)
-        ctx = _state_to_context(state, tool_client=tool_client)
-        ctx.diff_text = _selected_diff(state, scope)
-        ContextProviderStage(include_broad_scan=not scope.active).execute(ctx)
-        bundle = ctx.context_bundle
-        broad_diagnostics = ctx.context_diagnostics
-
         selection = state.get("task_selection")
         selected_ids = set(selection.selected_task_ids) if selection is not None else set()
         all_tasks: list[ReviewTask] = state.get("review_tasks") or []
         tasks = [task for task in all_tasks if task.id in selected_ids]
-        risk_profiles: dict[str, RiskProfile] = state.get("risk_profiles") or {}
+        ctx = _state_to_context(state, tool_client=tool_client)
+        ctx.diff_text = _selected_diff(state, scope)
+        ctx.change_locations = [
+            {"file": task.file, "lines": task.changed_lines}
+            for task in tasks
+        ]
+        ContextProviderStage(include_broad_scan=not scope.active).execute(ctx)
+        bundle = ctx.context_bundle
+
         budget = scope.effective_budget
-
-        ast_text = "\n".join(
-            fact.content for fact in bundle.facts if fact.source == "tool:get_diff_ast"
-        )
-        sensitive_text = "\n".join(
-            fact.content for fact in bundle.facts if fact.source == "tool:find_sensitive_apis"
-        )
-        ast_blocks: dict[str, str] = {}
-        for task in tasks:
-            key = context_rules.normalize_path(task.file)
-
-            if key in ast_blocks:
-                continue
-            block = context_rules.ast_block_for_file(ast_text, task.file)
-            if block is not None:
-                ast_blocks[key] = block
-
-        plan = context_rules.plan_context_calls(tasks, risk_profiles, ast_blocks)
-        level1_content: dict[tuple[context_rules.ContextLevel, str], str] = {}
-        failed_level1: dict[tuple[context_rules.ContextLevel, str], str] = {}
         gathered = list(ctx.gathered_context)
-        if tool_client is not None and plan.level1_calls:
-            outcomes = run_bounded_parallel(
-                list(plan.level1_calls),
-                lambda call: _execute_level1_call(call, tool_client),
-                max_workers=8,
-            )
-            for outcome in outcomes:
-                if outcome is None:
-                    continue
-                call, content, error = outcome
-                if content is None:
-                    failed_level1[(call.level, call.key)] = error or "tool_failed"
-                    continue
-                level1_content[(call.level, call.key)] = content
-                gathered.append(GatheredContext(call.level.value, call.key, content))
+        symbol_facts: list[tuple[ContextFact, dict[str, Any]]] = []
+        for fact in bundle.facts:
+            if fact.kind != "symbol_context":
+                continue
+            try:
+                symbol_facts.append((fact, json.loads(fact.content)))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
 
         task_bundles: dict[str, TaskContextBundle] = {}
         trace: list[CouncilTrace] = [
@@ -428,113 +402,38 @@ def _context_provider_node(tool_client):
             )
         ]
         for task in tasks:
-            facts: list[ContextFact] = []
-            statuses: list[ContextStatus] = []
-            ast_block = ast_blocks.get(context_rules.normalize_path(task.file))
-            if ast_block:
-                facts.append(
-                    ContextFact(
-                        source="tool:get_diff_ast",
-                        kind="ast_structure",
-                        content=ast_block,
+            task_start = min(task.changed_lines) if task.changed_lines else 0
+            task_end = max(task.changed_lines) if task.changed_lines else 0
+            facts = [
+                fact
+                for fact, item in symbol_facts
+                if context_rules.normalize_path(str(item.get("file", "")))
+                == context_rules.normalize_path(task.file)
+                and (
+                    not task.changed_lines
+                    or (
+                        int(item.get("start_line", 0)) <= task_end
+                        and int(item.get("end_line", 0)) >= task_start
                     )
                 )
-            else:
-                ast_failure = broad_diagnostics.get("ast_structure")
+            ]
+            statuses: list[ContextStatus] = []
+            if not facts:
+                failure = ctx.context_diagnostics.get("symbol_context")
                 statuses.append(
                     ContextStatus(
-                        kind="ast_structure",
-                        status="failed" if ast_failure else "unavailable",
+                        kind="symbol_context",
+                        status="failed" if failure else "unavailable",
                         reason=(
-                            ast_failure
+                            failure
                             or (
                                 "tool_server_not_configured"
                                 if tool_client is None
-                                else "no_parseable_ast_for_current_file"
+                                else "no_resolved_symbol_for_current_hunk"
                             )
                         ),
                     )
                 )
-            sensitive_rows = context_rules.sensitive_api_rows_for_task(sensitive_text, task)
-            if sensitive_rows:
-                facts.append(
-                    ContextFact(
-                        source="tool:find_sensitive_apis",
-                        kind="sensitive_api",
-                        content="\n".join(sensitive_rows),
-                    )
-                )
-            else:
-                sensitive_failure = broad_diagnostics.get("sensitive_api")
-                statuses.append(
-                    ContextStatus(
-                        kind="sensitive_api",
-                        status=(
-                            "skipped"
-                            if scope.active
-                            else ("failed" if sensitive_failure else "unavailable")
-                        ),
-                        reason=(
-                            "large_diff_broad_scan_disabled"
-                            if scope.active
-                            else (
-                                sensitive_failure
-                                or (
-                                    "tool_server_not_configured"
-                                    if tool_client is None
-                                    else "no_matching_sensitive_api_current_hunk"
-                                )
-                            )
-                        ),
-                    )
-                )
-
-            level1_labels: list[str] = []
-            for call in plan.level1_calls:
-                if task.id not in call.task_ids:
-                    continue
-                content = level1_content.get((call.level, call.key))
-                if content is None:
-                    failure = failed_level1.get((call.level, call.key))
-                    if failure:
-                        statuses.append(
-                            ContextStatus(
-                                kind=call.level.value,
-                                status="failed",
-                                reason=failure,
-                            )
-                        )
-                    continue
-                facts.append(
-                    ContextFact(
-                        source=f"tool:{call.level.value}",
-                        kind=call.level.value,
-                        content=content,
-                    )
-                )
-                level1_labels.append(f"{call.level.value}({call.key})")
-
-            for skip in plan.skips:
-                if skip.task_id == task.id:
-                    statuses.append(
-                        ContextStatus(
-                            kind=skip.level.value,
-                            status="skipped",
-                            reason=skip.reason,
-                        )
-                    )
-            present_kinds = {fact.kind for fact in facts} | {
-                status.kind for status in statuses
-            }
-            for level in context_rules.ContextLevel:
-                if level.value not in present_kinds:
-                    statuses.append(
-                        ContextStatus(
-                            kind=level.value,
-                            status="skipped",
-                            reason="risk_tag_not_required",
-                        )
-                    )
 
             facts, truncated = context_rules.truncate_task_facts(
                 facts, budget.max_context_chars_per_task
@@ -545,19 +444,15 @@ def _context_provider_node(tool_client):
                 statuses=statuses,
                 truncated=truncated,
             )
-            skip_reasons = [skip.reason for skip in plan.skips if skip.task_id == task.id]
-            failure_reasons = [
-                failed_level1[(call.level, call.key)]
-                for call in plan.level1_calls
-                if task.id in call.task_ids and (call.level, call.key) in failed_level1
-            ]
             trace.append(
                 CouncilTrace(
                     node="context_provider",
                     event="task_bundle_filled",
                     detail=(
-                        f"task={task.id} facts={len(facts)} level1={level1_labels} "
-                        f"skips={skip_reasons} failed={failure_reasons} truncated={truncated}"
+                        f"task={task.id} facts={len(facts)} "
+                        f"symbol_context={bool(facts)} "
+                        f"diagnostic={ctx.context_diagnostics.get('symbol_context', '')} "
+                        f"truncated={truncated}"
                     ),
                 )
             )

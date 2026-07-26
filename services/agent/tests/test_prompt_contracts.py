@@ -183,7 +183,7 @@ def test_truncated_new_file_patch_is_not_advertised_as_complete() -> None:
 
 def test_reviewer_system_prompt_contains_only_stable_contract_not_task_knowledge() -> None:
     rendered = build_reviewer_system_prompt(DEFAULT_REVIEWERS[0])
-    assert "AST structure" in rendered
+    assert "symbol context" in rendered
     assert "task_knowledge" not in rendered
 
 
@@ -361,14 +361,10 @@ def test_effective_reviewer_prompts_explain_prefetched_context_and_hard_tool_gat
     required = (
         "task patch 是当前 hunk",
         "不保证包含整个文件",
-        "AST structure",
-        "类、方法、方法行范围、控制流节点和可解析的调用边",
-        "sensitive API",
-        "不等于漏洞成立",
-        "find callers",
-        "未找到直接调用方",
-        "code metrics",
-        "不能仅凭指标阈值报告问题",
+        "symbol context",
+        "稳定 `symbol_id`",
+        "confirmed/not_found/unknown",
+        "不得根据惯用命名猜测",
         "风险画像是审查先验",
         "标签知识是检查清单",
         "truncated=true",

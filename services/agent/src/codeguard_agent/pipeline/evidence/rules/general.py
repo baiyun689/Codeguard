@@ -2,7 +2,10 @@
 
 from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.evidence.rules.recipes import file_only
-from codeguard_agent.pipeline.evidence.rules.types import EvidenceStrategy
+from codeguard_agent.pipeline.evidence.rules.types import (
+    EvidenceCapability,
+    EvidenceStrategy,
+)
 
 
 _TAG = RiskTag.GENERAL_REVIEW
@@ -16,7 +19,7 @@ GENERAL_STRATEGIES = [
         priority=10,
         question_template="task 中是否存在直接推翻候选的保护或前置条件",
         context_kinds=("task_patch",),
-        allowed_tools=("get_file_content",),
+        allowed_capabilities=(EvidenceCapability.CURRENT_IMPLEMENTATION,),
         build_tool_calls=file_only,
     ),
     EvidenceStrategy(
@@ -26,7 +29,7 @@ GENERAL_STRATEGIES = [
         priority=20,
         question_template="task 中是否存在候选主张依赖的直接事实",
         context_kinds=("task_patch",),
-        allowed_tools=("get_file_content",),
+        allowed_capabilities=(EvidenceCapability.CURRENT_IMPLEMENTATION,),
         build_tool_calls=file_only,
     ),
     EvidenceStrategy(
@@ -36,7 +39,7 @@ GENERAL_STRATEGIES = [
         priority=40,
         question_template="候选影响范围和恢复成本是否足以支撑所提级别",
         context_kinds=("task_patch",),
-        allowed_tools=("get_file_content",),
+        allowed_capabilities=(EvidenceCapability.CURRENT_IMPLEMENTATION,),
         build_tool_calls=file_only,
     ),
 ]

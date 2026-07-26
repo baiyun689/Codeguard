@@ -45,6 +45,25 @@ def _dossier(
         claim="update lacks authorization",
         confidence=0.8,
     )
+    if context is None:
+        context = TaskContextBundle(
+            task_id=task.id,
+            facts=[
+                ContextFact(
+                    source="tool:resolve_change_context",
+                    kind="symbol_context",
+                    content=json.dumps(
+                        {
+                            "file": task.file,
+                            "symbol_id": f"java:{task.file}#update()",
+                            "start_line": 1,
+                            "end_line": 999,
+                            "resolution": "resolved",
+                        }
+                    ),
+                )
+            ],
+        )
     return CandidateDossier(
         candidate=candidate,
         task=task,
@@ -83,6 +102,22 @@ class _ToolClient:
     def find_sensitive_apis(self) -> ToolResponse:
         self.calls.append(("find_sensitive_apis", {}))
         return ToolResponse(success=True, result="")
+
+    def inspect_security_path(self, symbol_id: str) -> ToolResponse:
+        self.calls.append(("inspect_security_path", symbol_id))
+        return ToolResponse(
+            success=True,
+            result=json.dumps(
+                {
+                    "status": "not_found",
+                    "coverage": "complete",
+                    "subject_symbol_id": symbol_id,
+                    "symbols": [],
+                    "relationships": [],
+                    "limitations": [],
+                }
+            ),
+        )
 
 
 def _collect(dossiers, requests, *, client=None, enabled_tools=None):
@@ -155,7 +190,9 @@ def test_same_tool_call_is_cached_but_each_request_gets_its_own_note():
     assert len(batch.notes) == 2
     assert [note.request_id for note in batch.notes] == [request.id for request in requests]
     assert client.calls.count(("get_file_content", "src/Service.java")) == 1
-    assert client.calls.count(("find_sensitive_apis", {})) == 1
+    assert client.calls.count(
+        ("inspect_security_path", "java:src/Service.java#update()")
+    ) == 1
     assert len(batch.gathered_context) == 2
     assert sum(event == "evidence_tool_called" for event, _ in batch.trace) == 2
     assert sum(event == "evidence_tool_reused" for event, _ in batch.trace) == 2
@@ -211,7 +248,7 @@ def test_unique_tool_calls_run_concurrently_and_notes_keep_request_order():
     assert [note.request_id for note in batch.notes] == [
         request.id for request in requests
     ]
-    assert client.calls.count(("find_sensitive_apis", {})) == 1
+    assert sum(name == "inspect_security_path" for name, _ in client.calls) == 3
 
 
 def test_context_fact_reuse_skips_matching_sensitive_api_tool():
@@ -698,6 +735,10 @@ class _FailingTools(_ToolClient):
         self.calls.append(("get_file_content", file_path))
         return ToolResponse(success=False, error="gateway unavailable")
 
+    def inspect_security_path(self, symbol_id: str) -> ToolResponse:
+        self.calls.append(("inspect_security_path", symbol_id))
+        return ToolResponse(success=True, result="")
+
 
 def test_tool_failure_and_empty_result_are_insufficient_but_count_actual_calls():
     dossier = _dossier()
@@ -710,11 +751,20 @@ def test_tool_failure_and_empty_result_are_insufficient_but_count_actual_calls()
 
 
 class _OtherFileSensitiveTools(_ToolClient):
-    def find_sensitive_apis(self) -> ToolResponse:
-        self.calls.append(("find_sensitive_apis", {}))
+    def inspect_security_path(self, symbol_id: str) -> ToolResponse:
+        self.calls.append(("inspect_security_path", symbol_id))
         return ToolResponse(
             success=True,
-            result="| sink | call | src/Other.java:10 |",
+            result=json.dumps(
+                {
+                    "status": "confirmed",
+                    "coverage": "complete",
+                    "subject_symbol_id": "java:src/Other.java#other()",
+                    "symbols": [],
+                    "relationships": [],
+                    "limitations": [],
+                }
+            ),
         )
 
 
@@ -729,10 +779,10 @@ def test_global_sensitive_api_output_never_uses_other_file_as_evidence():
     sensitive = next(
         finding
         for finding in batch.notes[0].findings
-        if finding.source == "tool:find_sensitive_apis"
+        if finding.source == "tool:inspect_security_path"
     )
     assert sensitive.relation == "insufficient"
-    assert sensitive.limitation == "no_task_sensitive_api"
+    assert sensitive.limitation == "graph_subject_mismatch"
 
 
 def test_current_method_transaction_annotation_is_direct_counter_evidence():
@@ -776,13 +826,23 @@ def test_finding_trace_has_stable_required_fields():
 
 
 class _GlobalSensitiveTools(_ToolClient):
-    def find_sensitive_apis(self) -> ToolResponse:
-        self.calls.append(("find_sensitive_apis", {}))
+    def inspect_security_path(self, symbol_id: str) -> ToolResponse:
+        self.calls.append(("inspect_security_path", symbol_id))
         return ToolResponse(
             success=True,
-            result=(
-                "| sink | call | src/A.java:10 |\n"
-                "| sink | call | src/B.java:20 |"
+            result=json.dumps(
+                {
+                    "status": "confirmed" if "src/C.java" not in symbol_id else "not_found",
+                    "coverage": "complete",
+                    "subject_symbol_id": symbol_id,
+                    "symbols": [{"id": symbol_id}],
+                    "relationships": (
+                        [{"file": symbol_id.split("java:", 1)[1].split("#", 1)[0]}]
+                        if "src/C.java" not in symbol_id
+                        else []
+                    ),
+                    "limitations": [],
+                }
             ),
         )
 
@@ -828,31 +888,31 @@ def test_sensitive_cache_keeps_global_raw_and_slices_per_task_request():
 
     batch = _collect_with_llm(dossiers, requests, llm, client=client)
 
-    assert client.calls.count(("find_sensitive_apis", {})) == 1
+    assert sum(name == "inspect_security_path" for name, _ in client.calls) == 3
     sensitive_prompts = [
         call[1][1]
         for call in llm.messages
-        if '"source":"tool:find_sensitive_apis"' in call[1][1]
+        if '"source":"tool:inspect_security_path"' in call[1][1]
     ]
-    assert len(sensitive_prompts) == 2
+    assert len(sensitive_prompts) == 3
     prompt_by_patch = {
         patch: next(prompt for prompt in sensitive_prompts if patch in prompt)
         for patch in ('"task_patch":"+a();"', '"task_patch":"+b();"')
     }
-    assert "src/A.java:10" in prompt_by_patch['"task_patch":"+a();"']
-    assert "src/B.java:20" not in prompt_by_patch['"task_patch":"+a();"']
-    assert "src/B.java:20" in prompt_by_patch['"task_patch":"+b();"']
-    assert "src/A.java:10" not in prompt_by_patch['"task_patch":"+b();"']
+    assert "src/A.java" in prompt_by_patch['"task_patch":"+a();"']
+    assert "src/B.java" not in prompt_by_patch['"task_patch":"+a();"']
+    assert "src/B.java" in prompt_by_patch['"task_patch":"+b();"']
+    assert "src/A.java" not in prompt_by_patch['"task_patch":"+b();"']
     sensitive_findings = [
         next(
             finding
             for finding in note.findings
-            if finding.source == "tool:find_sensitive_apis"
+            if finding.source == "tool:inspect_security_path"
         )
         for note in batch.notes
     ]
     assert sensitive_findings[0].evidence_id != sensitive_findings[1].evidence_id
-    assert sensitive_findings[2].limitation == "no_task_sensitive_api"
+    assert sensitive_findings[2].relation == "insufficient"
 
 
 def test_request_target_cannot_use_candidate_basename_to_bypass_task_path():

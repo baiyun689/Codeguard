@@ -87,11 +87,8 @@ def test_context_provider_keeps_summary_and_files_out_of_facts():
 
 def test_context_provider_records_tool_failures_as_diagnostics_not_facts():
     class _FailingBroadContextClient:
-        def find_sensitive_apis(self):
-            return _MockToolResponse(False, error="sensitive timeout")
-
-        def get_diff_ast(self, diff_text):  # noqa: ARG002
-            return _MockToolResponse(False, error="ast timeout")
+        def resolve_change_context(self, changes):  # noqa: ARG002
+            return _MockToolResponse(False, error="graph timeout")
 
     ctx = PipelineContext(
         diff_text="diff --git a/A.java b/A.java\n+++ b/A.java\n+class A {}",
@@ -101,10 +98,7 @@ def test_context_provider_records_tool_failures_as_diagnostics_not_facts():
     ContextProviderStage().execute(ctx)
 
     assert ctx.context_bundle.facts == []
-    assert ctx.context_diagnostics == {
-        "sensitive_api": "sensitive timeout",
-        "ast_structure": "ast timeout",
-    }
+    assert ctx.context_diagnostics == {"symbol_context": "graph timeout"}
 
 
 def test_summary_prompts_only_request_summary():
@@ -352,14 +346,17 @@ def test_default_discoverers_are_methodology_roles_with_tool_boundaries():
     assert by_source["threat_model"].name == "ThreatModelAgent"
     assert by_source["threat_model"].tool_allowlist == [
         "get_file_content",
-        "find_sensitive_apis",
+        "inspect_security_path",
     ]
     assert by_source["behavior"].name == "BehaviorAgent"
-    assert by_source["behavior"].tool_allowlist == ["get_file_content", "find_callers"]
+    assert by_source["behavior"].tool_allowlist == [
+        "get_file_content",
+        "inspect_change_impact",
+    ]
     assert by_source["maintainability"].name == "MaintainabilityAgent"
     assert by_source["maintainability"].tool_allowlist == [
         "get_file_content",
-        "get_code_metrics",
+        "inspect_structure",
     ]
 
 
@@ -677,6 +674,35 @@ class _MockToolClient:
     def get_code_metrics(self, file_path: str = "") -> _MockToolResponse:
         self.calls.append(("get_code_metrics", {"file_path": file_path}))
         return _MockToolResponse(True, result=f"CC=12 LOC=200 for {file_path}")
+
+    def resolve_change_context(self, changes) -> _MockToolResponse:
+        self.calls.append(("resolve_change_context", {"changes": changes}))
+        contexts = [
+            {
+                "file": change["file"],
+                "file_id": f"file:{change['file']}",
+                "symbol_id": f"java:{change['file']}#save()",
+                "kind": "method",
+                "start_line": min(change["lines"] or [1]),
+                "end_line": max(change["lines"] or [1]),
+                "signature": "void save()",
+                "annotations": [],
+                "control_flow": [],
+                "resolution": "resolved",
+            }
+            for change in changes
+        ]
+        return _MockToolResponse(
+            True,
+            result=json.dumps(
+                {
+                    "status": "confirmed",
+                    "coverage": "complete",
+                    "contexts": contexts,
+                    "limitations": [],
+                }
+            ),
+        )
 
 
 class _CountingToolClient:
@@ -1090,7 +1116,7 @@ def test_make_reviewer_node_fanout_survives_real_memory_checkpointer(monkeypatch
     assert {c.file for c in out["raw_candidate_issues"]} == {"A.java", "B.java"}
 
 
-def test_context_provider_node_fills_level0_and_level1_facts_per_task():
+def test_context_provider_node_fills_symbol_context_per_task():
     task = G.ReviewTask(
         id="A.java#h0",
         file="A.java",
@@ -1120,11 +1146,10 @@ def test_context_provider_node_fills_level0_and_level1_facts_per_task():
 
 
     bundle = out["task_context_bundles"][task.id]
-    assert {fact.source for fact in bundle.facts} >= {
-        "tool:get_diff_ast",
-        "tool:find_callers",
+    assert {fact.source for fact in bundle.facts} == {
+        "tool:resolve_change_context",
     }
-    assert ("find_callers", {"query": "A.java#save"}) in tool_client.calls
+    assert not any(name == "find_callers" for name, _ in tool_client.calls)
     assert any(
         trace.event == "task_bundle_filled" and f"task={task.id}" in trace.detail
         for trace in out["council_trace"]
@@ -1139,7 +1164,22 @@ def test_context_provider_node_records_skip_when_method_unresolved():
         patch="+x",
         changed_lines=[1],
     )
-    tool_client = _MockToolClient()
+    class _UnresolvedClient(_MockToolClient):
+        def resolve_change_context(self, changes):
+            self.calls.append(("resolve_change_context", {"changes": changes}))
+            return _MockToolResponse(
+                True,
+                result=json.dumps(
+                    {
+                        "status": "confirmed",
+                        "coverage": "complete",
+                        "contexts": [],
+                        "limitations": [],
+                    }
+                ),
+            )
+
+    tool_client = _UnresolvedClient()
 
     out = G._context_provider_node(tool_client)(
         {
@@ -1159,12 +1199,12 @@ def test_context_provider_node_records_skip_when_method_unresolved():
     assert not any(call[0] == "find_callers" for call in tool_client.calls)
     statuses = out["task_context_bundles"][task.id].statuses
     assert any(
-        status.kind == "find_callers"
-        and status.status == "skipped"
-        and status.reason == "no_method_resolved"
+        status.kind == "symbol_context"
+        and status.status == "unavailable"
+        and status.reason == "no_resolved_symbol_for_current_hunk"
         for status in statuses
     )
-    assert any("no_method_resolved" in trace.detail for trace in out["council_trace"])
+    assert any("symbol_context=False" in trace.detail for trace in out["council_trace"])
 
 
 def test_context_provider_node_general_review_gets_no_level1_call():
@@ -1195,10 +1235,10 @@ def test_context_provider_node_general_review_gets_no_level1_call():
     assert not any(call[0] in ("find_callers", "get_code_metrics") for call in tool_client.calls)
 
 
-def test_context_provider_node_does_not_store_failed_level1_response_as_fact():
-    class _FailingCallersClient(_MockToolClient):
-        def find_callers(self, query: str = "") -> _MockToolResponse:
-            self.calls.append(("find_callers", {"query": query}))
+def test_context_provider_node_does_not_store_failed_graph_response_as_fact():
+    class _FailingGraphClient(_MockToolClient):
+        def resolve_change_context(self, changes) -> _MockToolResponse:
+            self.calls.append(("resolve_change_context", {"changes": changes}))
             return _MockToolResponse(False, error="gateway timeout")
 
     task = G.ReviewTask(
@@ -1208,7 +1248,7 @@ def test_context_provider_node_does_not_store_failed_level1_response_as_fact():
         patch="+x",
         changed_lines=[12],
     )
-    out = G._context_provider_node(_FailingCallersClient())(
+    out = G._context_provider_node(_FailingGraphClient())(
         {
             "diff_text": "diff --git a/A.java b/A.java\n+++ b/A.java\n@@ -12 +12 @@\n+x\n",
             "review_tasks": [task],
@@ -1227,7 +1267,7 @@ def test_context_provider_node_does_not_store_failed_level1_response_as_fact():
     assert all("gateway timeout" not in fact.content for fact in facts)
     statuses = out["task_context_bundles"][task.id].statuses
     assert any(
-        status.kind == "find_callers"
+        status.kind == "symbol_context"
         and status.status == "failed"
         and "gateway timeout" in status.reason
         for status in statuses

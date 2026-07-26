@@ -6,13 +6,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
-import re
 
 from codeguard_agent.git.diff_collector import parse_changed_files
 from codeguard_agent.models.council import ContextBundle, ContextFact
 from codeguard_agent.pipeline.engines import GatheredContext
 from codeguard_agent.pipeline.context.base import PipelineContext, PipelineStage
+from codeguard_agent.pipeline.risk.task_prep import build_tasks
 
 logger = logging.getLogger("codeguard")
 
@@ -25,12 +26,14 @@ def _clip(text: str, budget: int = _FACT_BUDGET) -> tuple[str, bool]:
     return text[:budget] + "...(已截断)", True
 
 
-def _split_ast_blocks(text: str) -> list[str]:
-    """将多文件 AST 文本按 'AST for:' 分隔符拆分为单文件块。"""
-    if not text.strip():
-        return []
-    blocks = re.split(r'\n(?=AST for:)', text.strip())
-    return [b.strip() for b in blocks if b.strip()]
+def _changed_locations(diff_text: str) -> list[dict[str, object]]:
+    by_file: dict[str, set[int]] = {}
+    for task in build_tasks(diff_text):
+        by_file.setdefault(task.file, set()).update(task.changed_lines)
+    return [
+        {"file": file, "lines": sorted(lines)}
+        for file, lines in by_file.items()
+    ]
 
 
 class ContextProviderStage(PipelineStage):
@@ -52,48 +55,47 @@ class ContextProviderStage(PipelineStage):
         diagnostics: dict[str, str] = {}
 
         gathered: list[GatheredContext] = []
-        if context.tool_client is not None and self._include_broad_scan:
-            resp = context.tool_client.find_sensitive_apis()
-            if not getattr(resp, "success", False):
-                diagnostics["sensitive_api"] = str(
-                    getattr(resp, "error", "tool_failed") or "tool_failed"
-                )
-            else:
-                content = resp.as_tool_output()
-                clipped, truncated = _clip(content)
-            if getattr(resp, "success", False) and content.strip():
-                facts.append(
-                    ContextFact(
-                        source="tool:find_sensitive_apis",
-                        kind="sensitive_api",
-                        content=clipped,
-                        truncated=truncated,
-                    )
-                )
-                gathered.append(GatheredContext("find_sensitive_apis", "{}", content))
-
-        # 4. AST 结构提取（diff 内文件）
         if context.tool_client is not None:
-            resp = context.tool_client.get_diff_ast(context.diff_text)
+            changes = context.change_locations or _changed_locations(context.diff_text)
+            resp = context.tool_client.resolve_change_context(changes)
             if not getattr(resp, "success", False):
-                diagnostics["ast_structure"] = str(
+                diagnostics["symbol_context"] = str(
                     getattr(resp, "error", "tool_failed") or "tool_failed"
                 )
-                content = ""
             else:
                 content = (
                     resp.as_tool_output()
                     if hasattr(resp, "as_tool_output")
                     else str(resp)
                 )
-            if content.strip() and "无可解析" not in content:
-                for file_block in _split_ast_blocks(content):
-                    facts.append(ContextFact(
-                        source="tool:get_diff_ast",
-                        kind="ast_structure",
-                        content=file_block,
-                    ))
-                gathered.append(GatheredContext("get_diff_ast", "{}", content))
+                try:
+                    payload = json.loads(content)
+                    for item in payload.get("contexts", []):
+                        rendered = json.dumps(
+                            item, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                        )
+                        clipped, truncated = _clip(rendered)
+                        facts.append(
+                            ContextFact(
+                                source="tool:resolve_change_context",
+                                kind="symbol_context",
+                                content=clipped,
+                                truncated=truncated,
+                            )
+                        )
+                    if payload.get("status") == "unknown":
+                        diagnostics["symbol_context"] = "; ".join(
+                            str(value) for value in payload.get("limitations", [])
+                        ) or "graph_coverage_unknown"
+                    gathered.append(
+                        GatheredContext(
+                            "resolve_change_context",
+                            json.dumps(changes, ensure_ascii=False),
+                            content,
+                        )
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    diagnostics["symbol_context"] = f"invalid_graph_response: {exc}"
 
         bundle = ContextBundle(
             changed_files=changed_files,

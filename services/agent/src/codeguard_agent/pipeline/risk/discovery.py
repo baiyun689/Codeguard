@@ -14,6 +14,9 @@ DISCOVERY_GATEWAY_TOOLS = frozenset({
     "find_sensitive_apis",
     "find_callers",
     "get_code_metrics",
+    "inspect_security_path",
+    "inspect_change_impact",
+    "inspect_structure",
 })
 REPEATED_TOOL_RESULT = (
     "该工具和参数已经在当前对话中成功返回；请复用前述结果，不要重复读取。"
@@ -180,4 +183,25 @@ class CoordinatedDiscoveryToolClient:
             "get_code_metrics",
             {"file_path": file_path},
             lambda: self._delegate.get_code_metrics(file_path),
+        )
+
+    def inspect_security_path(self, symbol_id: str) -> ToolResponse:
+        return self._invoke(
+            "inspect_security_path",
+            {"symbol_id": symbol_id},
+            lambda: self._delegate.inspect_security_path(symbol_id),
+        )
+
+    def inspect_change_impact(self, symbol_id: str) -> ToolResponse:
+        return self._invoke(
+            "inspect_change_impact",
+            {"symbol_id": symbol_id},
+            lambda: self._delegate.inspect_change_impact(symbol_id),
+        )
+
+    def inspect_structure(self, symbol_id: str) -> ToolResponse:
+        return self._invoke(
+            "inspect_structure",
+            {"symbol_id": symbol_id},
+            lambda: self._delegate.inspect_structure(symbol_id),
         )

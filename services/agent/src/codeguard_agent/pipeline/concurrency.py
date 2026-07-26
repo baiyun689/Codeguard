@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TypeVar
 
@@ -14,7 +14,7 @@ R = TypeVar("R")
 
 
 def run_bounded_parallel(
-    items: list[T],
+    items: Sequence[T],
     fn: Callable[[T], R],
     max_workers: int = 8,
 ) -> list[R | None]:

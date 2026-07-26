@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,10 @@ from codeguard_agent.pipeline.evidence.rules import (
 from codeguard_agent.pipeline.evidence.rules import _build_registry
 from codeguard_agent.pipeline.evidence.rules import recipes
 from codeguard_agent.pipeline.evidence.rules.recipes import callers_upstream
+from codeguard_agent.pipeline.evidence.rules.types import (
+    CAPABILITY_TO_TOOL,
+    EvidenceCapability,
+)
 
 
 VALID_CONTEXT_KINDS = {
@@ -25,12 +30,16 @@ VALID_CONTEXT_KINDS = {
     "find_callers",
     "get_code_metrics",
     "task_patch",
+    "symbol_context",
 }
 VALID_TOOLS = {
     "get_file_content",
     "find_sensitive_apis",
     "find_callers",
     "get_code_metrics",
+    "inspect_security_path",
+    "inspect_change_impact",
+    "inspect_structure",
 }
 UPSTREAM_TAGS = {
     RiskTag.AUTHORIZATION,
@@ -96,9 +105,21 @@ def _dossier(*facts: SimpleNamespace, file_path: str = "src/OrderService.java") 
         hunk_header="@@ -12,2 +12,2 @@",
         changed_lines=[12],
     )
+    symbol_fact = SimpleNamespace(
+        kind="symbol_context",
+        content=json.dumps(
+            {
+                "file": file_path,
+                "symbol_id": "java:OrderService#save(Order)",
+                "start_line": 10,
+                "end_line": 20,
+            }
+        ),
+        truncated=False,
+    )
     return SimpleNamespace(
         task=task,
-        context_bundle=SimpleNamespace(facts=list(facts)),
+        context_bundle=SimpleNamespace(facts=[symbol_fact, *facts]),
     )
 
 
@@ -110,7 +131,7 @@ def _strategy(strategy_id: str) -> EvidenceStrategy:
         priority=10,
         question_template="question",
         context_kinds=("task_patch",),
-        allowed_tools=("get_file_content",),
+        allowed_capabilities=(EvidenceCapability.CURRENT_IMPLEMENTATION,),
         build_tool_calls=lambda dossier: [],
     )
 
@@ -139,7 +160,7 @@ def test_only_outer_semantic_tags_have_counter_upstream():
         upstream = STRATEGIES_BY_ID[f"{tag.value.lower()}.counter_upstream"]
         assert upstream.purpose == "counter"
         assert upstream.priority == 30
-        assert upstream.allowed_tools == ("find_callers",)
+        assert upstream.allowed_tools == ("inspect_change_impact",)
 
 
 def test_registry_builder_rejects_duplicate_raw_ids():
@@ -158,7 +179,10 @@ def test_every_strategy_has_valid_declarations_and_recipe_tools():
         assert set(strategy.allowed_tools) <= VALID_TOOLS
         assert len(strategy.tags) == 1
         calls = strategy.build_tool_calls(dossier)
-        assert {call.tool_name for call in calls} <= set(strategy.allowed_tools)
+        assert {call.tool_name for call in calls} <= {
+            CAPABILITY_TO_TOOL[capability]
+            for capability in strategy.allowed_capabilities
+        }
 
 
 def test_non_upstream_strategy_allowlist_exactly_matches_recipe_tools():
@@ -169,7 +193,10 @@ def test_non_upstream_strategy_allowlist_exactly_matches_recipe_tools():
             continue
         calls = strategy.build_tool_calls(dossier)
         actual_tools = tuple(dict.fromkeys(call.tool_name for call in calls))
-        assert strategy.allowed_tools == actual_tools, strategy.id
+        assert tuple(
+            CAPABILITY_TO_TOOL[capability]
+            for capability in strategy.allowed_capabilities
+        ) == actual_tools, strategy.id
 
 
 def test_upstream_strategy_allowlist_exactly_matches_callers_recipe():
@@ -188,7 +215,7 @@ def test_upstream_strategy_allowlist_exactly_matches_callers_recipe():
         strategy = STRATEGIES_BY_ID[f"{tag.value.lower()}.counter_upstream"]
         calls = strategy.build_tool_calls(dossier)
         actual_tools = tuple(dict.fromkeys(call.tool_name for call in calls))
-        assert strategy.allowed_tools == actual_tools == ("find_callers",)
+        assert actual_tools == ("inspect_change_impact",)
 
 
 def test_upstream_strategies_use_explicit_tag_specific_questions():
@@ -219,10 +246,13 @@ def test_authorization_counter_uses_file_and_sensitive_api_recipe():
 
     assert calls == [
         ToolCallSpec(
-            "get_file_content",
+            "CURRENT_IMPLEMENTATION",
             (("file_path", "src/OrderService.java"),),
         ),
-        ToolCallSpec("find_sensitive_apis", ()),
+        ToolCallSpec(
+            "SECURITY_PATH",
+            (("symbol_id", "java:OrderService#save(Order)"),),
+        ),
     ]
 
 
@@ -240,18 +270,23 @@ def test_maintainability_base_strategies_use_file_and_metrics_recipe(tag: RiskTa
 
     assert strategy.build_tool_calls(_dossier()) == [
         ToolCallSpec(
-            "get_file_content",
+            "CURRENT_IMPLEMENTATION",
             (("file_path", "src/OrderService.java"),),
         ),
-        ToolCallSpec(
-            "get_code_metrics",
-            (("file_path", "src/OrderService.java"),),
-        ),
+            ToolCallSpec(
+                "STRUCTURAL_METRICS",
+                (("symbol_id", "java:OrderService#save(Order)"),),
+            ),
     ]
 
 
-def test_callers_upstream_returns_empty_without_ast_fact():
-    assert callers_upstream(_dossier()) == []
+def test_callers_upstream_uses_prefetched_symbol_context():
+    assert callers_upstream(_dossier()) == [
+        ToolCallSpec(
+            "UPSTREAM_REACHABILITY",
+            (("symbol_id", "java:OrderService#save(Order)"),),
+        )
+    ]
 
 
 def test_callers_upstream_returns_empty_without_context_bundle():
@@ -261,27 +296,7 @@ def test_callers_upstream_returns_empty_without_context_bundle():
     assert callers_upstream(dossier) == []
 
 
-def test_callers_upstream_ignores_truncated_ast_fact():
-    ast_fact = SimpleNamespace(
-        kind="ast_structure",
-        content="AST for: src/OrderService.java\n    save() [L10-L20]",
-        truncated=True,
-    )
-
-    assert callers_upstream(_dossier(ast_fact)) == []
-
-
-def test_callers_upstream_returns_empty_when_method_cannot_be_resolved():
-    ast_fact = SimpleNamespace(
-        kind="ast_structure",
-        content="AST for: src/OrderService.java\n  class: OrderService",
-        truncated=False,
-    )
-
-    assert callers_upstream(_dossier(ast_fact)) == []
-
-
-def test_callers_upstream_uses_exact_file_and_resolved_method_query():
+def test_callers_upstream_ignores_unrelated_legacy_ast_and_uses_symbol_id():
     ast_fact = SimpleNamespace(
         kind="ast_structure",
         content=(
@@ -294,8 +309,8 @@ def test_callers_upstream_uses_exact_file_and_resolved_method_query():
 
     assert callers_upstream(_dossier(ast_fact)) == [
         ToolCallSpec(
-            "find_callers",
-            (("query", "src/OrderService.java#save"),),
+            "UPSTREAM_REACHABILITY",
+            (("symbol_id", "java:OrderService#save(Order)"),),
         )
     ]
 
@@ -318,4 +333,4 @@ def test_file_metrics_includes_get_code_metrics_for_java_file():
     dossier_java = _dossier(file_path="src/main/java/com/example/UserService.java")
     calls = recipes.file_metrics(dossier_java)
     tool_names = {c.tool_name for c in calls}
-    assert tool_names == {"get_file_content", "get_code_metrics"}
+    assert tool_names == {"get_file_content", "inspect_structure"}

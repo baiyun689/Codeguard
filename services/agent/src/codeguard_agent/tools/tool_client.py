@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 
@@ -86,6 +87,22 @@ class ToolClient:
         """计算指定文件的代码度量(质量审查员专属)。"""
         return self._post_tool("get_code_metrics", {"file_path": file_path})
 
+    def resolve_change_context(self, changes: list[dict]) -> ToolResponse:
+        """批量把变更文件/行解析为稳定图谱符号。"""
+        return self._post_tool(
+            "resolve_change_context",
+            {"query": json.dumps({"changes": changes}, ensure_ascii=False)},
+        )
+
+    def inspect_security_path(self, symbol_id: str) -> ToolResponse:
+        return self._post_tool("inspect_security_path", {"query": symbol_id})
+
+    def inspect_change_impact(self, symbol_id: str) -> ToolResponse:
+        return self._post_tool("inspect_change_impact", {"query": symbol_id})
+
+    def inspect_structure(self, symbol_id: str) -> ToolResponse:
+        return self._post_tool("inspect_structure", {"query": symbol_id})
+
     def delete_session(self) -> None:
         """请求服务端释放本会话(复用同一连接)。"""
         self._client.delete(f"{self._base_url}/api/v1/tools/session/{self._session_id}")
@@ -99,13 +116,18 @@ def create_tool_session(
     repo_path: str,
     allowed_files: list[str],
     timeout: float = 30.0,
+    revision: str = "",
 ) -> ToolClient:
     """在 Java 工具服务上创建会话,返回绑定该会话的 ToolClient。
     repo_path 应为绝对路径(Java 侧据此解析文件相对路径并做沙箱校验)。
     失败时抛 RuntimeError,由调用方决定是否回退到无工具直连。
     """
     normalized = base_url.rstrip("/")
-    payload = {"repo_path": repo_path, "allowed_files": allowed_files}
+    payload = {
+        "repo_path": repo_path,
+        "allowed_files": allowed_files,
+        "revision": revision,
+    }
     with httpx.Client(timeout=timeout) as client:
         resp = client.post(f"{normalized}/api/v1/tools/session", json=payload)
         resp.raise_for_status()

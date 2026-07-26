@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
-from codeguard_agent.pipeline.context.rules import resolve_method_name
-from codeguard_agent.pipeline.evidence.rules.types import ToolCallSpec
+from codeguard_agent.pipeline.evidence.rules.types import (
+    EvidenceCapability,
+    ToolCallSpec,
+)
 
 if TYPE_CHECKING:
     from codeguard_agent.pipeline.evidence.planner import CandidateDossier
@@ -14,7 +17,7 @@ if TYPE_CHECKING:
 def file_only(dossier: "CandidateDossier") -> list[ToolCallSpec]:
     return [
         ToolCallSpec(
-            tool_name="get_file_content",
+            capability=EvidenceCapability.CURRENT_IMPLEMENTATION,
             arguments=(("file_path", dossier.task.file),),
         )
     ]
@@ -23,7 +26,16 @@ def file_only(dossier: "CandidateDossier") -> list[ToolCallSpec]:
 def file_sensitive(dossier: "CandidateDossier") -> list[ToolCallSpec]:
     return [
         *file_only(dossier),
-        ToolCallSpec(tool_name="find_sensitive_apis", arguments=()),
+        *(
+            [
+                ToolCallSpec(
+                    capability=EvidenceCapability.SECURITY_PATH,
+                    arguments=(("symbol_id", symbol),),
+                )
+            ]
+            if (symbol := _symbol_id(dossier))
+            else []
+        ),
     ]
 
 
@@ -31,27 +43,42 @@ def file_metrics(dossier: "CandidateDossier") -> list[ToolCallSpec]:
     """收集文件内容，仅对 .java 文件额外调用 get_code_metrics。"""
     calls = [*file_only(dossier)]
     if dossier.task.file.endswith(".java"):
-        calls.append(
-            ToolCallSpec(
-                tool_name="get_code_metrics",
-                arguments=(("file_path", dossier.task.file),),
+        symbol = _symbol_id(dossier)
+        if symbol:
+            calls.append(
+                ToolCallSpec(
+                    capability=EvidenceCapability.STRUCTURAL_METRICS,
+                    arguments=(("symbol_id", symbol),),
+                )
             )
-        )
     return calls
 
 
 def callers_upstream(dossier: "CandidateDossier") -> list[ToolCallSpec]:
+    symbol = _symbol_id(dossier)
+    return (
+        [
+            ToolCallSpec(
+                capability=EvidenceCapability.UPSTREAM_REACHABILITY,
+                arguments=(("symbol_id", symbol),),
+            )
+        ]
+        if symbol
+        else []
+    )
+
+
+def _symbol_id(dossier: "CandidateDossier") -> str:
     if dossier.context_bundle is None:
-        return []
+        return ""
     for fact in dossier.context_bundle.facts:
-        if fact.kind != "ast_structure" or fact.truncated:
+        if fact.kind != "symbol_context" or fact.truncated:
             continue
-        method = resolve_method_name(fact.content, dossier.task)
-        if method is not None:
-            return [
-                ToolCallSpec(
-                    tool_name="find_callers",
-                    arguments=(("query", f"{dossier.task.file}#{method}"),),
-                )
-            ]
-    return []
+        try:
+            value = json.loads(fact.content)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        symbol = str(value.get("symbol_id", ""))
+        if symbol:
+            return symbol
+    return ""

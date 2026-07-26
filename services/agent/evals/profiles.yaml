@@ -51,6 +51,12 @@ profiles:
     tools: [find_callers, get_file_content]
     fp_verify: true
 
+  # 管线 + 项目语义图:三路角色工具共享完整 Java AST/符号图，只按 symbol_id 查询局部事实。
+  pipeline-codegraph:
+    mode: pipeline
+    orchestration: adr-032
+    tools: [get_file_content, inspect_security_path, inspect_change_impact, inspect_structure]
+
   # —— 扩展占位(零成本预留,框架无需改动)——
   # 后续逐个加重型工具时,在此追加 profile 即可:
   # pipeline-ast:    { mode: pipeline, tools: [get_file_content, get_method_definition] }

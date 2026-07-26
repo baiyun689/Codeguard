@@ -40,6 +40,19 @@ def collect_diff(repo_path: str = ".", base: str = "HEAD") -> str:
     return result.stdout
 
 
+def collect_head_revision(repo_path: str = ".") -> str:
+    """返回当前工作树所属的完整 HEAD SHA，作为项目快照版本的基线。"""
+    result = subprocess.run(
+        ["git", "-C", repo_path, "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"git rev-parse HEAD 执行失败: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
 def collect_staged_diff(repo_path: str = ".") -> str:
     """采集已暂存(git add 之后)的改动。
 

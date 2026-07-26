@@ -15,19 +15,58 @@ from __future__ import annotations
 import logging
 import re
 
+from codeguard_agent.git.diff_collector import split_diff_by_file
+from codeguard_agent.models.tasks import (
+    ReviewBudget,
+    ReviewTask,
+    RiskProfile,
+    RiskTag,
+    SkippedTask,
+    TaskSelection,
+)
+from codeguard_agent.pipeline.risk.rules.catalog import (
+    TriageResult,
+    triage_tasks as _triage_tasks,
+)
+
 logger = logging.getLogger("codeguard")
 
 # 构建产物的目录前缀和文件后缀——这些文件不是源代码，审查它们毫无意义。
 _BUILD_DIR_PREFIXES = (
-    "target/", "build/", "out/", "dist/", "node_modules/",
-    ".gradle/", "__pycache__/", ".mvn/", "bin/",
+    "target/",
+    "build/",
+    "out/",
+    "dist/",
+    "node_modules/",
+    ".gradle/",
+    "__pycache__/",
+    ".mvn/",
+    "bin/",
 )
 _NON_SOURCE_SUFFIXES = (
-    ".class", ".jar", ".war", ".ear", ".zip", ".tar", ".gz",
-    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx",
-    ".min.js", ".min.css", ".map",
+    ".class",
+    ".jar",
+    ".war",
+    ".ear",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".ico",
+    ".svg",
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".min.js",
+    ".min.css",
+    ".map",
 )
+
 
 def _is_build_artifact(file_path: str) -> bool:
     """判断文件是否为构建产物或二进制文件，不应作为审查任务。"""
@@ -42,17 +81,6 @@ def _is_build_artifact(file_path: str) -> bool:
     if normalized.endswith("/createdfiles.lst") or normalized.endswith("/inputfiles.lst"):
         return True
     return False
-
-from codeguard_agent.git.diff_collector import split_diff_by_file
-from codeguard_agent.models.tasks import (
-    ReviewBudget,
-    ReviewTask,
-    RiskProfile,
-    RiskTag,
-    SkippedTask,
-    TaskSelection,
-)
-from codeguard_agent.pipeline.risk.rules.catalog import TriageResult, triage_tasks as _triage_tasks
 
 # @@ -oldStart[,oldLen] +newStart[,newLen] @@ [section heading]
 _HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")

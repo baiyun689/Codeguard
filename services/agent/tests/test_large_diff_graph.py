@@ -121,13 +121,12 @@ class _ToolClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def find_sensitive_apis(self):
-        self.calls.append(("find_sensitive_apis", ""))
-        return _Response("sensitive")
-
-    def get_diff_ast(self, diff_text: str):
-        self.calls.append(("get_diff_ast", diff_text))
-        return _Response("AST for: F0.java\n  class: F0")
+    def resolve_change_context(self, changes):
+        self.calls.append(("resolve_change_context", changes))
+        return _Response(
+            '{"status":"confirmed","coverage":"complete",'
+            '"contexts":[],"limitations":[]}'
+        )
 
 
 def test_context_provider_large_diff_uses_selected_scope_and_skips_broad_scan():
@@ -144,10 +143,10 @@ def test_context_provider_large_diff_uses_selected_scope_and_skips_broad_scan():
         }
     )
 
-    assert not any(name == "find_sensitive_apis" for name, _ in client.calls)
-    ast_query = next(value for name, value in client.calls if name == "get_diff_ast")
-    assert "selected0" in ast_query
-    assert "selected1" not in ast_query
+    changes = next(
+        value for name, value in client.calls if name == "resolve_change_context"
+    )
+    assert [change["file"] for change in changes] == ["F0.java"]
 
 
 def test_large_diff_reviewer_includes_bounded_patch_only_once(monkeypatch):

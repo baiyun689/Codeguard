@@ -43,19 +43,19 @@ DEFAULT_REVIEWERS: tuple[Reviewer, ...] = (
         "ThreatModelAgent",
         "threat-model-base.txt",
         source_agent="threat_model",
-        tool_allowlist=["get_file_content", "find_sensitive_apis"],
+        tool_allowlist=["get_file_content", "inspect_security_path"],
     ),
     Reviewer(
         "BehaviorAgent",
         "behavior-base.txt",
         source_agent="behavior",
-        tool_allowlist=["get_file_content", "find_callers"],
+        tool_allowlist=["get_file_content", "inspect_change_impact"],
     ),
     Reviewer(
         "MaintainabilityAgent",
         "maintainability-base.txt",
         source_agent="maintainability",
-        tool_allowlist=["get_file_content", "get_code_metrics"],
+        tool_allowlist=["get_file_content", "inspect_structure"],
     ),
 )
 
@@ -77,6 +77,7 @@ def build_reviewer_system_prompt(reviewer: Reviewer) -> str:
 
 _FACT_SCOPES = {
     "ast_structure": "current_file",
+    "symbol_context": "current_file",
     "sensitive_api": "current_file/current_hunk_lines",
     "find_callers": "resolved_current_method/direct_static_callers",
     "get_code_metrics": "current_file/method_metrics",
@@ -197,11 +198,8 @@ def build_reviewer_user_prompt(
         "      但它只是分派依据，**不等于漏洞已确认**：你仍须用当前 task patch 和工具事实独立验证。",
         "",
         "  - <prefetched_context>: 工具预取的代码事实，帮你减少反复查工具。每个 <fact> 的属性含义:",
-        "      kind:   事实类型——ast_structure(当前文件的类/方法骨架，理解代码结构用)、",
-        "              sensitive_api(命中的敏感API调用点，如SQL执行/命令执行/文件操作，检查是否安全使用)、",
-        "              find_callers(受影响的当前方法的直接调用方，评估修改影响面)、",
-        "              get_code_metrics(当前文件/方法的圈复杂度等度量，辅助判断维护风险)",
-        "      source: 产生该事实的工具名(如 get_diff_ast / find_sensitive_apis / find_callers / get_code_metrics)",
+        "      kind:   事实类型——symbol_context(当前变更所属的稳定 symbol_id、声明、注解和局部控制流)",
+        "      source: 产生该事实的工具名(resolve_change_context)",
         "      scope:  事实的覆盖范围——task_scoped 是当前任务文件内的事实；cross_file 是跨文件获取的外部事实，"
         "              只能作为辅助证据，不能作为新 Issue 的定位。current_file 限定在当前文件。",
         "      truncated: true 表示内容因长度限制被截断，可考虑用工具补全",

@@ -11,9 +11,9 @@ from codeguard_agent.pipeline.evidence.rules.recipes import (
     file_sensitive,
 )
 from codeguard_agent.pipeline.evidence.rules.types import (
+    EvidenceCapability,
     EvidenceStrategy,
     ToolCallSpec,
-    ToolName,
 )
 
 
@@ -24,7 +24,7 @@ def _strategies(
     support: str,
     severity: str,
     context_kinds: tuple[str, ...],
-    allowed_tools: tuple[ToolName, ...],
+    allowed_capabilities: tuple[EvidenceCapability, ...],
     recipe: Callable[..., list[ToolCallSpec]],
     upstream_question: str | None = None,
 ) -> list[EvidenceStrategy]:
@@ -37,7 +37,7 @@ def _strategies(
             priority=10,
             question_template=counter,
             context_kinds=context_kinds,
-            allowed_tools=allowed_tools,
+            allowed_capabilities=allowed_capabilities,
             build_tool_calls=recipe,
         ),
         EvidenceStrategy(
@@ -47,7 +47,7 @@ def _strategies(
             priority=20,
             question_template=support,
             context_kinds=context_kinds,
-            allowed_tools=allowed_tools,
+            allowed_capabilities=allowed_capabilities,
             build_tool_calls=recipe,
         ),
     ]
@@ -60,7 +60,7 @@ def _strategies(
                 priority=30,
                 question_template=upstream_question,
                 context_kinds=context_kinds,
-                allowed_tools=("find_callers",),
+                allowed_capabilities=(EvidenceCapability.UPSTREAM_REACHABILITY,),
                 build_tool_calls=callers_upstream,
             )
         )
@@ -72,7 +72,7 @@ def _strategies(
             priority=40,
             question_template=severity,
             context_kinds=context_kinds,
-            allowed_tools=allowed_tools,
+            allowed_capabilities=allowed_capabilities,
             build_tool_calls=recipe,
         )
     )
@@ -86,7 +86,10 @@ SECURITY_STRATEGIES = [
         support="路径是否真实执行敏感操作或访问受保护资源",
         severity="未授权路径的可达性、受保护资源敏感度和影响用户范围是否支撑候选级别",
         context_kinds=("sensitive_api", "ast_structure", "find_callers"),
-        allowed_tools=("get_file_content", "find_sensitive_apis"),
+        allowed_capabilities=(
+            EvidenceCapability.CURRENT_IMPLEMENTATION,
+            EvidenceCapability.SECURITY_PATH,
+        ),
         recipe=file_sensitive,
         upstream_question=(
             "上游调用方是否已完成鉴权或资源归属校验，使当前方法无需重复校验"
@@ -98,7 +101,7 @@ SECURITY_STRATEGIES = [
         support="变更是否真实影响认证凭据或会话生命周期",
         severity="可利用会话范围、凭据敏感度和账户影响面是否支撑候选级别",
         context_kinds=("ast_structure", "find_callers"),
-        allowed_tools=("get_file_content",),
+        allowed_capabilities=(EvidenceCapability.CURRENT_IMPLEMENTATION,),
         recipe=file_only,
         upstream_question="上游是否验证 token/session 有效期、撤销和主体绑定",
     ),
@@ -108,7 +111,7 @@ SECURITY_STRATEGIES = [
         support="变更是否扩大公开路由或关闭安全保护",
         severity="暴露路由范围、默认生效环境和跨域/伪造影响是否支撑候选级别",
         context_kinds=("ast_structure",),
-        allowed_tools=("get_file_content",),
+        allowed_capabilities=(EvidenceCapability.CURRENT_IMPLEMENTATION,),
         recipe=file_only,
     ),
     *_strategies(
@@ -117,7 +120,7 @@ SECURITY_STRATEGIES = [
         support="外部输入是否真实到达敏感操作或状态修改",
         severity="输入可控程度、敏感 sink 与状态影响范围是否支撑候选级别",
         context_kinds=("sensitive_api", "ast_structure"),
-        allowed_tools=("get_file_content",),
+        allowed_capabilities=(EvidenceCapability.CURRENT_IMPLEMENTATION,),
         recipe=file_only,
     ),
     *_strategies(
@@ -126,7 +129,10 @@ SECURITY_STRATEGIES = [
         support="不可信输入是否真实进入解释器、SQL 或命令 sink",
         severity="sink 权限、输入可控性和执行/数据影响是否支撑候选级别",
         context_kinds=("sensitive_api", "ast_structure"),
-        allowed_tools=("get_file_content", "find_sensitive_apis"),
+        allowed_capabilities=(
+            EvidenceCapability.CURRENT_IMPLEMENTATION,
+            EvidenceCapability.SECURITY_PATH,
+        ),
         recipe=file_sensitive,
     ),
     *_strategies(
@@ -135,7 +141,7 @@ SECURITY_STRATEGIES = [
         support="路径是否真实执行查询/写入并满足候选数据条件",
         severity="数据敏感度、租户/行影响范围与写入可恢复性是否支撑候选级别",
         context_kinds=("sensitive_api", "ast_structure", "find_callers"),
-        allowed_tools=("get_file_content",),
+        allowed_capabilities=(EvidenceCapability.CURRENT_IMPLEMENTATION,),
         recipe=file_only,
         upstream_question=(
             "调用方是否已强制租户/查询边界或使用安全参数，使当前数据访问条件受控"
@@ -147,7 +153,10 @@ SECURITY_STRATEGIES = [
         support="外部可控路径是否真实进入文件系统操作",
         severity="可读写路径范围、文件敏感度和覆盖/泄露影响是否支撑候选级别",
         context_kinds=("sensitive_api", "ast_structure"),
-        allowed_tools=("get_file_content", "find_sensitive_apis"),
+        allowed_capabilities=(
+            EvidenceCapability.CURRENT_IMPLEMENTATION,
+            EvidenceCapability.SECURITY_PATH,
+        ),
         recipe=file_sensitive,
     ),
     *_strategies(
@@ -156,7 +165,10 @@ SECURITY_STRATEGIES = [
         support="外部可控 URL 是否真实进入出站客户端",
         severity="内网可达范围、凭据转发和云元数据影响是否支撑候选级别",
         context_kinds=("sensitive_api", "ast_structure"),
-        allowed_tools=("get_file_content", "find_sensitive_apis"),
+        allowed_capabilities=(
+            EvidenceCapability.CURRENT_IMPLEMENTATION,
+            EvidenceCapability.SECURITY_PATH,
+        ),
         recipe=file_sensitive,
     ),
     *_strategies(
@@ -165,7 +177,7 @@ SECURITY_STRATEGIES = [
         support="变更是否引入弱配置、明文秘密或暴露开关",
         severity="生效环境、秘密价值和默认暴露范围是否支撑候选级别",
         context_kinds=("ast_structure",),
-        allowed_tools=("get_file_content",),
+        allowed_capabilities=(EvidenceCapability.CURRENT_IMPLEMENTATION,),
         recipe=file_only,
     ),
     *_strategies(
@@ -174,7 +186,7 @@ SECURITY_STRATEGIES = [
         support="敏感数据是否真实进入响应、日志或错误信息",
         severity="数据类别、记录规模和可访问受众是否支撑候选级别",
         context_kinds=("sensitive_api", "ast_structure"),
-        allowed_tools=("get_file_content",),
+        allowed_capabilities=(EvidenceCapability.CURRENT_IMPLEMENTATION,),
         recipe=file_only,
     ),
     *_strategies(
@@ -183,7 +195,10 @@ SECURITY_STRATEGIES = [
         support="不可信输入是否真实进入反序列化入口",
         severity="可反序列化类型范围、执行权限和数据影响是否支撑候选级别",
         context_kinds=("sensitive_api", "ast_structure"),
-        allowed_tools=("get_file_content", "find_sensitive_apis"),
+        allowed_capabilities=(
+            EvidenceCapability.CURRENT_IMPLEMENTATION,
+            EvidenceCapability.SECURITY_PATH,
+        ),
         recipe=file_sensitive,
     ),
 ]

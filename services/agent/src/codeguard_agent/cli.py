@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+from hashlib import sha256
 import logging
 import sys
 import uuid
@@ -18,7 +19,11 @@ import uuid
 import os
 
 from codeguard_agent.config import Settings
-from codeguard_agent.git.diff_collector import collect_diff, parse_changed_files
+from codeguard_agent.git.diff_collector import (
+    collect_diff,
+    collect_head_revision,
+    parse_changed_files,
+)
 from codeguard_agent.llm.client import build_llm
 from codeguard_agent.models.schemas import ReviewResult, Severity
 from codeguard_agent.models.tasks import ReviewBudget
@@ -112,8 +117,13 @@ def main(argv: list[str] | None = None) -> int:
         allowed_files = parse_changed_files(diff_text)
         if settings.tool_server_url and llm is not None:
             try:
+                head_revision = collect_head_revision(repo_abspath)
+                working_tree_digest = sha256(diff_text.encode("utf-8")).hexdigest()
                 tool_client = create_tool_session(
-                    settings.tool_server_url, repo_abspath, allowed_files
+                    settings.tool_server_url,
+                    repo_abspath,
+                    allowed_files,
+                    revision=f"{head_revision}:{working_tree_digest}",
                 )
                 logger.info(
                     "已创建工具会话(%s),审查员走 ReAct;允许文件 %d 个",
