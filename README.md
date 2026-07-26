@@ -51,6 +51,8 @@ Python Agent 负责审查推理与编排。Java Gateway 拆为三个独立服务
 
 发现阶段的 system prompt 只定义稳定的上下文语义和工具调用门槛；每个 task 的实际 patch、风险画像、预取事实、缺失状态及标签知识通过 user 消息动态注入。上下文已经回答候选所需事实时，发现者必须略过工具。单个发现者的并发 task 共享一次审查内的工具结果，但不会与另外两个发现者或下一次审查共享。
 
+配置工具服务后，每次审查会按精确 revision 异步构建完整、只读的 Java `ProjectSnapshot`，缓存全部源码、JavaParser AST、符号索引和 Spring 感知语义图。ContextProvider 只注入变更所属的稳定 `symbol_id`；三路审查员分别通过 `inspect_security_path`、`inspect_change_impact`、`inspect_structure` 查询有限局部子图，EvidenceAgent 复用同一快照。图谱明确区分 `confirmed/not_found/unknown`，静态分析未知不会被解释为不可达。
+
 三路发现者只按 ID 汇集原始候选。CouncilCoordinator 在 fan-in 后批量解析候选 RiskTag，按完整 Git 路径和局部位置构建连通候选块，并以最多 8 个并行结构化 LLM 调用执行保守归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会删除重复候选；非法、低置信或失败结果一律完整保留。EvidencePlanner 直接复用归并阶段已解析的 RiskTag。
 
 ## 使用 Docker Compose 快速开始
@@ -244,6 +246,9 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 | `CODEGUARD_RETRY_DELAY_SECONDS` | `30` | 可重试任务重新调度前的等待时间 |
 | `CODEGUARD_SHUTDOWN_GRACE_SECONDS` | `30` | 停机时等待活动任务结束的最长时间 |
 | `CODEGUARD_WEBHOOK_RATE_LIMIT` | `0.5` | 每秒接收的 Webhook 请求数；`0` 表示关闭限流 |
+| `CODEGUARD_GRAPH_CACHE_MAX_SNAPSHOTS` | `4` | 跨会话保留的完整项目快照上限 |
+| `CODEGUARD_GRAPH_CACHE_TTL_MINUTES` | `30` | 项目快照访问后过期时间 |
+| `CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS` | `120` | 全项目 AST 与语义图构建超时 |
 
 Compose 会设置打包部署所需的容器内部路径和端口，并在未显式设置时将
 `CODEGUARD_API_BASE_URL` 指向容器内的 LLM Proxy。除非维护自定义部署，否则不要修改

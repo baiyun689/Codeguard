@@ -47,8 +47,9 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 
 ```
 默认(无工具):git diff → 任务/风险/上下文 → 三路直连发现者 → Planner → Agent(insufficient 安全回退) → Judge → 打印
-默认(有工具):配置 CODEGUARD_TOOL_SERVER_URL 后,发现者可走 ReAct；EvidenceAgent 只按已规划策略
-              复用/调用 Java 工具(get_file_content / find_sensitive_apis / find_callers / get_code_metrics)获取事实
+默认(有工具):配置 CODEGUARD_TOOL_SERVER_URL 后,Tool Server 按 revision 构建完整 Java ProjectSnapshot；
+              ContextProvider 注入 symbol_context，三路发现者分别使用 inspect_security_path /
+              inspect_change_impact / inspect_structure，EvidenceAgent 按语义证据能力复用同一图谱事实
 ```
 
 默认节点:
@@ -242,6 +243,9 @@ python -m evals.runner --runs 3 --judge  # 额外开 LLM-as-judge
 | `CODEGUARD_SHUTDOWN_GRACE_SECONDS` | `30` | 停机等待活动审查的最长时间 |
 | `CODEGUARD_JOB_DB_PATH` | `./data/codeguard-jobs` | H2 job 数据库路径 |
 | `CODEGUARD_WORKSPACE_DIR` | 系统临时目录 | SHA 隔离 workspace 根目录 |
+| `CODEGUARD_GRAPH_CACHE_MAX_SNAPSHOTS` | `4` | 完整项目快照缓存上限 |
+| `CODEGUARD_GRAPH_CACHE_TTL_MINUTES` | `30` | 项目快照访问后过期分钟数 |
+| `CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS` | `120` | 全项目 AST/语义图构建超时 |
 
 > **Windows/PowerShell 注意**:bash 的 `VAR=value cmd` 内联写法在 PowerShell 不生效,要先 `$env:VAR="value"` 再跑命令;或直接写 `.env`(推荐)。
 

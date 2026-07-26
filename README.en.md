@@ -221,6 +221,8 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 
 Set `CODEGUARD_PROVIDER=mock` for a zero-cost pipeline smoke test. Configure `CODEGUARD_TOOL_SERVER_URL=http://localhost:9090` when the local Agent should use a separately running Gateway for repository context tools.
 
+With the Tool Server enabled, each review asynchronously builds an immutable Java `ProjectSnapshot` for the exact revision. It retains all source text, complete JavaParser ASTs, a symbol index, and a Spring-aware semantic graph. ContextProvider injects only grounded `symbol_id` values; the three reviewers query bounded facts through `inspect_security_path`, `inspect_change_impact`, and `inspect_structure`, while EvidenceAgent reuses the same snapshot. Graph results distinguish `confirmed`, `not_found`, and `unknown`.
+
 ## Configuration
 
 Deployment settings:
@@ -242,6 +244,9 @@ Deployment settings:
 | `CODEGUARD_RETRY_DELAY_SECONDS` | `30` | Delay before a retryable job is rescheduled |
 | `CODEGUARD_SHUTDOWN_GRACE_SECONDS` | `30` | Maximum drain time during shutdown |
 | `CODEGUARD_WEBHOOK_RATE_LIMIT` | `0.5` | Accepted webhook requests per second; `0` disables rate limiting |
+| `CODEGUARD_GRAPH_CACHE_MAX_SNAPSHOTS` | `4` | Maximum complete project snapshots retained across sessions |
+| `CODEGUARD_GRAPH_CACHE_TTL_MINUTES` | `30` | Snapshot expiry after last access |
+| `CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS` | `120` | Full-project AST and semantic graph build timeout |
 
 Compose sets container-only paths and ports for the bundled deployment. Do not change `CODEGUARD_TOOL_SERVER_PORT`, `CODEGUARD_TOOL_SERVER_URL`, `CODEGUARD_JOB_DB_PATH`, or `CODEGUARD_WORKSPACE_DIR` unless you are maintaining a custom deployment.
 
