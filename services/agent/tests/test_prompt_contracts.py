@@ -16,7 +16,6 @@ from codeguard_agent.models.tasks import (
 from codeguard_agent.pipeline.risk.rules.catalog import RISK_TAG_REVIEWERS
 from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
-    _build_user_prompt,
     build_reviewer_user_prompt,
     build_reviewer_system_prompt,
 )
@@ -49,13 +48,6 @@ def test_reviewer_prompts_describe_task_scoped_conditional_tool_contract() -> No
         assert "当前任务文件" in text
         assert "diff 外部问题" not in text
         assert "低置信候选" not in text
-
-
-def test_reviewer_user_prompt_labels_input_as_current_task_patch() -> None:
-    rendered = _build_user_prompt("@@ patch @@", "summary")
-    assert "当前任务代码变更(task patch)" in rendered
-    assert "<task_patch>" in rendered
-    assert "<diff_input>" not in rendered
 
 
 def test_reviewer_user_prompt_renders_current_context_as_typed_dynamic_data() -> None:

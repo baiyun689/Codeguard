@@ -73,7 +73,6 @@ from codeguard_agent.pipeline.context.provider import ContextProviderStage
 from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
     Reviewer,
-    _build_user_prompt,
     build_reviewer_system_prompt,
     build_reviewer_user_prompt,
 )
@@ -189,8 +188,6 @@ class ReviewerState(TypedDict, total=False):
     structured_method: str
     diff_summary: str
     react_recursion_limit: int
-    context_bundle: ContextBundle
-    task_risk_context: str
     task_knowledge: str
     review_task: ReviewTask
     risk_profile: RiskProfile
@@ -245,7 +242,7 @@ def _scope_plan(state: ReviewState) -> LargeDiffPlan:
 def _selected_diff(state: ReviewState, scope: LargeDiffPlan) -> str:
     selection = state.get("task_selection")
     if selection is None:
-        return state.get("diff_text", "")
+        raise ValueError("task_selection is required before scoped context stages")
     return scope.selected_diff(list(state.get("review_tasks") or []), selection)
 
 
@@ -346,24 +343,6 @@ def _task_rank_node():
         }
 
     return _node
-
-
-def _execute_level1_call(
-    call: context_rules.Level1Call, tool_client,
-) -> tuple[context_rules.Level1Call, str | None, str]:
-    """执行单个 Level1 调用，拒绝将失败信封作为事实返回。"""
-    try:
-        response = (
-            tool_client.find_callers(call.key)
-            if call.level is context_rules.ContextLevel.FIND_CALLERS
-            else tool_client.get_code_metrics(call.key)
-        )
-    except Exception as exc:  # noqa: BLE001
-        return call, None, f"{type(exc).__name__}: {exc}"
-    if not getattr(response, "success", False):
-        return call, None, str(getattr(response, "error", "tool_failed"))
-    content = response.as_tool_output().strip()
-    return call, (content or None), ""
 
 
 def _context_provider_node(tool_client):
@@ -491,27 +470,17 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
         if llm is None:
             return {}
         review_task = state.get("review_task")
-        if review_task is not None:
-            return {
-                "user_prompt": build_reviewer_user_prompt(
-                    task=review_task,
-                    summary=state.get("diff_summary", ""),
-                    risk_profile=state.get("risk_profile"),
-                    context_bundle=state.get("task_context_bundle"),
-                    task_knowledge=state.get("task_knowledge", ""),
-                )
-            }
-        user = _build_user_prompt(
-            state["diff_text"], summary=state.get("diff_summary", "")
-        )
-        task_risk_context = state.get("task_risk_context")
-        if task_risk_context:
-            user += "\n\n" + task_risk_context
-        else:
-            bundle = state.get("context_bundle")
-            if bundle is not None:
-                user += "\n\n<shared_context>\n" + bundle.render() + "\n</shared_context>"
-        return {"user_prompt": user}
+        if review_task is None:
+            raise ValueError("review_task is required for task-scoped discovery")
+        return {
+            "user_prompt": build_reviewer_user_prompt(
+                task=review_task,
+                summary=state.get("diff_summary", ""),
+                risk_profile=state.get("risk_profile"),
+                context_bundle=state.get("task_context_bundle"),
+                task_knowledge=state.get("task_knowledge", ""),
+            )
+        }
 
     def _review(state: ReviewerState) -> dict:
         if llm is None:
@@ -632,6 +601,8 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         tasks = state.get("review_tasks") or []
         profiles = state.get("risk_profiles") or {}
         selection = state.get("task_selection")
+        if selection is None:
+            raise ValueError("task_selection is required before discovery")
 
         _coordinator = DiscoveryToolCoordinator() if tool_client is not None else None
 
@@ -651,12 +622,10 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 complete_patch_files=complete_patch_files,
             )
 
-        routed_ids = (
-            set(routed_task_ids(reviewer.source_agent, tasks, profiles, selection))
-            if selection is not None
-            else None
-        )
-        if routed_ids is not None and not routed_ids:
+        routed_ids = set(routed_task_ids(
+            reviewer.source_agent, tasks, profiles, selection
+        ))
+        if not routed_ids:
             return {
                 "raw_candidate_issues": [],
                 "truncated_candidates": 0,
@@ -674,69 +643,6 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             if state.get("enabled_tools") is not None
             else reviewer.tool_allowlist
         )
-
-        if selection is None:
-            # 兼容路径：无任务化 State（测试 / 非任务化调用场景）——整份 diff 一次调用，
-            # 沿用 map_candidate_to_task 的按 file/line 猜测归属。
-            result = subgraph.invoke(
-                {
-                    "diff_text": state.get("diff_text", ""),
-                    "enabled_tools": effective_tools,
-                    "max_retries": state.get("max_retries", 3),
-                    "structured_method": state.get("structured_method", "function_calling"),
-                    "diff_summary": state.get("diff_summary", ""),
-                    "react_recursion_limit": state.get("react_recursion_limit", 24),
-                    "context_bundle": state.get("context_bundle"),
-                    "review_tool_client": _task_tool_client(),
-                }
-            )
-            issues = list(result.get("issues") or [])
-            kept_issues = issues[:MAX_CANDIDATES_PER_AGENT]
-            truncated_candidates = max(0, len(issues) - len(kept_issues))
-            candidates: list[CandidateIssue] = []
-            rejected_unmapped: list[str] = []
-            accepted_count = 0
-            for issue in kept_issues:
-                task_id = task_prep.map_candidate_to_task(issue.file, issue.line, tasks)
-                if task_id is None:
-                    rejected_unmapped.append(f"{issue.file}:{issue.line}")
-                    continue
-                accepted_count += 1
-                candidates.append(
-                    CandidateIssue.from_issue(
-                        issue, source_agent=reviewer.source_agent,
-                        index=accepted_count, task_id=task_id,
-                    )
-                )
-            trace: list[CouncilTrace] = list(result.get("council_trace") or [])
-            trace.append(
-                CouncilTrace(
-                    node=reviewer.source_agent,
-                    event="candidates_created",
-                    detail=(
-                        f"count={len(candidates)} truncated={truncated_candidates} "
-                        f"rejected_unmapped={len(rejected_unmapped)}"
-                    ),
-                )
-
-            )
-            if rejected_unmapped:
-                trace.append(
-                    CouncilTrace(
-                        node=reviewer.source_agent,
-                        event="candidate_rejected_unmapped",
-                        detail="; ".join(rejected_unmapped),
-                    )
-                )
-            out: dict = {
-                "raw_candidate_issues": candidates,
-                "truncated_candidates": truncated_candidates,
-                "council_trace": trace,
-            }
-            for key in ("gathered_context", "tool_trace_records", "review_summaries"):
-                if result.get(key):
-                    out[key] = result[key]
-            return out
 
         # 每个路由到的 task 独立调用，task 间并发派发。
         task_by_id = {t.id: t for t in tasks}

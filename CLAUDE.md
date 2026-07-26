@@ -50,7 +50,8 @@ START → diff_task_builder → risk_triage → task_rank ─┬─ summary(可�
 
 三路输出在 `council_coordinator` 处 fan-in：解析 RiskTag → 按文件路径和局部位置构建连通候选块 → 最多 8 个并行 LLM 调用做保守语义归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会去重；非法、低置信或失败结果一律完整保留。去重后经 `evidence_planner` 为每个候选按 RiskTag 匹配取证策略（counter + support + severity），`evidence_agent` 调 Java 工具获取原始事实并调 LLM 分析证据含义（SUPPORTS/CONTRADICTS/INSUFFICIENT），最后由 `council_judge` 做三阶段裁决：证据门控（3 条确定性规则，零 LLM 成本淘汰）→ LLM 语义综合 → 严重度策略定级。
 
-旧 supervisor 调度图已迁移到 `services/agent/legacy/supervisor_graph/graph.py`，仅作历史参考。
+旧 supervisor 调度图及 SelfChecker/FP/聚合 stages 已迁移到
+`services/agent/legacy/`，不再随 Python wheel 打包，也不参与默认 pytest。
 
 ---
 
@@ -165,17 +166,18 @@ Codeguard/
     │   │   ├── models/schemas.py  # ★核心数据结构:Severity / Issue / ReviewResult
     │   │   ├── git/diff_collector.py  # 调系统 git 采集 diff + parse_changed_files(派生 allowed_files)
     │   │   ├── llm/client.py      # LLM 工厂(openai/claude/mock)+ 重试 + mock 假数据
-    │   │   │   ├── pipeline/graph.py            # ★ADR-032 审查状态图(~1040行):State+reducer+节点+条件边+去重
-    │   │   │   ├── pipeline/orchestrator.py   # PipelineOrchestrator 门面,对外返回 ReviewResult
-    │   │   │   ├── pipeline/engines.py        # ★审查员执行引擎:DirectEngine(直连基准)/ToolAgentEngine(ReAct)
-    │   │   │   ├── pipeline/fp_rules.py       # 误报过滤的确定性规则(纯函数,可单测)
-    │   │   │   ├── pipeline/stages/           # 旧管线阶段(现被 graph 替代):summary/reviewer_stage/aggregation/
-    │   │   │   │                              #   fp_filter/context_provider/self_checker
-    │   │   │   ├── models/council.py          # ★ADR-032 内部模型:CandidateIssue/EvidenceRequest/Verdict/JudgeDecision
-    │   │   │   └── prompts/                   # threat-model.txt(~220行安全知识图谱)/behavior.txt(~240行)/
-    │   │   │                                  #   maintainability.txt(~230行)/aggregation-*.txt/fp_verify.txt/
-    │   │   │                                  #   旧 security.txt/logic.txt/quality.txt(保留作为知识参考)
-    │   ├── config/false-positive-rules.yaml  # 误报过滤的确定性规则配置(YAML)
+    │   │   ├── pipeline/graph.py          # ★ReviewCouncil 状态图、节点与条件边
+    │   │   ├── pipeline/orchestrator.py   # PipelineOrchestrator 门面
+    │   │   ├── pipeline/engines.py        # DirectEngine / ToolAgentEngine
+    │   │   ├── pipeline/risk/             # 任务、风险规则、路由与排序
+    │   │   ├── pipeline/context/          # 图谱符号上下文与事实预算
+    │   │   ├── pipeline/reviewers/        # 三路发现者与工具协调
+    │   │   ├── pipeline/evidence/         # 证据策略、规划与执行
+    │   │   ├── pipeline/council/          # 候选归并、裁决与指标
+    │   │   ├── pipeline/summary/          # 可选变更摘要阶段
+    │   │   ├── models/council.py          # 内部 ReviewCouncil 模型
+    │   │   └── prompts/                   # 发现、证据、裁决、摘要与 RiskTag 知识
+    │   ├── legacy/                # Supervisor 与旧 stages/prompts/tests 历史归档
     │   ├── tests/                 # pytest:测工程正确性
     │   └── evals/                 # ★审查质量评测框架(量化效果,见 §5)
     └── gateway/                   # ★Java Gateway——四模块 Maven 多模块项目

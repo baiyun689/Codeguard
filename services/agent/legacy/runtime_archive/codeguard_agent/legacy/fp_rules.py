@@ -22,10 +22,9 @@ from codeguard_agent.models.schemas import Issue
 
 logger = logging.getLogger("codeguard")
 
-# config/ 在 agent 目录下(services/agent/config/),与包 src/codeguard_agent 平级。
-# 本文件: src/codeguard_agent/pipeline/fp_rules.py → parents[3] = services/agent。
+# 历史规则文件与归档源码共同保存在 runtime_archive 下。
 _DEFAULT_RULES_PATH = (
-    Path(__file__).resolve().parents[3] / "config" / "false-positive-rules.yaml"
+    Path(__file__).resolve().parents[2] / "config" / "false-positive-rules.yaml"
 )
 
 

@@ -157,6 +157,8 @@ def test_reviewer_state_excludes_retired_routing_fields():
         "enable_hitl",
         "dispatched",
         "eff_diff",
+        "context_bundle",
+        "task_risk_context",
     }.isdisjoint(G.ReviewerState.__annotations__)
 
 
@@ -185,57 +187,16 @@ def test_reviewer_prompt_contains_summary_once(monkeypatch):
         "diff_text": "diff --git a/A.java b/A.java\n+++ b/A.java\n+class A {}",
         "diff_summary": "唯一摘要标记-Task3",
         "structured_method": "function_calling",
+        "review_task": G.ReviewTask(
+            id="A.java#h0",
+            file="A.java",
+            patch="+class A {}",
+            changed_lines=[1],
+        ),
+        "tier": "direct",
     })
 
     assert captured["prompt"].count("唯一摘要标记-Task3") == 1
-
-
-def test_reviewer_prepare_injects_task_risk_context_instead_of_global_bundle(monkeypatch):
-    captured = {}
-
-    class _CapturingEngine:
-        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                   max_retries, structured_method, enable_hitl=False):
-            captured["user_prompt"] = user_prompt
-            return ReviewOutcome(ReviewResult(summary="s"))
-
-    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _CapturingEngine())
-    sub = G.build_reviewer_subgraph(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
-    sub.invoke(
-        {
-            "diff_text": "+risky",
-            "task_risk_context": "<task id=\"A.java#h0\">RISK_BLOCK</task>",
-            "tier": "direct",
-            "context_bundle": G.ContextBundle(facts=[
-                G.ContextFact(source="diff", kind="x", content="SHOULD_NOT_APPEAR"),
-            ]),
-        }
-    )
-    assert "RISK_BLOCK" in captured["user_prompt"]
-    assert "SHOULD_NOT_APPEAR" not in captured["user_prompt"]
-
-
-
-def test_reviewer_prepare_falls_back_to_global_bundle_without_task_risk_context(monkeypatch):
-    captured = {}
-
-    class _CapturingEngine:
-        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                   max_retries, structured_method, enable_hitl=False):
-            captured["user_prompt"] = user_prompt
-            return ReviewOutcome(ReviewResult(summary="s"))
-
-    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _CapturingEngine())
-    sub = G.build_reviewer_subgraph(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
-    sub.invoke(
-        {
-            "diff_text": "+risky",
-            "context_bundle": G.ContextBundle(facts=[
-                G.ContextFact(source="diff", kind="x", content="LEGACY_PATH"),
-            ]),
-        }
-    )
-    assert "LEGACY_PATH" in captured["user_prompt"]
 
 
 def test_reviewer_review_uses_direct_engine_when_tier_is_direct(monkeypatch):
@@ -249,7 +210,13 @@ def test_reviewer_review_uses_direct_engine_when_tier_is_direct(monkeypatch):
     sub = G.build_reviewer_subgraph(
         G.DEFAULT_REVIEWERS[0], llm=_FakeLLM(), tool_client=object()
     )
-    sub.invoke({"diff_text": "+x", "tier": "direct"})
+    sub.invoke({
+        "diff_text": "+x",
+        "review_task": G.ReviewTask(
+            id="A.java#h0", file="A.java", patch="+x", changed_lines=[1]
+        ),
+        "tier": "direct",
+    })
     assert "tool_agent" not in calls
 
 
@@ -272,7 +239,13 @@ def test_review_tier_direct_empty_result_does_not_retry(monkeypatch):
     monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _EmptyEngine())
     monkeypatch.setattr(G, "DirectEngine", _FallbackDirectEngine)
     sub = G.build_reviewer_subgraph(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
-    sub.invoke({"diff_text": "+x", "tier": "direct"})
+    sub.invoke({
+        "diff_text": "+x",
+        "review_task": G.ReviewTask(
+            id="A.java#h0", file="A.java", patch="+x", changed_lines=[1]
+        ),
+        "tier": "direct",
+    })
     assert calls["engine"] == 1
     assert calls["fallback"] == 0
 
@@ -298,32 +271,13 @@ def test_review_tier_react_empty_result_still_retries_direct_fallback(monkeypatc
     sub = G.build_reviewer_subgraph(
         G.DEFAULT_REVIEWERS[0], llm=_FakeLLM(), tool_client=object()
     )
-    sub.invoke({"diff_text": "+x", "tier": "react"})
-    assert calls["engine"] == 1
-    assert calls["fallback"] == 1
-
-
-def test_review_legacy_no_tier_empty_result_still_retries_direct_fallback(monkeypatch):
-    """selection is None 的旧兼容路径不设置 tier,空结果的降级复审行为必须保持不变。"""
-    calls = {"engine": 0, "fallback": 0}
-
-    class _EmptyEngine:
-        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                    max_retries, structured_method, enable_hitl=False):
-            calls["engine"] += 1
-            return ReviewOutcome(ReviewResult(summary="", issues=[]))
-
-    class _FallbackDirectEngine:
-        def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                    max_retries, structured_method, enable_hitl=False):
-
-            calls["fallback"] += 1
-            return ReviewOutcome(ReviewResult(summary="fallback-summary", issues=[]))
-
-    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _EmptyEngine())
-    monkeypatch.setattr(G, "DirectEngine", _FallbackDirectEngine)
-    sub = G.build_reviewer_subgraph(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
-    sub.invoke({"diff_text": "+x"})  # 无 tier key -> 旧兼容路径
+    sub.invoke({
+        "diff_text": "+x",
+        "review_task": G.ReviewTask(
+            id="A.java#h0", file="A.java", patch="+x", changed_lines=[1]
+        ),
+        "tier": "react",
+    })
     assert calls["engine"] == 1
     assert calls["fallback"] == 1
 
@@ -809,8 +763,8 @@ def test_evidence_agent_runs_once_before_judge(monkeypatch):
     assert "evidence_rounds" not in meta["council"]
 
 
-def test_make_reviewer_node_rejects_unmapped_candidate(monkeypatch):
-    """收集节点：候选文件不在任何任务中 → 不进黑板 + 留 candidate_rejected_unmapped trace。"""
+def test_make_reviewer_node_rejects_task_mismatch_candidate(monkeypatch):
+    """候选文件不属于当前 task 时拒绝进入黑板并记录 trace。"""
 
     class _OutOfDiffEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
@@ -827,13 +781,22 @@ def test_make_reviewer_node_rejects_unmapped_candidate(monkeypatch):
     monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _OutOfDiffEngine())
     node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
     out = node({
-        "diff_text": "diff --git a/A.java b/A.java\n+++ b/A.java\n@@ -1 +1 @@\n+x",
-        "review_tasks": [G.ReviewTask(id="A.java#h0", file="A.java", patch="")],
-    })
+            "diff_text": "diff --git a/A.java b/A.java\n+++ b/A.java\n@@ -1 +1 @@\n+x",
+            "review_tasks": [
+                G.ReviewTask(id="A.java#h0", file="A.java", patch="", changed_lines=[1])
+            ],
+            "risk_profiles": {
+                "A.java#h0": G.RiskProfile(
+                    task_id="A.java#h0",
+                    tag_scores={G.RiskTag.INJECTION: 2},
+                )
+            },
+            "task_selection": G.TaskSelection(selected_task_ids=["A.java#h0"]),
+        })
     # 候选指向 NotInDiff.java，不在 review_tasks 中 → 被拒绝
     assert out["raw_candidate_issues"] == []
     events = {t.event for t in out["council_trace"]}
-    assert "candidate_rejected_unmapped" in events
+    assert "candidate_rejected_task_mismatch" in events
 
 
 def test_make_reviewer_node_only_invokes_routed_and_selected_tasks(monkeypatch):

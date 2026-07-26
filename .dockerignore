@@ -14,5 +14,6 @@ trace
 **/target
 services/gateway/data
 services/gateway/legacy
+services/agent/legacy
 services/agent/trace
 services/agent/evals/runs

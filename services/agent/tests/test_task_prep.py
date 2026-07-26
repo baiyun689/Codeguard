@@ -8,7 +8,6 @@ from codeguard_agent.pipeline.risk.task_prep import (
     _is_production_path,
     build_tasks,
     file_matches_task,
-    map_candidate_to_task,
     rank_tasks,
     triage_tasks,
 )
@@ -144,38 +143,6 @@ def test_generated_and_nested_test_paths_are_not_production():
     assert _is_production_path("src/main/test/OrderServiceTest.java") is False
 
 
-def test_map_candidate_uses_changed_line_first():
-    tasks = build_tasks(_TWO_HUNK_DIFF)
-    # 行 12 命中 hunk1 的 changed_lines
-    assert map_candidate_to_task("A.java", 12, tasks) == "A.java#h1"
-
-
-def test_map_candidate_binds_context_line_to_containing_hunk():
-    tasks = build_tasks(_TWO_HUNK_DIFF)
-    # 行 11 是 hunk1 的上下文行（不在 changed_lines[12]，但落在 hunk1 范围 [11,12]）
-    # → 归属正确的 hunk1，绝不落到"第一个"hunk0
-    assert map_candidate_to_task("A.java", 11, tasks) == "A.java#h1"
-    # 行 3 落在 hunk0 范围 [1,3] → hunk0
-    assert map_candidate_to_task("A.java", 3, tasks) == "A.java#h0"
-
-
-def test_map_candidate_rejects_line_outside_all_hunks():
-    tasks = build_tasks(_TWO_HUNK_DIFF)
-    # 行 999 不在任何 changed_lines、不落在任何 hunk 范围、无文件级 fallback → 拒绝
-    assert map_candidate_to_task("A.java", 999, tasks) is None
-
-
-def test_map_candidate_matches_by_basename():
-    # LLM 常只给 basename；文件级 fallback task 对任意行都可绑定
-    tasks = [ReviewTask(id="src/A.java#file", file="src/A.java", patch="")]
-    assert map_candidate_to_task("A.java", 0, tasks) == "src/A.java#file"
-
-
-def test_map_candidate_returns_none_when_file_absent():
-    tasks = build_tasks(_TWO_HUNK_DIFF)
-    assert map_candidate_to_task("Ghost.java", 1, tasks) is None
-
-
 def test_build_tasks_creates_fallback_for_deleted_file():
     # 删除文件（+++ /dev/null）：split_diff_by_file 会漏掉，需补文件级 fallback 取旧路径
     diff = (
@@ -191,8 +158,6 @@ def test_build_tasks_creates_fallback_for_deleted_file():
     tasks = build_tasks(diff)
     assert [t.id for t in tasks] == ["Auth.java#file"]
     assert tasks[0].file == "Auth.java"
-    # 删除文件仍能被候选绑定（reviewer 发现"删了鉴权"时不会被丢弃）
-    assert map_candidate_to_task("Auth.java", 1, tasks) == "Auth.java#file"
 
 
 def test_build_tasks_creates_fallback_for_pure_rename():
@@ -236,16 +201,6 @@ def test_changed_lines_ignores_no_newline_marker():
     )
     # 新文件: context(1) / new(2) / extra(3) / final(4) → 新增行号 [2, 3]
     assert _changed_lines(hunk, 1) == [2, 3]
-
-
-def test_map_candidate_prefers_full_path_over_basename_collision():
-    # 同 basename 不同目录：候选给出全路径时应精确命中，不被另一个同名文件抢走。
-    tasks = [
-        ReviewTask(id="src/Foo.java#h0", file="src/Foo.java", patch="", changed_lines=[1]),
-        ReviewTask(id="test/Foo.java#h0", file="test/Foo.java", patch="", changed_lines=[1]),
-    ]
-    assert map_candidate_to_task("test/Foo.java", 1, tasks) == "test/Foo.java#h0"
-    assert map_candidate_to_task("src/Foo.java", 1, tasks) == "src/Foo.java#h0"
 
 
 def test_file_matches_task_true_for_exact_path():

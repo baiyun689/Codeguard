@@ -5,9 +5,6 @@
   纯重命名）退化为文件级 fallback task。不判断风险、不读仓库文件、不调 LLM。
 - triage_tasks：调用风险规则目录，产出画像和规则诊断。
 - rank_tasks：按 RiskProfile 派生排序分数并应用预算。
-- map_candidate_to_task：候选(file, line) → task_id 的确定性映射。必须能绑定到具体
-  changed 区域（命中 changed line、落在 hunk 覆盖范围、或该文件的明确文件级 fallback），
-  否则返回 None。绝不把无法绑定的候选硬塞给"第一个" task。
 """
 
 from __future__ import annotations
@@ -337,34 +334,3 @@ def rank_tasks(
             for task, reason in skipped
         ],
     )
-
-
-def map_candidate_to_task(file: str, line: int, tasks: list[ReviewTask]) -> str | None:
-    """候选(file, line) → task_id。无法绑定到具体 changed 区域时返回 None。
-
-    文件匹配：全路径精确匹配优先（消解同 basename 不同目录的歧义，如
-    src/Foo.java vs test/Foo.java）；无全路径命中再退化到 basename 匹配。
-
-    行绑定（按精确度递减）：
-      1. 命中某 hunk 的 changed_lines → 该 hunk 的 task。
-      2. 落在某 hunk 覆盖的新文件行范围内（含上下文行）→ 该 hunk 的 task。
-      3. 该文件存在文件级 fallback task（删除/纯重命名/无 hunk 文件，无行信息）→ 它。
-      4. 以上都不满足（行落在所有 hunk 之外）→ None，交由调用方拒绝并留 trace。
-
-    绝不把无法绑定的候选归属到"第一个"task——那会让风险/上下文/证据错挂到无关任务。
-    """
-    exact = [t for t in tasks if _norm(t.file) == _norm(file)]
-    file_tasks = exact or [t for t in tasks if _basename(t.file) == _basename(file)]
-    if not file_tasks:
-        return None
-    for t in file_tasks:
-        if line in t.changed_lines:
-            return t.id
-    for t in file_tasks:
-        span = _hunk_span(t)
-        if span is not None and span[0] <= line <= span[1]:
-            return t.id
-    fallback = next((t for t in file_tasks if t.id.endswith("#file")), None)
-    if fallback is not None:
-        return fallback.id
-    return None

@@ -67,7 +67,8 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 
 **职责边界**:Python = 智能编排(推理 / 编排 / 对结论加工);Java = 护栏 + 地面真值(安全沙箱 / 重静态计算)。四条不变量:Python 调 Java 单向、Java 不碰 LLM;代码探索只走 Java 沙箱;不确定性只在 Python;Java 不判断"是不是问题"。
 
-旧 SelfChecker / Challenge 默认运行路径已由 purpose-aware CouncilJudge 取代；legacy stage 只作历史兼容，不参与默认图。
+旧 SelfChecker / Challenge 默认运行路径已由 purpose-aware CouncilJudge 取代；其
+stage、prompt 和测试已移出 Python 包并归档到 `services/agent/legacy/`。
 
 `services/gateway`(Java)提供工具服务 + 护栏。**只放"事实与护栏"(工具执行 / 沙箱 / 重计算),绝不在 gateway 里调 LLM 或做"是不是问题"的判断**(那是 Python 的事,见职责边界)。
 
@@ -95,21 +96,18 @@ Codeguard/
     │   │   ├── llm/client.py      # LLM 工厂(openai/Codex/mock)+ 重试 + mock 假数据
     │   │   ├── tools/             # ★工具调用(智能层侧)。tool_client(同步 HTTP)+ definitions(LangChain 工具)
     │   │   ├── pipeline/orchestrator.py   # 多阶段管线编排(审查唯一入口)
-    │   │   ├── pipeline/risk_rules/       # ★变化特征、24 个具体标签规则、注册表/聚合/兜底
-    │   │   ├── pipeline/risk_routing.py   # ★从 RiskProfile 派生 reviewer task scope
-    │   │   ├── pipeline/evidence_rules/   # ★25 标签三目的静态策略与候选主题分类
-    │   │   ├── pipeline/evidence_planner.py # ★dossier 绑定与一次性完整证据规划
-    │   │   ├── pipeline/evidence_agent.py # ★策略执行、事实复用/工具缓存、finding 安全回退
-    │   │   ├── pipeline/candidate_dedup.py # ★候选语义归并（Coordinator fan-in 后）
-    │   │   ├── pipeline/council_judge.py  # ★证据门槛、候选综合、固定策略定级与 survivor 映射
-    │   │   ├── pipeline/council_metrics.py # ★ReviewCouncil 过程指标唯一计算入口
-    │   │   ├── pipeline/discovery_tools.py # ★发现者级规范化去重、single-flight 与对话内短标记
+    │   │   ├── pipeline/risk/             # ★任务拆分、风险规则、路由与排序
+    │   │   ├── pipeline/context/          # ★图谱符号上下文与事实预算
+    │   │   ├── pipeline/reviewers/        # ★三路发现者、工具协调与 prompt 构造
+    │   │   ├── pipeline/evidence/         # ★证据策略、规划、执行与能力映射
+    │   │   ├── pipeline/council/          # ★候选归并、裁决与过程指标
+    │   │   ├── pipeline/summary/          # 可选变更摘要阶段
     │   │   ├── pipeline/engines.py        # ★审查员执行引擎:DirectEngine(直连基准)/ ToolAgentEngine(ReAct)
-    │   │   ├── pipeline/stages/           # 各阶段:summary / context_provider / reviewer 等通用 stage
-    │   │   ├── pipeline/fp_rules.py       # 误报过滤的确定性规则(纯函数,可单测)
-    │   │   └── prompts/                   # threat-model/behavior/maintainability + summary/aggregation/fp prompts
-    │   ├── legacy/supervisor_graph/       # 旧 Supervisor 图备份,不作为运行回退
-    │   ├── config/false-positive-rules.yaml  # 误报过滤的确定性规则配置(YAML)
+    │   │   └── prompts/                   # 三路发现、证据、裁决、摘要与 RiskTag 知识
+    │   ├── legacy/                # 不打包、不参与默认 pytest 的历史实现
+    │   │   ├── supervisor_graph/  # 旧 Supervisor 图
+    │   │   ├── runtime_archive/   # 旧 stages/prompts/fp rules
+    │   │   └── tests/             # 对应历史测试
     │   ├── tests/                 # pytest:测工程正确性
     │   └── evals/                 # ★审查质量评测框架(量化效果,见 §5)
     └── gateway/                   # ★Java Gateway(护栏 + 地面真值层)
