@@ -13,5 +13,6 @@ trace
 **/.venv
 **/target
 services/gateway/data
+services/gateway/legacy
 services/agent/trace
 services/agent/evals/runs

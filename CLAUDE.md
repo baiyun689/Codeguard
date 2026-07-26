@@ -188,9 +188,8 @@ Codeguard/
         │       ├── toolserver/   #   ToolServerApp / ToolServerController / ToolSessionManager / GatewaySettings
         │       └── agent/
         │           ├── core/     #   AgentTool 接口 / ToolResult 信封 / AgentContext
-        │           ├── ast/      # ★ DiffASTAnalyzer / DiffASTResult / ASTContextFormatter
-        │           └── tools/    #   ToolRegistry / FileAccessSandbox / GetFileContentTool / FindCallersTool
-        │                         #   / FindSensitiveApisTool / GetCodeMetricsTool / GetDiffASTTool
+        │           ├── graph/    # ★ ProjectSnapshot / ProjectCodeGraph / JavaParser 符号解析
+        │           └── tools/    #   沙箱、语义图工具与 GraphCompatibilityTool
         ├── ci-webhook/           # GitHub PR 自动审查链路(:8080)
         │   └── src/.../
         │       ├── Main.java     # ★ 统一入口(同时启动三个服务)
@@ -210,7 +209,10 @@ Codeguard/
         │       ├── model/        #   OpenAiChatRequest / OpenAiChatResponse(Jackson record)
         │       ├── config/       #   ProxyConfig(YAML 加载+环境变量替换)
         │       └── resilience/   #   ResilienceService(限流→熔断 per-provider→重试 指数退避+jitter)
-        └── src/                  # 旧单体代码(已不参与构建,保留参考)
+        └── legacy/               # 历史源码归档(.java.legacy),不参与构建/项目图
+            ├── pre-modular-gateway/
+            ├── pre-codegraph-tool-server/
+            └── repomap/
 ```
 
 带 ★ 的是改动时最需要小心的核心文件。

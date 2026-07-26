@@ -32,7 +32,13 @@ Agent tool sessions:
 - `DELETE /api/v1/tools/session/{id}` destroys a session.
 - `POST /api/v1/tools/{name}` dispatches an allowed tool using the `X-Session-Id` header.
 
-The tool registry includes guarded file content, sensitive API, caller, code-metric, and diff AST queries. Repository paths are constrained by the session sandbox.
+The default tool registry includes guarded file content, project-symbol
+resolution, and role-specific semantic graph queries. The legacy
+`find_sensitive_apis`, `find_callers`, `get_code_metrics`, and `get_diff_ast`
+protocol names are served by `GraphCompatibilityTool` over the same
+`ProjectSnapshot`; the old repository scanners are archived under `legacy/`
+and are not compiled. Repository paths are constrained by the session
+sandbox.
 
 ## Local Development
 
@@ -48,6 +54,9 @@ Build and test the Gateway:
 cd services/gateway
 mvn --batch-mode verify
 ```
+
+The Maven reactor only contains `shared`, `tool-server`, `llm-proxy`, and
+`ci-webhook`. The root no longer has a `src/` source tree.
 
 Run the packaged JAR:
 

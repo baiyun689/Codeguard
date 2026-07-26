@@ -113,14 +113,15 @@ Codeguard/
     │   ├── tests/                 # pytest:测工程正确性
     │   └── evals/                 # ★审查质量评测框架(量化效果,见 §5)
     └── gateway/                   # ★Java Gateway(护栏 + 地面真值层)
-        ├── pom.xml               # Maven;Javalin + Jackson + SLF4J;fat jar 独立启动
-        └── src/main/java/com/codeguard/
-            ├── agent/core/       # AgentTool 接口 / ToolResult 信封 / AgentContext
-            ├── agent/tools/      # ToolRegistry / FileAccessSandbox(护栏)/ GetFileContentTool / GetRepoMapTool
-            ├── agent/repomap/    # ★get_repo_map:TagExtractor 接口(JavaTagExtractor=JavaParser,TagExtractorRegistry 按扩展名路由)+ PageRank + RepoMapRanker + RepoMapRenderer + RepoMapBuilder
-            ├── ci/executor/      # 单次审查执行、进程协议/超时/输出限制与 Git 凭据护栏
-            ├── ci/job/           # H2 JobRepository + 非阻塞 JobScheduler + 启动恢复/停机
-            └── toolserver/       # 工具路由 + GatewaySettings + live/ready/metrics + 生命周期所有权
+        ├── pom.xml                # Maven 四模块 parent
+        ├── shared/                # 指标、健康检查和共享配置
+        ├── tool-server/           # ★沙箱、ProjectSnapshot/ProjectCodeGraph、语义工具
+        ├── ci-webhook/            # CI 执行、job 调度、GitHub webhook 与 fat jar
+        ├── llm-proxy/             # OpenAI 兼容代理、路由、熔断与 fallback
+        └── legacy/                # .java.legacy 历史归档,不参与构建或项目图
+            ├── pre-modular-gateway/       # Gateway 拆模块前的根 src
+            ├── pre-codegraph-tool-server/ # 项目图前的逐次 AST/扫描工具
+            └── repomap/                    # 已下线 repo-map 实现
 ```
 
 带 ★ 的是改动时最需要小心的核心文件。
