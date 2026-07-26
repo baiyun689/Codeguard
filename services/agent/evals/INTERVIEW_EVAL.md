@@ -16,10 +16,14 @@
 |---|---|
 | `eval-direct-diff` | 单模型只看 diff 的最低基线 |
 | `eval-council-diff` | 三路 ReviewCouncil，但不开放项目图工具 |
-| `eval-council-codegraph` | 发现者使用项目语义图，EvidenceAgent 不额外补证 |
-| `eval-codeguard-full` | 三路发现和 EvidenceAgent 都使用项目语义图 |
+| `eval-council-codegraph` | ContextProvider 使用项目语义图；高风险/预算内发现任务使用图谱工具，EvidenceAgent 不额外补证 |
+| `eval-codeguard-full` | ContextProvider 与高风险/预算内发现任务使用项目语义图，EvidenceAgent 共享图谱工具 |
 
 这样可以分别计算 Council、图谱探索和举证链的边际收益，而不是只展示完整系统的孤立分数。
+
+图谱档保留生产环境的风险分层策略：低风险任务和 ReAct 预算外任务会按设计走
+Direct。报告用 `direct_tier_task_count` 披露这部分覆盖；严格校验只拒绝图谱
+构建/工具失败、发现者失败以及 ReAct 异常降级，不把策略选择的 Direct 任务误判为故障。
 
 ## 评分契约
 

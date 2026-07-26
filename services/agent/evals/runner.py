@@ -157,7 +157,6 @@ def _strict_tool_failures(trace: list, metadata: dict) -> list[str]:
         "react_degraded_empty_count",
         "discoverer_failed_count",
         "task_review_failed_count",
-        "direct_tier_task_count",
     ):
         count = int(council.get(key, 0))
         if count:

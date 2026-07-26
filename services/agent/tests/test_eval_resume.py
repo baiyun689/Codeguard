@@ -32,7 +32,7 @@ def test_run_once_skips_checkpointed_cases_and_preserves_dataset_order() -> None
     assert checkpoints == [["first", "second"]]
 
 
-def test_strict_tool_profile_rejects_graph_failure_and_react_degradation() -> None:
+def test_strict_tool_profile_allows_policy_selected_direct_tasks() -> None:
     failures = _strict_tool_failures(
         [type("Trace", (), {"status": "failed", "tool": "inspect_structure"})()],
         {
@@ -47,4 +47,4 @@ def test_strict_tool_profile_rejects_graph_failure_and_react_degradation() -> No
     assert "symbol_context:graph_coverage_partial" in failures
     assert "tool_failed:inspect_structure" in failures
     assert "react_degraded_empty_count=1" in failures
-    assert "direct_tier_task_count=2" in failures
+    assert "direct_tier_task_count=2" not in failures
