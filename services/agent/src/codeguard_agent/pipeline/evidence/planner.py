@@ -8,13 +8,19 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from codeguard_agent.models.council import (
+    CandidateConcern,
     CandidateIssue,
+    ConcernEvidencePlan,
+    EvidenceFactType,
+    EvidenceGoal,
     EvidenceNote,
+    EvidencePolarity,
     EvidencePurpose,
     EvidenceRequest,
 )
 from codeguard_agent.models.tasks import ReviewTask, RiskProfile, RiskTag, TaskContextBundle
 from codeguard_agent.pipeline.risk import task_prep
+from codeguard_agent.pipeline.evidence.capability import capabilities_for_fact_type
 from codeguard_agent.pipeline.evidence.rules import (
     CandidateTagResolution,
     EvidenceStrategy,
@@ -488,6 +494,187 @@ def plan_evidence(
     )
 
 
+def _select_fact_type_for_support(claim_text: str) -> EvidenceFactType:
+    """根据 root cause 文本选择最合适的 fact_type。"""
+    rc_lower = claim_text.lower()
+    if any(kw in rc_lower for kw in ("表达式", "expression", "计算", "compute",
+                                       "amount", "quantity", "值", "value", "运算")):
+        return EvidenceFactType.VALUE_IDENTITY
+    if any(kw in rc_lower for kw in ("调用", "call", "propagate", "传入", "传递",
+                                       "data flow", "数据流")):
+        return EvidenceFactType.DATA_FLOW
+    if any(kw in rc_lower for kw in ("事务", "transaction", "commit", "rollback",
+                                       "原子")):
+        return EvidenceFactType.TRANSACTION_BOUNDARY
+    if any(kw in rc_lower for kw in ("并发", "concurrent", "race", "竞态",
+                                       "lock", "同步")):
+        return EvidenceFactType.ORDERING
+    if any(kw in rc_lower for kw in ("状态", "state", "transition", "转换")):
+        return EvidenceFactType.STATE_TRANSITION
+    if any(kw in rc_lower for kw in ("注入", "injection", "sqli", "xss",
+                                       "命令", "遍历", "穿越")):
+        return EvidenceFactType.REACHABILITY
+    return EvidenceFactType.CHANGED_CONDITION
+
+
+def _build_support_goal(
+    concern: CandidateConcern, claim: "CandidateClaim",
+) -> EvidenceGoal | None:
+    """构建 support goal：证明 root cause 的关键机制成立。"""
+    rc = claim.root_cause[:200]
+    if not rc.strip():
+        return None
+    fact_type = _select_fact_type_for_support(rc)
+    return EvidenceGoal(
+        concern_id=concern.concern_id,
+        claim_ids=tuple(c.claim_id for c in concern.claims),
+        fact_type=fact_type,
+        polarity=EvidencePolarity.SUPPORT,
+        proposition=f"变更引入的机制成立：{rc}",
+        why_needed="验证候选声称的错误机制是否真实存在于变更代码中",
+        preferred_capabilities=tuple(
+            c.value for c in capabilities_for_fact_type(fact_type)
+        ),
+        required=True,
+    )
+
+
+def _build_counter_goal(
+    concern: CandidateConcern, claim: "CandidateClaim",
+) -> EvidenceGoal | None:
+    """构建 counter goal：寻找足以推翻主张的最强反证。"""
+    trigger_text = claim.trigger or claim.root_cause[:100]
+    return EvidenceGoal(
+        concern_id=concern.concern_id,
+        claim_ids=tuple(c.claim_id for c in concern.claims),
+        fact_type=EvidenceFactType.GUARD_PRESENCE,
+        polarity=EvidencePolarity.COUNTER,
+        proposition=(
+            f"是否存在 guard、补偿或保护机制使问题不可达：{trigger_text}"
+        ),
+        why_needed="寻找调用前 guard、补偿事务、幂等保护或不可达证据",
+        preferred_capabilities=tuple(
+            c.value for c in capabilities_for_fact_type(EvidenceFactType.GUARD_PRESENCE)
+        ),
+        required=True,
+    )
+
+
+def _build_impact_goal(
+    concern: CandidateConcern, claim: "CandidateClaim",
+) -> EvidenceGoal | None:
+    """构建 impact goal：证明后果和影响范围。"""
+    consequence = claim.observable_consequence or claim.root_cause[:200]
+    if not consequence.strip():
+        return None
+    return EvidenceGoal(
+        concern_id=concern.concern_id,
+        claim_ids=(claim.claim_id,),
+        fact_type=EvidenceFactType.OBSERVABLE_CONSEQUENCE,
+        polarity=EvidencePolarity.IMPACT,
+        proposition=f"变更后果的可达性与影响范围：{consequence}",
+        why_needed="确认后果是否可达、跨租户、持久化或需人工修复",
+        preferred_capabilities=tuple(
+            c.value for c in capabilities_for_fact_type(
+                EvidenceFactType.OBSERVABLE_CONSEQUENCE
+            )
+        ),
+        required=False,
+    )
+
+
+def _goals_to_requests(
+    concern: CandidateConcern,
+    goals: list[EvidenceGoal],
+    diagnostics: list[str],
+) -> list:
+    """将 EvidenceGoal 映射为 EvidenceRequest 列表。"""
+    from codeguard_agent.models.council import EvidenceRequest
+
+    _polarity_to_purpose: dict[str, str] = {
+        "support": "support",
+        "counter": "counter",
+        "impact": "severity",
+    }
+
+    requests: list[EvidenceRequest] = []
+    for goal in goals:
+        # 选 preferred capability 对应的 tool name 作为 preferred_tools
+        tools = list(goal.preferred_capabilities[:2])
+        primary_file = concern.files[0] if concern.files else ""
+        anchor_id = concern.member_candidate_ids[0] if concern.member_candidate_ids else ""
+        purpose_value = _polarity_to_purpose.get(goal.polarity.value, "support")
+        request = EvidenceRequest(
+            candidate_id=anchor_id,
+            strategy_id=f"claim.{goal.fact_type.value}.{goal.polarity.value}",
+            purpose=purpose_value,  # type: ignore[arg-type]
+            target=primary_file,
+            question=goal.proposition,
+            preferred_tools=tools,
+            goal_id=goal.goal_id,
+            concern_id=goal.concern_id,
+            claim_ids=goal.claim_ids,
+            fact_type=goal.fact_type,
+        )
+        requests.append(request)
+    return requests
+
+
+def plan_claim_evidence(
+    concern: CandidateConcern,
+    *,
+    task_contexts: dict | None = None,
+) -> ConcernEvidencePlan:
+    """按 concern 的结构化主张生成 EvidenceGoal 并映射为 EvidenceRequest。
+
+    每个 concern 至少生成 support/counter/impact 三类 goal。
+    """
+    goals: list[EvidenceGoal] = []
+    diagnostics: list[str] = []
+
+    primary_claim = concern.claims[0] if concern.claims else None
+    if primary_claim is None:
+        return ConcernEvidencePlan(
+            concern_id=concern.concern_id,
+            diagnostics=("no claims in concern",),
+        )
+
+    # 1. Support goal — 证明 root cause 机制成立
+    support_goal = _build_support_goal(concern, primary_claim)
+    if support_goal:
+        goals.append(support_goal)
+
+    # 2. Counter goal — 寻找最强反证
+    counter_goal = _build_counter_goal(concern, primary_claim)
+    if counter_goal:
+        goals.append(counter_goal)
+
+    # 3. Impact goal — 证明影响范围
+    impact_goal = _build_impact_goal(concern, primary_claim)
+    if impact_goal:
+        goals.append(impact_goal)
+
+    # 4. 成员独有影响（每个额外 claim 一个 impact goal）
+    for claim in concern.claims[1:]:
+        member_goal = _build_impact_goal(concern, claim)
+        if member_goal:
+            goals.append(member_goal)
+
+    uncovered = [g.goal_id for g in goals if not g.preferred_capabilities]
+    if uncovered:
+        diagnostics.append(f"goals without capabilities: {uncovered}")
+
+    requests = _goals_to_requests(concern, goals, diagnostics)
+
+    return ConcernEvidencePlan(
+        concern_id=concern.concern_id,
+        goals=tuple(goals),
+        requests=tuple(requests),
+        uncovered_goals=tuple(uncovered),
+        diagnostics=tuple(diagnostics),
+    )
+
+
 __all__ = [
     "CandidateBindingFailure",
     "CandidateDossier",
@@ -495,5 +682,6 @@ __all__ = [
     "EvidencePlan",
     "MAX_INITIAL_REQUESTS_PER_CANDIDATE",
     "assemble_dossiers",
+    "plan_claim_evidence",
     "plan_evidence",
 ]
