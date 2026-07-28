@@ -1502,6 +1502,14 @@ def test_coordinator_batches_tag_resolution_and_emits_complete_trace(monkeypatch
     assert calls == [[first.id, second.id]]
     assert output["candidate_issues"] == [first, second]
     assert output["candidate_groups"][0].members == (first, second)
+    assert output["candidate_dedup_stats"] == {
+        "raw_candidate_count": 2,
+        "logical_candidate_count": 1,
+        "grouped_member_count": 1,
+        "removed_count": 0,
+        "llm_call_count": 1,
+        "block_failure_count": 1,
+    }
     traces = {trace.event: trace.detail for trace in output["council_trace"]}
     assert "rule=2" in traces["candidate_tags_resolved"]
     assert "singleton=0" in traces["candidate_dedup_blocks_built"]

@@ -546,7 +546,6 @@ def test_candidate_group_combines_all_supported_member_information():
     second = _dossier(
         "candidate-second",
         request_findings=[("support", _finding("supports", "direct"))],
-        issue_type="contract bypass",
         claim="blank id bypasses the contract",
     )
     group = CandidateGroup(
@@ -571,7 +570,6 @@ def test_candidate_group_combines_all_supported_member_information():
     assert first.candidate.claim in batch.final_issues[0].message
     assert second.candidate.claim in batch.final_issues[0].message
     assert first.candidate.type in batch.final_issues[0].type
-    assert second.candidate.type in batch.final_issues[0].type
 
 
 def test_candidate_group_splits_when_judged_impacts_have_different_severity():
@@ -620,6 +618,38 @@ def test_candidate_group_splits_when_judged_impacts_have_different_severity():
     assert [issue.message for issue in batch.final_issues] == [
         first.candidate.claim,
         second.candidate.claim,
+    ]
+    assert any(event == "candidate_group_split" for event, _ in batch.trace)
+
+
+def test_candidate_group_splits_same_file_and_severity_with_different_types():
+    first = _dossier("candidate-first", issue_type="runtime interruption")
+    second = _dossier("candidate-second", issue_type="dead catch")
+    group = CandidateGroup(
+        id="candidate-group-different-types",
+        members=(first.candidate, second.candidate),
+        primary_risk_tag=RiskTag.ERROR_HANDLING,
+        severity_proposal=Severity.WARNING,
+        confidence=0.99,
+        shared_root_cause="claimed shared root",
+        shared_behavior="claimed shared behavior",
+        shared_fix="claimed shared fix",
+    )
+    batch = JudgeBatch()
+    issues = [
+        (
+            dossier.candidate.id,
+            dossier.candidate.to_issue(),
+        )
+        for dossier in (first, second)
+    ]
+
+    _emit_supported_issues(batch, issues, [group])
+
+    assert len(batch.final_issues) == 2
+    assert batch.final_candidate_ids == [
+        first.candidate.id,
+        second.candidate.id,
     ]
     assert any(event == "candidate_group_split" for event, _ in batch.trace)
 

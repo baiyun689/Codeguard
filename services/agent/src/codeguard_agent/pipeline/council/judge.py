@@ -87,9 +87,13 @@ def _emit_supported_issues(
         if not kept:
             continue
 
-        # 裁决后严重度或文件不同，说明实际影响并不等价，安全拆回多条。
+        # 类型、裁决后严重度或文件不同，说明实际影响并不等价，安全拆回多条。
         output_shapes = {
-            (member_issue.file, member_issue.severity)
+            (
+                member_issue.file,
+                member_issue.type.strip().casefold(),
+                member_issue.severity,
+            )
             for _, member_issue in kept
         }
         if len(output_shapes) != 1:

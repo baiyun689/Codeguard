@@ -236,7 +236,9 @@ class CouncilTraceStats(BaseModel):
     candidate_count: int = 0
     candidate_count_by_agent: dict[str, int] = Field(default_factory=dict)
     raw_candidate_count: int = Field(default=0, description="归并前的原始候选数")
-    candidate_dedup_removed_count: int = Field(default=0, description="归并移除的候选数")
+    logical_candidate_count: int = Field(default=0, description="严格等价分组后的逻辑候选数")
+    candidate_grouped_member_count: int = Field(default=0, description="逻辑分组减少量")
+    candidate_dedup_removed_count: int = Field(default=0, description="归并阶段真实删除的候选数")
     candidate_dedup_llm_calls: int = Field(default=0, description="归并 LLM 调用次数")
     candidate_dedup_block_failure_count: int = Field(default=0, description="归并失败块数")
     evidence_request_count: int = Field(default=0, description="累计有效/无效证据请求数")

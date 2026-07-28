@@ -157,10 +157,12 @@ def test_候选归并压缩重复与疑似误归并指标():
             reported_total=2,
             true_positives=1,
             false_positives=1,
-            council_trace=CouncilTraceStats(
-                raw_candidate_count=4,
-                candidate_count=3,
-                candidate_dedup_removed_count=1,
+                council_trace=CouncilTraceStats(
+                    raw_candidate_count=4,
+                    logical_candidate_count=3,
+                    candidate_grouped_member_count=1,
+                    candidate_count=4,
+                    candidate_dedup_removed_count=0,
             ),
         ),
         _vuln(
@@ -170,10 +172,12 @@ def test_候选归并压缩重复与疑似误归并指标():
             true_positives=1,
             false_positives=1,
             false_negatives=1,
-            council_trace=CouncilTraceStats(
-                raw_candidate_count=3,
-                candidate_count=2,
-                candidate_dedup_removed_count=1,
+                council_trace=CouncilTraceStats(
+                    raw_candidate_count=3,
+                    logical_candidate_count=2,
+                    candidate_grouped_member_count=1,
+                    candidate_count=3,
+                    candidate_dedup_removed_count=0,
             ),
         ),
     ]

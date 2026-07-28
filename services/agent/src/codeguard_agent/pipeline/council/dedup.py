@@ -96,6 +96,8 @@ class CandidateBlockFailure:
 
 class CandidateDedupStats(TypedDict):
     raw_candidate_count: int
+    logical_candidate_count: int
+    grouped_member_count: int
     removed_count: int
     llm_call_count: int
     block_failure_count: int

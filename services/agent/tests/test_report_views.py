@@ -158,9 +158,11 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
             case_id="v",
             is_clean=False,
             council_trace={
-                "candidate_count": 3,
+                "candidate_count": 5,
                 "raw_candidate_count": 5,
-                "candidate_dedup_removed_count": 2,
+                "logical_candidate_count": 3,
+                "candidate_grouped_member_count": 2,
+                "candidate_dedup_removed_count": 0,
                 "candidate_dedup_llm_calls": 2,
                 "candidate_dedup_block_failure_count": 1,
                 "candidate_count_by_agent": {
@@ -194,7 +196,7 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
                 "registry_risk_tag_total": 24,
                 "registry_risk_tag_coverage": 1.0,
                 "actual_evidence_tool_calls": 1,
-                "average_evidence_tool_calls": 0.333333,
+                "average_evidence_tool_calls": 0.2,
                 "trace_events": 9,
             },
         )
@@ -202,9 +204,10 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
 
     out = render_report(_metrics(), _settings(), [run], [])
 
-    assert "原始→归并后候选" in out
-    assert "5->3" in out
-    assert "归并=2" in out
+    assert "原始→逻辑组/举证成员" in out
+    assert "5->3/5" in out
+    assert "逻辑归组=2" in out
+    assert "实删=0" in out
     assert "角色候选分布" in out
     assert "threat_model=1, behavior=1, maintainability=1" in out
     assert "证据请求" in out
@@ -221,7 +224,7 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
     assert "RiskTag 策略覆盖率" in out
     assert "24/24 (1.000)" in out
     assert "平均实际证据工具调用" in out
-    assert "1/3 (0.333)" in out
+    assert "1/5 (0.200)" in out
     assert "WARNING->CRITICAL=1" in out
     assert "evidence_requests=" not in out
 

@@ -186,13 +186,13 @@ def aggregate(runs: list[list[MatchOutcome]]) -> AggregateMetrics:
         for o in council_outcomes
         if o.council_trace is not None
     )
-    removed_candidates = sum(
-        o.council_trace.candidate_dedup_removed_count
+    grouped_candidates = sum(
+        o.council_trace.candidate_grouped_member_count
         for o in council_outcomes
         if o.council_trace is not None
     )
     candidate_compression_rate = (
-        _safe_div(removed_candidates, raw_candidates)
+        _safe_div(grouped_candidates, raw_candidates)
         if raw_candidates
         else None
     )
@@ -210,7 +210,7 @@ def aggregate(runs: list[list[MatchOutcome]]) -> AggregateMetrics:
         o
         for o in dedup_vuln_outcomes
         if o.council_trace is not None
-        and o.council_trace.candidate_dedup_removed_count > 0
+        and o.council_trace.candidate_grouped_member_count > 0
     ]
     suspected_false_merge_rate = (
         _safe_div(

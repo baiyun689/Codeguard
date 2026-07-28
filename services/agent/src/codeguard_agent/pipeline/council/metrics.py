@@ -150,6 +150,14 @@ def compute_council_run_stats(
     final_issue_count = len(final_candidate_ids)
     dedup = candidate_dedup_stats or {}
     raw_candidate_count = dedup.get("raw_candidate_count", candidate_count)
+    logical_candidate_count = dedup.get(
+        "logical_candidate_count",
+        candidate_count,
+    )
+    candidate_grouped_member_count = dedup.get(
+        "grouped_member_count",
+        max(0, raw_candidate_count - logical_candidate_count),
+    )
     candidate_dedup_removed_count = dedup.get(
         "removed_count",
         max(0, raw_candidate_count - candidate_count),
@@ -182,6 +190,8 @@ def compute_council_run_stats(
         evidence_request_count=evidence_request_count,
         truncated_candidates=truncated_candidates,
         raw_candidate_count=raw_candidate_count,
+        logical_candidate_count=logical_candidate_count,
+        candidate_grouped_member_count=candidate_grouped_member_count,
         candidate_dedup_removed_count=candidate_dedup_removed_count,
         candidate_dedup_llm_calls=candidate_dedup_llm_calls,
         candidate_dedup_block_failure_count=candidate_dedup_block_failure_count,

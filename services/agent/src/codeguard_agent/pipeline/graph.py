@@ -981,7 +981,9 @@ def _coordinator_node(effective_judge_llm):
             "candidate_tag_resolutions": dict(resolutions),
             "candidate_dedup_stats": {
                 "raw_candidate_count": result.raw_candidate_count,
-                "removed_count": result.grouped_member_count,
+                "logical_candidate_count": result.logical_candidate_count,
+                "grouped_member_count": result.grouped_member_count,
+                "removed_count": 0,
                 "llm_call_count": result.llm_call_count,
                 "block_failure_count": len(result.block_failures),
             },
