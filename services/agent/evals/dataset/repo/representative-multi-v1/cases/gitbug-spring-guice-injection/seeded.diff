@@ -1,0 +1,27 @@
+diff --git a/src/main/java/org/springframework/guice/annotation/GuiceFactoryBean.java b/src/main/java/org/springframework/guice/annotation/GuiceFactoryBean.java
+--- a/src/main/java/org/springframework/guice/annotation/GuiceFactoryBean.java
++++ b/src/main/java/org/springframework/guice/annotation/GuiceFactoryBean.java
+@@ -58,8 +58,8 @@
+ 	}
+ 
+ 	@Override
+ 	public boolean isSingleton() {
+-		return this.isSingleton;
++		return true;
+ 	}
+ 
+ }
+diff --git a/src/main/java/org/springframework/guice/module/GuiceAutowireCandidateResolver.java b/src/main/java/org/springframework/guice/module/GuiceAutowireCandidateResolver.java
+--- a/src/main/java/org/springframework/guice/module/GuiceAutowireCandidateResolver.java
++++ b/src/main/java/org/springframework/guice/module/GuiceAutowireCandidateResolver.java
+@@ -139,9 +139,9 @@
+ 				Type type = descriptor.getResolvableType().getType();
+ 
+ 				Qualifier qualifierValue = qualifierBean(descriptor);
+ 				if (qualifierValue != null) {
+-					return Key.get(type, Names.named(qualifierValue.value()));
++					return Key.get(type);
+ 				}
+ 				return Key.get(type);
+ 			}
+ 

@@ -1,0 +1,72 @@
+case_id: vul4j-42-command-injection
+issues:
+- id: E1
+  origin: upstream-real
+  title: CWE-78 command injection
+  dimension: security
+  severity: CRITICAL
+  file: src/main/java/org/codehaus/plexus/util/cli/Commandline.java
+  line: 0
+  root_cause: Untrusted command elements are passed to an operating-system command
+  trigger: 不可信参数进入 Commandline 和 BourneShell
+  observable_consequence: 攻击者注入额外 shell 命令
+  fix_action: 以参数数组执行并对 shell 元字符实施严格编码
+  call_path:
+  - Commandline.execute
+  - Shell.getShellCommandLine
+  - BourneShell.getExecutionPreamble
+  primary_risk_tag: INJECTION
+  expected_reviewers:
+  - threat_model
+  type_keywords:
+  - command injection
+  - 命令注入
+  - CWE-78
+- id: E2
+  origin: controlled-seed
+  title: 扫描器忽略禁止跟随符号链接的配置
+  dimension: security
+  severity: CRITICAL
+  file: src/main/java/org/codehaus/plexus/util/DirectoryScanner.java
+  line: 275
+  root_cause: setFollowSymlinks 丢弃调用方提供的安全策略
+  trigger: 构建目录中存在指向工作区外部的符号链接
+  observable_consequence: 扫描结果包含根目录外文件并被后续打包或处理
+  fix_action: 保存并执行调用方指定的 followSymlinks 值
+  call_path:
+  - DirectoryScanner.setFollowSymlinks
+  - scan
+  - scandir
+  - isSymbolicLink
+  primary_risk_tag: FILE_PATH_IO
+  expected_reviewers:
+  - threat_model
+  - behavior
+  type_keywords:
+  - symlink
+  - directory scan
+  - workspace escape
+- id: E3
+  origin: controlled-seed
+  title: 归档解压计数器使用可溢出的 int
+  dimension: security
+  severity: CRITICAL
+  file: src/main/java/org/codehaus/plexus/util/Expand.java
+  line: 180
+  root_cause: 单文件解压字节数以 int 累加且未在写入前实施可靠上限
+  trigger: 高压缩率条目解压后超过 Integer.MAX_VALUE
+  observable_consequence: 计数回绕后资源限制失效并持续占用磁盘
+  fix_action: 使用 long 累计总归档展开量并在写入前拒绝超限
+  call_path:
+  - Expand.expandFile
+  - extractFile
+  - ZipInputStream.read
+  - FileOutputStream.write
+  primary_risk_tag: PERFORMANCE
+  expected_reviewers:
+  - maintainability
+  - threat_model
+  type_keywords:
+  - zip bomb
+  - integer overflow
+  - disk exhaustion

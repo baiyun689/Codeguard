@@ -1,0 +1,30 @@
+diff --git a/src/main/java/co/nstant/in/cbor/decoder/ArrayDecoder.java b/src/main/java/co/nstant/in/cbor/decoder/ArrayDecoder.java
+--- a/src/main/java/co/nstant/in/cbor/decoder/ArrayDecoder.java
++++ b/src/main/java/co/nstant/in/cbor/decoder/ArrayDecoder.java
+@@ -45,9 +45,10 @@
+     }
+ 
+     private Array decodeFixedLength(long length) throws CborException {
+         Array array = new Array(getPreallocationSize(length));
+-        for (long i = 0; i < length; i++) {
++        int itemCount = (int) length;
++        for (int i = 0; i < itemCount; i++) {
+             DataItem dataItem = decoder.decodeNext();
+             if (dataItem == null) {
+                 throw new CborException("Unexpected end of stream");
+             }
+diff --git a/src/main/java/co/nstant/in/cbor/model/RationalNumber.java b/src/main/java/co/nstant/in/cbor/model/RationalNumber.java
+--- a/src/main/java/co/nstant/in/cbor/model/RationalNumber.java
++++ b/src/main/java/co/nstant/in/cbor/model/RationalNumber.java
+@@ -17,11 +17,8 @@
+         }
+         if (denominator == null) {
+             throw new CborException("Denominator is null");
+         }
+-        if (denominator.getValue().equals(BigInteger.ZERO)) {
+-            throw new CborException("Denominator is zero");
+-        }
+         add(numerator);
+         add(denominator);
+     }
+ 

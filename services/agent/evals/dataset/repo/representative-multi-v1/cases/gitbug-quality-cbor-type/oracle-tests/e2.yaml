@@ -1,0 +1,11 @@
+issue_id: E2
+not_exposed_to_review_model: true
+trigger: 解码 tag 30 或调用公开构造器传入零分母
+expected_observation: 无效有理数进入模型并在后续运算、编码或展示阶段延迟失败
+source_anchor:
+  file: src/main/java/co/nstant/in/cbor/model/RationalNumber.java
+  line: 17
+  call_path:
+  - CborDecoder.decodeNext
+  - RationalNumber.<init>
+  - DataItem.add

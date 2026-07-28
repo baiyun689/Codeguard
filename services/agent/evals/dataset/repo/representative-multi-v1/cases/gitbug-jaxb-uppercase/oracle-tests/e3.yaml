@@ -1,0 +1,11 @@
+issue_id: E3
+not_exposed_to_review_model: true
+trigger: 同一次 XJC 生成包含两个或更多 schema 包
+expected_observation: 后续包的 factory 被跳过，部分元素声明无法进入生成代码
+source_anchor:
+  file: src/main/java/com/sun/tools/xjc/addon/xew/Candidate.java
+  line: 190
+  call_path:
+  - Plugin.run
+  - Candidate.addObjectFactoryForClass
+  - objectFactoryClasses

@@ -1,0 +1,69 @@
+case_id: vul4j-43-path-traversal
+issues:
+- id: E1
+  origin: upstream-real
+  title: CWE-22 path traversal
+  dimension: security
+  severity: CRITICAL
+  file: util/src/main/java/org/eclipse/rdf4j/common/io/ZipUtil.java
+  line: 0
+  root_cause: Attacker-controlled path can escape the configured base directory
+  trigger: 恶意 ZIP entry 使用父目录片段
+  observable_consequence: 文件被写到目标目录之外
+  fix_action: 规范化输出路径并验证仍位于目标根目录
+  call_path:
+  - RDFLoader.loadZip
+  - ZipUtil.extract
+  - Files.copy
+  primary_risk_tag: FILE_PATH_IO
+  expected_reviewers:
+  - threat_model
+  - behavior
+  type_keywords:
+  - path traversal
+  - 路径穿越
+  - CWE-22
+- id: E2
+  origin: controlled-seed
+  title: 以 available() 推断完整流长度
+  dimension: logic
+  severity: WARNING
+  file: util/src/main/java/org/eclipse/rdf4j/common/io/IOUtil.java
+  line: 204
+  root_cause: InputStream.available 仅表示当前无阻塞可读字节而非总长度
+  trigger: 网络流或分段压缩流初次只暴露部分数据
+  observable_consequence: RDF 文档被静默截断并产生不完整仓库状态
+  fix_action: 持续读取到 EOF，并由显式调用方预算控制最大字节数
+  call_path:
+  - RDFLoader.load
+  - IOUtil.readBytes
+  - InputStream.available
+  primary_risk_tag: API_CONTRACT
+  expected_reviewers:
+  - behavior
+  type_keywords:
+  - InputStream
+  - available
+  - truncation
+- id: E3
+  origin: controlled-seed
+  title: 远程 RDF 加载只限制建连而不限制读取
+  dimension: quality
+  severity: WARNING
+  file: repository/api/src/main/java/org/eclipse/rdf4j/repository/util/RDFLoader.java
+  line: 132
+  root_cause: URLConnection 配置 connect timeout 后仍保留无限 read timeout
+  trigger: 远端接受连接后持续缓慢发送或停止响应
+  observable_consequence: 工作线程和连接长期占用，批量导入无法释放容量
+  fix_action: 同时配置有限 read timeout，并让上层提供统一请求期限
+  call_path:
+  - RDFLoader.load(URL)
+  - URLConnection.getInputStream
+  - RDFParser.parse
+  primary_risk_tag: RESOURCE_LIFECYCLE
+  expected_reviewers:
+  - maintainability
+  type_keywords:
+  - read timeout
+  - slow response
+  - resource

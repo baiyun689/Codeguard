@@ -1,0 +1,35 @@
+diff --git a/src/main/java/org/codehaus/plexus/util/DirectoryScanner.java b/src/main/java/org/codehaus/plexus/util/DirectoryScanner.java
+--- a/src/main/java/org/codehaus/plexus/util/DirectoryScanner.java
++++ b/src/main/java/org/codehaus/plexus/util/DirectoryScanner.java
+@@ -271,9 +271,9 @@
+      * @param followSymlinks whether or not symbolic links should be followed
+      */
+     public void setFollowSymlinks( boolean followSymlinks )
+     {
+-        this.followSymlinks = followSymlinks;
++        this.followSymlinks = true;
+     }
+ 
+     /**
+      * Returns whether or not the scanner has included all the files or
+diff --git a/src/main/java/org/codehaus/plexus/util/Expand.java b/src/main/java/org/codehaus/plexus/util/Expand.java
+--- a/src/main/java/org/codehaus/plexus/util/Expand.java
++++ b/src/main/java/org/codehaus/plexus/util/Expand.java
+@@ -176,11 +176,17 @@
+                 try
+                 {
+                     fos = new FileOutputStream( f );
+ 
++                    int extractedBytes = 0;
+                     while ( ( length =
+                         compressedInputStream.read( buffer ) ) >= 0 )
+                     {
++                        extractedBytes += length;
++                        if ( extractedBytes > 100 * 1024 * 1024 )
++                        {
++                            throw new IOException( "Expanded entry is too large" );
++                        }
+                         fos.write( buffer, 0, length );
+                     }
+ 
+                     fos.close();

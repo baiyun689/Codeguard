@@ -1,0 +1,48 @@
+id: vul4j-42-command-injection
+category: representative multi-issue PR
+description: OS 命令构造、文件遍历与归档解压三类高风险边界。
+ground_truth_mode: complete-issue-set
+difficulty: deep
+provenance:
+  source: Vul4J
+  repository_url: https://github.com/codehaus-plexus/plexus-utils.git
+  base_revision: b38a1b3a4352303e4312b2bb601a0d7ec6e28f41
+  head_revision: 86c37983bb2bd92b1df43fe73f321ffbfa155070
+  patch_direction: reversed-fix
+  license: Vul4J CC-BY-4.0; source per upstream
+  source_case: vul4j-42-command-injection
+  enhancement: two controlled issues added to the frozen vulnerable snapshot
+expected:
+- id: E1
+  origin: upstream-real
+  file: src/main/java/org/codehaus/plexus/util/cli/Commandline.java
+  line: 0
+  type_keywords:
+  - command injection
+  - 命令注入
+  - CWE-78
+  root_cause: Untrusted command elements are passed to an operating-system command
+  risk_tag: INJECTION
+  tolerance: 0
+- id: E2
+  origin: controlled-seed
+  file: src/main/java/org/codehaus/plexus/util/DirectoryScanner.java
+  line: 275
+  type_keywords:
+  - symlink
+  - directory scan
+  - workspace escape
+  root_cause: setFollowSymlinks 丢弃调用方提供的安全策略
+  risk_tag: FILE_PATH_IO
+  tolerance: 5
+- id: E3
+  origin: controlled-seed
+  file: src/main/java/org/codehaus/plexus/util/Expand.java
+  line: 180
+  type_keywords:
+  - zip bomb
+  - integer overflow
+  - disk exhaustion
+  root_cause: 单文件解压字节数以 int 累加且未在写入前实施可靠上限
+  risk_tag: PERFORMANCE
+  tolerance: 5

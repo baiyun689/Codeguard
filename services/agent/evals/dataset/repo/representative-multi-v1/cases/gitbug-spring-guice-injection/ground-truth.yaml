@@ -1,0 +1,72 @@
+case_id: gitbug-spring-guice-injection
+issues:
+- id: E1
+  origin: upstream-real
+  title: dependency injection
+  dimension: logic
+  severity: WARNING
+  file: src/main/java/org/springframework/guice/module/SpringModule.java
+  line: 0
+  root_cause: Beans with custom annotations cannot be injected through the Spring/Guice
+    bridge
+  trigger: 通过自定义 binding annotation 请求 Spring bean
+  observable_consequence: Spring/Guice bridge 无法解析带自定义注解的依赖
+  fix_action: 完整保留 binding annotation 并按 factory method 元数据生成 Guice Key
+  call_path:
+  - SpringModule.bind
+  - getAnnotationForBeanDefinition
+  - bindConditionally
+  primary_risk_tag: API_CONTRACT
+  expected_reviewers:
+  - behavior
+  - maintainability
+  type_keywords:
+  - custom annotation
+  - Guice
+  - inject
+  - 注入
+- id: E2
+  origin: controlled-seed
+  title: 延迟代理解析时丢失 Qualifier
+  dimension: logic
+  severity: WARNING
+  file: src/main/java/org/springframework/guice/module/GuiceAutowireCandidateResolver.java
+  line: 141
+  root_cause: DependencyDescriptor 中的 Qualifier 未进入 Guice Key
+  trigger: 同一接口存在两个命名实现且依赖通过延迟代理解析
+  observable_consequence: 代理取得默认实现而不是注入点指定的实现
+  fix_action: 以 qualifier 值构造带 Names.named 的 Key
+  call_path:
+  - getLazyResolutionProxyIfNecessary
+  - buildLazyResolutionProxy
+  - guiceInstanceResolverKey
+  - Injector.getInstance
+  primary_risk_tag: API_CONTRACT
+  expected_reviewers:
+  - behavior
+  type_keywords:
+  - Qualifier
+  - lazy proxy
+  - Guice Key
+- id: E3
+  origin: controlled-seed
+  title: FactoryBean 覆盖 Guice prototype scope
+  dimension: logic
+  severity: WARNING
+  file: src/main/java/org/springframework/guice/annotation/GuiceFactoryBean.java
+  line: 50
+  root_cause: FactoryBean 无条件向 Spring 声明单例
+  trigger: Guice Key 对应 prototype/no-scope binding 且被 Spring 多次请求
+  observable_consequence: 首个实例被 Spring 缓存并错误复用于后续请求
+  fix_action: 透传注册时计算出的 isSingleton 语义
+  call_path:
+  - GuiceModuleRegistrar
+  - GuiceFactoryBean.isSingleton
+  - BeanFactory
+  primary_risk_tag: API_CONTRACT
+  expected_reviewers:
+  - behavior
+  type_keywords:
+  - FactoryBean
+  - scope
+  - prototype

@@ -1,0 +1,46 @@
+id: representative-multi-v1
+benchmark_type: controlled project-level benchmark
+case_count: 10
+issue_count: 30
+selection: ten representative, unique real Java repositories from interview-v1
+cases:
+- id: gitbug-spring-guice-injection
+  repository_url: https://github.com/spring-projects/spring-guice.git
+  source_case: gitbug-spring-guice-injection
+  issue_count: 3
+- id: vul4j-42-command-injection
+  repository_url: https://github.com/codehaus-plexus/plexus-utils.git
+  source_case: vul4j-42-command-injection
+  issue_count: 3
+- id: vul4j-43-path-traversal
+  repository_url: https://github.com/eclipse/rdf4j.git
+  source_case: vul4j-43-path-traversal
+  issue_count: 3
+- id: vul4j-48-jwt-validation
+  repository_url: https://github.com/inversoft/prime-jwt.git
+  source_case: vul4j-48-jwt-validation
+  issue_count: 3
+- id: gitbug-spring-retry-interrupt
+  repository_url: https://github.com/spring-projects/spring-retry.git
+  source_case: gitbug-spring-retry-interrupt
+  issue_count: 3
+- id: gitbug-snowflake-credentials
+  repository_url: https://github.com/snowflakedb/snowflake-jdbc.git
+  source_case: gitbug-snowflake-credentials
+  issue_count: 3
+- id: gitbug-evalex-memory
+  repository_url: https://github.com/ezylang/EvalEx.git
+  source_case: gitbug-evalex-memory
+  issue_count: 3
+- id: gitbug-mcs-runtime-errors
+  repository_url: https://github.com/mthmulders/mcs.git
+  source_case: gitbug-mcs-runtime-errors
+  issue_count: 3
+- id: gitbug-jaxb-uppercase
+  repository_url: https://github.com/dmak/jaxb-xew-plugin.git
+  source_case: gitbug-jaxb-uppercase
+  issue_count: 3
+- id: gitbug-quality-cbor-type
+  repository_url: https://github.com/c-rack/cbor-java.git
+  source_case: gitbug-quality-cbor-type
+  issue_count: 3

@@ -1,0 +1,11 @@
+issue_id: E3
+not_exposed_to_review_model: true
+trigger: 连续网络失败使上一次 sleep 多轮增长
+expected_observation: 重试线程长时间不可用，乘法溢出后还可能抛出参数异常
+source_anchor:
+  file: src/main/java/net/snowflake/client/util/DecorrelatedJitterBackoff.java
+  line: 20
+  call_path:
+  - RetryingRestClient
+  - DecorrelatedJitterBackoff.nextSleepTime
+  - Thread.sleep

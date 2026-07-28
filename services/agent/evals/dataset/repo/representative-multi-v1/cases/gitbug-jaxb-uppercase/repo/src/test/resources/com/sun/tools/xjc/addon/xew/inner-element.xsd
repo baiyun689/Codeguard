@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xsd:schema
+	jaxb:version="3.0"
+	jaxb:extensionBindingPrefixes="xjc"
+	xmlns:jaxb="https://jakarta.ee/xml/ns/jaxb"
+	xmlns:xjc="http://java.sun.com/xml/ns/jaxb/xjc"
+	xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+	elementFormDefault="qualified"
+>
+	<xsd:annotation>
+		<xsd:appinfo>
+			<jaxb:schemaBindings>
+				<jaxb:package name="inner_element" />
+			</jaxb:schemaBindings>
+			<jaxb:globalBindings>
+				<xjc:superClass name="com.sun.tools.xjc.addon.xew.CommonBean" />
+				<xjc:superInterface name="java.lang.Cloneable" />
+			</jaxb:globalBindings>
+		</xsd:appinfo>
+	</xsd:annotation>
+
+	<xsd:include schemaLocation="inner-element-shared.xsd" />
+</xsd:schema>

@@ -1,0 +1,28 @@
+diff --git a/src/main/java/com/ezylang/evalex/data/MapBasedDataAccessor.java b/src/main/java/com/ezylang/evalex/data/MapBasedDataAccessor.java
+--- a/src/main/java/com/ezylang/evalex/data/MapBasedDataAccessor.java
++++ b/src/main/java/com/ezylang/evalex/data/MapBasedDataAccessor.java
+@@ -24,9 +24,9 @@
+  */
+ public class MapBasedDataAccessor implements DataAccessorIfc {
+ 
+   private final Map<String, EvaluationValue> variables =
+-      new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
++      new TreeMap<>((left, right) -> left.toUpperCase().compareTo(right.toUpperCase()));
+ 
+   @Override
+   public EvaluationValue getData(String variable) {
+     return variables.get(variable);
+diff --git a/src/main/java/com/ezylang/evalex/parser/ShuntingYardConverter.java b/src/main/java/com/ezylang/evalex/parser/ShuntingYardConverter.java
+--- a/src/main/java/com/ezylang/evalex/parser/ShuntingYardConverter.java
++++ b/src/main/java/com/ezylang/evalex/parser/ShuntingYardConverter.java
+@@ -268,9 +268,9 @@
+       return currentOperator.getPrecedence(configuration)
+           <= nextOperator.getPrecedence(configuration);
+     } else {
+       return currentOperator.getPrecedence(configuration)
+-          < nextOperator.getPrecedence(configuration);
++          <= nextOperator.getPrecedence(configuration);
+     }
+   }
+ 
+   private boolean isOperator(Token token) {

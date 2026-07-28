@@ -1,0 +1,69 @@
+case_id: gitbug-mcs-runtime-errors
+issues:
+- id: E1
+  origin: upstream-real
+  title: runtime error handling
+  dimension: logic
+  severity: WARNING
+  file: src/main/java/it/mulders/mcs/common/Result.java
+  line: 0
+  root_cause: Runtime failures are not converted into the expected error path
+  trigger: HTTP、JSON 或映射阶段抛出运行时异常
+  observable_consequence: CLI 绕过 Result.Failure 合约并直接崩溃
+  fix_action: 在 I/O 边界捕获可预期解析异常并保留原因返回 Failure
+  call_path:
+  - SearchClient.search
+  - SearchResponseBodyHandler.apply
+  - Result
+  primary_risk_tag: ERROR_HANDLING
+  expected_reviewers:
+  - behavior
+  type_keywords:
+  - runtime error
+  - TLS
+  - 错误处理
+- id: E2
+  origin: controlled-seed
+  title: 搜索总数被窄化为 short
+  dimension: logic
+  severity: WARNING
+  file: src/main/java/it/mulders/mcs/common/SearchResponseBodyHandler.java
+  line: 63
+  root_cause: JSON 中的 int 结果数在领域响应构造时再次窄化为 16 位
+  trigger: 中央仓库查询命中超过 32767 个文档
+  observable_consequence: numFound 回绕为负数并破坏分页、输出模式和唯一结果判断
+  fix_action: 保持协议字段的 int/long 宽度并校验非负范围
+  call_path:
+  - SearchClient.search
+  - SearchResponseBodyHandler.constructResponse
+  - CoordinatePrinter
+  primary_risk_tag: API_CONTRACT
+  expected_reviewers:
+  - behavior
+  type_keywords:
+  - numeric narrowing
+  - numFound
+  - pagination
+- id: E3
+  origin: controlled-seed
+  title: 响应映射静默截断文档列表
+  dimension: quality
+  severity: WARNING
+  file: src/main/java/it/mulders/mcs/common/SearchResponseBodyHandler.java
+  line: 70
+  root_cause: BodyHandler 在协议解析层硬编码最多保留 20 个文档
+  trigger: 调用方请求大于 20 的结果页且服务端正常返回
+  observable_consequence: 响应声明的总数与实际 docs 不一致，调用方静默丢失结果
+  fix_action: 完整映射当前响应页，将分页上限留在查询构造层
+  call_path:
+  - SearchClient.search
+  - SearchResponseBodyHandler.constructDocs
+  - SearchResultPrinter
+  primary_risk_tag: API_CONTRACT
+  expected_reviewers:
+  - behavior
+  - maintainability
+  type_keywords:
+  - silent truncation
+  - response mapping
+  - pagination

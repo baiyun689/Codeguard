@@ -1,0 +1,48 @@
+id: gitbug-evalex-memory
+category: representative multi-issue PR
+description: 表达式词法分析、变量解析与运算符结合性。
+ground_truth_mode: complete-issue-set
+difficulty: deep
+provenance:
+  source: GitBug-Java
+  repository_url: https://github.com/ezylang/EvalEx.git
+  base_revision: 7c39c5478a3934ae862aa5d86718d7414ecb3a3c
+  head_revision: df8eeeb85e2402bb88784729c497d9b3cfcfa27d
+  patch_direction: reversed-fix
+  license: GitBug-Java metadata MIT; source per upstream
+  source_case: gitbug-evalex-memory
+  enhancement: two controlled issues added to the frozen vulnerable snapshot
+expected:
+- id: E1
+  origin: upstream-real
+  file: src/main/java/com/ezylang/evalex/parser/Tokenizer.java
+  line: 0
+  type_keywords:
+  - OutOfMemoryError
+  - memory leak
+  - 内存
+  root_cause: e.<number> input causes unbounded memory growth
+  risk_tag: PERFORMANCE
+  tolerance: 0
+- id: E2
+  origin: controlled-seed
+  file: src/main/java/com/ezylang/evalex/data/MapBasedDataAccessor.java
+  line: 28
+  type_keywords:
+  - locale
+  - case insensitive
+  - variable lookup
+  root_cause: 大小写无关比较器使用进程默认区域进行大写转换
+  risk_tag: API_CONTRACT
+  tolerance: 5
+- id: E3
+  origin: controlled-seed
+  file: src/main/java/com/ezylang/evalex/parser/ShuntingYardConverter.java
+  line: 268
+  type_keywords:
+  - associativity
+  - precedence
+  - AST
+  root_cause: 右结合分支在优先级相等时也弹出栈顶运算符
+  risk_tag: API_CONTRACT
+  tolerance: 5

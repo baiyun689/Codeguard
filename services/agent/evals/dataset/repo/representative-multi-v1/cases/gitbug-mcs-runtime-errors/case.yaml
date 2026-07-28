@@ -1,0 +1,48 @@
+id: gitbug-mcs-runtime-errors
+category: representative multi-issue PR
+description: HTTP 搜索客户端、JSON 类型转换与结果打印链。
+ground_truth_mode: complete-issue-set
+difficulty: deep
+provenance:
+  source: GitBug-Java
+  repository_url: https://github.com/mthmulders/mcs.git
+  base_revision: 12a39786d7533a368462d3c46be77072948c6e48
+  head_revision: d7fbf8eaf58c416bf5fd861a005f47dd3d0d2d09
+  patch_direction: reversed-fix
+  license: GitBug-Java metadata MIT; source per upstream
+  source_case: gitbug-mcs-runtime-errors
+  enhancement: two controlled issues added to the frozen vulnerable snapshot
+expected:
+- id: E1
+  origin: upstream-real
+  file: src/main/java/it/mulders/mcs/common/Result.java
+  line: 0
+  type_keywords:
+  - runtime error
+  - TLS
+  - 错误处理
+  root_cause: Runtime failures are not converted into the expected error path
+  risk_tag: ERROR_HANDLING
+  tolerance: 0
+- id: E2
+  origin: controlled-seed
+  file: src/main/java/it/mulders/mcs/common/SearchResponseBodyHandler.java
+  line: 63
+  type_keywords:
+  - numeric narrowing
+  - numFound
+  - pagination
+  root_cause: JSON 中的 int 结果数在领域响应构造时再次窄化为 16 位
+  risk_tag: API_CONTRACT
+  tolerance: 5
+- id: E3
+  origin: controlled-seed
+  file: src/main/java/it/mulders/mcs/common/SearchResponseBodyHandler.java
+  line: 70
+  type_keywords:
+  - silent truncation
+  - response mapping
+  - pagination
+  root_cause: BodyHandler 在协议解析层硬编码最多保留 20 个文档
+  risk_tag: API_CONTRACT
+  tolerance: 5

@@ -1,0 +1,57 @@
+<xsd:schema
+	jaxb:version="3.0"
+	targetNamespace="http://foo.org/"
+	xmlns:foo="http://foo.org/"
+	xmlns:jaxb="https://jakarta.ee/xml/ns/jaxb"
+	xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+	elementFormDefault="qualified"
+>
+	<xsd:annotation>
+		<xsd:appinfo>
+			<jaxb:schemaBindings>
+				<jaxb:package name="element_name_collision" />
+			</jaxb:schemaBindings>
+		</xsd:appinfo>
+	</xsd:annotation>
+
+	<xsd:element name="root">
+		<xsd:complexType>
+			<xsd:sequence>
+				<xsd:element name="action">
+					<xsd:complexType>
+						<xsd:choice>
+							<xsd:element name="update">
+								<xsd:complexType>
+									<xsd:sequence>
+										<xsd:element name="item" minOccurs="0" maxOccurs="unbounded">
+											<xsd:complexType>
+												<xsd:all>
+													<xsd:element name="key" type="xsd:string" />
+													<xsd:element name="value" type="xsd:string" />
+												</xsd:all>
+											</xsd:complexType>
+										</xsd:element>
+									</xsd:sequence>
+								</xsd:complexType>
+							</xsd:element>
+							<xsd:element name="add">
+								<xsd:complexType>
+									<xsd:sequence>
+										<xsd:element name="item" minOccurs="0" maxOccurs="unbounded" nillable="true">
+											<xsd:complexType>
+												<xsd:all>
+													<xsd:element name="key" type="xsd:string" />
+													<xsd:element name="value" type="xsd:string" />
+												</xsd:all>
+											</xsd:complexType>
+										</xsd:element>
+									</xsd:sequence>
+								</xsd:complexType>
+							</xsd:element>
+						</xsd:choice>
+					</xsd:complexType>
+				</xsd:element>
+			</xsd:sequence>
+		</xsd:complexType>
+	</xsd:element>
+</xsd:schema>

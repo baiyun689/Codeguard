@@ -1,0 +1,11 @@
+issue_id: E2
+not_exposed_to_review_model: true
+trigger: 网络流或分段压缩流初次只暴露部分数据
+expected_observation: RDF 文档被静默截断并产生不完整仓库状态
+source_anchor:
+  file: util/src/main/java/org/eclipse/rdf4j/common/io/IOUtil.java
+  line: 204
+  call_path:
+  - RDFLoader.load
+  - IOUtil.readBytes
+  - InputStream.available

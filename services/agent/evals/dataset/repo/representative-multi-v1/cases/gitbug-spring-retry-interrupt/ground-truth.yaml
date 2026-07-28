@@ -1,0 +1,69 @@
+case_id: gitbug-spring-retry-interrupt
+issues:
+- id: E1
+  origin: upstream-real
+  title: interrupt handling
+  dimension: logic
+  severity: WARNING
+  file: src/main/java/org/springframework/retry/backoff/ExponentialBackOffPolicy.java
+  line: 0
+  root_cause: InterruptedException handling fails to restore the thread interruption
+    status
+  trigger: 退避 sleep 期间线程收到 interrupt
+  observable_consequence: 中断状态丢失，上层取消无法被观察
+  fix_action: 重新设置 interrupt flag 后传播 BackOffInterruptedException
+  call_path:
+  - RetryTemplate
+  - BackOffPolicy.backOff
+  - Sleeper.sleep
+  primary_risk_tag: ERROR_HANDLING
+  expected_reviewers:
+  - behavior
+  type_keywords:
+  - interrupted status
+  - interrupt
+  - 中断状态
+- id: E2
+  origin: controlled-seed
+  title: 有状态重试缓存退化为非线程安全 HashMap
+  dimension: logic
+  severity: WARNING
+  file: src/main/java/org/springframework/retry/policy/MapRetryContextCache.java
+  line: 39
+  root_cause: 共享 RetryContextCache 在并发 get/put/remove 下没有同步
+  trigger: 多个工作线程以不同业务键并发执行 stateful retry
+  observable_consequence: 缓存结构损坏、上下文串用或容量判断失真
+  fix_action: 使用并发映射并以原子操作组合容量检查和写入
+  call_path:
+  - RetryTemplate
+  - RetryContextCache
+  - MapRetryContextCache.put
+  primary_risk_tag: CONCURRENCY_CONSISTENCY
+  expected_reviewers:
+  - behavior
+  type_keywords:
+  - retry cache
+  - concurrency
+  - state
+- id: E3
+  origin: controlled-seed
+  title: 重试超时被窄化为 int
+  dimension: logic
+  severity: WARNING
+  file: src/main/java/org/springframework/retry/policy/TimeoutRetryPolicy.java
+  line: 52
+  root_cause: long 毫秒超时在构造时截断为 32 位有符号整数
+  trigger: 调用方配置超过 Integer.MAX_VALUE 毫秒的长周期任务
+  observable_consequence: 超时变为负数或较小正数，重试立即终止或提前结束
+  fix_action: 保持 long/Duration 类型并拒绝越界或负值
+  call_path:
+  - RetryTemplate.execute
+  - TimeoutRetryPolicy.open
+  - TimeoutRetryContext.isAlive
+  primary_risk_tag: API_CONTRACT
+  expected_reviewers:
+  - behavior
+  type_keywords:
+  - timeout
+  - narrowing
+  - overflow

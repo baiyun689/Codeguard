@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xsd:schema
+	jaxb:version="3.0"
+	targetNamespace="http://example.com/entry"
+	xmlns:jaxb="https://jakarta.ee/xml/ns/jaxb"
+	xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
+	<xsd:annotation>
+		<xsd:appinfo>
+			<jaxb:schemaBindings>
+				<jaxb:package name="different_namespaces" />
+			</jaxb:schemaBindings>
+		</xsd:appinfo>
+	</xsd:annotation>
+
+	<xsd:element name="entry">
+		<xsd:complexType>
+			<xsd:attribute name="name" />
+		</xsd:complexType>
+	</xsd:element>
+</xsd:schema>

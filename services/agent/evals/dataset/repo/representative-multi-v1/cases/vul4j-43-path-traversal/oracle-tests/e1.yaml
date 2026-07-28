@@ -1,0 +1,11 @@
+issue_id: E1
+not_exposed_to_review_model: true
+trigger: 恶意 ZIP entry 使用父目录片段
+expected_observation: 文件被写到目标目录之外
+source_anchor:
+  file: util/src/main/java/org/eclipse/rdf4j/common/io/ZipUtil.java
+  line: 0
+  call_path:
+  - RDFLoader.loadZip
+  - ZipUtil.extract
+  - Files.copy

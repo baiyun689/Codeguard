@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xsd:schema
+	jaxb:version="3.0"
+	xmlns:jaxb="https://jakarta.ee/xml/ns/jaxb"
+	xmlns:xew="http://github.com/jaxb-xew-plugin"
+	xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+	jaxb:extensionBindingPrefixes="xew"
+	elementFormDefault="qualified"
+>
+	<xsd:annotation>
+		<xsd:appinfo>
+			<jaxb:schemaBindings>
+				<jaxb:package name="element_with_customization" />
+			</jaxb:schemaBindings>
+			<xew:xew collection="java.util.LinkedHashSet" collectionInterface="java.util.Collection" />
+		</xsd:appinfo>
+	</xsd:annotation>
+
+	<!--
+		Elements use Java reserved words.
+	-->
+
+	<xsd:element name="post-office">
+		<xsd:complexType>
+			<!-- Example of type customization: all substituted fields in this class (if any) will inherit given settings -->
+			<xsd:annotation>
+				<xsd:appinfo>
+					<xew:xew collection="java.util.LinkedList" />
+				</xsd:appinfo>
+			</xsd:annotation>
+			<xsd:sequence>
+				<xsd:element ref="type-of-message" />
+				<xsd:element ref="args">
+					<xsd:annotation>
+						<xsd:appinfo>
+							<!-- Example of field customization: exclude this field from substitution -->
+							<xew:xew annotate="false" />
+						</xsd:appinfo>
+					</xsd:annotation>
+				</xsd:element>
+				<xsd:element ref="class">
+					<xsd:annotation>
+						<xsd:appinfo>
+							<!-- Force the property name to be "classes" (otherwise it becomes "clazzs") -->
+							<jaxb:property name="classes" />
+							<!-- Example of field customization: this field uses collection class different from global -->
+							<xew:xew collection="java.util.Vector" />
+						</xsd:appinfo>
+					</xsd:annotation>
+				</xsd:element>
+				<xsd:element ref="misc" minOccurs="0">
+					<xsd:annotation>
+						<xsd:appinfo>
+							<!-- Force the property name to be "misc" (otherwise it becomes "miscs") -->
+							<jaxb:property name="misc" />
+						</xsd:appinfo>
+					</xsd:annotation>
+				</xsd:element>
+			</xsd:sequence>
+		</xsd:complexType>
+	</xsd:element>
+
+	<xsd:element name="type-of-message">
+		<xsd:complexType>
+			<xsd:sequence>
+				<xsd:element name="type" type="xsd:string" maxOccurs="unbounded" />
+			</xsd:sequence>
+		</xsd:complexType>
+	</xsd:element>
+
+	<xsd:element name="class">
+		<xsd:complexType>
+			<xsd:choice>
+				<xsd:element name="name" type="xsd:string" maxOccurs="unbounded" />
+			</xsd:choice>
+		</xsd:complexType>
+	</xsd:element>
+
+	<xsd:element name="args">
+		<xsd:complexType>
+			<xsd:sequence>
+				<xsd:element name="arg" type="xsd:string" maxOccurs="unbounded" />
+			</xsd:sequence>
+		</xsd:complexType>
+	</xsd:element>
+
+	<xsd:element name="misc">
+		<xsd:complexType>
+			<xsd:sequence>
+				<xsd:any minOccurs="0" maxOccurs="unbounded" processContents="lax" />
+			</xsd:sequence>
+		</xsd:complexType>
+	</xsd:element>
+</xsd:schema>

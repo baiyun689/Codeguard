@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xsd:schema
+	jaxb:version="3.0"
+	xmlns:jaxb="https://jakarta.ee/xml/ns/jaxb"
+	xmlns:xew="http://github.com/jaxb-xew-plugin"
+	xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+	jaxb:extensionBindingPrefixes="xew"
+	elementFormDefault="qualified"
+>
+	<xsd:annotation>
+		<xsd:appinfo>
+			<jaxb:schemaBindings>
+				<jaxb:package name="element_list_extended" />
+			</jaxb:schemaBindings>
+			<xew:xew collection="java.util.HashSet" collectionInterface="java.util.Set" plural="true" />
+		</xsd:appinfo>
+	</xsd:annotation>
+
+	<xsd:element name="foo">
+		<xsd:complexType>
+			<xsd:sequence>
+				<xsd:element name="bar">
+					<xsd:complexType>
+						<xsd:sequence>
+							<xsd:element name="e" minOccurs="0" maxOccurs="unbounded">
+								<xsd:complexType>
+									<xsd:attribute name="id" type="xsd:string" />
+								</xsd:complexType>
+							</xsd:element>
+						</xsd:sequence>
+					</xsd:complexType>
+				</xsd:element>
+			</xsd:sequence>
+		</xsd:complexType>
+	</xsd:element>
+</xsd:schema>

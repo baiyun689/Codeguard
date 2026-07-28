@@ -1,0 +1,12 @@
+issue_id: E2
+not_exposed_to_review_model: true
+trigger: 同一接口存在两个命名实现且依赖通过延迟代理解析
+expected_observation: 代理取得默认实现而不是注入点指定的实现
+source_anchor:
+  file: src/main/java/org/springframework/guice/module/GuiceAutowireCandidateResolver.java
+  line: 141
+  call_path:
+  - getLazyResolutionProxyIfNecessary
+  - buildLazyResolutionProxy
+  - guiceInstanceResolverKey
+  - Injector.getInstance

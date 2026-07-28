@@ -1,0 +1,11 @@
+issue_id: E3
+not_exposed_to_review_model: true
+trigger: 表达式包含连续幂运算或其他同优先级右结合运算符
+expected_observation: 生成的 AST 改变求值顺序并返回错误业务结果
+source_anchor:
+  file: src/main/java/com/ezylang/evalex/parser/ShuntingYardConverter.java
+  line: 268
+  call_path:
+  - Expression.evaluate
+  - ShuntingYardConverter.convert
+  - isNextOperatorOfHigherPrecedence

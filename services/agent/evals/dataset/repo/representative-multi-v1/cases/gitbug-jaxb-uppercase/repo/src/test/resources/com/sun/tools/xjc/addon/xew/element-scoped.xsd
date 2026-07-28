@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xsd:schema
+	jaxb:version="3.0"
+	targetNamespace="http://example.com/scope"
+	xmlns:s="http://example.com/scope"
+	xmlns:x="http://example.com/extra"
+	xmlns:jaxb="https://jakarta.ee/xml/ns/jaxb"
+	xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+	elementFormDefault="qualified"
+>
+	<xsd:annotation>
+		<xsd:appinfo>
+			<jaxb:schemaBindings>
+				<jaxb:package name="element_scoped" />
+			</jaxb:schemaBindings>
+		</xsd:appinfo>
+	</xsd:annotation>
+
+	<xsd:import schemaLocation="element-scoped-extra.xsd" namespace="http://example.com/extra" />
+
+	<!--
+		Special case when element with same name ("age") exists in two different namespaces, thus
+		ObjectFactory should have two factory methods annotated with @XmlElementDecl with different namespaces.
+	-->
+	<xsd:element name="return">
+		<xsd:complexType>
+			<xsd:sequence minOccurs="0">
+				<xsd:element name="users">
+					<xsd:complexType>
+						<xsd:sequence maxOccurs="unbounded">
+							<xsd:element name="name" type="xsd:string" />
+							<xsd:element name="age" type="xsd:string" />
+						</xsd:sequence>
+					</xsd:complexType>
+				</xsd:element>
+				<xsd:element ref="x:age" />
+				<xsd:element name="search-parameters" type="s:search-parameters" />
+			</xsd:sequence>
+		</xsd:complexType>
+	</xsd:element>
+
+	<!--
+		Special case when JAXB will generate a wrapper object to hold list of items:
+			JAXBElement<List<String>>
+		and this wrapper object is scoped to "search-parameters" type.
+	-->
+	<xsd:complexType name="id-list">
+		<xsd:sequence>
+			<xsd:element name="id" minOccurs="1" maxOccurs="unbounded">
+				<xsd:simpleType>
+					<xsd:list itemType="xsd:string" />
+				</xsd:simpleType>
+			</xsd:element>
+		</xsd:sequence>
+	</xsd:complexType>
+
+	<xsd:complexType name="search-parameters">
+		<xsd:sequence>
+			<xsd:element name="provider-ids" type="s:id-list" minOccurs="0" maxOccurs="1" />
+		</xsd:sequence>
+	</xsd:complexType>
+</xsd:schema>

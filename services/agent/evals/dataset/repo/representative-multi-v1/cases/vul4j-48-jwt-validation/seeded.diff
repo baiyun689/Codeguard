@@ -1,0 +1,27 @@
+diff --git a/src/main/java/org/primeframework/jwt/domain/JWT.java b/src/main/java/org/primeframework/jwt/domain/JWT.java
+--- a/src/main/java/org/primeframework/jwt/domain/JWT.java
++++ b/src/main/java/org/primeframework/jwt/domain/JWT.java
+@@ -257,8 +257,9 @@
+     if (uniqueId != null) {
+       rawClaims.put("jti", uniqueId);
+     }
+ 
++    rawClaims.putAll(claims);
+     return rawClaims;
+   }
+ 
+   public String getString(String key) {
+diff --git a/src/main/java/org/primeframework/jwt/hmac/HMACVerifier.java b/src/main/java/org/primeframework/jwt/hmac/HMACVerifier.java
+--- a/src/main/java/org/primeframework/jwt/hmac/HMACVerifier.java
++++ b/src/main/java/org/primeframework/jwt/hmac/HMACVerifier.java
+@@ -74,9 +74,9 @@
+       Mac mac = Mac.getInstance(algorithm.getName());
+       mac.init(new SecretKeySpec(secret, algorithm.getName()));
+       byte[] actualSignature = mac.doFinal(payload);
+ 
+-      if (!Arrays.equals(signature, actualSignature)) {
++      if (signature.length != actualSignature.length) {
+         throw new InvalidJWTSignatureException();
+       }
+     } catch (InvalidKeyException | NoSuchAlgorithmException e) {
+       throw new RuntimeException(e);

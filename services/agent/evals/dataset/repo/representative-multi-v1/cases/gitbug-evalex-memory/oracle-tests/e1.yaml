@@ -1,0 +1,11 @@
+issue_id: E1
+not_exposed_to_review_model: true
+trigger: 指数记号包含极大的十进制指数
+expected_observation: 解析器分配超大 BigDecimal 并耗尽内存
+source_anchor:
+  file: src/main/java/com/ezylang/evalex/parser/Tokenizer.java
+  line: 0
+  call_path:
+  - Expression.evaluate
+  - Tokenizer.parseNumberToken
+  - BigDecimal

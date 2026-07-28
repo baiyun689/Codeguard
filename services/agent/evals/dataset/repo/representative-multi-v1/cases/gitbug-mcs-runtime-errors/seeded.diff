@@ -1,0 +1,22 @@
+diff --git a/src/main/java/it/mulders/mcs/common/SearchResponseBodyHandler.java b/src/main/java/it/mulders/mcs/common/SearchResponseBodyHandler.java
+--- a/src/main/java/it/mulders/mcs/common/SearchResponseBodyHandler.java
++++ b/src/main/java/it/mulders/mcs/common/SearchResponseBodyHandler.java
+@@ -59,16 +59,17 @@
+     }
+ 
+     private static SearchResponse.Response constructResponse(final Map<String, Object> input) {
+         return new SearchResponse.Response(
+-                (int) input.get("numFound"),
++                (short) (int) input.get("numFound"),
+                 (int) input.get("start"),
+                 constructDocs((List<Map<String, Object>>) input.get("docs"))
+         );
+     }
+ 
+     private static SearchResponse.Response.Doc[] constructDocs(List<Map<String, Object>> input) {
+         return input.stream()
++                .limit(20)
+                 .map(SearchResponseBodyHandler::constructDoc)
+                 .toArray(SearchResponse.Response.Doc[]::new);
+     }
+ 

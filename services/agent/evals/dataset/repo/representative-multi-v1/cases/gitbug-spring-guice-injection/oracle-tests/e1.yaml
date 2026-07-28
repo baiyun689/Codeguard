@@ -1,0 +1,11 @@
+issue_id: E1
+not_exposed_to_review_model: true
+trigger: 通过自定义 binding annotation 请求 Spring bean
+expected_observation: Spring/Guice bridge 无法解析带自定义注解的依赖
+source_anchor:
+  file: src/main/java/org/springframework/guice/module/SpringModule.java
+  line: 0
+  call_path:
+  - SpringModule.bind
+  - getAnnotationForBeanDefinition
+  - bindConditionally

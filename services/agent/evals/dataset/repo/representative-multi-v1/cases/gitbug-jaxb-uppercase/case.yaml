@@ -1,0 +1,48 @@
+id: gitbug-jaxb-uppercase
+category: representative multi-issue PR
+description: XJC 插件跨包代码模型、注解查找与 ObjectFactory 聚合。
+ground_truth_mode: complete-issue-set
+difficulty: deep
+provenance:
+  source: GitBug-Java
+  repository_url: https://github.com/dmak/jaxb-xew-plugin.git
+  base_revision: f48935133d6ad30ad31613fca3b64db50f77fd26
+  head_revision: f2320aaa24d70d087ff24edc326912ac22d1acb8
+  patch_direction: reversed-fix
+  license: GitBug-Java metadata MIT; source per upstream
+  source_case: gitbug-jaxb-uppercase
+  enhancement: two controlled issues added to the frozen vulnerable snapshot
+expected:
+- id: E1
+  origin: upstream-real
+  file: src/main/java/com/sun/tools/xjc/addon/xew/XmlElementWrapperPlugin.java
+  line: 0
+  type_keywords:
+  - upper case
+  - uppercase
+  - 大小写
+  root_cause: Upper-case registered class names are not normalized consistently
+  risk_tag: API_CONTRACT
+  tolerance: 0
+- id: E2
+  origin: controlled-seed
+  file: src/main/java/com/sun/tools/xjc/addon/xew/CommonUtils.java
+  line: 62
+  type_keywords:
+  - annotation identity
+  - package
+  - code generation
+  root_cause: 代码模型注解匹配丢弃包名，仅比较 name
+  risk_tag: API_CONTRACT
+  tolerance: 5
+- id: E3
+  origin: controlled-seed
+  file: src/main/java/com/sun/tools/xjc/addon/xew/Candidate.java
+  line: 190
+  type_keywords:
+  - ObjectFactory
+  - package collision
+  - code generation
+  root_cause: 候选集合用固定简单类名 ObjectFactory 作为全局 key
+  risk_tag: API_CONTRACT
+  tolerance: 5

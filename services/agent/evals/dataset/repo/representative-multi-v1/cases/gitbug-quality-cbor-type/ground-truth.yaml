@@ -1,0 +1,71 @@
+case_id: gitbug-quality-cbor-type
+issues:
+- id: E1
+  origin: upstream-real
+  title: invalid model state
+  dimension: quality
+  severity: WARNING
+  file: src/main/java/co/nstant/in/cbor/decoder/SpecialDecoder.java
+  line: 0
+  root_cause: The model exposes an unallocated enum value that cannot be encoded or
+    decoded
+  trigger: 解码或编码遇到未分配的 special type
+  observable_consequence: 模型暴露无法稳定往返编码的无效状态
+  fix_action: 限制公开枚举到协议已分配值，并对未知值显式报错
+  call_path:
+  - CborDecoder.decodeNext
+  - SpecialDecoder.decode
+  - SpecialType
+  primary_risk_tag: API_CONTRACT
+  expected_reviewers:
+  - maintainability
+  - behavior
+  type_keywords:
+  - UNALLOCATED
+  - enum
+  - special type
+- id: E2
+  origin: controlled-seed
+  title: RationalNumber 接受零分母
+  dimension: logic
+  severity: WARNING
+  file: src/main/java/co/nstant/in/cbor/model/RationalNumber.java
+  line: 17
+  root_cause: 构造函数不再维护分母非零的领域不变量
+  trigger: 解码 tag 30 或调用公开构造器传入零分母
+  observable_consequence: 无效有理数进入模型并在后续运算、编码或展示阶段延迟失败
+  fix_action: 在模型边界拒绝零分母并保留明确 CborException
+  call_path:
+  - CborDecoder.decodeNext
+  - RationalNumber.<init>
+  - DataItem.add
+  primary_risk_tag: INPUT_VALIDATION
+  expected_reviewers:
+  - behavior
+  type_keywords:
+  - rational
+  - zero denominator
+  - invariant
+- id: E3
+  origin: controlled-seed
+  title: CBOR 数组长度窄化后控制解码循环
+  dimension: security
+  severity: CRITICAL
+  file: src/main/java/co/nstant/in/cbor/decoder/ArrayDecoder.java
+  line: 49
+  root_cause: 协议中的 64 位数组长度未经范围验证转换为有符号 int
+  trigger: 输入声明超过 Integer.MAX_VALUE 的 definite-length 数组
+  observable_consequence: 循环可能零次或提前结束，剩余字节被当作后续顶层对象解析
+  fix_action: 拒绝超出实现预算的长度并保持 long 作为循环边界
+  call_path:
+  - CborDecoder.decodeNext
+  - ArrayDecoder.decode
+  - decodeFixedLength
+  primary_risk_tag: INPUT_VALIDATION
+  expected_reviewers:
+  - threat_model
+  - behavior
+  type_keywords:
+  - CBOR length
+  - integer narrowing
+  - parser desync

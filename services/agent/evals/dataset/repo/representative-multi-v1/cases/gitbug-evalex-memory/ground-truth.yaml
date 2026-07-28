@@ -1,0 +1,70 @@
+case_id: gitbug-evalex-memory
+issues:
+- id: E1
+  origin: upstream-real
+  title: memory exhaustion
+  dimension: quality
+  severity: WARNING
+  file: src/main/java/com/ezylang/evalex/parser/Tokenizer.java
+  line: 0
+  root_cause: e.<number> input causes unbounded memory growth
+  trigger: 指数记号包含极大的十进制指数
+  observable_consequence: 解析器分配超大 BigDecimal 并耗尽内存
+  fix_action: 在构造数值前限制指数位数和可接受数值规模
+  call_path:
+  - Expression.evaluate
+  - Tokenizer.parseNumberToken
+  - BigDecimal
+  primary_risk_tag: PERFORMANCE
+  expected_reviewers:
+  - maintainability
+  - behavior
+  type_keywords:
+  - OutOfMemoryError
+  - memory leak
+  - 内存
+- id: E2
+  origin: controlled-seed
+  title: 变量名比较依赖默认 Locale
+  dimension: logic
+  severity: WARNING
+  file: src/main/java/com/ezylang/evalex/data/MapBasedDataAccessor.java
+  line: 28
+  root_cause: 大小写无关比较器使用进程默认区域进行大写转换
+  trigger: 服务运行在土耳其语等具有特殊大小写规则的 Locale
+  observable_consequence: 同一表达式变量在写入和读取时出现不可移植的缺失或碰撞
+  fix_action: 使用 String.CASE_INSENSITIVE_ORDER 或 Locale.ROOT 规范化
+  call_path:
+  - Expression.with
+  - MapBasedDataAccessor.setData
+  - getData
+  - ASTNode.evaluate
+  primary_risk_tag: API_CONTRACT
+  expected_reviewers:
+  - behavior
+  type_keywords:
+  - locale
+  - case insensitive
+  - variable lookup
+- id: E3
+  origin: controlled-seed
+  title: 右结合运算符被按左结合归约
+  dimension: logic
+  severity: WARNING
+  file: src/main/java/com/ezylang/evalex/parser/ShuntingYardConverter.java
+  line: 268
+  root_cause: 右结合分支在优先级相等时也弹出栈顶运算符
+  trigger: 表达式包含连续幂运算或其他同优先级右结合运算符
+  observable_consequence: 生成的 AST 改变求值顺序并返回错误业务结果
+  fix_action: 右结合分支仅在当前优先级严格低于栈顶时归约
+  call_path:
+  - Expression.evaluate
+  - ShuntingYardConverter.convert
+  - isNextOperatorOfHigherPrecedence
+  primary_risk_tag: API_CONTRACT
+  expected_reviewers:
+  - behavior
+  type_keywords:
+  - associativity
+  - precedence
+  - AST
