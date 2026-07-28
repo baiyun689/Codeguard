@@ -6,6 +6,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 
 from codeguard_agent.llm.client import invoke_with_retry
@@ -18,6 +19,7 @@ from codeguard_agent.models.council import (
 from codeguard_agent.models.schemas import Issue
 from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
+from codeguard_agent.pipeline.council.dedup import CandidateGroup
 from codeguard_agent.pipeline.evidence.agent import (
     BoundEvidence,
     bound_evidence,
@@ -48,6 +50,77 @@ def _stable_json(value: object) -> str:
 
 def _trace(batch: JudgeBatch, event: str, detail: dict[str, object]) -> None:
     batch.trace.append((event, _stable_json(detail)))
+
+
+def _unique_text(values: Sequence[str]) -> str:
+    return "；".join(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+
+def _emit_supported_issues(
+    batch: JudgeBatch,
+    supported: Sequence[tuple[str, Issue]],
+    candidate_groups: Sequence[CandidateGroup],
+) -> None:
+    """按严格等价组汇总已支持成员；任何未获支持成员都不影响其兄弟。"""
+    issue_by_id = dict(supported)
+    group_by_member = {
+        member.id: group
+        for group in candidate_groups
+        for member in group.members
+    }
+    emitted_groups: set[str] = set()
+
+    for candidate_id, issue in supported:
+        group = group_by_member.get(candidate_id)
+        if group is None:
+            batch.final_candidate_ids.append(candidate_id)
+            batch.final_issues.append(issue)
+            continue
+        if group.id in emitted_groups:
+            continue
+        emitted_groups.add(group.id)
+        kept = [
+            (member.id, issue_by_id[member.id])
+            for member in group.members
+            if member.id in issue_by_id
+        ]
+        if not kept:
+            continue
+
+        # 裁决后严重度或文件不同，说明实际影响并不等价，安全拆回多条。
+        output_shapes = {
+            (member_issue.file, member_issue.severity)
+            for _, member_issue in kept
+        }
+        if len(output_shapes) != 1:
+            for kept_id, kept_issue in kept:
+                batch.final_candidate_ids.append(kept_id)
+                batch.final_issues.append(kept_issue)
+            _trace(
+                batch,
+                "candidate_group_split",
+                {"group_id": group.id, "member_ids": [item[0] for item in kept]},
+            )
+            continue
+
+        anchor_id, anchor = kept[0]
+        positive_lines = [item.line for _, item in kept if item.line > 0]
+        combined = anchor.model_copy(
+            update={
+                "line": min(positive_lines) if positive_lines else 0,
+                "type": _unique_text([item.type for _, item in kept]),
+                "message": _unique_text([item.message for _, item in kept]),
+                "suggestion": _unique_text([item.suggestion for _, item in kept]),
+                "confidence": min(item.confidence for _, item in kept),
+            }
+        )
+        batch.final_candidate_ids.append(anchor_id)
+        batch.final_issues.append(combined)
+        _trace(
+            batch,
+            "candidate_group_consolidated",
+            {"group_id": group.id, "member_ids": [item[0] for item in kept]},
+        )
 
 
 def _primary_tag(dossier: CandidateDossier) -> RiskTag:
@@ -365,6 +438,7 @@ def judge_candidates(
     judge_llm: Any,
     structured_method: str,
     max_retries: int,
+    candidate_groups: Sequence[CandidateGroup] = (),
 ) -> JudgeBatch:
     batch = JudgeBatch()
 
@@ -397,17 +471,17 @@ def judge_candidates(
 
     results = run_bounded_parallel(assembly.dossiers, _invoke, max_workers=6)
 
+    supported: list[tuple[str, Issue]] = []
     for result in results:
         if result is None:
             continue
         verdict, issue, candidate_id, traces = result
         batch.verdicts.append(verdict)
-        if issue is not None:
-            batch.final_issues.append(issue)
-        if candidate_id:
-            batch.final_candidate_ids.append(candidate_id)
+        if issue is not None and candidate_id:
+            supported.append((candidate_id, issue))
         batch.trace.extend(traces)
 
+    _emit_supported_issues(batch, supported, candidate_groups)
     return batch
 
 

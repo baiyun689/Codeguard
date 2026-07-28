@@ -619,6 +619,25 @@ def _analysis_user_prompt(
             "claim": dossier.candidate.claim,
             "severity": dossier.candidate.severity_proposal.value,
         },
+        "candidate_group": (
+            {
+                "group_id": dossier.candidate_group.id,
+                "shared_root_cause": dossier.candidate_group.shared_root_cause,
+                "shared_behavior": dossier.candidate_group.shared_behavior,
+                "shared_fix": dossier.candidate_group.shared_fix,
+                "members": [
+                    {
+                        "candidate_id": member.id,
+                        "type": member.type,
+                        "claim": member.claim,
+                        "suggestion": member.suggestion,
+                    }
+                    for member in dossier.candidate_group.members
+                ],
+            }
+            if dossier.candidate_group is not None
+            else None
+        ),
         "purpose": request.purpose,
         "strategy_question": request.question,
         "task_patch": dossier.task.patch,

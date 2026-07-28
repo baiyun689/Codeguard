@@ -999,6 +999,7 @@ def _assemble_state_dossiers(state: ReviewState):
         state.get("task_context_bundles") or {},
         state.get("evidence_requests") or [],
         state.get("evidence_notes") or [],
+        state.get("candidate_groups") or [],
     )
 
 
@@ -1080,6 +1081,7 @@ def _council_judge_node(llm, judge_llm=None):
             judge_llm=effective_judge_llm,
             structured_method=state.get("structured_method", "function_calling"),
             max_retries=state.get("max_retries", 2),
+            candidate_groups=state.get("candidate_groups") or [],
         )
         judge_trace = [
             CouncilTrace(node="council_judge", event=event, detail=detail)

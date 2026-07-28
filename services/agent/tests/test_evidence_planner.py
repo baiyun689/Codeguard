@@ -28,6 +28,7 @@ from codeguard_agent.pipeline.evidence.planner import (
     CandidateDossier,
     plan_evidence,
 )
+from codeguard_agent.pipeline.council.dedup import CandidateGroup
 from codeguard_agent.pipeline.evidence.rules import (
     STRATEGIES_BY_ID,
     CandidateTagResolution,
@@ -510,6 +511,67 @@ def test_assemble_dossiers_reports_missing_task_and_file_mismatch():
     ]
     details = [json.loads(detail) for _, detail in assembly.trace]
     assert [detail["reason"] for detail in details] == ["missing_task", "file_mismatch"]
+
+
+def test_candidate_group_plans_every_member_and_traces_shared_core():
+    base = _dossier(24)
+    second = base.candidate.model_copy(
+        update={
+            "id": "candidate-24b",
+            "claim": "blank identifier bypasses the same contract",
+        }
+    )
+    group = CandidateGroup(
+        id="candidate-group-contract",
+        members=(base.candidate, second),
+        primary_risk_tag=RiskTag.API_CONTRACT,
+        severity_proposal=Severity.WARNING,
+        confidence=0.99,
+        shared_root_cause="identifier validation is missing",
+        shared_behavior="invalid identifiers reach the same operation",
+        shared_fix="validate the identifier at the request boundary",
+    )
+    assembly = evidence_planner.assemble_dossiers(
+        [base.candidate, second],
+        [base.task],
+        {},
+        {},
+        [],
+        [],
+        [group],
+    )
+
+    plan = plan_evidence(
+        assembly.dossiers,
+        classifier_llm=None,
+        structured_method="function_calling",
+        candidate_tag_resolutions={
+            member.id: _resolution(RiskTag.API_CONTRACT)
+            for member in group.members
+        },
+    )
+
+    assert {dossier.candidate.id for dossier in assembly.dossiers} == {
+        member.id for member in group.members
+    }
+    assert all(dossier.candidate_group is group for dossier in assembly.dossiers)
+    assert {request.candidate_id for request in plan.requests} == {
+        member.id for member in group.members
+    }
+    scope = _trace_details(plan, "candidate_group_evidence_scope")
+    assert scope == [
+        {
+            "group_id": group.id,
+            "member_claims": {
+                base.candidate.id: base.candidate.claim,
+                second.id: second.claim,
+            },
+            "missing_member_ids": [],
+            "shared_behavior": group.shared_behavior,
+            "shared_fix": group.shared_fix,
+            "shared_root_cause": group.shared_root_cause,
+        }
+    ]
 
 
 # -- supplied candidate tag resolutions (Coordinator reuse) --

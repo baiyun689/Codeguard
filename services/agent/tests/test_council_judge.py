@@ -13,10 +13,15 @@ from codeguard_agent.models.council import (
     EvidenceRequest,
     SeverityFactorAssessment,
 )
-from codeguard_agent.models.schemas import Severity
+from codeguard_agent.models.schemas import Issue, Severity
 from codeguard_agent.models.tasks import ReviewTask, RiskTag
+from codeguard_agent.pipeline.council.dedup import CandidateGroup
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
-from codeguard_agent.pipeline.council.judge import judge_candidates as _judge_impl
+from codeguard_agent.pipeline.council.judge import (
+    JudgeBatch,
+    _emit_supported_issues,
+    judge_candidates as _judge_impl,
+)
 from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID, strategies_for
 from codeguard_agent.pipeline.council.severity import policy_for
 
@@ -498,10 +503,137 @@ def test_invalid_binding_drops():
     assert batch.verdicts[0].reason_code == "invalid_candidate_binding"
 
 
-def _judge(dossiers, *, llm=None):
+def test_candidate_group_does_not_drop_supported_member_with_refuted_sibling():
+    refuted = _dossier(
+        "candidate-refuted",
+        request_findings=[("counter", _finding("contradicts", "direct"))],
+        claim="dead catch is misleading",
+    )
+    supported = _dossier(
+        "candidate-supported",
+        request_findings=[("support", _finding("supports", "direct"))],
+        claim="runtime exception escapes the event loop",
+    )
+    group = CandidateGroup(
+        id="candidate-group-error-handling",
+        members=(refuted.candidate, supported.candidate),
+        primary_risk_tag=RiskTag.AUTHORIZATION,
+        severity_proposal=Severity.WARNING,
+        confidence=0.99,
+        shared_root_cause="same root cause",
+        shared_behavior="same behavior",
+        shared_fix="same fix",
+    )
+
+    batch = _judge(
+        [refuted, supported],
+        llm=_AssessmentLLM(_supported_assessment()),
+        candidate_groups=[group],
+    )
+
+    assert batch.final_candidate_ids == [supported.candidate.id]
+    assert [issue.message for issue in batch.final_issues] == [
+        supported.candidate.claim
+    ]
+
+
+def test_candidate_group_combines_all_supported_member_information():
+    first = _dossier(
+        "candidate-first",
+        request_findings=[("support", _finding("supports", "direct"))],
+        claim="request without id is accepted",
+    )
+    second = _dossier(
+        "candidate-second",
+        request_findings=[("support", _finding("supports", "direct"))],
+        issue_type="contract bypass",
+        claim="blank id bypasses the contract",
+    )
+    group = CandidateGroup(
+        id="candidate-group-input",
+        members=(first.candidate, second.candidate),
+        primary_risk_tag=RiskTag.AUTHORIZATION,
+        severity_proposal=Severity.WARNING,
+        confidence=0.99,
+        shared_root_cause="same contract defect",
+        shared_behavior="same invalid request behavior",
+        shared_fix="same validation fix",
+    )
+
+    batch = _judge(
+        [first, second],
+        llm=_AssessmentLLM(_supported_assessment()),
+        candidate_groups=[group],
+    )
+
+    assert batch.final_candidate_ids == [first.candidate.id]
+    assert len(batch.final_issues) == 1
+    assert first.candidate.claim in batch.final_issues[0].message
+    assert second.candidate.claim in batch.final_issues[0].message
+    assert first.candidate.type in batch.final_issues[0].type
+    assert second.candidate.type in batch.final_issues[0].type
+
+
+def test_candidate_group_splits_when_judged_impacts_have_different_severity():
+    first = _dossier("candidate-first", claim="runtime interruption")
+    second = _dossier("candidate-second", claim="dead catch")
+    group = CandidateGroup(
+        id="candidate-group-not-equivalent",
+        members=(first.candidate, second.candidate),
+        primary_risk_tag=RiskTag.ERROR_HANDLING,
+        severity_proposal=Severity.WARNING,
+        confidence=0.99,
+        shared_root_cause="same upstream change",
+        shared_behavior="claimed shared behavior",
+        shared_fix="claimed shared fix",
+    )
+    batch = JudgeBatch()
+    _emit_supported_issues(
+        batch,
+        [
+            (
+                first.candidate.id,
+                Issue(
+                    severity=Severity.WARNING,
+                    file=first.candidate.file,
+                    type=first.candidate.type,
+                    message=first.candidate.claim,
+                ),
+            ),
+            (
+                second.candidate.id,
+                Issue(
+                    severity=Severity.INFO,
+                    file=second.candidate.file,
+                    type=second.candidate.type,
+                    message=second.candidate.claim,
+                ),
+            ),
+        ],
+        [group],
+    )
+
+    assert batch.final_candidate_ids == [
+        first.candidate.id,
+        second.candidate.id,
+    ]
+    assert [issue.message for issue in batch.final_issues] == [
+        first.candidate.claim,
+        second.candidate.claim,
+    ]
+    assert any(event == "candidate_group_split" for event, _ in batch.trace)
+
+
+def _judge(dossiers, *, llm=None, candidate_groups=()):
     from codeguard_agent.pipeline.evidence.planner import DossierAssembly
     assembly = DossierAssembly(tuple(dossiers), (), ())
-    return _judge_impl(assembly, judge_llm=llm, structured_method="function_calling", max_retries=1)
+    return _judge_impl(
+        assembly,
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+        candidate_groups=candidate_groups,
+    )
 
 
 def _judge_from_assembly(assembly, *, llm=None):

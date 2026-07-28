@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from codeguard_agent.models.council import (
     CandidateIssue,
@@ -22,6 +22,9 @@ from codeguard_agent.pipeline.evidence.rules import (
     strategies_for,
 )
 
+if TYPE_CHECKING:
+    from codeguard_agent.pipeline.council.dedup import CandidateGroup
+
 
 MAX_INITIAL_REQUESTS_PER_CANDIDATE = 4
 
@@ -36,6 +39,7 @@ class CandidateDossier:
     context_bundle: TaskContextBundle | None
     requests: tuple[EvidenceRequest, ...]
     notes: tuple[EvidenceNote, ...]
+    candidate_group: CandidateGroup | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +78,7 @@ def assemble_dossiers(
     bundles: Mapping[str, TaskContextBundle],
     requests: Sequence[EvidenceRequest],
     notes: Sequence[EvidenceNote],
+    candidate_groups: Sequence[CandidateGroup] = (),
 ) -> DossierAssembly:
     """把 graph state 关联为候选级只读快照，并显式保留绑定失败。"""
     tasks_by_id: dict[str, list[ReviewTask]] = {}
@@ -85,6 +90,11 @@ def assemble_dossiers(
     notes_by_candidate: dict[str, list[EvidenceNote]] = {}
     for note in notes:
         notes_by_candidate.setdefault(note.candidate_id, []).append(note)
+    groups_by_candidate = {
+        member.id: group
+        for group in candidate_groups
+        for member in group.members
+    }
 
     dossiers: list[CandidateDossier] = []
     failures: list[CandidateBindingFailure] = []
@@ -132,6 +142,7 @@ def assemble_dossiers(
                 context_bundle=bundles.get(task.id),
                 requests=tuple(requests_by_candidate.get(candidate.id, ())),
                 notes=tuple(notes_by_candidate.get(candidate.id, ())),
+                candidate_group=groups_by_candidate.get(candidate.id),
             )
         )
     return DossierAssembly(tuple(dossiers), tuple(failures), tuple(trace))
@@ -366,6 +377,34 @@ def _plan_initial(
             _trace_invalid_binding(plan, dossier)
             continue
         valid_dossiers.append(dossier)
+
+    present_candidate_ids = {
+        dossier.candidate.id for dossier in valid_dossiers
+    }
+    traced_groups: set[str] = set()
+    for dossier in valid_dossiers:
+        group = dossier.candidate_group
+        if group is None or group.id in traced_groups:
+            continue
+        traced_groups.add(group.id)
+        _trace(
+            plan,
+            "candidate_group_evidence_scope",
+            {
+                "group_id": group.id,
+                "shared_root_cause": group.shared_root_cause,
+                "shared_behavior": group.shared_behavior,
+                "shared_fix": group.shared_fix,
+                "member_claims": {
+                    member.id: member.claim for member in group.members
+                },
+                "missing_member_ids": [
+                    member.id
+                    for member in group.members
+                    if member.id not in present_candidate_ids
+                ],
+            },
+        )
 
     resolutions = _resolved_dossier_tags(
         valid_dossiers,
