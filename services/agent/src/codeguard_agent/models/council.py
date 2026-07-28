@@ -1,4 +1,4 @@
-"""ADR-032 ReviewCouncil 的内部状态模型。
+"""ReviewCouncil 的内部状态模型。
 
 这些模型只用于图 State、trace 和 eval 诊断,不进入 `ReviewResult` 产品输出。
 """
@@ -6,12 +6,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from hashlib import sha256
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TYPE_CHECKING
 
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from codeguard_agent.models.schemas import Issue, Severity
+
+if TYPE_CHECKING:
+    from codeguard_agent.models.tasks import RiskTag  # noqa: F401
 
 
 SourceAgent = Literal["threat_model", "behavior", "maintainability"]
@@ -103,6 +107,11 @@ class EvidenceRequest(BaseModel):
     target: NonBlankStr
     question: NonBlankStr
     preferred_tools: list[str] = Field(default_factory=list)
+    # Phase 3: concern 对齐字段
+    goal_id: str | None = None
+    concern_id: str | None = None
+    claim_ids: tuple[str, ...] = ()
+    fact_type: "EvidenceFactType | None" = None
 
     @model_validator(mode="after")
     def assign_stable_id(self) -> "EvidenceRequest":
@@ -181,6 +190,11 @@ class EvidenceFinding(BaseModel):
     relation: Literal["supports", "contradicts", "insufficient"]
     strength: Literal["direct", "contextual"]
     limitation: str = ""
+    # Phase 3: concern 对齐字段
+    goal_id: str | None = None
+    concern_id: str | None = None
+    claim_ids: tuple[str, ...] = ()
+    fact_type: "EvidenceFactType | None" = None
 
     @model_validator(mode="after")
     def validate_safe_relation(self) -> "EvidenceFinding":
@@ -324,3 +338,128 @@ class CouncilRunStats(BaseModel):
     evidence_plan_skipped_count: int = Field(
         default=0, description="证据规划因超 cap 跳过的请求数"
     )
+
+
+# ── Phase 3: Candidate Concern & Claim-based Evidence ──
+
+
+class EvidenceFactType(str, Enum):
+    """证据目标的事实类型——描述"要证明什么"，不是"用什么工具"。"""
+
+    CHANGED_CONDITION = "changed_condition"
+    VALUE_IDENTITY = "value_identity"
+    CALL_PATH = "call_path"
+    DATA_FLOW = "data_flow"
+    STATE_TRANSITION = "state_transition"
+    TRANSACTION_BOUNDARY = "transaction_boundary"
+    ORDERING = "ordering"
+    GUARD_PRESENCE = "guard_presence"
+    REACHABILITY = "reachability"
+    SIDE_EFFECT = "side_effect"
+    OBSERVABLE_CONSEQUENCE = "observable_consequence"
+    FIX_SCOPE = "fix_scope"
+    IMPACT_FACTOR = "impact_factor"
+
+
+class EvidencePolarity(str, Enum):
+    SUPPORT = "support"
+    COUNTER = "counter"
+    IMPACT = "impact"
+
+
+class CandidateClaim(BaseModel):
+    """候选的结构化主张——代码中的错误机制，而非风险类别。"""
+
+    claim_id: str = ""
+    root_cause: str = ""
+    trigger: str = ""
+    observable_consequence: str = ""
+    fix_location: str = ""
+    fix_action: str = ""
+    affected_path: tuple[str, ...] = ()
+    unresolved_fields: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def assign_claim_id(self) -> "CandidateClaim":
+        if not self.claim_id:
+            payload = "\0".join(
+                [self.root_cause, self.trigger, self.observable_consequence,
+                 self.fix_location, self.fix_action]
+            )
+            self.claim_id = f"claim-{sha256(payload.encode('utf-8')).hexdigest()[:12]}"
+        return self
+
+
+class ConcernTagResolution(BaseModel):
+    """多标签视角：primary 表达 root cause，secondary 表达独立后果或验证方法。"""
+
+    primary_tag: RiskTag | None = None
+    secondary_tags: tuple[RiskTag, ...] = ()
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    source: Literal["deterministic", "llm", "mixed", "unclassified"] = "unclassified"
+    reasons: tuple[str, ...] = ()
+
+
+class CandidateConcern(BaseModel):
+    """一个或多个候选成员的结构化审查关注点。"""
+
+    concern_id: str = ""
+    group_id: str = ""
+    member_candidate_ids: tuple[str, ...] = ()
+    claims: tuple[CandidateClaim, ...] = ()
+    tags: ConcernTagResolution = Field(default_factory=ConcernTagResolution)
+    member_risk_tags: dict[str, tuple[RiskTag, ...]] = Field(default_factory=dict)
+    source_agents: tuple[str, ...] = ()
+    task_ids: tuple[str, ...] = ()
+    files: tuple[str, ...] = ()
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    diagnostics: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def assign_concern_id(self) -> "CandidateConcern":
+        if not self.concern_id:
+            payload = "\0".join(self.member_candidate_ids)
+            self.concern_id = f"concern-{sha256(payload.encode('utf-8')).hexdigest()[:12]}"
+        return self
+
+
+class EvidenceGoal(BaseModel):
+    """一个可判真假的证据命题——描述"要证明什么"。"""
+
+    goal_id: str = ""
+    concern_id: str = ""
+    claim_ids: tuple[str, ...] = ()
+    fact_type: EvidenceFactType = EvidenceFactType.VALUE_IDENTITY
+    polarity: EvidencePolarity = EvidencePolarity.SUPPORT
+    proposition: str = ""
+    why_needed: str = ""
+    preferred_capabilities: tuple[str, ...] = ()
+    required: bool = True
+
+    @model_validator(mode="after")
+    def assign_goal_id(self) -> "EvidenceGoal":
+        if not self.goal_id:
+            payload = "\0".join(
+                [self.concern_id, self.fact_type.value, self.polarity.value,
+                 self.proposition]
+            )
+            self.goal_id = f"goal-{sha256(payload.encode('utf-8')).hexdigest()[:12]}"
+        return self
+
+
+class ConcernAnalysis(BaseModel):
+    """ConcernAnalyzer 的输出：concerns + candidate 到 concern 的映射。"""
+
+    concerns: tuple[CandidateConcern, ...] = ()
+    candidate_to_concern: dict[str, str] = Field(default_factory=dict)
+    diagnostics: tuple[str, ...] = ()
+
+
+class ConcernEvidencePlan(BaseModel):
+    """单个 concern 的证据计划：goals + 对应的 requests。"""
+
+    concern_id: str = ""
+    goals: tuple[EvidenceGoal, ...] = ()
+    requests: tuple[EvidenceRequest, ...] = ()
+    uncovered_goals: tuple[str, ...] = ()
+    diagnostics: tuple[str, ...] = ()
