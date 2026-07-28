@@ -9,6 +9,7 @@ import json
 
 import codeguard_agent.pipeline.orchestrator as orchestrator_module
 from codeguard_agent.models.council import ContextBundle, ContextFact
+from codeguard_agent.models.knowledge import KnowledgeBundle
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
 from codeguard_agent.models.tasks import RiskSignal, RiskTag
 from codeguard_agent.pipeline import graph as G
@@ -1029,7 +1030,17 @@ def test_make_reviewer_node_injects_matched_tag_knowledge_into_user_prompt(monke
 
     monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _CapturingEngine())
     monkeypatch.setattr(
-        G, "load_knowledge", lambda domain, tags: "KNOWLEDGE_MARKER" if tags else ""
+        G, "select_knowledge",
+        lambda **kwargs: KnowledgeBundle(
+            task_id=kwargs["task"].id,
+            reviewer=kwargs["reviewer"],
+            base=None,
+            specialized=(),
+            rendered_text="KNOWLEDGE_MARKER",
+            truncated=False,
+            omitted_topics=(),
+            diagnostics=(),
+        ),
     )
     node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[1], llm=_FakeLLM())
 
