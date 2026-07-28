@@ -27,7 +27,7 @@ from codeguard_agent.pipeline.evidence.agent import (
 )
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
 from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID
-from codeguard_agent.pipeline.council.severity import policy_for, resolve_severity
+from codeguard_agent.pipeline.council.severity import policy_for, _resolve_severity_legacy
 
 logger = logging.getLogger("codeguard")
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
@@ -411,7 +411,7 @@ def _judge_one_candidate(
         return verdict, None, "", traces
 
     # claim_status == "supported" → severity resolution
-    resolution = resolve_severity(primary, assessment.severity_factors, findings_map)
+    resolution = _resolve_severity_legacy(primary, assessment.severity_factors, findings_map)
     verdict = Verdict(
         dossier.candidate.id, "keep",
         "severity_resolved",

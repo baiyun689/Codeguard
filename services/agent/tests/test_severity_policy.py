@@ -3,11 +3,11 @@
 from codeguard_agent.models.council import EvidenceFinding
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import RiskTag
+from codeguard_agent.models.council import SeverityFactorAssessment
 from codeguard_agent.pipeline.council.severity import (
-    SeverityFactorAssessment,
     factor_is_proven,
     policy_for,
-    resolve_severity,
+    _resolve_severity_legacy,
 )
 
 EXPECTED_LEVELS = {
@@ -94,7 +94,7 @@ def _proven_factors(
 def test_injection_requires_every_critical_factor():
     policy = policy_for(RiskTag.INJECTION)
     assessments, findings = _proven_factors(policy.critical_requires)
-    result = resolve_severity(RiskTag.INJECTION, assessments, findings)
+    result = _resolve_severity_legacy(RiskTag.INJECTION, assessments, findings)
     assert result.severity is Severity.CRITICAL
     assert result.missing_critical_factors == ()
 
@@ -102,7 +102,7 @@ def test_injection_requires_every_critical_factor():
 def test_one_missing_critical_factor_falls_back_to_warning():
     policy = policy_for(RiskTag.INJECTION)
     assessments, findings = _proven_factors(policy.critical_requires[:-1])
-    result = resolve_severity(RiskTag.INJECTION, assessments, findings)
+    result = _resolve_severity_legacy(RiskTag.INJECTION, assessments, findings)
     assert result.severity is Severity.WARNING
     assert result.missing_critical_factors == (policy.critical_requires[-1],)
 
@@ -115,7 +115,7 @@ def test_critical_factor_rejects_single_contextual_source():
         reason="one contextual observation",
     )
     findings = {"E1": _finding("E1", source="task_patch", strength="contextual")}
-    result = resolve_severity(RiskTag.INJECTION, [assessment], findings)
+    result = _resolve_severity_legacy(RiskTag.INJECTION, [assessment], findings)
     assert result.severity is Severity.WARNING
 
 
@@ -196,14 +196,14 @@ def test_non_critical_tag_returns_default():
         RiskTag.OBSERVABILITY_TESTABILITY,
         RiskTag.GENERAL_REVIEW,
     ):
-        result = resolve_severity(tag, [], {})
+        result = _resolve_severity_legacy(tag, [], {})
         assert result.severity is EXPECTED_LEVELS[tag][0]
         assert result.missing_critical_factors == ()
         assert result.matched_rule == f"{tag.value.lower()}.default"
 
 
 def test_general_review_never_critical():
-    result = resolve_severity(RiskTag.GENERAL_REVIEW, [], {})
+    result = _resolve_severity_legacy(RiskTag.GENERAL_REVIEW, [], {})
     assert result.severity is not Severity.CRITICAL
 
 
@@ -248,12 +248,12 @@ def test_every_critical_policy_requires_all_of_its_factors():
     for tag in CRITICAL_ENABLED_TAGS:
         policy = policy_for(tag)
         assessments, findings = _proven_factors(policy.critical_requires)
-        assert resolve_severity(tag, assessments, findings).severity is Severity.CRITICAL
+        assert _resolve_severity_legacy(tag, assessments, findings).severity is Severity.CRITICAL
 
         missing_assessments, missing_findings = _proven_factors(
             policy.critical_requires[:-1]
         )
-        resolution = resolve_severity(tag, missing_assessments, missing_findings)
+        resolution = _resolve_severity_legacy(tag, missing_assessments, missing_findings)
         assert resolution.severity is policy.default_severity
         assert resolution.missing_critical_factors == (policy.critical_requires[-1],)
 
@@ -273,18 +273,18 @@ def test_critical_tags_have_factor_descriptions():
 def test_critical_resolution_has_correct_matched_rule():
     policy = policy_for(RiskTag.DESERIALIZATION)
     assessments, findings = _proven_factors(policy.critical_requires)
-    result = resolve_severity(RiskTag.DESERIALIZATION, assessments, findings)
+    result = _resolve_severity_legacy(RiskTag.DESERIALIZATION, assessments, findings)
     assert result.matched_rule == "deserialization.critical"
 
 
 def test_default_resolution_has_correct_matched_rule():
-    result = resolve_severity(RiskTag.DESERIALIZATION, [], {})
+    result = _resolve_severity_legacy(RiskTag.DESERIALIZATION, [], {})
     assert result.matched_rule == "deserialization.default"
 
 
 def test_resolution_includes_proven_and_evidence_ids():
     policy = policy_for(RiskTag.AUTHORIZATION)
     assessments, findings = _proven_factors(policy.critical_requires)
-    result = resolve_severity(RiskTag.AUTHORIZATION, assessments, findings)
+    result = _resolve_severity_legacy(RiskTag.AUTHORIZATION, assessments, findings)
     assert set(result.proven_factors) == set(policy.critical_requires)
     assert len(result.evidence_ids) == len(policy.critical_requires)
