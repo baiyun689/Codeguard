@@ -1,7 +1,8 @@
 id: gitbug-spring-retry-interrupt
 category: representative multi-issue PR
+dimension: logic
 description: 并发重试、状态缓存、时间预算与线程中断传播。
-ground_truth_mode: complete-issue-set
+ground_truth_mode: known-issue-only
 difficulty: deep
 provenance:
   source: GitBug-Java
@@ -16,7 +17,7 @@ expected:
 - id: E1
   origin: upstream-real
   file: src/main/java/org/springframework/retry/backoff/ExponentialBackOffPolicy.java
-  line: 0
+  line: 2
   type_keywords:
   - interrupted status
   - interrupt

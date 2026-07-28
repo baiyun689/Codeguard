@@ -1,4 +1,5 @@
 issue_id: E2
+oracle_type: declarative-regression-contract
 not_exposed_to_review_model: true
 trigger: 同一接口存在两个命名实现且依赖通过延迟代理解析
 expected_observation: 代理取得默认实现而不是注入点指定的实现

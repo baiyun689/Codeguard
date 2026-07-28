@@ -1,7 +1,8 @@
 id: vul4j-42-command-injection
 category: representative multi-issue PR
+dimension: security
 description: OS 命令构造、文件遍历与归档解压三类高风险边界。
-ground_truth_mode: complete-issue-set
+ground_truth_mode: known-issue-only
 difficulty: deep
 provenance:
   source: Vul4J
@@ -16,7 +17,7 @@ expected:
 - id: E1
   origin: upstream-real
   file: src/main/java/org/codehaus/plexus/util/cli/Commandline.java
-  line: 0
+  line: 177
   type_keywords:
   - command injection
   - 命令注入
@@ -41,8 +42,8 @@ expected:
   line: 180
   type_keywords:
   - zip bomb
-  - integer overflow
+  - compressed size
   - disk exhaustion
-  root_cause: 单文件解压字节数以 int 累加且未在写入前实施可靠上限
+  root_cause: 资源上限检查 ZipEntry.compressedSize，而写盘成本由展开后字节数决定
   risk_tag: PERFORMANCE
   tolerance: 5

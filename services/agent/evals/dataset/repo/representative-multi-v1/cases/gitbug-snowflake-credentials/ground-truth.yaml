@@ -6,7 +6,7 @@ issues:
   dimension: security
   severity: CRITICAL
   file: src/main/java/net/snowflake/client/jdbc/SnowflakeConnectString.java
-  line: 0
+  line: 7
   root_cause: Connection URL parse failures include credential properties in the exception
   trigger: 包含凭据的连接 URL 解析失败
   observable_consequence: 异常消息和日志暴露用户名、密码或 token

@@ -6,7 +6,7 @@ issues:
   dimension: quality
   severity: WARNING
   file: src/main/java/com/ezylang/evalex/parser/Tokenizer.java
-  line: 0
+  line: 356
   root_cause: e.<number> input causes unbounded memory growth
   trigger: 指数记号包含极大的十进制指数
   observable_consequence: 解析器分配超大 BigDecimal 并耗尽内存

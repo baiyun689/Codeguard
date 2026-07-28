@@ -1,11 +1,12 @@
 issue_id: E3
+oracle_type: declarative-regression-contract
 not_exposed_to_review_model: true
-trigger: 远端接受连接后持续缓慢发送或停止响应
-expected_observation: 工作线程和连接长期占用，批量导入无法释放容量
+trigger: 远程 RDF 文档包含相对 IRI 并依赖文档路径解析
+expected_observation: 相对资源解析失败或被绑定到错误标识，导入后的图数据语义改变
 source_anchor:
   file: repository/api/src/main/java/org/eclipse/rdf4j/repository/util/RDFLoader.java
-  line: 132
+  line: 129
   call_path:
   - RDFLoader.load(URL)
-  - URLConnection.getInputStream
+  - RDFParser.setBaseURI
   - RDFParser.parse

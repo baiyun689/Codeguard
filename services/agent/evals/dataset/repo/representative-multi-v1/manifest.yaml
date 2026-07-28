@@ -7,40 +7,50 @@ cases:
 - id: gitbug-spring-guice-injection
   repository_url: https://github.com/spring-projects/spring-guice.git
   source_case: gitbug-spring-guice-injection
+  source_snapshot_sha256: 281b4e52172664030eea2ad2dce7cc5320689470f6b158aa109ef327f775bb1f
   issue_count: 3
 - id: vul4j-42-command-injection
   repository_url: https://github.com/codehaus-plexus/plexus-utils.git
   source_case: vul4j-42-command-injection
+  source_snapshot_sha256: 9cf29e0d6673ab66ed5c30ffbae4a8c903b835e7c31e01b9b246d2327dba1ff8
   issue_count: 3
 - id: vul4j-43-path-traversal
   repository_url: https://github.com/eclipse/rdf4j.git
   source_case: vul4j-43-path-traversal
+  source_snapshot_sha256: 66ad0dde4c5eea7fd84b740ee3e981c73a5186ebf539bf1562b879e5ab700230
   issue_count: 3
 - id: vul4j-48-jwt-validation
   repository_url: https://github.com/inversoft/prime-jwt.git
   source_case: vul4j-48-jwt-validation
+  source_snapshot_sha256: 486e46cbd2c1b53bf53557585a6a11ff6f66cb1736cd16248cd4c3309a11bcba
   issue_count: 3
 - id: gitbug-spring-retry-interrupt
   repository_url: https://github.com/spring-projects/spring-retry.git
   source_case: gitbug-spring-retry-interrupt
+  source_snapshot_sha256: f1c28d8b6c5267acb11b32adb0d6abf2aab5eda50b92cc4ea1303e601585a634
   issue_count: 3
 - id: gitbug-snowflake-credentials
   repository_url: https://github.com/snowflakedb/snowflake-jdbc.git
   source_case: gitbug-snowflake-credentials
+  source_snapshot_sha256: ffcc48e3b0a7e40fdcc9338c725da22e1f41c7f5d461171b98a349208b0e8478
   issue_count: 3
 - id: gitbug-evalex-memory
   repository_url: https://github.com/ezylang/EvalEx.git
   source_case: gitbug-evalex-memory
+  source_snapshot_sha256: 68d2cebb7a4dea7212570cb1bb4db78ab2f7bd3d150416f6406e8ee7b84b7344
   issue_count: 3
 - id: gitbug-mcs-runtime-errors
   repository_url: https://github.com/mthmulders/mcs.git
   source_case: gitbug-mcs-runtime-errors
+  source_snapshot_sha256: 5536ed2795347d2b198c6fe1734fb4caaa9536647c5f92fc836f22fde4141118
   issue_count: 3
 - id: gitbug-jaxb-uppercase
   repository_url: https://github.com/dmak/jaxb-xew-plugin.git
   source_case: gitbug-jaxb-uppercase
+  source_snapshot_sha256: 86ba66eab0f90d12abd82acce75195434581583661bcd242ad985ae90959622f
   issue_count: 3
 - id: gitbug-quality-cbor-type
   repository_url: https://github.com/c-rack/cbor-java.git
   source_case: gitbug-quality-cbor-type
+  source_snapshot_sha256: cf3f54b8b6bc0a7f9deccb18d125a2f39df7f89c98de4f35472a8ae35068b665
   issue_count: 3

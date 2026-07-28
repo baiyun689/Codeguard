@@ -1,16 +1,17 @@
 diff --git a/repository/api/src/main/java/org/eclipse/rdf4j/repository/util/RDFLoader.java b/repository/api/src/main/java/org/eclipse/rdf4j/repository/util/RDFLoader.java
 --- a/repository/api/src/main/java/org/eclipse/rdf4j/repository/util/RDFLoader.java
 +++ b/repository/api/src/main/java/org/eclipse/rdf4j/repository/util/RDFLoader.java
-@@ -129,8 +129,9 @@
- 			baseURI = url.toExternalForm();
+@@ -125,9 +125,9 @@
+ 	 */
+ 	public void load(URL url, String baseURI, RDFFormat dataFormat, RDFHandler rdfHandler)
+ 			throws IOException, RDFParseException, RDFHandlerException {
+ 		if (baseURI == null) {
+-			baseURI = url.toExternalForm();
++			baseURI = url.getHost();
  		}
  
  		URLConnection con = url.openConnection();
-+		con.setConnectTimeout(30_000);
  		// Set appropriate Accept headers
- 		if (dataFormat != null) {
- 			for (String mimeType : dataFormat.getMIMETypes()) {
- 				con.addRequestProperty("Accept", mimeType);
 diff --git a/util/src/main/java/org/eclipse/rdf4j/common/io/IOUtil.java b/util/src/main/java/org/eclipse/rdf4j/common/io/IOUtil.java
 --- a/util/src/main/java/org/eclipse/rdf4j/common/io/IOUtil.java
 +++ b/util/src/main/java/org/eclipse/rdf4j/common/io/IOUtil.java

@@ -1,7 +1,8 @@
 id: vul4j-43-path-traversal
 category: representative multi-issue PR
+dimension: security
 description: 大型多模块 RDF4J，覆盖归档、远程加载与流式 I/O。
-ground_truth_mode: complete-issue-set
+ground_truth_mode: known-issue-only
 difficulty: deep
 provenance:
   source: Vul4J
@@ -16,7 +17,7 @@ expected:
 - id: E1
   origin: upstream-real
   file: util/src/main/java/org/eclipse/rdf4j/common/io/ZipUtil.java
-  line: 0
+  line: 29
   type_keywords:
   - path traversal
   - 路径穿越
@@ -38,11 +39,11 @@ expected:
 - id: E3
   origin: controlled-seed
   file: repository/api/src/main/java/org/eclipse/rdf4j/repository/util/RDFLoader.java
-  line: 132
+  line: 129
   type_keywords:
-  - read timeout
-  - slow response
-  - resource
-  root_cause: URLConnection 配置 connect timeout 后仍保留无限 read timeout
-  risk_tag: RESOURCE_LIFECYCLE
+  - base URI
+  - relative IRI
+  - RDF
+  root_cause: 未显式提供 baseURI 时仅保留 URL host，而不是完整文档 URL
+  risk_tag: API_CONTRACT
   tolerance: 5

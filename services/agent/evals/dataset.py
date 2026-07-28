@@ -98,10 +98,32 @@ def _load_repo_backed_cases(root: Path) -> list[EvalCase]:
     return cases
 
 
+def _load_repo_benchmark_suite(root: Path) -> list[EvalCase] | None:
+    """加载 manifest + cases/<case_id>/ 形式的独立 repo-backed benchmark。"""
+    cases_root = root / "cases"
+    if not (root / "manifest.yaml").is_file() or not cases_root.is_dir():
+        return None
+
+    cases: list[EvalCase] = []
+    for case_dir in sorted(path for path in cases_root.iterdir() if path.is_dir()):
+        case_file = case_dir / _CASE_FILE
+        diff_file = case_dir / _DIFF_FILE
+        snapshot = case_dir / _REPO_SUBDIR
+        if not case_file.is_file() or not diff_file.is_file() or not snapshot.is_dir():
+            raise ValueError(f"benchmark 用例结构不完整:{case_dir}")
+        raw = yaml.safe_load(case_file.read_text(encoding="utf-8")) or {}
+        raw["diff"] = diff_file.read_text(encoding="utf-8")
+        raw["repo_path"] = str(snapshot.resolve())
+        raw.setdefault("capability", ["file", "call-graph", "ast"])
+        cases.append(EvalCase.model_validate(raw))
+    return cases
+
+
 def load_cases(dataset_dir: Path | None = None) -> list[EvalCase]:
     """加载数据集下所有用例(内联 + repo-backed),按 id 排序返回。"""
     root = dataset_dir or _DATASET_DIR
-    cases = (
+    suite_cases = _load_repo_benchmark_suite(root)
+    cases = suite_cases if suite_cases is not None else (
         _load_synthetic_cases(root)
         + _load_external_diff_cases(root)
         + _load_repo_backed_cases(root)

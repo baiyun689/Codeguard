@@ -1,10 +1,11 @@
 issue_id: E1
+oracle_type: declarative-regression-contract
 not_exposed_to_review_model: true
 trigger: 解码或编码遇到未分配的 special type
 expected_observation: 模型暴露无法稳定往返编码的无效状态
 source_anchor:
   file: src/main/java/co/nstant/in/cbor/decoder/SpecialDecoder.java
-  line: 0
+  line: 54
   call_path:
   - CborDecoder.decodeNext
   - SpecialDecoder.decode

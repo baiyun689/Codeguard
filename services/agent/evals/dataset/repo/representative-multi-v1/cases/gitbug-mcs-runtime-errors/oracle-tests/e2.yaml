@@ -1,4 +1,5 @@
 issue_id: E2
+oracle_type: declarative-regression-contract
 not_exposed_to_review_model: true
 trigger: 中央仓库查询命中超过 32767 个文档
 expected_observation: numFound 回绕为负数并破坏分页、输出模式和唯一结果判断

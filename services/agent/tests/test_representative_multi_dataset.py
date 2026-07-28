@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml  # type: ignore[import-untyped]
 
 from codeguard_agent.git.diff_collector import parse_changed_files
+from evals.dataset import load_cases
 
 
 ROOT = (
@@ -41,6 +42,10 @@ def test_representative_multi_dataset_has_ten_real_multi_issue_cases() -> None:
     assert manifest["id"] == "representative-multi-v1"
     assert manifest["case_count"] == 10
     assert manifest["issue_count"] == 30
+    assert all(
+        len(case["source_snapshot_sha256"]) == 64
+        for case in manifest["cases"]
+    )
     assert len(cases) == 10
 
     repositories: set[str] = set()
@@ -52,13 +57,14 @@ def test_representative_multi_dataset_has_ten_real_multi_issue_cases() -> None:
         repo = case_dir / "repo"
 
         assert case["id"] == case_dir.name
-        assert case["ground_truth_mode"] == "complete-issue-set"
+        assert case["ground_truth_mode"] == "known-issue-only"
         assert len(case["expected"]) == 3
         assert len(truth["issues"]) == 3
         assert repo.is_dir()
         assert diff.startswith("diff --git ")
         assert diff.count("diff --git ") >= 2
         assert any(repo.rglob("*.java"))
+        assert not (repo / "oracle-tests").exists()
         changed_files = set(parse_changed_files(diff))
         assert {
             issue["file"] for issue in truth["issues"]
@@ -95,6 +101,27 @@ def test_representative_multi_dataset_has_ten_real_multi_issue_cases() -> None:
         repositories.add(case["provenance"]["repository_url"])
         issue_ids = {issue["id"] for issue in truth["issues"]}
         assert issue_ids == {issue["id"] for issue in case["expected"]}
+        assert all(issue["line"] > 0 for issue in truth["issues"])
+        oracle_files = sorted((case_dir / "oracle-tests").glob("*.yaml"))
+        assert len(oracle_files) == 3
+        oracles = [_yaml(path) for path in oracle_files]
+        assert {oracle["issue_id"] for oracle in oracles} == issue_ids
+        for oracle in oracles:
+            issue = next(
+                item for item in truth["issues"] if item["id"] == oracle["issue_id"]
+            )
+            assert oracle["not_exposed_to_review_model"] is True
+            assert oracle["oracle_type"] == "declarative-regression-contract"
+            assert oracle["trigger"] == issue["trigger"]
+            assert (
+                oracle["expected_observation"]
+                == issue["observable_consequence"]
+            )
+            assert oracle["source_anchor"] == {
+                "file": issue["file"],
+                "line": issue["line"],
+                "call_path": issue["call_path"],
+            }
         assert sum(issue["origin"] == "upstream-real" for issue in truth["issues"]) == 1
         assert sum(issue["origin"] == "controlled-seed" for issue in truth["issues"]) == 2
 
@@ -113,3 +140,8 @@ def test_representative_multi_dataset_has_ten_real_multi_issue_cases() -> None:
 
     assert len(repositories) == 10
     assert set(dimensions) == {"security", "logic", "quality"}
+
+    loaded = load_cases(ROOT)
+    assert len(loaded) == 10
+    assert all(case.repo_path for case in loaded)
+    assert all(case.ground_truth_mode == "known-issue-only" for case in loaded)

@@ -1,4 +1,5 @@
 issue_id: E3
+oracle_type: declarative-regression-contract
 not_exposed_to_review_model: true
 trigger: 输入声明超过 Integer.MAX_VALUE 的 definite-length 数组
 expected_observation: 循环可能零次或提前结束，剩余字节被当作后续顶层对象解析

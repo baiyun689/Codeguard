@@ -6,7 +6,7 @@ issues:
   dimension: security
   severity: CRITICAL
   file: util/src/main/java/org/eclipse/rdf4j/common/io/ZipUtil.java
-  line: 0
+  line: 29
   root_cause: Attacker-controlled path can escape the configured base directory
   trigger: 恶意 ZIP entry 使用父目录片段
   observable_consequence: 文件被写到目标目录之外
@@ -47,23 +47,23 @@ issues:
   - truncation
 - id: E3
   origin: controlled-seed
-  title: 远程 RDF 加载只限制建连而不限制读取
-  dimension: quality
+  title: 远程 RDF 的默认 base URI 丢失路径
+  dimension: logic
   severity: WARNING
   file: repository/api/src/main/java/org/eclipse/rdf4j/repository/util/RDFLoader.java
-  line: 132
-  root_cause: URLConnection 配置 connect timeout 后仍保留无限 read timeout
-  trigger: 远端接受连接后持续缓慢发送或停止响应
-  observable_consequence: 工作线程和连接长期占用，批量导入无法释放容量
-  fix_action: 同时配置有限 read timeout，并让上层提供统一请求期限
+  line: 129
+  root_cause: 未显式提供 baseURI 时仅保留 URL host，而不是完整文档 URL
+  trigger: 远程 RDF 文档包含相对 IRI 并依赖文档路径解析
+  observable_consequence: 相对资源解析失败或被绑定到错误标识，导入后的图数据语义改变
+  fix_action: 继续使用完整 url.toExternalForm 作为默认 base URI
   call_path:
   - RDFLoader.load(URL)
-  - URLConnection.getInputStream
+  - RDFParser.setBaseURI
   - RDFParser.parse
-  primary_risk_tag: RESOURCE_LIFECYCLE
+  primary_risk_tag: API_CONTRACT
   expected_reviewers:
-  - maintainability
+  - behavior
   type_keywords:
-  - read timeout
-  - slow response
-  - resource
+  - base URI
+  - relative IRI
+  - RDF

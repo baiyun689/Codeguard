@@ -1,7 +1,8 @@
 issue_id: E3
+oracle_type: declarative-regression-contract
 not_exposed_to_review_model: true
-trigger: 高压缩率条目解压后超过 Integer.MAX_VALUE
-expected_observation: 计数回绕后资源限制失效并持续占用磁盘
+trigger: 压缩后小于 100 MiB 的高压缩率条目展开为超大内容
+expected_observation: 检查被绕过，解压持续占用磁盘直至服务不可用
 source_anchor:
   file: src/main/java/org/codehaus/plexus/util/Expand.java
   line: 180

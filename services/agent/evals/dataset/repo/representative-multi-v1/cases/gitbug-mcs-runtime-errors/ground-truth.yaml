@@ -6,7 +6,7 @@ issues:
   dimension: logic
   severity: WARNING
   file: src/main/java/it/mulders/mcs/common/Result.java
-  line: 0
+  line: 20
   root_cause: Runtime failures are not converted into the expected error path
   trigger: HTTP、JSON 或映射阶段抛出运行时异常
   observable_consequence: CLI 绕过 Result.Failure 合约并直接崩溃

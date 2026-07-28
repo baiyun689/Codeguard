@@ -6,7 +6,7 @@ issues:
   dimension: quality
   severity: WARNING
   file: src/main/java/co/nstant/in/cbor/decoder/SpecialDecoder.java
-  line: 0
+  line: 54
   root_cause: The model exposes an unallocated enum value that cannot be encoded or
     decoded
   trigger: 解码或编码遇到未分配的 special type

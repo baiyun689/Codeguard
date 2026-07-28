@@ -6,7 +6,7 @@ issues:
   dimension: logic
   severity: WARNING
   file: src/main/java/org/springframework/retry/backoff/ExponentialBackOffPolicy.java
-  line: 0
+  line: 2
   root_cause: InterruptedException handling fails to restore the thread interruption
     status
   trigger: 退避 sleep 期间线程收到 interrupt

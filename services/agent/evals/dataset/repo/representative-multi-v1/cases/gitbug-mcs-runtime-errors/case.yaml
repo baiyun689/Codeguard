@@ -1,7 +1,8 @@
 id: gitbug-mcs-runtime-errors
 category: representative multi-issue PR
+dimension: logic
 description: HTTP 搜索客户端、JSON 类型转换与结果打印链。
-ground_truth_mode: complete-issue-set
+ground_truth_mode: known-issue-only
 difficulty: deep
 provenance:
   source: GitBug-Java
@@ -16,7 +17,7 @@ expected:
 - id: E1
   origin: upstream-real
   file: src/main/java/it/mulders/mcs/common/Result.java
-  line: 0
+  line: 20
   type_keywords:
   - runtime error
   - TLS

@@ -1,10 +1,11 @@
 issue_id: E1
+oracle_type: declarative-regression-contract
 not_exposed_to_review_model: true
 trigger: 包含凭据的连接 URL 解析失败
 expected_observation: 异常消息和日志暴露用户名、密码或 token
 source_anchor:
   file: src/main/java/net/snowflake/client/jdbc/SnowflakeConnectString.java
-  line: 0
+  line: 7
   call_path:
   - SnowflakeDriver.connect
   - SnowflakeConnectString.parse

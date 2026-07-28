@@ -1,4 +1,5 @@
 issue_id: E2
+oracle_type: declarative-regression-contract
 not_exposed_to_review_model: true
 trigger: 攻击者提交任意与目标算法输出等长的签名
 expected_observation: 伪造 JWT 被当作已认证 token 接受

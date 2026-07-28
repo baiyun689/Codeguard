@@ -1,7 +1,8 @@
 id: gitbug-spring-guice-injection
 category: representative multi-issue PR
+dimension: logic
 description: Framework entry、泛型绑定与 Spring/Guice 双容器生命周期。
-ground_truth_mode: complete-issue-set
+ground_truth_mode: known-issue-only
 difficulty: deep
 provenance:
   source: GitBug-Java
@@ -16,7 +17,7 @@ expected:
 - id: E1
   origin: upstream-real
   file: src/main/java/org/springframework/guice/module/SpringModule.java
-  line: 0
+  line: 20
   type_keywords:
   - custom annotation
   - Guice

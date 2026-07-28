@@ -6,7 +6,7 @@ issues:
   dimension: logic
   severity: WARNING
   file: src/main/java/org/springframework/guice/module/SpringModule.java
-  line: 0
+  line: 20
   root_cause: Beans with custom annotations cannot be injected through the Spring/Guice
     bridge
   trigger: 通过自定义 binding annotation 请求 Spring bean

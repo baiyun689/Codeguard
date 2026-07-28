@@ -126,11 +126,10 @@ public class RDFLoader {
 	public void load(URL url, String baseURI, RDFFormat dataFormat, RDFHandler rdfHandler)
 			throws IOException, RDFParseException, RDFHandlerException {
 		if (baseURI == null) {
-			baseURI = url.toExternalForm();
+			baseURI = url.getHost();
 		}
 
 		URLConnection con = url.openConnection();
-		con.setConnectTimeout(30_000);
 		// Set appropriate Accept headers
 		if (dataFormat != null) {
 			for (String mimeType : dataFormat.getMIMETypes()) {

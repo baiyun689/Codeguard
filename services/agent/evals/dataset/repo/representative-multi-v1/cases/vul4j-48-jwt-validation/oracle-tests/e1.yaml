@@ -1,10 +1,11 @@
 issue_id: E1
+oracle_type: declarative-regression-contract
 not_exposed_to_review_model: true
 trigger: 提交结构不完整或额外分段的 JWT
 expected_observation: 无效 token 进入解码和认证流程
 source_anchor:
   file: src/main/java/org/primeframework/jwt/JWTDecoder.java
-  line: 0
+  line: 154
   call_path:
   - JWTDecoder.decode
   - getParts

@@ -2,6 +2,8 @@
 
 该数据集从冻结的 `interview-v1` 中选出 10 个不同真实 Java 项目。每个 case
 保留原始 reversed-fix 问题，并在完整项目快照中加入两个彼此独立的受控问题。
+`manifest.yaml` 保存每个原始 case 目录的 SHA-256；重建脚本需要本地存在
+`.eval-work/interview-v1/dataset/repo`，以便核对冻结输入而不是重新抓取浮动分支。
 
 - `repo/`：PR 后完整项目快照。
 - `changes.diff`：原始真实 diff 与新增受控 diff 的有效 Git unified diff。

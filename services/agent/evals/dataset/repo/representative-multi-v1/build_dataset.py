@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -211,27 +213,25 @@ CASES = (
                         fos.write( buffer, 0, length );
                     }""",
                 """\
-                    int extractedBytes = 0;
+                    if ( entry.getCompressedSize() > 100 * 1024 * 1024 )
+                    {
+                        throw new IOException( "Archive entry is too large" );
+                    }
                     while ( ( length =
                         compressedInputStream.read( buffer ) ) >= 0 )
                     {
-                        extractedBytes += length;
-                        if ( extractedBytes > 100 * 1024 * 1024 )
-                        {
-                            throw new IOException( "Expanded entry is too large" );
-                        }
                         fos.write( buffer, 0, length );
                     }""",
-                "归档解压计数器使用可溢出的 int",
+                "解压限制错误使用压缩后大小",
                 "security",
                 "PERFORMANCE",
                 ("maintainability", "threat_model"),
-                "单文件解压字节数以 int 累加且未在写入前实施可靠上限",
-                "高压缩率条目解压后超过 Integer.MAX_VALUE",
-                "计数回绕后资源限制失效并持续占用磁盘",
-                "使用 long 累计总归档展开量并在写入前拒绝超限",
+                "资源上限检查 ZipEntry.compressedSize，而写盘成本由展开后字节数决定",
+                "压缩后小于 100 MiB 的高压缩率条目展开为超大内容",
+                "检查被绕过，解压持续占用磁盘直至服务不可用",
+                "使用 long 累计实际展开字节和归档总量，并在写入前拒绝超限",
                 ("Expand.expandFile", "extractFile", "ZipInputStream.read", "FileOutputStream.write"),
-                ("zip bomb", "integer overflow", "disk exhaustion"),
+                ("zip bomb", "compressed size", "disk exhaustion"),
                 "CRITICAL",
             ),
         ),
@@ -279,20 +279,18 @@ CASES = (
             ),
             _seed(
                 "repository/api/src/main/java/org/eclipse/rdf4j/repository/util/RDFLoader.java",
-                "\t\tURLConnection con = url.openConnection();",
-                """\
-\t\tURLConnection con = url.openConnection();
-\t\tcon.setConnectTimeout(30_000);""",
-                "远程 RDF 加载只限制建连而不限制读取",
-                "quality",
-                "RESOURCE_LIFECYCLE",
-                ("maintainability",),
-                "URLConnection 配置 connect timeout 后仍保留无限 read timeout",
-                "远端接受连接后持续缓慢发送或停止响应",
-                "工作线程和连接长期占用，批量导入无法释放容量",
-                "同时配置有限 read timeout，并让上层提供统一请求期限",
-                ("RDFLoader.load(URL)", "URLConnection.getInputStream", "RDFParser.parse"),
-                ("read timeout", "slow response", "resource"),
+                "\t\t\tbaseURI = url.toExternalForm();",
+                "\t\t\tbaseURI = url.getHost();",
+                "远程 RDF 的默认 base URI 丢失路径",
+                "logic",
+                "API_CONTRACT",
+                ("behavior",),
+                "未显式提供 baseURI 时仅保留 URL host，而不是完整文档 URL",
+                "远程 RDF 文档包含相对 IRI 并依赖文档路径解析",
+                "相对资源解析失败或被绑定到错误标识，导入后的图数据语义改变",
+                "继续使用完整 url.toExternalForm 作为默认 base URI",
+                ("RDFLoader.load(URL)", "RDFParser.setBaseURI", "RDFParser.parse"),
+                ("base URI", "relative IRI", "RDF"),
             ),
         ),
     ),
@@ -688,6 +686,41 @@ def _line_number(text: str, changed: str) -> int:
     return 0
 
 
+def _first_added_line(diff_text: str, path: str) -> int:
+    in_target = False
+    new_line = 0
+    first_hunk_line = 0
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            in_target = line.endswith(f" b/{path}")
+            new_line = 0
+            continue
+        if not in_target:
+            continue
+        if line.startswith("@@ "):
+            match = re.search(r"\+(\d+)", line)
+            new_line = int(match.group(1)) if match else 0
+            first_hunk_line = first_hunk_line or new_line
+            continue
+        if not new_line or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            return new_line
+        if not line.startswith("-"):
+            new_line += 1
+    return first_hunk_line
+
+
+def _read_source(path: Path) -> tuple[str, str]:
+    raw = path.read_bytes()
+    newline = "\r\n" if b"\r\n" in raw else "\n"
+    return raw.decode("utf-8").replace("\r\n", "\n"), newline
+
+
+def _write_source(path: Path, text: str, newline: str) -> None:
+    path.write_bytes(text.replace("\n", newline).encode("utf-8"))
+
+
 def _issue_from_seed(index: int, seed: Seed, final_text: str) -> dict:
     return {
         "id": f"E{index}",
@@ -723,6 +756,18 @@ def _copy_repo(source: Path, target: Path) -> None:
     )
 
 
+def _tree_sha256(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        content = path.read_bytes()
+        digest.update(len(relative).to_bytes(4, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
 def _build_case(spec: CaseSpec) -> dict:
     source_dir = SOURCE_ROOT / spec.source_id
     case_dir = CASES_ROOT / spec.source_id
@@ -734,15 +779,16 @@ def _build_case(spec: CaseSpec) -> dict:
         (source_dir / "case.yaml").read_text(encoding="utf-8")
     )
     original_expected = original_case["expected"][0]
+    upstream_diff = (source_dir / "changes.diff").read_text(encoding="utf-8")
     changed_files: dict[str, tuple[str, str]] = {}
     seed_issues: list[dict] = []
     for index, seed in enumerate(spec.seeds, start=2):
         target = repo_dir / seed.file
-        before_file = target.read_text(encoding="utf-8")
+        before_file, newline = _read_source(target)
         after_file = _replace_once(
             before_file, seed.before, seed.after, f"{spec.source_id}/{seed.file}"
         )
-        target.write_text(after_file, encoding="utf-8")
+        _write_source(target, after_file, newline)
         if seed.file in changed_files:
             initial, _ = changed_files[seed.file]
             changed_files[seed.file] = (initial, after_file)
@@ -754,7 +800,6 @@ def _build_case(spec: CaseSpec) -> dict:
         _git_diff(path, before, after)
         for path, (before, after) in sorted(changed_files.items())
     )
-    upstream_diff = (source_dir / "changes.diff").read_text(encoding="utf-8")
     if upstream_diff and not upstream_diff.endswith("\n"):
         upstream_diff += "\n"
     (case_dir / "seeded.diff").write_text(seeded_diff, encoding="utf-8")
@@ -769,7 +814,7 @@ def _build_case(spec: CaseSpec) -> dict:
         "dimension": spec.real.dimension,
         "severity": spec.real.severity,
         "file": original_expected["file"],
-        "line": original_expected.get("line", 0),
+        "line": _first_added_line(upstream_diff, original_expected["file"]),
         "root_cause": original_expected["root_cause"],
         "trigger": spec.real.trigger,
         "observable_consequence": spec.real.consequence,
@@ -783,8 +828,9 @@ def _build_case(spec: CaseSpec) -> dict:
     enhanced_case = {
         "id": spec.source_id,
         "category": "representative multi-issue PR",
+        "dimension": spec.real.dimension,
         "description": spec.rationale,
-        "ground_truth_mode": "complete-issue-set",
+        "ground_truth_mode": "known-issue-only",
         "difficulty": "deep",
         "provenance": {
             **original_case["provenance"],
@@ -817,6 +863,7 @@ def _build_case(spec: CaseSpec) -> dict:
             oracle_dir / f"{issue['id'].lower()}.yaml",
             {
                 "issue_id": issue["id"],
+                "oracle_type": "declarative-regression-contract",
                 "not_exposed_to_review_model": True,
                 "trigger": issue["trigger"],
                 "expected_observation": issue["observable_consequence"],
@@ -831,6 +878,7 @@ def _build_case(spec: CaseSpec) -> dict:
         "id": spec.source_id,
         "repository_url": original_case["provenance"]["repository_url"],
         "source_case": spec.source_id,
+        "source_snapshot_sha256": _tree_sha256(source_dir),
         "issue_count": len(issues),
     }
 
@@ -859,6 +907,8 @@ def build() -> None:
 
 该数据集从冻结的 `interview-v1` 中选出 10 个不同真实 Java 项目。每个 case
 保留原始 reversed-fix 问题，并在完整项目快照中加入两个彼此独立的受控问题。
+`manifest.yaml` 保存每个原始 case 目录的 SHA-256；重建脚本需要本地存在
+`.eval-work/interview-v1/dataset/repo`，以便核对冻结输入而不是重新抓取浮动分支。
 
 - `repo/`：PR 后完整项目快照。
 - `changes.diff`：原始真实 diff 与新增受控 diff 的有效 Git unified diff。

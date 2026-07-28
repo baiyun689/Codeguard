@@ -1,4 +1,5 @@
 issue_id: E2
+oracle_type: declarative-regression-contract
 not_exposed_to_review_model: true
 trigger: 模型同时出现来自不同包但同名的注解类型
 expected_observation: 插件读取或修改错误注解，生成源码的序列化合约被改变

@@ -6,7 +6,7 @@ issues:
   dimension: security
   severity: CRITICAL
   file: src/main/java/org/primeframework/jwt/JWTDecoder.java
-  line: 0
+  line: 154
   root_cause: JWT input is accepted without all required structural validation
   trigger: 提交结构不完整或额外分段的 JWT
   observable_consequence: 无效 token 进入解码和认证流程

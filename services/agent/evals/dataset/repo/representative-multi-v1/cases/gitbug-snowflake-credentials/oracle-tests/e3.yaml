@@ -1,4 +1,5 @@
 issue_id: E3
+oracle_type: declarative-regression-contract
 not_exposed_to_review_model: true
 trigger: 连续网络失败使上一次 sleep 多轮增长
 expected_observation: 重试线程长时间不可用，乘法溢出后还可能抛出参数异常

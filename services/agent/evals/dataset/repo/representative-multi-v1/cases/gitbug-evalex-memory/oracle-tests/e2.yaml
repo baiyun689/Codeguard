@@ -1,4 +1,5 @@
 issue_id: E2
+oracle_type: declarative-regression-contract
 not_exposed_to_review_model: true
 trigger: 服务运行在土耳其语等具有特殊大小写规则的 Locale
 expected_observation: 同一表达式变量在写入和读取时出现不可移植的缺失或碰撞

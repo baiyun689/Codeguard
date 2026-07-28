@@ -1,7 +1,8 @@
 id: gitbug-evalex-memory
 category: representative multi-issue PR
+dimension: quality
 description: 表达式词法分析、变量解析与运算符结合性。
-ground_truth_mode: complete-issue-set
+ground_truth_mode: known-issue-only
 difficulty: deep
 provenance:
   source: GitBug-Java
@@ -16,7 +17,7 @@ expected:
 - id: E1
   origin: upstream-real
   file: src/main/java/com/ezylang/evalex/parser/Tokenizer.java
-  line: 0
+  line: 356
   type_keywords:
   - OutOfMemoryError
   - memory leak

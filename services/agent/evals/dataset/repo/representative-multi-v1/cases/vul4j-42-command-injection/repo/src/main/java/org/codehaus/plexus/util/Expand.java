@@ -177,15 +177,13 @@ public class Expand
                 {
                     fos = new FileOutputStream( f );
 
-                    int extractedBytes = 0;
+                    if ( entry.getCompressedSize() > 100 * 1024 * 1024 )
+                    {
+                        throw new IOException( "Archive entry is too large" );
+                    }
                     while ( ( length =
                         compressedInputStream.read( buffer ) ) >= 0 )
                     {
-                        extractedBytes += length;
-                        if ( extractedBytes > 100 * 1024 * 1024 )
-                        {
-                            throw new IOException( "Expanded entry is too large" );
-                        }
                         fos.write( buffer, 0, length );
                     }
 

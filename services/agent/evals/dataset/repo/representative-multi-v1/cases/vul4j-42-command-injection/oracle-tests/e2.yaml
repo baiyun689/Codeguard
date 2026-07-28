@@ -1,4 +1,5 @@
 issue_id: E2
+oracle_type: declarative-regression-contract
 not_exposed_to_review_model: true
 trigger: 构建目录中存在指向工作区外部的符号链接
 expected_observation: 扫描结果包含根目录外文件并被后续打包或处理
