@@ -1,0 +1,121 @@
+case_id: pr-18-admin-report
+project: TradeFlow
+baseline: tradeflow-clean-v1
+issues:
+- id: pr-18-admin-report-issue-1
+  title: 异步报表路径绕过管理员鉴权
+  dimension: security
+  primary_risk_tag: AUTHORIZATION
+  secondary_risk_tags: []
+  expected_reviewers:
+  - threat_model
+  - behavior
+  required_knowledge:
+  - threat_model/AUTHORIZATION
+  - behavior/AUTHORIZATION
+  risk_coverage: exact
+  routing_hazard: true
+  taxonomy_gap: null
+  root_cause: 鉴权仅位于 Controller，worker 公开调用同一服务时无等价检查
+  trigger: 低权限用户能投递导出任务
+  observable_consequence: 导出全租户敏感报表
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/AdminReportService.java
+  line: 54
+  expected_trigger_lines:
+  - 54
+  call_path:
+  - AdminReportController.runScheduledExport
+  - AdminReportCoordinator.runScheduledExport
+  - AdminReportService.runScheduledExport
+  - OrderRepository.findByTenantAndId
+  evidence_anchors:
+  - AdminReportService.runScheduledExport
+  - OrderRepository.findByTenantAndId
+  fix_location: AdminReportService.runScheduledExport
+  fix_action: 在应用用例 seam 强制授权
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 导出全租户敏感报表
+  oracle_test: AdminReport1OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-18-admin-report-issue-2
+  title: 报表全量加载导致内存放大
+  dimension: security
+  primary_risk_tag: PERFORMANCE
+  secondary_risk_tags: []
+  expected_reviewers:
+  - behavior
+  - maintainability
+  required_knowledge:
+  - behavior/PERFORMANCE
+  - maintainability/PERFORMANCE
+  risk_coverage: exact
+  routing_hazard: true
+  taxonomy_gap: null
+  root_cause: 先 findAll 再在内存分页和序列化
+  trigger: 大租户导出多年数据
+  observable_consequence: 堆内存耗尽并影响在线请求
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/AdminReportService.java
+  line: 58
+  expected_trigger_lines:
+  - 58
+  call_path:
+  - AdminReportController.renderFullReport
+  - AdminReportCoordinator.renderFullReport
+  - AdminReportService.renderFullReport
+  - unbounded repository/client operation
+  evidence_anchors:
+  - AdminReportService.renderFullReport
+  - unbounded repository/client operation
+  fix_location: AdminReportService.renderFullReport
+  fix_action: 流式分页、背压和导出上限
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 堆内存耗尽并影响在线请求
+  oracle_test: AdminReport2OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-18-admin-report-issue-3
+  title: 报表字段未防 CSV 注入
+  dimension: security
+  primary_risk_tag: INJECTION
+  secondary_risk_tags: []
+  expected_reviewers:
+  - threat_model
+  - behavior
+  required_knowledge:
+  - threat_model/INJECTION
+  - behavior/INJECTION
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 用户字段直接写入电子表格可执行单元格
+  trigger: 订单备注以公式前缀开头
+  observable_consequence: 管理员打开报表时执行公式
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/AdminReportService.java
+  line: 63
+  expected_trigger_lines:
+  - 63
+  call_path:
+  - AdminReportController.renderReportRow
+  - AdminReportCoordinator.renderReportRow
+  - AdminReportService.renderReportRow
+  - expression/query interpreter
+  evidence_anchors:
+  - AdminReportService.renderReportRow
+  - expression/query interpreter
+  fix_location: AdminReportService.renderReportRow
+  fix_action: 转义公式前缀并采用安全导出格式
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 管理员打开报表时执行公式
+  oracle_test: AdminReport3OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false

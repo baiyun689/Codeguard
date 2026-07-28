@@ -1,0 +1,126 @@
+case_id: pr-12-order-search
+project: TradeFlow
+baseline: tradeflow-clean-v1
+issues:
+- id: pr-12-order-search-issue-1
+  title: 排序字段进入原生查询
+  dimension: security
+  primary_risk_tag: INJECTION
+  secondary_risk_tags:
+  - SQL_DATA_ACCESS
+  expected_reviewers:
+  - threat_model
+  - behavior
+  required_knowledge:
+  - threat_model/INJECTION
+  - behavior/INJECTION
+  - behavior/SQL_DATA_ACCESS
+  risk_coverage: composite
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 请求 sort 表达式未经枚举映射进入查询
+  trigger: 调用方提交 SQL 片段作为排序字段
+  observable_consequence: 查询语义被篡改或数据泄露
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/OrderSearchService.java
+  line: 54
+  expected_trigger_lines:
+  - 54
+  call_path:
+  - OrderSearchController.searchWithSort
+  - OrderSearchCoordinator.searchWithSort
+  - OrderSearchService.searchWithSort
+  - expression/query interpreter
+  evidence_anchors:
+  - OrderSearchService.searchWithSort
+  - expression/query interpreter
+  fix_location: OrderSearchService.searchWithSort
+  fix_action: 将公开排序键映射到固定列集合
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 查询语义被篡改或数据泄露
+  oracle_test: OrderSearch1OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-12-order-search-issue-2
+  title: 分页 offset 整数溢出
+  dimension: security
+  primary_risk_tag: PERFORMANCE
+  secondary_risk_tags:
+  - INPUT_VALIDATION
+  expected_reviewers:
+  - threat_model
+  - maintainability
+  required_knowledge:
+  - threat_model/INPUT_VALIDATION
+  - maintainability/PERFORMANCE
+  risk_coverage: composite
+  routing_hazard: true
+  taxonomy_gap: null
+  root_cause: page 与 size 使用 int 乘法且校验发生在乘法前
+  trigger: 提交极大页码
+  observable_consequence: 负 offset 绕过限制并触发大范围查询
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/OrderSearchService.java
+  line: 59
+  expected_trigger_lines:
+  - 59
+  call_path:
+  - OrderSearchController.searchPage
+  - OrderSearchCoordinator.searchPage
+  - OrderSearchService.searchPage
+  - unbounded repository/client operation
+  evidence_anchors:
+  - OrderSearchService.searchPage
+  - unbounded repository/client operation
+  fix_location: OrderSearchService.searchPage
+  fix_action: 使用 long/Math.multiplyExact 并设置总上限
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 负 offset 绕过限制并触发大范围查询
+  oracle_test: OrderSearch2OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-12-order-search-issue-3
+  title: fallback 查询遗漏访问范围
+  dimension: security
+  primary_risk_tag: AUTHORIZATION
+  secondary_risk_tags:
+  - SQL_DATA_ACCESS
+  expected_reviewers:
+  - threat_model
+  - behavior
+  required_knowledge:
+  - threat_model/AUTHORIZATION
+  - behavior/AUTHORIZATION
+  - behavior/SQL_DATA_ACCESS
+  risk_coverage: composite
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 主查询为空时改用不带租户条件的 fallback
+  trigger: 当前租户没有匹配记录
+  observable_consequence: 返回其他租户订单
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/OrderSearchService.java
+  line: 67
+  expected_trigger_lines:
+  - 67
+  call_path:
+  - OrderSearchController.searchWithFallback
+  - OrderSearchCoordinator.searchWithFallback
+  - OrderSearchService.searchWithFallback
+  - OrderRepository.findByTenantAndId
+  evidence_anchors:
+  - OrderSearchService.searchWithFallback
+  - OrderRepository.findByTenantAndId
+  fix_location: OrderSearchService.searchWithFallback
+  fix_action: 所有查询分支共享强制租户 predicate
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 返回其他租户订单
+  oracle_test: OrderSearch3OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false

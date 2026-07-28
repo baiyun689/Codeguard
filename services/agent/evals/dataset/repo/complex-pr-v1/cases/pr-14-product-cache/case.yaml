@@ -1,0 +1,64 @@
+id: pr-14-product-cache
+category: 商品缓存刷新
+dimension: security
+language: java
+capability:
+- call-path
+- state-impact
+description: TradeFlow 完整项目中的商品缓存刷新 PR；包含三个需要跨层调用链、状态或外部副作用语义才能确认的独立问题。
+expected:
+- id: pr-14-product-cache-issue-1
+  type_keywords:
+  - 缓存
+  - 租户
+  - 商品
+  file: ProductCacheService.java
+  line: 54
+  tolerance: 5
+  severity: CRITICAL
+  note: 商品缓存键遗漏租户
+  root_cause: 缓存 key 只使用商品 ID
+  risk_tag: CACHE_CONSISTENCY
+  evidence_anchors:
+  - ProductCacheController
+  - ProductCacheCoordinator
+  - ProductCacheService.loadProduct
+- id: pr-14-product-cache-issue-2
+  type_keywords:
+  - 缓存
+  - 事务
+  - 失效
+  file: ProductCacheService.java
+  line: 59
+  tolerance: 5
+  severity: WARNING
+  note: 事务提交前驱逐缓存
+  root_cause: 更新事务尚未成功就向其他实例广播失效
+  risk_tag: TRANSACTION_ATOMICITY
+  evidence_anchors:
+  - ProductCacheController
+  - ProductCacheCoordinator
+  - ProductCacheService.updateProduct
+- id: pr-14-product-cache-issue-3
+  type_keywords:
+  - negative cache
+  - 创建
+  - 缓存
+  file: ProductCacheService.java
+  line: 66
+  tolerance: 5
+  severity: WARNING
+  note: 创建后未清除 negative cache
+  root_cause: 未找到结果被缓存，创建路径不驱逐该 key
+  risk_tag: CACHE_CONSISTENCY
+  evidence_anchors:
+  - ProductCacheController
+  - ProductCacheCoordinator
+  - ProductCacheService.createProduct
+provenance:
+  source: Codeguard controlled project-level benchmark
+  repository_url: ''
+  base_revision: tradeflow-clean-v1
+  head_revision: pr-14-product-cache
+  patch_direction: seeded-pr
+  license: CC0-1.0 benchmark fixture

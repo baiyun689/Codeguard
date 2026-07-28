@@ -1,0 +1,115 @@
+case_id: pr-02-checkout
+project: TradeFlow
+baseline: tradeflow-clean-v1
+issues:
+- id: pr-02-checkout-issue-1
+  title: 扣款后库存失败无补偿
+  dimension: logic
+  primary_risk_tag: TRANSACTION_ATOMICITY
+  secondary_risk_tags: []
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/TRANSACTION_ATOMICITY
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 不可逆支付先于库存预留且失败路径没有退款补偿
+  trigger: 支付成功后库存版本冲突或库存不足
+  observable_consequence: 用户被扣款但订单无法履约
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/CheckoutService.java
+  line: 54
+  expected_trigger_lines:
+  - 54
+  call_path:
+  - CheckoutController.uncompensatedCharge
+  - CheckoutCoordinator.uncompensatedCharge
+  - CheckoutService.uncompensatedCharge
+  - OrderRepository.save
+  evidence_anchors:
+  - CheckoutService.uncompensatedCharge
+  - OrderRepository.save
+  fix_location: CheckoutService.uncompensatedCharge
+  fix_action: 先可靠预留或实现持久化 Saga/补偿退款
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 用户被扣款但订单无法履约
+  oracle_test: Checkout1OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-02-checkout-issue-2
+  title: 事务方法通过同类调用绕过代理
+  dimension: logic
+  primary_risk_tag: TRANSACTION_ATOMICITY
+  secondary_risk_tags: []
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/TRANSACTION_ATOMICITY
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 事务方法由同一实例直接调用
+  trigger: 后续持久化步骤抛出运行时异常
+  observable_consequence: 预期原子更新可能部分提交
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/CheckoutService.java
+  line: 64
+  expected_trigger_lines:
+  - 64
+  call_path:
+  - CheckoutController.localTransaction
+  - CheckoutCoordinator.localTransaction
+  - CheckoutService.localTransaction
+  - OrderRepository.save
+  evidence_anchors:
+  - CheckoutService.localTransaction
+  - OrderRepository.save
+  fix_location: CheckoutService.localTransaction
+  fix_action: 将事务 seam 移到独立 Spring bean 的公开入口
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 预期原子更新可能部分提交
+  oracle_test: Checkout2OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-02-checkout-issue-3
+  title: 幂等键未包含租户
+  dimension: logic
+  primary_risk_tag: IDEMPOTENCY_RETRY
+  secondary_risk_tags: []
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/IDEMPOTENCY_RETRY
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 全局缓存键只使用客户端 requestId
+  trigger: 两个租户使用相同 requestId
+  observable_consequence: 一个租户收到另一租户的支付结果或请求被错误抑制
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/CheckoutService.java
+  line: 76
+  expected_trigger_lines:
+  - 76
+  call_path:
+  - CheckoutController.sharedIdempotency
+  - CheckoutCoordinator.sharedIdempotency
+  - CheckoutService.sharedIdempotency
+  - CacheStore.put
+  evidence_anchors:
+  - CheckoutService.sharedIdempotency
+  - CacheStore.put
+  fix_location: CheckoutService.sharedIdempotency
+  fix_action: 以 tenantId、业务动作和 requestId 共同组成唯一键
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 一个租户收到另一租户的支付结果或请求被错误抑制
+  oracle_test: Checkout3OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false

@@ -1,0 +1,64 @@
+id: pr-08-order-events
+category: 订单事件消费
+dimension: logic
+language: java
+capability:
+- call-path
+- state-impact
+description: TradeFlow 完整项目中的订单事件消费 PR；包含三个需要跨层调用链、状态或外部副作用语义才能确认的独立问题。
+expected:
+- id: pr-08-order-events-issue-1
+  type_keywords:
+  - 事件
+  - 事务
+  - 提交
+  file: OrderEventsService.java
+  line: 54
+  tolerance: 5
+  severity: WARNING
+  note: 订单事件在事务提交前发布
+  root_cause: 外部事件发布先于订单事务提交
+  risk_tag: MESSAGE_DELIVERY
+  evidence_anchors:
+  - OrderEventsController
+  - OrderEventsCoordinator
+  - OrderEventsService.changeOrderStatus
+- id: pr-08-order-events-issue-2
+  type_keywords:
+  - 异常
+  - ack
+  - 消息
+  file: OrderEventsService.java
+  line: 62
+  tolerance: 5
+  severity: WARNING
+  note: 消费异常被吞后仍确认消息
+  root_cause: 宽泛 catch 将处理失败转换为正常返回
+  risk_tag: ERROR_HANDLING
+  evidence_anchors:
+  - OrderEventsController
+  - OrderEventsCoordinator
+  - OrderEventsService.consumeOrderEvent
+- id: pr-08-order-events-issue-3
+  type_keywords:
+  - 版本
+  - 乱序
+  - 事件
+  file: OrderEventsService.java
+  line: 73
+  tolerance: 5
+  severity: WARNING
+  note: 旧版本事件覆盖新状态
+  root_cause: 消费者未比较事件聚合版本
+  risk_tag: CONCURRENCY_CONSISTENCY
+  evidence_anchors:
+  - OrderEventsController
+  - OrderEventsCoordinator
+  - OrderEventsService.applyVersionedEvent
+provenance:
+  source: Codeguard controlled project-level benchmark
+  repository_url: ''
+  base_revision: tradeflow-clean-v1
+  head_revision: pr-08-order-events
+  patch_direction: seeded-pr
+  license: CC0-1.0 benchmark fixture

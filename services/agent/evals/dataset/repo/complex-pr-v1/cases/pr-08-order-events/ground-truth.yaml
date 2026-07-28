@@ -1,0 +1,118 @@
+case_id: pr-08-order-events
+project: TradeFlow
+baseline: tradeflow-clean-v1
+issues:
+- id: pr-08-order-events-issue-1
+  title: 订单事件在事务提交前发布
+  dimension: logic
+  primary_risk_tag: MESSAGE_DELIVERY
+  secondary_risk_tags:
+  - TRANSACTION_ATOMICITY
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/MESSAGE_DELIVERY
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 外部事件发布先于订单事务提交
+  trigger: 发布成功后数据库提交失败
+  observable_consequence: 消费者观察到不存在的订单状态
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/OrderEventsService.java
+  line: 54
+  expected_trigger_lines:
+  - 54
+  call_path:
+  - OrderEventsController.changeOrderStatus
+  - OrderEventsCoordinator.changeOrderStatus
+  - OrderEventsService.changeOrderStatus
+  - EventPublisher.publish
+  evidence_anchors:
+  - OrderEventsService.changeOrderStatus
+  - EventPublisher.publish
+  fix_location: OrderEventsService.changeOrderStatus
+  fix_action: 使用 transactional outbox 并在提交后投递
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 消费者观察到不存在的订单状态
+  oracle_test: OrderEvents1OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-08-order-events-issue-2
+  title: 消费异常被吞后仍确认消息
+  dimension: logic
+  primary_risk_tag: ERROR_HANDLING
+  secondary_risk_tags:
+  - MESSAGE_DELIVERY
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/ERROR_HANDLING
+  risk_coverage: exact
+  routing_hazard: true
+  taxonomy_gap: null
+  root_cause: 宽泛 catch 将处理失败转换为正常返回
+  trigger: 任意下游暂时失败
+  observable_consequence: 消息 offset 前进且事件永久丢失
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/OrderEventsService.java
+  line: 62
+  expected_trigger_lines:
+  - 62
+  call_path:
+  - OrderEventsController.consumeOrderEvent
+  - OrderEventsCoordinator.consumeOrderEvent
+  - OrderEventsService.consumeOrderEvent
+  - message acknowledgement
+  evidence_anchors:
+  - OrderEventsService.consumeOrderEvent
+  - message acknowledgement
+  fix_location: OrderEventsService.consumeOrderEvent
+  fix_action: 传播异常触发重试并配置 DLQ
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 消息 offset 前进且事件永久丢失
+  oracle_test: OrderEvents2OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-08-order-events-issue-3
+  title: 旧版本事件覆盖新状态
+  dimension: logic
+  primary_risk_tag: CONCURRENCY_CONSISTENCY
+  secondary_risk_tags:
+  - MESSAGE_DELIVERY
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/CONCURRENCY_CONSISTENCY
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 消费者未比较事件聚合版本
+  trigger: 网络重试导致事件乱序
+  observable_consequence: 订单回退到旧状态
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/OrderEventsService.java
+  line: 73
+  expected_trigger_lines:
+  - 73
+  call_path:
+  - OrderEventsController.applyVersionedEvent
+  - OrderEventsCoordinator.applyVersionedEvent
+  - OrderEventsService.applyVersionedEvent
+  - OrderRepository.saveIfVersion
+  evidence_anchors:
+  - OrderEventsService.applyVersionedEvent
+  - OrderRepository.saveIfVersion
+  fix_location: OrderEventsService.applyVersionedEvent
+  fix_action: 持久化最后版本并仅原子接受更大版本
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 订单回退到旧状态
+  oracle_test: OrderEvents3OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false

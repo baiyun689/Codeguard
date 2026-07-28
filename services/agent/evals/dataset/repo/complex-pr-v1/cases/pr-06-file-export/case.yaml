@@ -1,0 +1,64 @@
+id: pr-06-file-export
+category: 文件导出
+dimension: security
+language: java
+capability:
+- call-path
+- state-impact
+description: TradeFlow 完整项目中的文件导出 PR；包含三个需要跨层调用链、状态或外部副作用语义才能确认的独立问题。
+expected:
+- id: pr-06-file-export-issue-1
+  type_keywords:
+  - 路径穿越
+  - 导出
+  - 文件
+  file: FileExportService.java
+  line: 54
+  tolerance: 5
+  severity: CRITICAL
+  note: 导出路径可逃逸租户目录
+  root_cause: resolve 后未 normalize 并验证根目录
+  risk_tag: FILE_PATH_IO
+  evidence_anchors:
+  - FileExportController
+  - FileExportCoordinator
+  - FileExportService.openExport
+- id: pr-06-file-export-issue-2
+  type_keywords:
+  - 越权
+  - owner
+  - 导出
+  file: FileExportService.java
+  line: 60
+  tolerance: 5
+  severity: CRITICAL
+  note: 导出授权信任请求 owner
+  root_cause: 资源所有者来自调用方而非可信身份上下文
+  risk_tag: AUTHORIZATION
+  evidence_anchors:
+  - FileExportController
+  - FileExportCoordinator
+  - FileExportService.openOwnedExport
+- id: pr-06-file-export-issue-3
+  type_keywords:
+  - TOCTOU
+  - 并发
+  - 文件
+  file: FileExportService.java
+  line: 65
+  tolerance: 5
+  severity: WARNING
+  note: 检查与打开之间存在文件竞态
+  root_cause: 权限检查和实际打开使用两个独立路径解析步骤
+  risk_tag: CONCURRENCY_CONSISTENCY
+  evidence_anchors:
+  - FileExportController
+  - FileExportCoordinator
+  - FileExportService.openVerifiedExport
+provenance:
+  source: Codeguard controlled project-level benchmark
+  repository_url: ''
+  base_revision: tradeflow-clean-v1
+  head_revision: pr-06-file-export
+  patch_direction: seeded-pr
+  license: CC0-1.0 benchmark fixture

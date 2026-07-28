@@ -1,0 +1,64 @@
+id: pr-19-order-state-machine
+category: 订单状态机
+dimension: logic
+language: java
+capability:
+- call-path
+- state-impact
+description: TradeFlow 完整项目中的订单状态机 PR；包含三个需要跨层调用链、状态或外部副作用语义才能确认的独立问题。
+expected:
+- id: pr-19-order-state-machine-issue-1
+  type_keywords:
+  - 状态机
+  - 非法跳转
+  - ordinal
+  file: OrderStateMachineService.java
+  line: 54
+  tolerance: 5
+  severity: WARNING
+  note: 状态 ordinal 比较允许非法跳转
+  root_cause: 用枚举顺序代替显式状态转换图
+  risk_tag: API_CONTRACT
+  evidence_anchors:
+  - OrderStateMachineController
+  - OrderStateMachineCoordinator
+  - OrderStateMachineService.transitionOrder
+- id: pr-19-order-state-machine-issue-2
+  type_keywords:
+  - 版本
+  - 映射
+  - 并发
+  file: OrderStateMachineService.java
+  line: 63
+  tolerance: 5
+  severity: WARNING
+  note: 映射过程丢失乐观锁版本
+  root_cause: 重建 Order 时 version 回到默认值
+  risk_tag: CONCURRENCY_CONSISTENCY
+  evidence_anchors:
+  - OrderStateMachineController
+  - OrderStateMachineCoordinator
+  - OrderStateMachineService.mapOrderUpdate
+- id: pr-19-order-state-machine-issue-3
+  type_keywords:
+  - 补偿
+  - 版本
+  - 事件
+  file: OrderStateMachineService.java
+  line: 70
+  tolerance: 5
+  severity: WARNING
+  note: 补偿事件携带新版本而非被补偿版本
+  root_cause: 事件版本在状态递增后取值
+  risk_tag: MESSAGE_DELIVERY
+  evidence_anchors:
+  - OrderStateMachineController
+  - OrderStateMachineCoordinator
+  - OrderStateMachineService.publishCompensation
+provenance:
+  source: Codeguard controlled project-level benchmark
+  repository_url: ''
+  base_revision: tradeflow-clean-v1
+  head_revision: pr-19-order-state-machine
+  patch_direction: seeded-pr
+  license: CC0-1.0 benchmark fixture

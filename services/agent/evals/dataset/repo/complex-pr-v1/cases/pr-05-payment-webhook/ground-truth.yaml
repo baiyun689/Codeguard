@@ -1,0 +1,119 @@
+case_id: pr-05-payment-webhook
+project: TradeFlow
+baseline: tradeflow-clean-v1
+issues:
+- id: pr-05-payment-webhook-issue-1
+  title: 使用解析后 JSON 验证 Webhook 签名
+  dimension: security
+  primary_risk_tag: INPUT_VALIDATION
+  secondary_risk_tags:
+  - AUTHENTICATION_SESSION
+  expected_reviewers:
+  - threat_model
+  - behavior
+  required_knowledge:
+  - threat_model/INPUT_VALIDATION
+  - behavior/INPUT_VALIDATION
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 签名输入不是支付方发送的原始字节
+  trigger: JSON 空白、字段顺序或数字格式被解析器规范化
+  observable_consequence: 合法回调被拒绝或错误实现下可绕过认证
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/PaymentWebhookService.java
+  line: 54
+  expected_trigger_lines:
+  - 54
+  call_path:
+  - PaymentWebhookController.verifyWebhookSignature
+  - PaymentWebhookCoordinator.verifyWebhookSignature
+  - PaymentWebhookService.verifyWebhookSignature
+  - sensitive business operation
+  evidence_anchors:
+  - PaymentWebhookService.verifyWebhookSignature
+  - sensitive business operation
+  fix_location: PaymentWebhookService.verifyWebhookSignature
+  fix_action: 在反序列化前保留原始 body 并做恒时签名比较
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 合法回调被拒绝或错误实现下可绕过认证
+  oracle_test: PaymentWebhook1OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-05-payment-webhook-issue-2
+  title: Webhook 缺少重放窗口
+  dimension: security
+  primary_risk_tag: IDEMPOTENCY_RETRY
+  secondary_risk_tags: []
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/IDEMPOTENCY_RETRY
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 事件去重没有绑定签名时间戳和有效窗口
+  trigger: 攻击者重放曾经合法的支付事件
+  observable_consequence: 订单状态或退款副作用重复执行
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/PaymentWebhookService.java
+  line: 61
+  expected_trigger_lines:
+  - 61
+  call_path:
+  - PaymentWebhookController.acceptWebhookEvent
+  - PaymentWebhookCoordinator.acceptWebhookEvent
+  - PaymentWebhookService.acceptWebhookEvent
+  - CacheStore.put
+  evidence_anchors:
+  - PaymentWebhookService.acceptWebhookEvent
+  - CacheStore.put
+  fix_location: PaymentWebhookService.acceptWebhookEvent
+  fix_action: 校验时间戳窗口并持久化事件 ID 去重
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 订单状态或退款副作用重复执行
+  oracle_test: PaymentWebhook2OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-05-payment-webhook-issue-3
+  title: 先标记回调完成再更新订单
+  dimension: security
+  primary_risk_tag: TRANSACTION_ATOMICITY
+  secondary_risk_tags:
+  - MESSAGE_DELIVERY
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/TRANSACTION_ATOMICITY
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 处理标记和业务状态更新顺序错误且不原子
+  trigger: 订单保存失败
+  observable_consequence: 重试被完成标记挡住，支付状态永久丢失
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/PaymentWebhookService.java
+  line: 68
+  expected_trigger_lines:
+  - 68
+  call_path:
+  - PaymentWebhookController.applyPaymentEvent
+  - PaymentWebhookCoordinator.applyPaymentEvent
+  - PaymentWebhookService.applyPaymentEvent
+  - OrderRepository.save
+  evidence_anchors:
+  - PaymentWebhookService.applyPaymentEvent
+  - OrderRepository.save
+  fix_location: PaymentWebhookService.applyPaymentEvent
+  fix_action: 在同一事务中更新状态和 inbox，提交后再确认
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 重试被完成标记挡住，支付状态永久丢失
+  oracle_test: PaymentWebhook3OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false

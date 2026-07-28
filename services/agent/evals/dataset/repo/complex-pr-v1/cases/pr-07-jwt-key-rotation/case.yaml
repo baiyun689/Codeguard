@@ -1,0 +1,64 @@
+id: pr-07-jwt-key-rotation
+category: JWT 与密钥轮换
+dimension: security
+language: java
+capability:
+- call-path
+- state-impact
+description: TradeFlow 完整项目中的JWT 与密钥轮换 PR；包含三个需要跨层调用链、状态或外部副作用语义才能确认的独立问题。
+expected:
+- id: pr-07-jwt-key-rotation-issue-1
+  type_keywords:
+  - SSRF
+  - kid
+  - JWT
+  file: JwtKeyRotationService.java
+  line: 54
+  tolerance: 5
+  severity: CRITICAL
+  note: JWT kid 可控制远程密钥地址
+  root_cause: 未受信任 kid 被拼成任意 URI
+  risk_tag: SSRF_OUTBOUND
+  evidence_anchors:
+  - JwtKeyRotationController
+  - JwtKeyRotationCoordinator
+  - JwtKeyRotationService.loadSigningKey
+- id: pr-07-jwt-key-rotation-issue-2
+  type_keywords:
+  - 过期
+  - 时间
+  - JWT
+  file: JwtKeyRotationService.java
+  line: 59
+  tolerance: 5
+  severity: WARNING
+  note: JWT 过期时间单位比较错误
+  root_cause: 秒级 exp 与毫秒级当前时间直接比较
+  risk_tag: IDEMPOTENCY_RETRY
+  evidence_anchors:
+  - JwtKeyRotationController
+  - JwtKeyRotationCoordinator
+  - JwtKeyRotationService.isTokenActive
+- id: pr-07-jwt-key-rotation-issue-3
+  type_keywords:
+  - 缓存
+  - 角色
+  - 租户
+  file: JwtKeyRotationService.java
+  line: 64
+  tolerance: 5
+  severity: CRITICAL
+  note: 角色缓存键遗漏租户
+  root_cause: 角色缓存只按用户 ID 建键
+  risk_tag: CACHE_CONSISTENCY
+  evidence_anchors:
+  - JwtKeyRotationController
+  - JwtKeyRotationCoordinator
+  - JwtKeyRotationService.loadTenantRoles
+provenance:
+  source: Codeguard controlled project-level benchmark
+  repository_url: ''
+  base_revision: tradeflow-clean-v1
+  head_revision: pr-07-jwt-key-rotation
+  patch_direction: seeded-pr
+  license: CC0-1.0 benchmark fixture

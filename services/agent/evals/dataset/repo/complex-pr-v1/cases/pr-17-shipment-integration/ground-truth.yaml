@@ -1,0 +1,122 @@
+case_id: pr-17-shipment-integration
+project: TradeFlow
+baseline: tradeflow-clean-v1
+issues:
+- id: pr-17-shipment-integration-issue-1
+  title: 物流回调地址形成 SSRF
+  dimension: security
+  primary_risk_tag: SSRF_OUTBOUND
+  secondary_risk_tags: []
+  expected_reviewers:
+  - threat_model
+  - behavior
+  required_knowledge:
+  - threat_model/SSRF_OUTBOUND
+  - behavior/SSRF_OUTBOUND
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 请求 callbackUrl 直接交给出站客户端
+  trigger: 用户控制 scheme 或 host
+  observable_consequence: 访问内网和云元数据
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/ShipmentIntegrationService.java
+  line: 54
+  expected_trigger_lines:
+  - 54
+  call_path:
+  - ShipmentIntegrationController.createShipment
+  - ShipmentIntegrationCoordinator.createShipment
+  - ShipmentIntegrationService.createShipment
+  - ExternalHttpClient.post
+  evidence_anchors:
+  - ShipmentIntegrationService.createShipment
+  - ExternalHttpClient.post
+  fix_location: ShipmentIntegrationService.createShipment
+  fix_action: 固定合作方 base URL 并校验解析后的地址
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 访问内网和云元数据
+  oracle_test: ShipmentIntegration1OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-17-shipment-integration-issue-2
+  title: HTTP 重试重复创建运单
+  dimension: security
+  primary_risk_tag: IDEMPOTENCY_RETRY
+  secondary_risk_tags: []
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/IDEMPOTENCY_RETRY
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 非幂等创建请求每次重试使用新 requestId
+  trigger: 物流端已创建但响应超时
+  observable_consequence: 同一订单产生多个运单和费用
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/ShipmentIntegrationService.java
+  line: 60
+  expected_trigger_lines:
+  - 60
+  call_path:
+  - ShipmentIntegrationController.retryShipment
+  - ShipmentIntegrationCoordinator.retryShipment
+  - ShipmentIntegrationService.retryShipment
+  - CacheStore.put
+  evidence_anchors:
+  - ShipmentIntegrationService.retryShipment
+  - CacheStore.put
+  fix_location: ShipmentIntegrationService.retryShipment
+  fix_action: 以 orderId 生成稳定幂等键并查询已有结果
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 同一订单产生多个运单和费用
+  oracle_test: ShipmentIntegration2OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-17-shipment-integration-issue-3
+  title: 超时单位错误占满工作线程
+  dimension: security
+  primary_risk_tag: PERFORMANCE
+  secondary_risk_tags:
+  - RESOURCE_LIFECYCLE
+  expected_reviewers:
+  - behavior
+  - maintainability
+  required_knowledge:
+  - behavior/PERFORMANCE
+  - behavior/RESOURCE_LIFECYCLE
+  - maintainability/PERFORMANCE
+  - maintainability/RESOURCE_LIFECYCLE
+  risk_coverage: composite
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 秒级配置被构造成 Duration.ofMillis
+  trigger: 物流端延迟或失联
+  observable_consequence: 请求线程长时间阻塞并级联耗尽
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/ShipmentIntegrationService.java
+  line: 66
+  expected_trigger_lines:
+  - 66
+  call_path:
+  - ShipmentIntegrationController.createShipmentWithTimeout
+  - ShipmentIntegrationCoordinator.createShipmentWithTimeout
+  - ShipmentIntegrationService.createShipmentWithTimeout
+  - unbounded repository/client operation
+  evidence_anchors:
+  - ShipmentIntegrationService.createShipmentWithTimeout
+  - unbounded repository/client operation
+  fix_location: ShipmentIntegrationService.createShipmentWithTimeout
+  fix_action: 用 Duration 配置并设置连接、响应与总预算
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 请求线程长时间阻塞并级联耗尽
+  oracle_test: ShipmentIntegration3OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false

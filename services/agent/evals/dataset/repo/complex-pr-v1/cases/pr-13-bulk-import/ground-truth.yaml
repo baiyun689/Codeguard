@@ -1,0 +1,121 @@
+case_id: pr-13-bulk-import
+project: TradeFlow
+baseline: tradeflow-clean-v1
+issues:
+- id: pr-13-bulk-import-issue-1
+  title: ZIP 条目逃逸导入目录
+  dimension: security
+  primary_risk_tag: FILE_PATH_IO
+  secondary_risk_tags: []
+  expected_reviewers:
+  - threat_model
+  - behavior
+  required_knowledge:
+  - threat_model/FILE_PATH_IO
+  - behavior/FILE_PATH_IO
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: entry name 直接 resolve 到目标目录
+  trigger: 上传包含 ../ 的压缩包
+  observable_consequence: 覆盖应用可写的任意文件
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/BulkImportService.java
+  line: 54
+  expected_trigger_lines:
+  - 54
+  call_path:
+  - BulkImportController.resolveArchiveEntry
+  - BulkImportCoordinator.resolveArchiveEntry
+  - BulkImportService.resolveArchiveEntry
+  - FileStore.open
+  evidence_anchors:
+  - BulkImportService.resolveArchiveEntry
+  - FileStore.open
+  fix_location: BulkImportService.resolveArchiveEntry
+  fix_action: normalize 后检查根目录并限制条目和总大小
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 覆盖应用可写的任意文件
+  oracle_test: BulkImport1OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-13-bulk-import-issue-2
+  title: 捕获行异常导致部分导入提交
+  dimension: security
+  primary_risk_tag: ERROR_HANDLING
+  secondary_risk_tags:
+  - TRANSACTION_ATOMICITY
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/ERROR_HANDLING
+  - behavior/TRANSACTION_ATOMICITY
+  risk_coverage: composite
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 行级异常被吞且外层事务继续提交
+  trigger: 批次中间一行保存失败
+  observable_consequence: 调用方收到成功但数据仅部分导入
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/BulkImportService.java
+  line: 60
+  expected_trigger_lines:
+  - 60
+  call_path:
+  - BulkImportController.importRows
+  - BulkImportCoordinator.importRows
+  - BulkImportService.importRows
+  - message acknowledgement
+  evidence_anchors:
+  - BulkImportService.importRows
+  - message acknowledgement
+  fix_location: BulkImportService.importRows
+  fix_action: 按明确策略回滚整个批次或返回可恢复的逐行结果
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 调用方收到成功但数据仅部分导入
+  oracle_test: BulkImport2OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-13-bulk-import-issue-3
+  title: 错误报告存在 CSV 公式注入
+  dimension: security
+  primary_risk_tag: INJECTION
+  secondary_risk_tags: []
+  expected_reviewers:
+  - threat_model
+  - behavior
+  required_knowledge:
+  - threat_model/INJECTION
+  - behavior/INJECTION
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 外部字段以公式前缀原样写入 CSV
+  trigger: 商品名以 =、+、- 或 @ 开头
+  observable_consequence: 运营人员打开文件时执行公式
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/BulkImportService.java
+  line: 74
+  expected_trigger_lines:
+  - 74
+  call_path:
+  - BulkImportController.renderImportError
+  - BulkImportCoordinator.renderImportError
+  - BulkImportService.renderImportError
+  - expression/query interpreter
+  evidence_anchors:
+  - BulkImportService.renderImportError
+  - expression/query interpreter
+  fix_location: BulkImportService.renderImportError
+  fix_action: 按 CSV 消费场景转义公式前缀
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 运营人员打开文件时执行公式
+  oracle_test: BulkImport3OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false

@@ -1,0 +1,64 @@
+id: pr-16-notification-template
+category: 通知模板
+dimension: security
+language: java
+capability:
+- call-path
+- state-impact
+description: TradeFlow 完整项目中的通知模板 PR；包含三个需要跨层调用链、状态或外部副作用语义才能确认的独立问题。
+expected:
+- id: pr-16-notification-template-issue-1
+  type_keywords:
+  - 模板注入
+  - 表达式
+  - 通知
+  file: NotificationTemplateService.java
+  line: 54
+  tolerance: 5
+  severity: CRITICAL
+  note: 租户模板进入表达式求值
+  root_cause: 用户可控模板作为表达式源码解析
+  risk_tag: INJECTION
+  evidence_anchors:
+  - NotificationTemplateController
+  - NotificationTemplateCoordinator
+  - NotificationTemplateService.renderNotification
+- id: pr-16-notification-template-issue-2
+  type_keywords:
+  - 退订
+  - 租户
+  - 越权
+  file: NotificationTemplateService.java
+  line: 59
+  tolerance: 5
+  severity: CRITICAL
+  note: 退订查询遗漏租户
+  root_cause: 退订 token 解析后只按 subscriptionId 查询
+  risk_tag: AUTHORIZATION
+  evidence_anchors:
+  - NotificationTemplateController
+  - NotificationTemplateCoordinator
+  - NotificationTemplateService.unsubscribeRecipient
+- id: pr-16-notification-template-issue-3
+  type_keywords:
+  - 重试
+  - 幂等
+  - 通知
+  file: NotificationTemplateService.java
+  line: 65
+  tolerance: 5
+  severity: WARNING
+  note: 通知重试缺少业务幂等键
+  root_cause: 每次尝试生成新的外部 requestId
+  risk_tag: IDEMPOTENCY_RETRY
+  evidence_anchors:
+  - NotificationTemplateController
+  - NotificationTemplateCoordinator
+  - NotificationTemplateService.sendNotification
+provenance:
+  source: Codeguard controlled project-level benchmark
+  repository_url: ''
+  base_revision: tradeflow-clean-v1
+  head_revision: pr-16-notification-template
+  patch_direction: seeded-pr
+  license: CC0-1.0 benchmark fixture

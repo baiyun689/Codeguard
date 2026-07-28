@@ -1,0 +1,64 @@
+id: pr-13-bulk-import
+category: 批量商品导入
+dimension: security
+language: java
+capability:
+- call-path
+- state-impact
+description: TradeFlow 完整项目中的批量商品导入 PR；包含三个需要跨层调用链、状态或外部副作用语义才能确认的独立问题。
+expected:
+- id: pr-13-bulk-import-issue-1
+  type_keywords:
+  - Zip Slip
+  - 路径
+  - 导入
+  file: BulkImportService.java
+  line: 54
+  tolerance: 5
+  severity: CRITICAL
+  note: ZIP 条目逃逸导入目录
+  root_cause: entry name 直接 resolve 到目标目录
+  risk_tag: FILE_PATH_IO
+  evidence_anchors:
+  - BulkImportController
+  - BulkImportCoordinator
+  - BulkImportService.resolveArchiveEntry
+- id: pr-13-bulk-import-issue-2
+  type_keywords:
+  - 事务
+  - 异常
+  - 部分提交
+  file: BulkImportService.java
+  line: 60
+  tolerance: 5
+  severity: WARNING
+  note: 捕获行异常导致部分导入提交
+  root_cause: 行级异常被吞且外层事务继续提交
+  risk_tag: ERROR_HANDLING
+  evidence_anchors:
+  - BulkImportController
+  - BulkImportCoordinator
+  - BulkImportService.importRows
+- id: pr-13-bulk-import-issue-3
+  type_keywords:
+  - CSV注入
+  - 公式
+  - 导出
+  file: BulkImportService.java
+  line: 74
+  tolerance: 5
+  severity: CRITICAL
+  note: 错误报告存在 CSV 公式注入
+  root_cause: 外部字段以公式前缀原样写入 CSV
+  risk_tag: INJECTION
+  evidence_anchors:
+  - BulkImportController
+  - BulkImportCoordinator
+  - BulkImportService.renderImportError
+provenance:
+  source: Codeguard controlled project-level benchmark
+  repository_url: ''
+  base_revision: tradeflow-clean-v1
+  head_revision: pr-13-bulk-import
+  patch_direction: seeded-pr
+  license: CC0-1.0 benchmark fixture

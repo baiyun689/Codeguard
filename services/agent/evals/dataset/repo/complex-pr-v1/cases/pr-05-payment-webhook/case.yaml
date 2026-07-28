@@ -1,0 +1,64 @@
+id: pr-05-payment-webhook
+category: 支付 Webhook
+dimension: security
+language: java
+capability:
+- call-path
+- state-impact
+description: TradeFlow 完整项目中的支付 Webhook PR；包含三个需要跨层调用链、状态或外部副作用语义才能确认的独立问题。
+expected:
+- id: pr-05-payment-webhook-issue-1
+  type_keywords:
+  - webhook
+  - 签名
+  - 原始
+  file: PaymentWebhookService.java
+  line: 54
+  tolerance: 5
+  severity: WARNING
+  note: 使用解析后 JSON 验证 Webhook 签名
+  root_cause: 签名输入不是支付方发送的原始字节
+  risk_tag: INPUT_VALIDATION
+  evidence_anchors:
+  - PaymentWebhookController
+  - PaymentWebhookCoordinator
+  - PaymentWebhookService.verifyWebhookSignature
+- id: pr-05-payment-webhook-issue-2
+  type_keywords:
+  - 重放
+  - webhook
+  - 幂等
+  file: PaymentWebhookService.java
+  line: 61
+  tolerance: 5
+  severity: WARNING
+  note: Webhook 缺少重放窗口
+  root_cause: 事件去重没有绑定签名时间戳和有效窗口
+  risk_tag: IDEMPOTENCY_RETRY
+  evidence_anchors:
+  - PaymentWebhookController
+  - PaymentWebhookCoordinator
+  - PaymentWebhookService.acceptWebhookEvent
+- id: pr-05-payment-webhook-issue-3
+  type_keywords:
+  - 事务
+  - processed
+  - 订单
+  file: PaymentWebhookService.java
+  line: 68
+  tolerance: 5
+  severity: WARNING
+  note: 先标记回调完成再更新订单
+  root_cause: 处理标记和业务状态更新顺序错误且不原子
+  risk_tag: TRANSACTION_ATOMICITY
+  evidence_anchors:
+  - PaymentWebhookController
+  - PaymentWebhookCoordinator
+  - PaymentWebhookService.applyPaymentEvent
+provenance:
+  source: Codeguard controlled project-level benchmark
+  repository_url: ''
+  base_revision: tradeflow-clean-v1
+  head_revision: pr-05-payment-webhook
+  patch_direction: seeded-pr
+  license: CC0-1.0 benchmark fixture

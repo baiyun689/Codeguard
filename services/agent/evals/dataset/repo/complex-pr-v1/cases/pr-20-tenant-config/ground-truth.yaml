@@ -1,0 +1,119 @@
+case_id: pr-20-tenant-config
+project: TradeFlow
+baseline: tradeflow-clean-v1
+issues:
+- id: pr-20-tenant-config-issue-1
+  title: 租户配置回退暴露全局密钥
+  dimension: security
+  primary_risk_tag: CONFIG_SECURITY
+  secondary_risk_tags:
+  - DATA_EXPOSURE
+  expected_reviewers:
+  - threat_model
+  - behavior
+  required_knowledge:
+  - threat_model/CONFIG_SECURITY
+  - threat_model/DATA_EXPOSURE
+  - behavior/DATA_EXPOSURE
+  risk_coverage: composite
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 租户缺失 secret 时返回全局生产 secret
+  trigger: 新租户尚未完成配置
+  observable_consequence: 租户获得共享高权限凭据
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/TenantConfigService.java
+  line: 54
+  expected_trigger_lines:
+  - 54
+  call_path:
+  - TenantConfigController.loadTenantSecret
+  - TenantConfigCoordinator.loadTenantSecret
+  - TenantConfigService.loadTenantSecret
+  - tenant runtime configuration
+  evidence_anchors:
+  - TenantConfigService.loadTenantSecret
+  - tenant runtime configuration
+  fix_location: TenantConfigService.loadTenantSecret
+  fix_action: 缺失安全配置时拒绝服务并使用租户隔离 secret
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 租户获得共享高权限凭据
+  oracle_test: TenantConfig1OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-20-tenant-config-issue-2
+  title: 共享配置 Map 并发修改
+  dimension: security
+  primary_risk_tag: CONCURRENCY_CONSISTENCY
+  secondary_risk_tags: []
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/CONCURRENCY_CONSISTENCY
+  risk_coverage: exact
+  routing_hazard: true
+  taxonomy_gap: null
+  root_cause: 请求线程读取的可变 Map 被 reload 原地更新
+  trigger: 热更新与请求读取交错
+  observable_consequence: 读取到混合版本或抛出并发异常
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/TenantConfigService.java
+  line: 60
+  expected_trigger_lines:
+  - 60
+  call_path:
+  - TenantConfigController.reloadConfiguration
+  - TenantConfigCoordinator.reloadConfiguration
+  - TenantConfigService.reloadConfiguration
+  - OrderRepository.saveIfVersion
+  evidence_anchors:
+  - TenantConfigService.reloadConfiguration
+  - OrderRepository.saveIfVersion
+  fix_location: TenantConfigService.reloadConfiguration
+  fix_action: 构建不可变快照后用原子引用整体替换
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 读取到混合版本或抛出并发异常
+  oracle_test: TenantConfig2OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-20-tenant-config-issue-3
+  title: 配置未构造完成就发布引用
+  dimension: security
+  primary_risk_tag: IDEMPOTENCY_RETRY
+  secondary_risk_tags: []
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/IDEMPOTENCY_RETRY
+  risk_coverage: gap
+  routing_hazard: false
+  taxonomy_gap: TEMPORAL_SEMANTICS
+  root_cause: reload 在填充所有字段前替换可见引用
+  trigger: 请求恰好落在热更新窗口
+  observable_consequence: 认证或支付读取到半初始化配置
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/TenantConfigService.java
+  line: 66
+  expected_trigger_lines:
+  - 66
+  call_path:
+  - TenantConfigController.publishConfiguration
+  - TenantConfigCoordinator.publishConfiguration
+  - TenantConfigService.publishConfiguration
+  - CacheStore.put
+  evidence_anchors:
+  - TenantConfigService.publishConfiguration
+  - CacheStore.put
+  fix_location: TenantConfigService.publishConfiguration
+  fix_action: 离线验证完整快照后一次原子发布
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 认证或支付读取到半初始化配置
+  oracle_test: TenantConfig3OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false

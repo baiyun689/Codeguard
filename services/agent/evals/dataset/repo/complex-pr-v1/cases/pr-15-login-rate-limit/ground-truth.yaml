@@ -1,0 +1,124 @@
+case_id: pr-15-login-rate-limit
+project: TradeFlow
+baseline: tradeflow-clean-v1
+issues:
+- id: pr-15-login-rate-limit-issue-1
+  title: 无条件信任转发来源地址
+  dimension: security
+  primary_risk_tag: AUTHENTICATION_SESSION
+  secondary_risk_tags:
+  - INPUT_VALIDATION
+  expected_reviewers:
+  - threat_model
+  - behavior
+  required_knowledge:
+  - threat_model/AUTHENTICATION_SESSION
+  - threat_model/INPUT_VALIDATION
+  - behavior/AUTHENTICATION_SESSION
+  - behavior/INPUT_VALIDATION
+  risk_coverage: composite
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 限流主体直接取首个 X-Forwarded-For
+  trigger: 客户端伪造请求头
+  observable_consequence: 绕过登录失败限流
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/LoginRateLimitService.java
+  line: 54
+  expected_trigger_lines:
+  - 54
+  call_path:
+  - LoginRateLimitController.countByClientAddress
+  - LoginRateLimitCoordinator.countByClientAddress
+  - LoginRateLimitService.countByClientAddress
+  - authentication decision
+  evidence_anchors:
+  - LoginRateLimitService.countByClientAddress
+  - authentication decision
+  fix_location: LoginRateLimitService.countByClientAddress
+  fix_action: 只接受可信代理重写的规范化客户端地址
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 绕过登录失败限流
+  oracle_test: LoginRateLimit1OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-15-login-rate-limit-issue-2
+  title: Redis 计数 get/increment 非原子
+  dimension: security
+  primary_risk_tag: CONCURRENCY_CONSISTENCY
+  secondary_risk_tags: []
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/CONCURRENCY_CONSISTENCY
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 阈值检查和增加是两个操作
+  trigger: 并发登录失败请求
+  observable_consequence: 多个请求同时低于阈值并绕过锁定
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/LoginRateLimitService.java
+  line: 59
+  expected_trigger_lines:
+  - 59
+  call_path:
+  - LoginRateLimitController.recordLoginFailure
+  - LoginRateLimitCoordinator.recordLoginFailure
+  - LoginRateLimitService.recordLoginFailure
+  - OrderRepository.saveIfVersion
+  evidence_anchors:
+  - LoginRateLimitService.recordLoginFailure
+  - OrderRepository.saveIfVersion
+  fix_location: LoginRateLimitService.recordLoginFailure
+  fix_action: Lua/原子 increment 后判断返回值
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 多个请求同时低于阈值并绕过锁定
+  oracle_test: LoginRateLimit2OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-15-login-rate-limit-issue-3
+  title: Redis 故障时登录限流 fail-open
+  dimension: security
+  primary_risk_tag: ERROR_HANDLING
+  secondary_risk_tags:
+  - AUTHENTICATION_SESSION
+  expected_reviewers:
+  - behavior
+  - threat_model
+  required_knowledge:
+  - behavior/ERROR_HANDLING
+  - behavior/AUTHENTICATION_SESSION
+  - threat_model/AUTHENTICATION_SESSION
+  risk_coverage: composite
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 缓存异常被捕获并直接允许认证继续
+  trigger: 攻击者或故障导致 Redis 不可用
+  observable_consequence: 敏感登录入口失去暴力破解保护
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/LoginRateLimitService.java
+  line: 67
+  expected_trigger_lines:
+  - 67
+  call_path:
+  - LoginRateLimitController.checkRateLimit
+  - LoginRateLimitCoordinator.checkRateLimit
+  - LoginRateLimitService.checkRateLimit
+  - message acknowledgement
+  evidence_anchors:
+  - LoginRateLimitService.checkRateLimit
+  - message acknowledgement
+  fix_location: LoginRateLimitService.checkRateLimit
+  fix_action: 采用本地受限降级或对高风险入口 fail-closed
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 敏感登录入口失去暴力破解保护
+  oracle_test: LoginRateLimit3OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false

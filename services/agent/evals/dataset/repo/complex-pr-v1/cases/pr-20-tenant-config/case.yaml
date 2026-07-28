@@ -1,0 +1,64 @@
+id: pr-20-tenant-config
+category: 动态租户配置
+dimension: security
+language: java
+capability:
+- call-path
+- state-impact
+description: TradeFlow 完整项目中的动态租户配置 PR；包含三个需要跨层调用链、状态或外部副作用语义才能确认的独立问题。
+expected:
+- id: pr-20-tenant-config-issue-1
+  type_keywords:
+  - 配置
+  - 密钥
+  - 租户
+  file: TenantConfigService.java
+  line: 54
+  tolerance: 5
+  severity: CRITICAL
+  note: 租户配置回退暴露全局密钥
+  root_cause: 租户缺失 secret 时返回全局生产 secret
+  risk_tag: CONFIG_SECURITY
+  evidence_anchors:
+  - TenantConfigController
+  - TenantConfigCoordinator
+  - TenantConfigService.loadTenantSecret
+- id: pr-20-tenant-config-issue-2
+  type_keywords:
+  - 配置
+  - 并发
+  - Map
+  file: TenantConfigService.java
+  line: 60
+  tolerance: 5
+  severity: WARNING
+  note: 共享配置 Map 并发修改
+  root_cause: 请求线程读取的可变 Map 被 reload 原地更新
+  risk_tag: CONCURRENCY_CONSISTENCY
+  evidence_anchors:
+  - TenantConfigController
+  - TenantConfigCoordinator
+  - TenantConfigService.reloadConfiguration
+- id: pr-20-tenant-config-issue-3
+  type_keywords:
+  - 配置
+  - 可见性
+  - 热更新
+  file: TenantConfigService.java
+  line: 66
+  tolerance: 5
+  severity: WARNING
+  note: 配置未构造完成就发布引用
+  root_cause: reload 在填充所有字段前替换可见引用
+  risk_tag: IDEMPOTENCY_RETRY
+  evidence_anchors:
+  - TenantConfigController
+  - TenantConfigCoordinator
+  - TenantConfigService.publishConfiguration
+provenance:
+  source: Codeguard controlled project-level benchmark
+  repository_url: ''
+  base_revision: tradeflow-clean-v1
+  head_revision: pr-20-tenant-config
+  patch_direction: seeded-pr
+  license: CC0-1.0 benchmark fixture

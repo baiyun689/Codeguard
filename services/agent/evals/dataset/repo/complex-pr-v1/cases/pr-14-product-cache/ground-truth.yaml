@@ -1,0 +1,121 @@
+case_id: pr-14-product-cache
+project: TradeFlow
+baseline: tradeflow-clean-v1
+issues:
+- id: pr-14-product-cache-issue-1
+  title: 商品缓存键遗漏租户
+  dimension: security
+  primary_risk_tag: CACHE_CONSISTENCY
+  secondary_risk_tags:
+  - AUTHORIZATION
+  expected_reviewers:
+  - behavior
+  - threat_model
+  required_knowledge:
+  - behavior/CACHE_CONSISTENCY
+  - behavior/AUTHORIZATION
+  - threat_model/AUTHORIZATION
+  risk_coverage: composite
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 缓存 key 只使用商品 ID
+  trigger: 不同租户存在相同商品 ID
+  observable_consequence: 读取另一租户价格或配置
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/ProductCacheService.java
+  line: 54
+  expected_trigger_lines:
+  - 54
+  call_path:
+  - ProductCacheController.loadProduct
+  - ProductCacheCoordinator.loadProduct
+  - ProductCacheService.loadProduct
+  - CacheStore.get
+  evidence_anchors:
+  - ProductCacheService.loadProduct
+  - CacheStore.get
+  fix_location: ProductCacheService.loadProduct
+  fix_action: key 加入 tenantId 并审计现有键空间
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 读取另一租户价格或配置
+  oracle_test: ProductCache1OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-14-product-cache-issue-2
+  title: 事务提交前驱逐缓存
+  dimension: security
+  primary_risk_tag: TRANSACTION_ATOMICITY
+  secondary_risk_tags:
+  - CACHE_CONSISTENCY
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/TRANSACTION_ATOMICITY
+  - behavior/CACHE_CONSISTENCY
+  risk_coverage: composite
+  routing_hazard: true
+  taxonomy_gap: null
+  root_cause: 更新事务尚未成功就向其他实例广播失效
+  trigger: 事务随后回滚且读请求重建缓存
+  observable_consequence: 缓存固化未提交状态或长期不一致
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/ProductCacheService.java
+  line: 59
+  expected_trigger_lines:
+  - 59
+  call_path:
+  - ProductCacheController.updateProduct
+  - ProductCacheCoordinator.updateProduct
+  - ProductCacheService.updateProduct
+  - OrderRepository.save
+  evidence_anchors:
+  - ProductCacheService.updateProduct
+  - OrderRepository.save
+  fix_location: ProductCacheService.updateProduct
+  fix_action: 提交后发布失效事件
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 缓存固化未提交状态或长期不一致
+  oracle_test: ProductCache2OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-14-product-cache-issue-3
+  title: 创建后未清除 negative cache
+  dimension: security
+  primary_risk_tag: CACHE_CONSISTENCY
+  secondary_risk_tags: []
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/CACHE_CONSISTENCY
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 未找到结果被缓存，创建路径不驱逐该 key
+  trigger: 先查询不存在商品再立即创建
+  observable_consequence: 有效商品在 TTL 内持续显示不存在
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/ProductCacheService.java
+  line: 66
+  expected_trigger_lines:
+  - 66
+  call_path:
+  - ProductCacheController.createProduct
+  - ProductCacheCoordinator.createProduct
+  - ProductCacheService.createProduct
+  - CacheStore.get
+  evidence_anchors:
+  - ProductCacheService.createProduct
+  - CacheStore.get
+  fix_location: ProductCacheService.createProduct
+  fix_action: 创建提交后驱逐 negative cache
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 有效商品在 TTL 内持续显示不存在
+  oracle_test: ProductCache3OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false

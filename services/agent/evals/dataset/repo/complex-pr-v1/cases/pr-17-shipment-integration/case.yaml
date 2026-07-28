@@ -1,0 +1,64 @@
+id: pr-17-shipment-integration
+category: 物流创建
+dimension: security
+language: java
+capability:
+- call-path
+- state-impact
+description: TradeFlow 完整项目中的物流创建 PR；包含三个需要跨层调用链、状态或外部副作用语义才能确认的独立问题。
+expected:
+- id: pr-17-shipment-integration-issue-1
+  type_keywords:
+  - SSRF
+  - 物流
+  - callback
+  file: ShipmentIntegrationService.java
+  line: 54
+  tolerance: 5
+  severity: CRITICAL
+  note: 物流回调地址形成 SSRF
+  root_cause: 请求 callbackUrl 直接交给出站客户端
+  risk_tag: SSRF_OUTBOUND
+  evidence_anchors:
+  - ShipmentIntegrationController
+  - ShipmentIntegrationCoordinator
+  - ShipmentIntegrationService.createShipment
+- id: pr-17-shipment-integration-issue-2
+  type_keywords:
+  - 重试
+  - 运单
+  - 幂等
+  file: ShipmentIntegrationService.java
+  line: 60
+  tolerance: 5
+  severity: CRITICAL
+  note: HTTP 重试重复创建运单
+  root_cause: 非幂等创建请求每次重试使用新 requestId
+  risk_tag: IDEMPOTENCY_RETRY
+  evidence_anchors:
+  - ShipmentIntegrationController
+  - ShipmentIntegrationCoordinator
+  - ShipmentIntegrationService.retryShipment
+- id: pr-17-shipment-integration-issue-3
+  type_keywords:
+  - 超时
+  - 线程
+  - 性能
+  file: ShipmentIntegrationService.java
+  line: 66
+  tolerance: 5
+  severity: WARNING
+  note: 超时单位错误占满工作线程
+  root_cause: 秒级配置被构造成 Duration.ofMillis
+  risk_tag: PERFORMANCE
+  evidence_anchors:
+  - ShipmentIntegrationController
+  - ShipmentIntegrationCoordinator
+  - ShipmentIntegrationService.createShipmentWithTimeout
+provenance:
+  source: Codeguard controlled project-level benchmark
+  repository_url: ''
+  base_revision: tradeflow-clean-v1
+  head_revision: pr-17-shipment-integration
+  patch_direction: seeded-pr
+  license: CC0-1.0 benchmark fixture

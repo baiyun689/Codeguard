@@ -1,0 +1,121 @@
+case_id: pr-11-user-invitation
+project: TradeFlow
+baseline: tradeflow-clean-v1
+issues:
+- id: pr-11-user-invitation-issue-1
+  title: 邀请查询遗漏租户
+  dimension: security
+  primary_risk_tag: AUTHORIZATION
+  secondary_risk_tags: []
+  expected_reviewers:
+  - threat_model
+  - behavior
+  required_knowledge:
+  - threat_model/AUTHORIZATION
+  - behavior/AUTHORIZATION
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 按全局用户 ID 读取邀请对象
+  trigger: 管理员提交另一租户用户 ID
+  observable_consequence: 跨租户创建或修改成员
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/UserInvitationService.java
+  line: 54
+  expected_trigger_lines:
+  - 54
+  call_path:
+  - UserInvitationController.inviteTenantMember
+  - UserInvitationCoordinator.inviteTenantMember
+  - UserInvitationService.inviteTenantMember
+  - OrderRepository.findByTenantAndId
+  evidence_anchors:
+  - UserInvitationService.inviteTenantMember
+  - OrderRepository.findByTenantAndId
+  fix_location: UserInvitationService.inviteTenantMember
+  fix_action: 所有邀请查询绑定可信 tenantId
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: CRITICAL
+  severity_rationale: 跨租户创建或修改成员
+  oracle_test: UserInvitation1OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-11-user-invitation-issue-2
+  title: 角色校验与邀请写入存在竞态
+  dimension: security
+  primary_risk_tag: CONCURRENCY_CONSISTENCY
+  secondary_risk_tags:
+  - AUTHORIZATION
+  expected_reviewers:
+  - behavior
+  - threat_model
+  required_knowledge:
+  - behavior/CONCURRENCY_CONSISTENCY
+  - behavior/AUTHORIZATION
+  - threat_model/AUTHORIZATION
+  risk_coverage: composite
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 校验管理员版本后写入前未锁定或复验
+  trigger: 管理员权限在并发请求中被撤销
+  observable_consequence: 已撤权主体仍能创建高权限邀请
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/UserInvitationService.java
+  line: 60
+  expected_trigger_lines:
+  - 60
+  call_path:
+  - UserInvitationController.inviteWithRoleCheck
+  - UserInvitationCoordinator.inviteWithRoleCheck
+  - UserInvitationService.inviteWithRoleCheck
+  - OrderRepository.saveIfVersion
+  evidence_anchors:
+  - UserInvitationService.inviteWithRoleCheck
+  - OrderRepository.saveIfVersion
+  fix_location: UserInvitationService.inviteWithRoleCheck
+  fix_action: 在同一原子边界校验角色版本并写入
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 已撤权主体仍能创建高权限邀请
+  oracle_test: UserInvitation2OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
+- id: pr-11-user-invitation-issue-3
+  title: 提交前发送外部邀请
+  dimension: security
+  primary_risk_tag: TRANSACTION_ATOMICITY
+  secondary_risk_tags: []
+  expected_reviewers:
+  - behavior
+  required_knowledge:
+  - behavior/TRANSACTION_ATOMICITY
+  risk_coverage: exact
+  routing_hazard: false
+  taxonomy_gap: null
+  root_cause: 邮件副作用发生在用户记录提交前
+  trigger: 数据库保存失败
+  observable_consequence: 收件人得到无法兑换的幽灵邀请
+  file: tradeflow-application/src/main/java/com/tradeflow/application/feature/UserInvitationService.java
+  line: 68
+  expected_trigger_lines:
+  - 68
+  call_path:
+  - UserInvitationController.sendInvitation
+  - UserInvitationCoordinator.sendInvitation
+  - UserInvitationService.sendInvitation
+  - OrderRepository.save
+  evidence_anchors:
+  - UserInvitationService.sendInvitation
+  - OrderRepository.save
+  fix_location: UserInvitationService.sendInvitation
+  fix_action: 提交后 outbox 发送并支持幂等兑换
+  why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
+  severity: WARNING
+  severity_rationale: 收件人得到无法兑换的幽灵邀请
+  oracle_test: UserInvitation3OracleTest.java
+  review_visibility:
+    repo_snapshot: true
+    oracle_test: false
+    ground_truth: false
