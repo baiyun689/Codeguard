@@ -6,6 +6,11 @@
     START → diff_task_builder → risk_triage → task_rank → review_coverage → [summary]
               → context_provider → discover_* → council_coordinator(fan-in)
               → evidence_planner → evidence_agent → council_judge → END
+
+discovery_only 拓扑(跳过归并/举证/法官，直接输出发现者原始结果):
+
+    START → diff_task_builder → risk_triage → task_rank → review_coverage → [summary]
+              → context_provider → discover_* → discovery_collector → END
 """
 
 from __future__ import annotations
@@ -31,7 +36,9 @@ from codeguard_agent.models.tasks import (
     ContextStatus,
     ReviewBudget,
     ReviewCoveragePlan,
+    ReviewerKind,
     ReviewTask,
+    RiskCoverage,
     RiskProfile,
     RiskTag,
     TaskContextBundle,
@@ -52,6 +59,9 @@ from codeguard_agent.pipeline.risk.discovery import (
     DiscoveryToolCoordinator,
     canonical_tool_key,
 )
+from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
+from codeguard_agent.pipeline.knowledge.selector import select_knowledge
+from codeguard_agent.models.knowledge import KnowledgeBudget
 from codeguard_agent.pipeline.risk.knowledge import load_knowledge
 from codeguard_agent.pipeline.risk.large_diff import LargeDiffPlan, plan_large_diff
 from codeguard_agent.pipeline.risk.routing import (
@@ -694,6 +704,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
     def _node(state: ReviewState) -> dict:
         tasks = state.get("review_tasks") or []
         profiles = state.get("risk_profiles") or {}
+        priors = state.get("risk_priors") or build_risk_priors(tasks, profiles)
         coverage = state.get("review_coverage_plan")
         selection = state.get("task_selection")
         if selection is None:
@@ -758,12 +769,24 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             profile = profiles.get(task_id)
             tier = tier_by_task.get(task_id, "direct")
             bundle = task_context_bundles.get(task_id)
-            active_tags = (
-                [tag for tag, score in profile.tag_scores.items() if score > 0]
-                if profile is not None
-                else []
+            prior = priors.get(task_id)
+            if prior is None:
+                prior = TaskRiskPrior(task_id=task_id, coverage=RiskCoverage.UNCLASSIFIED)
+
+            catalog = KnowledgeCatalog()
+            budget = KnowledgeBudget()
+            reviewer_kind_val = reviewer.source_agent  # "threat_model", "behavior", "maintainability"
+            reviewer_kind = ReviewerKind(reviewer_kind_val)
+
+            knowledge_bundle = select_knowledge(
+                reviewer=reviewer_kind,
+                task=scoped_task,
+                prior=prior,
+                context=None,  # ContextBundle not available in per-task scope yet; future phase adds
+                catalog=catalog,
+                budget=budget,
             )
-            task_knowledge = load_knowledge(reviewer.source_agent, active_tags)
+            task_knowledge = knowledge_bundle.rendered_text
             # 子图未挂 checkpointer（见 make_reviewer_node），因此线程池中的每次 task
             # invoke 都不需要也不应创建独立 thread_id；审查级恢复仍由外层图承担。
             result = subgraph.invoke(
@@ -880,6 +903,48 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         if review_summaries:
             routed_out["review_summaries"] = review_summaries
         return routed_out
+
+    return _node
+
+
+def _discovery_collector_node():
+    """发现者直出模式:将 raw_candidate_issues 直接转为 final_issues,不经归并/举证/法官。"""
+
+    def _node(state: ReviewState) -> dict:
+        raw = list(state.get("raw_candidate_issues") or [])
+        from codeguard_agent.models.schemas import Issue
+
+        issues = []
+        seen: set[str] = set()
+        for c in raw:
+            if c.id in seen:
+                continue
+            seen.add(c.id)
+            issues.append(
+                Issue(
+                    severity=c.severity_proposal,
+                    file=c.file,
+                    line=c.line,
+                    type=f"[{c.source_agent}] {c.type}",
+                    message=c.claim,
+                    suggestion=c.suggestion or "",
+                    confidence=c.confidence,
+                )
+            )
+
+        trace = list(state.get("council_trace") or [])
+        trace.append(
+            CouncilTrace(
+                node="discovery_collector",
+                event="discovery_direct_output",
+                detail=f"raw_candidates={len(raw)} final_issues={len(issues)}",
+            )
+        )
+
+        return {
+            "final_issues": issues,
+            "council_trace": trace,
+        }
 
     return _node
 
@@ -1177,13 +1242,26 @@ def _council_judge_node(llm, judge_llm=None):
     return _node
 
 
-def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=None, fp_verify_llm=None, tool_client=None):
+def build_review_graph(
+    *,
+    enable_summary: bool = True,
+    checkpointer=None,
+    llm=None,
+    fp_verify_llm=None,
+    tool_client=None,
+    discovery_only: bool = False,
+):
     """编译审查状态图。
 
-    拓扑:
-        diff_task_builder → risk_triage → task_rank → summary? → context_provider
+    默认拓扑:
+        diff_task_builder → risk_triage → task_rank → review_coverage → summary? → context_provider
           → discover_*(×3) → council_coordinator(fan-in)
           → evidence_planner → evidence_agent → council_judge → END
+
+    discovery_only 拓扑:
+        diff_task_builder → risk_triage → task_rank → review_coverage → summary? → context_provider
+          → discover_*(×3) → discovery_collector → END
+        (跳过归并/举证/法官，直接输出三路发现者原始候选)
     """
     from langgraph.graph import END, START, StateGraph
 
@@ -1199,16 +1277,20 @@ def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=No
             _discover_node_name(reviewer),
             make_reviewer_node(reviewer, checkpointer=checkpointer, llm=llm, tool_client=tool_client),
         )
-    g.add_node("council_coordinator", _coordinator_node(effective_judge_llm))
-    g.add_node("evidence_planner", _evidence_planner_node(effective_judge_llm))
-    g.add_node(
-        "evidence_agent",
-        _evidence_agent_node(tool_client, judge_llm=effective_judge_llm),
-    )
-    g.add_node(
-        "council_judge",
-        _council_judge_node(llm, judge_llm=effective_judge_llm),
-    )
+
+    if discovery_only:
+        g.add_node("discovery_collector", _discovery_collector_node())
+    else:
+        g.add_node("council_coordinator", _coordinator_node(effective_judge_llm))
+        g.add_node("evidence_planner", _evidence_planner_node(effective_judge_llm))
+        g.add_node(
+            "evidence_agent",
+            _evidence_agent_node(tool_client, judge_llm=effective_judge_llm),
+        )
+        g.add_node(
+            "council_judge",
+            _council_judge_node(llm, judge_llm=effective_judge_llm),
+        )
 
     g.add_edge(START, "diff_task_builder")
     g.add_edge("diff_task_builder", "risk_triage")
@@ -1219,16 +1301,22 @@ def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=No
         g.add_edge("review_coverage", "summary")
         g.add_edge("summary", "context_provider")
     else:
-        g.add_edge("task_rank", "context_provider")
+        g.add_edge("review_coverage", "context_provider")
 
     for reviewer in DEFAULT_REVIEWERS:
         node_name = _discover_node_name(reviewer)
         g.add_edge("context_provider", node_name)
-        g.add_edge(node_name, "council_coordinator")
+        if discovery_only:
+            g.add_edge(node_name, "discovery_collector")
+        else:
+            g.add_edge(node_name, "council_coordinator")
 
-    # 三路 fan-in 后一次性规划、收集证据、综合定级。
-    g.add_edge("council_coordinator", "evidence_planner")
-    g.add_edge("evidence_planner", "evidence_agent")
-    g.add_edge("evidence_agent", "council_judge")
-    g.add_edge("council_judge", END)
+    if discovery_only:
+        g.add_edge("discovery_collector", END)
+    else:
+        g.add_edge("council_coordinator", "evidence_planner")
+        g.add_edge("evidence_planner", "evidence_agent")
+        g.add_edge("evidence_agent", "council_judge")
+        g.add_edge("council_judge", END)
+
     return g.compile(checkpointer=checkpointer)
