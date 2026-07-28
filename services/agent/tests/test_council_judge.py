@@ -148,6 +148,36 @@ def _supported_dossier(
     return replace(base, requests=(request,), notes=(note,))
 
 
+def _dossier_with_observations(
+    observations: list[str],
+    *,
+    tag: RiskTag = RiskTag.AUTHORIZATION,
+    proposed: Severity = Severity.WARNING,
+) -> CandidateDossier:
+    """Create a supported dossier with keyword-rich observation findings
+    for ImpactAssessor deterministic factor detection."""
+    strategy = strategies_for(tag, "support")[0]
+    request = EvidenceRequest(
+        candidate_id="candidate-1",
+        strategy_id=strategy.id,
+        purpose="support",
+        target="src/Service.java",
+        question=strategy.question_template,
+        preferred_tools=list(strategy.allowed_tools),
+    )
+    findings = [
+        _finding("supports", "direct", evidence_id=f"obs-{i}", observation=obs)
+        for i, obs in enumerate(observations)
+    ]
+    note = EvidenceNote(
+        request_id=request.id,
+        candidate_id="candidate-1",
+        findings=findings,
+    )
+    base = _dossier(severity=proposed)
+    return replace(base, requests=(request,), notes=(note,))
+
+
 # ── LLM test doubles ─────────────────────────────────────────────────────────
 
 
@@ -380,64 +410,61 @@ def test_llm_failure_keeps_gate_passed_candidate_at_policy_default():
     assert batch.final_issues[0].severity is Severity.WARNING
 
 
-# ── severity_proposal 不影响 resolved severity ────────────────────────────────
+# ── severity_proposal 不影响 resolved severity (Phase 4: ImpactAssessor) ──────
 
 
 def test_proposed_severity_never_changes_resolved_severity():
-    factors = policy_for(RiskTag.INJECTION).critical_requires
-    low = _supported_dossier(tag=RiskTag.INJECTION, proposed=Severity.INFO, factor_ids=factors)
-    high = _supported_dossier(tag=RiskTag.INJECTION, proposed=Severity.CRITICAL, factor_ids=factors)
-    llm = _AssessmentLLM(_injection_critical_assessment())
+    """proposed severity 不影响 ImpactAssessor 裁决结果。"""
+    critical_obs = [
+        "变更代码可达且被外部调用",  # RUNTIME_REACHABLE
+        "涉及支付金额计算逻辑",      # FINANCIAL_IMPACT
+        "可能导致数据完整性损坏",    # INTEGRITY_LOSS
+        "涉及数据库持久化写入",     # PERSISTENT_STATE_CORRUPTION (any_of)
+    ]
+    low = _dossier_with_observations(critical_obs, proposed=Severity.INFO)
+    high = _dossier_with_observations(critical_obs, proposed=Severity.CRITICAL)
+    llm = _AssessmentLLM(_supported_assessment())
     assert _judge([low], llm=llm).final_issues[0].severity is Severity.CRITICAL
     assert _judge([high], llm=llm).final_issues[0].severity is Severity.CRITICAL
 
 
-# ── critical factor matching ─────────────────────────────────────────────────
+# ── critical factor matching (Phase 4: ImpactAssessor) ────────────────────────
 
 
 def test_all_critical_factors_proven_resolves_critical():
-    tag = RiskTag.DESERIALIZATION
-    factors = policy_for(tag).critical_requires
-    dossier = _supported_dossier(tag=tag, factor_ids=factors)
-    llm = _AssessmentLLM(
-        _supported_assessment(
-            severity_factors=[
-                SeverityFactorAssessment(
-                    factor_id=fid, status="proven",
-                    evidence_ids=[f"factor-{i}"], reason=f"{fid} proven",
-                )
-                for i, fid in enumerate(factors)
-            ]
-        )
-    )
+    """所有 CRITICAL predicate 要求的 factor 都 PROVEN 时应返回 CRITICAL。"""
+    critical_obs = [
+        "变更代码可达且被外部调用",  # RUNTIME_REACHABLE
+        "涉及支付金额计算逻辑",      # FINANCIAL_IMPACT
+        "可能导致数据完整性损坏",    # INTEGRITY_LOSS
+        "涉及数据库持久化写入",     # PERSISTENT_STATE_CORRUPTION (any_of)
+    ]
+    dossier = _dossier_with_observations(critical_obs)
+    llm = _AssessmentLLM(_supported_assessment())
     assert _judge([dossier], llm=llm).final_issues[0].severity is Severity.CRITICAL
 
 
 def test_one_missing_critical_factor_defaults_to_warning():
-    tag = RiskTag.DESERIALIZATION
-    factors = policy_for(tag).critical_requires
-    dossier = _supported_dossier(tag=tag, factor_ids=factors[:-1])
-    llm = _AssessmentLLM(
-        _supported_assessment(
-            severity_factors=[
-                SeverityFactorAssessment(
-                    factor_id=fid, status="proven",
-                    evidence_ids=[f"factor-{i}"], reason=f"{fid} proven",
-                )
-                for i, fid in enumerate(factors[:-1])
-            ]
-        )
-    )
+    """any_of factor 未满足时，有运行时影响但未达 CRITICAL 应返回 WARNING。"""
+    warning_obs = [
+        "变更代码可达且被外部调用",  # RUNTIME_REACHABLE
+        "涉及支付金额计算逻辑",      # FINANCIAL_IMPACT
+        "可能导致数据完整性损坏",    # INTEGRITY_LOSS
+        # 缺少 PERSISTENT_STATE_CORRUPTION / EXTERNAL_SIDE_EFFECT → any_of 失败
+    ]
+    dossier = _dossier_with_observations(warning_obs)
+    llm = _AssessmentLLM(_supported_assessment())
     assert _judge([dossier], llm=llm).final_issues[0].severity is Severity.WARNING
 
 
 def test_unknown_factor_evidence_citation_is_traced_and_ignored():
-    factor_id = policy_for(RiskTag.INJECTION).critical_requires[0]
-    dossier = _supported_dossier(tag=RiskTag.INJECTION)
+    """LLM 引用的 evidence_id 不存在于实际 findings 时应 trace。"""
+    warning_obs = ["变更代码可达且被外部调用"]  # RUNTIME_REACHABLE → WARNING
+    dossier = _dossier_with_observations(warning_obs, tag=RiskTag.INJECTION)
     assessment = _supported_assessment(
         severity_factors=[
             SeverityFactorAssessment(
-                factor_id=factor_id,
+                factor_id=policy_for(RiskTag.INJECTION).critical_requires[0],
                 status="proven",
                 evidence_ids=["unknown-evidence"],
             )

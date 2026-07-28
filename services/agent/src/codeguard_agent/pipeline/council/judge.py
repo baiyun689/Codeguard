@@ -27,7 +27,13 @@ from codeguard_agent.pipeline.evidence.agent import (
 )
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
 from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID
-from codeguard_agent.pipeline.council.severity import policy_for, _resolve_severity_legacy
+from codeguard_agent.pipeline.council.impact import assess_impact, assess_impact_fallback
+from codeguard_agent.pipeline.council.severity import (
+    policy_for,
+    resolve_severity as resolve_severity_new,
+    resolve_severity_fallback,
+    rubric_for,
+)
 
 logger = logging.getLogger("codeguard")
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
@@ -350,7 +356,8 @@ def _judge_one_candidate(
     )
 
     if assessment is None:
-        resolved_severity = policy.default_severity
+        fallback = resolve_severity_fallback()
+        resolved_severity = fallback.severity
         verdict = Verdict(
             dossier.candidate.id, "keep",
             "severity_evidence_incomplete",
@@ -410,12 +417,28 @@ def _judge_one_candidate(
         })
         return verdict, None, "", traces
 
-    # claim_status == "supported" → severity resolution
-    resolution = _resolve_severity_legacy(primary, assessment.severity_factors, findings_map)
+    # claim_status == "supported" → new severity resolution
+    try:
+        # Build rubric from concern tags (fallback: empty)
+        tags: tuple = ()
+        # Note: concern info not available in current _judge_one_candidate signature;
+        # use empty tags for now. Phase 4 follow-up will thread concern through.
+        rubric = rubric_for(tags=tags)
+        impact = assess_impact(
+            concern_id=dossier.candidate.id,
+            findings=[item.finding for item in findings],
+            rubric=rubric,
+            llm=judge_llm,
+        )
+        resolution = resolve_severity_new(impact, rubric)
+    except Exception:
+        logger.warning("New severity resolution failed, using fallback", exc_info=True)
+        resolution = resolve_severity_fallback()
+
     verdict = Verdict(
         dossier.candidate.id, "keep",
-        "severity_resolved",
-        f"resolved to {resolution.severity.value} via {resolution.matched_rule}",
+        f"severity_resolved:{resolution.rule_id}",
+        resolution.rationale,
         resolved_severity=resolution.severity,
     )
     issue = dossier.candidate.to_issue().model_copy(
@@ -423,15 +446,15 @@ def _judge_one_candidate(
     )
     _add_trace("judge_verdict", {
         "candidate_id": verdict.candidate_id, "action": "keep",
-        "reason_code": "severity_resolved",
+        "reason_code": f"severity_resolved:{resolution.rule_id}",
         "resolved_severity": resolution.severity.value,
     })
     _add_trace("severity_resolved", {
         "candidate_id": dossier.candidate.id,
-        "matched_rule": resolution.matched_rule,
+        "matched_rule": resolution.rule_id,
         "severity": resolution.severity.value,
-        "proven_factors": list(resolution.proven_factors),
-        "missing_critical_factors": list(resolution.missing_critical_factors),
+        "proven_factors": [f.value for f in resolution.proven_factors],
+        "fallback_used": resolution.fallback_used,
     })
     return verdict, issue, dossier.candidate.id, traces
 
