@@ -21,6 +21,7 @@ final class OrderSearch1OracleTest {
         assertAll(
         () -> assertTrue(source.contains("String expression = \"order by \" + request.get(\"sort\");"), "missing seeded evidence: String expression = \"order by \" + request.get(\"sort\");"),
         () -> assertTrue(source.contains("return orders.search(context.tenantId(), expression, 0, 100);"), "missing seeded evidence: return orders.search(context.tenantId(), expression, 0, 100);")
+
         );
     }
 }

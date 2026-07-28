@@ -20,6 +20,7 @@ final class JwtKeyRotation2OracleTest {
                 "tradeflow-application/src/main/java/com/tradeflow/application/feature/JwtKeyRotationService.java"));
         assertAll(
         () -> assertTrue(source.contains("long expiresAtSeconds = Long.parseLong(request.get(\"exp\"));"), "missing seeded evidence: long expiresAtSeconds = Long.parseLong(request.get(\"exp\"));")
+
         );
     }
 }

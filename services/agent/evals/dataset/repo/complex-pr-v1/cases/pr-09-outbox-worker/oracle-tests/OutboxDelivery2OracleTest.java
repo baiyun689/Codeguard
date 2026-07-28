@@ -22,6 +22,7 @@ final class OutboxDelivery2OracleTest {
         () -> assertTrue(source.contains("OutboxEvent event = outbox.findReady(Instant.now(), 1).stream().findFirst().orElseThrow();"), "missing seeded evidence: OutboxEvent event = outbox.findReady(Instant.now(), 1).stream().findFirst().orElseThrow();"),
         () -> assertTrue(source.contains("outbox.save(event.sent());"), "missing seeded evidence: outbox.save(event.sent());"),
         () -> assertTrue(source.contains("events.publish(\"outbox\", event.aggregateId(), event.payload());"), "missing seeded evidence: events.publish(\"outbox\", event.aggregateId(), event.payload());")
+
         );
     }
 }

@@ -21,6 +21,7 @@ final class ProductCache1OracleTest {
         assertAll(
         () -> assertTrue(source.contains("String key = \"product:\" + request.get(\"productId\");"), "missing seeded evidence: String key = \"product:\" + request.get(\"productId\");"),
         () -> assertTrue(source.contains("return cache.get(key).orElseGet(() -> request.get(\"productJson\"));"), "missing seeded evidence: return cache.get(key).orElseGet(() -> request.get(\"productJson\"));")
+
         );
     }
 }

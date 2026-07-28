@@ -22,6 +22,7 @@ final class Checkout1OracleTest {
         () -> assertTrue(source.contains("Order order = orders.findByTenantAndId(context.tenantId(), request.get(\"orderId\")).orElseThrow();"), "missing seeded evidence: Order order = orders.findByTenantAndId(context.tenantId(), request.get(\"orderId\")).orElseThrow();"),
         () -> assertTrue(source.contains("String paymentId = payments.charge(context.tenantId(), order.id(), order.total(), request.get(\"requestId\"));"), "missing seeded evidence: String paymentId = payments.charge(context.tenantId(), order.id(), order.total(), request.get(\"requestId\"));"),
         () -> assertTrue(source.contains("InventoryItem item = inventory.findBySku(request.get(\"sku\")).orElseThrow();"), "missing seeded evidence: InventoryItem item = inventory.findBySku(request.get(\"sku\")).orElseThrow();")
+
         );
     }
 }

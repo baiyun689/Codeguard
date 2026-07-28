@@ -22,6 +22,7 @@ final class OutboxDelivery3OracleTest {
         () -> assertTrue(source.contains("OutboxEvent event = outbox.findReady(Instant.now(), 1).stream().findFirst().orElseThrow();"), "missing seeded evidence: OutboxEvent event = outbox.findReady(Instant.now(), 1).stream().findFirst().orElseThrow();"),
         () -> assertTrue(source.contains("long configuredSeconds = Long.parseLong(request.get(\"backoffSeconds\"));"), "missing seeded evidence: long configuredSeconds = Long.parseLong(request.get(\"backoffSeconds\"));"),
         () -> assertTrue(source.contains("outbox.save(event.retryAt(Instant.now().plusMillis(configuredSeconds)));"), "missing seeded evidence: outbox.save(event.retryAt(Instant.now().plusMillis(configuredSeconds)));")
+
         );
     }
 }

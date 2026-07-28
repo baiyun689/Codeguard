@@ -22,6 +22,7 @@ final class InventoryReservation2OracleTest {
         () -> assertTrue(source.contains("synchronized (requestLock) {"), "missing seeded evidence: synchronized (requestLock) {"),
         () -> assertTrue(source.contains("InventoryItem item = inventory.findBySku(request.get(\"sku\")).orElseThrow();"), "missing seeded evidence: InventoryItem item = inventory.findBySku(request.get(\"sku\")).orElseThrow();"),
         () -> assertTrue(source.contains("item.available(item.available() - Integer.parseInt(request.get(\"quantity\")));"), "missing seeded evidence: item.available(item.available() - Integer.parseInt(request.get(\"quantity\")));")
+
         );
     }
 }

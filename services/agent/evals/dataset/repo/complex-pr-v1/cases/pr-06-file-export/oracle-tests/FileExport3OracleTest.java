@@ -22,6 +22,7 @@ final class FileExport3OracleTest {
         () -> assertTrue(source.contains("Path target = files.exportRoot(context.tenantId()).resolve(request.get(\"file\")).normalize();"), "missing seeded evidence: Path target = files.exportRoot(context.tenantId()).resolve(request.get(\"file\")).normalize();"),
         () -> assertTrue(source.contains("if (!Files.isRegularFile(target)) throw new IllegalArgumentException(\"missing\");"), "missing seeded evidence: if (!Files.isRegularFile(target)) throw new IllegalArgumentException(\"missing\");"),
         () -> assertTrue(source.contains("audit.record(context.tenantId(), \"EXPORT\", target.toString());"), "missing seeded evidence: audit.record(context.tenantId(), \"EXPORT\", target.toString());")
+
         );
     }
 }

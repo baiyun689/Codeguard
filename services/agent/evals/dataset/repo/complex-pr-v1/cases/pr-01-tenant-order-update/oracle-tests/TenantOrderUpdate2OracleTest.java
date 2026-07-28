@@ -22,6 +22,7 @@ final class TenantOrderUpdate2OracleTest {
         () -> assertTrue(source.contains("Order order = orders.findByTenantAndId(context.tenantId(), request.get(\"orderId\")).orElseThrow();"), "missing seeded evidence: Order order = orders.findByTenantAndId(context.tenantId(), request.get(\"orderId\")).orElseThrow();"),
         () -> assertTrue(source.contains("order.total(new BigDecimal(request.get(\"total\")));"), "missing seeded evidence: order.total(new BigDecimal(request.get(\"total\")));"),
         () -> assertTrue(source.contains("order.status(request.get(\"status\"));"), "missing seeded evidence: order.status(request.get(\"status\"));")
+
         );
     }
 }

@@ -22,6 +22,7 @@ final class ProductCache2OracleTest {
         () -> assertTrue(source.contains("String key = \"product:\" + context.tenantId() + \":\" + request.get(\"productId\");"), "missing seeded evidence: String key = \"product:\" + context.tenantId() + \":\" + request.get(\"productId\");"),
         () -> assertTrue(source.contains("cache.evict(key);"), "missing seeded evidence: cache.evict(key);"),
         () -> assertTrue(source.contains("events.publish(\"catalog.update\", request.get(\"productId\"), request.get(\"productJson\"));"), "missing seeded evidence: events.publish(\"catalog.update\", request.get(\"productId\"), request.get(\"productJson\"));")
+
         );
     }
 }

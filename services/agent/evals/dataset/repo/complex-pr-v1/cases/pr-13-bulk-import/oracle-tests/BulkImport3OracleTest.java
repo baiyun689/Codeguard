@@ -20,6 +20,7 @@ final class BulkImport3OracleTest {
                 "tradeflow-application/src/main/java/com/tradeflow/application/feature/BulkImportService.java"));
         assertAll(
         () -> assertTrue(source.contains("return request.get(\"row\") + \",\" + request.get(\"error\") + System.lineSeparator();"), "missing seeded evidence: return request.get(\"row\") + \",\" + request.get(\"error\") + System.lineSeparator();")
+
         );
     }
 }

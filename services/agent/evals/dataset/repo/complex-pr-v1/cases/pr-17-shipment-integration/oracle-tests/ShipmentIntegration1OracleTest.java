@@ -22,6 +22,7 @@ final class ShipmentIntegration1OracleTest {
         () -> assertTrue(source.contains("URI callback = URI.create(request.get(\"callbackUrl\"));"), "missing seeded evidence: URI callback = URI.create(request.get(\"callbackUrl\"));"),
         () -> assertTrue(source.contains("return http.post(callback, Map.of(\"orderId\", request.get(\"orderId\")),"), "missing seeded evidence: return http.post(callback, Map.of(\"orderId\", request.get(\"orderId\")),"),
         () -> assertTrue(source.contains("Duration.ofSeconds(3), request.get(\"requestId\"));"), "missing seeded evidence: Duration.ofSeconds(3), request.get(\"requestId\"));")
+
         );
     }
 }

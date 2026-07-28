@@ -21,6 +21,7 @@ final class UserInvitation1OracleTest {
         assertAll(
         () -> assertTrue(source.contains("UserAccount account = users.findById(request.get(\"userId\")).orElseThrow();"), "missing seeded evidence: UserAccount account = users.findById(request.get(\"userId\")).orElseThrow();"),
         () -> assertTrue(source.contains("users.save(new UserAccount(account.id(), context.tenantId(), Set.of(request.get(\"role\")), 0));"), "missing seeded evidence: users.save(new UserAccount(account.id(), context.tenantId(), Set.of(request.get(\"role\")), 0));")
+
         );
     }
 }

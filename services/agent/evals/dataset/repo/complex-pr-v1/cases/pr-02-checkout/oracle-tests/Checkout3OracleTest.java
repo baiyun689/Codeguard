@@ -22,6 +22,7 @@ final class Checkout3OracleTest {
         () -> assertTrue(source.contains("String key = \"checkout:\" + request.get(\"requestId\");"), "missing seeded evidence: String key = \"checkout:\" + request.get(\"requestId\");"),
         () -> assertTrue(source.contains("return cache.get(key).orElseGet(() -> {"), "missing seeded evidence: return cache.get(key).orElseGet(() -> {"),
         () -> assertTrue(source.contains("String result = payments.charge(context.tenantId(), request.get(\"orderId\"),"), "missing seeded evidence: String result = payments.charge(context.tenantId(), request.get(\"orderId\"),")
+
         );
     }
 }

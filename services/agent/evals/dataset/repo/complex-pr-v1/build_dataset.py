@@ -1868,7 +1868,13 @@ def _call_anchors(
     return list(dict.fromkeys(anchors))
 
 
-def _oracle_fragments(source_text: str, method_name: str) -> list[str]:
+def _oracle_fragments(
+    source_text: str, method_name: str, seen: set[str] | None = None
+) -> list[str]:
+    visited = set() if seen is None else seen
+    if method_name in visited:
+        return []
+    visited.add(method_name)
     method = _method_text(source_text, method_name)
     candidates = []
     for line in method.splitlines()[1:-1]:
@@ -1887,7 +1893,13 @@ def _oracle_fragments(source_text: str, method_name: str) -> list[str]:
             for line in method.splitlines()[1:-1]
             if line.strip() and line.strip() != "}"
         ]
-    return list(dict.fromkeys(candidates))[:3]
+    fragments = list(dict.fromkeys(candidates))[:3]
+    for helper in re.findall(r"\breturn\s+(\w+)\s*\(", method):
+        try:
+            fragments.extend(_oracle_fragments(source_text, helper, visited))
+        except ValueError:
+            continue
+    return list(dict.fromkeys(fragments))
 
 
 def _java_string(value: str) -> str:
@@ -1907,15 +1919,36 @@ def _oracle_source(
     source_relative: str,
     source_text: str,
 ) -> str:
+    fragments = _oracle_fragments(source_text, method_name)
     assertions = "\n".join(
         "                () -> assertTrue(source.contains("
         f"\"{_java_string(fragment)}\"), "
         f"\"missing seeded evidence: {_java_string(fragment)}\")"
-        + ("," if position < len(_oracle_fragments(source_text, method_name)) else "")
-        for position, fragment in enumerate(
-            _oracle_fragments(source_text, method_name), 1
-        )
+        + ("," if position < len(fragments) else "")
+        for position, fragment in enumerate(fragments, 1)
     )
+    helper_calls = re.findall(
+        r"\breturn\s+(\w+)\s*\(", _method_text(source_text, method_name)
+    )
+    ordering_assertion = ""
+    ordering_fragments: list[str] = []
+    if helper_calls:
+        ordering_fragments = _oracle_fragments(
+            source_text, helper_calls[0]
+        )[-2:]
+    if len(ordering_fragments) == 2:
+        indexes = " && ".join(
+            "source.indexOf("
+            f"\"{_java_string(left)}\") < source.indexOf("
+            f"\"{_java_string(right)}\")"
+            for left, right in zip(
+                ordering_fragments, ordering_fragments[1:]
+            )
+        )
+        ordering_assertion = (
+            ",\n                () -> assertTrue("
+            f"{indexes}, \"seeded side-effect order changed\")"
+        )
     return f"""
         package com.tradeflow.oracle;
 
@@ -1939,6 +1972,7 @@ def _oracle_source(
                         "{_java_string(source_relative)}"));
                 assertAll(
 {assertions}
+{ordering_assertion}
                 );
             }}
         }}

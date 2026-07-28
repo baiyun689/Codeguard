@@ -22,6 +22,7 @@ final class BulkImport2OracleTest {
         () -> assertTrue(source.contains("List<String> rows = Arrays.asList(request.get(\"rows\").split(\"\\\\|\"));"), "missing seeded evidence: List<String> rows = Arrays.asList(request.get(\"rows\").split(\"\\\\|\"));"),
         () -> assertTrue(source.contains("events.publish(\"catalog.import\", context.tenantId(), row);"), "missing seeded evidence: events.publish(\"catalog.import\", context.tenantId(), row);"),
         () -> assertTrue(source.contains("audit.record(context.tenantId(), \"IMPORT_ROW_FAILED\", row);"), "missing seeded evidence: audit.record(context.tenantId(), \"IMPORT_ROW_FAILED\", row);")
+
         );
     }
 }

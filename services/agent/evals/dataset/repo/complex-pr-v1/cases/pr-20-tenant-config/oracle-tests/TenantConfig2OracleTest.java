@@ -22,6 +22,7 @@ final class TenantConfig2OracleTest {
         () -> assertTrue(source.contains("runtimeConfig.clear();"), "missing seeded evidence: runtimeConfig.clear();"),
         () -> assertTrue(source.contains("runtimeConfig.putAll(request);"), "missing seeded evidence: runtimeConfig.putAll(request);"),
         () -> assertTrue(source.contains("return runtimeConfig.size();"), "missing seeded evidence: return runtimeConfig.size();")
+
         );
     }
 }

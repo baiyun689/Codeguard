@@ -22,6 +22,7 @@ final class TenantConfig3OracleTest {
         () -> assertTrue(source.contains("runtimeConfig.put(\"tenant\", context.tenantId());"), "missing seeded evidence: runtimeConfig.put(\"tenant\", context.tenantId());"),
         () -> assertTrue(source.contains("runtimeConfig.put(\"paymentUrl\", request.get(\"paymentUrl\"));"), "missing seeded evidence: runtimeConfig.put(\"paymentUrl\", request.get(\"paymentUrl\"));"),
         () -> assertTrue(source.contains("runtimeConfig.put(\"secret\", request.get(\"secret\"));"), "missing seeded evidence: runtimeConfig.put(\"secret\", request.get(\"secret\"));")
+
         );
     }
 }

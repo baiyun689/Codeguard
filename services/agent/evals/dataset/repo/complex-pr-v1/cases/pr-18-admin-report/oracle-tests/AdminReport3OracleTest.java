@@ -20,6 +20,7 @@ final class AdminReport3OracleTest {
                 "tradeflow-application/src/main/java/com/tradeflow/application/feature/AdminReportService.java"));
         assertAll(
         () -> assertTrue(source.contains("return request.get(\"orderId\") + \",\" + request.get(\"customerNote\") + System.lineSeparator();"), "missing seeded evidence: return request.get(\"orderId\") + \",\" + request.get(\"customerNote\") + System.lineSeparator();")
+
         );
     }
 }

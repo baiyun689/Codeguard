@@ -22,6 +22,7 @@ final class LoginRateLimit2OracleTest {
         () -> assertTrue(source.contains("String key = \"login:\" + request.get(\"username\");"), "missing seeded evidence: String key = \"login:\" + request.get(\"username\");"),
         () -> assertTrue(source.contains("long current = cache.get(key).map(Long::parseLong).orElse(0L);"), "missing seeded evidence: long current = cache.get(key).map(Long::parseLong).orElse(0L);"),
         () -> assertTrue(source.contains("if (current >= 5) throw new SecurityException(\"locked\");"), "missing seeded evidence: if (current >= 5) throw new SecurityException(\"locked\");")
+
         );
     }
 }

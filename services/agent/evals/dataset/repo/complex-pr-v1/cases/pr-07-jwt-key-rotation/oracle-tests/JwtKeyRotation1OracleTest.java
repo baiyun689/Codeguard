@@ -21,6 +21,7 @@ final class JwtKeyRotation1OracleTest {
         assertAll(
         () -> assertTrue(source.contains("URI keyUri = URI.create(request.get(\"issuer\") + \"/keys/\" + request.get(\"kid\"));"), "missing seeded evidence: URI keyUri = URI.create(request.get(\"issuer\") + \"/keys/\" + request.get(\"kid\"));"),
         () -> assertTrue(source.contains("return http.get(keyUri, Duration.ofSeconds(2));"), "missing seeded evidence: return http.get(keyUri, Duration.ofSeconds(2));")
+
         );
     }
 }

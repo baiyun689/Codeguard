@@ -20,6 +20,7 @@ final class ShipmentIntegration2OracleTest {
                 "tradeflow-application/src/main/java/com/tradeflow/application/feature/ShipmentIntegrationService.java"));
         assertAll(
         () -> assertTrue(source.contains("return http.post(URI.create(request.get(\"carrierUrl\")), Map.of(\"orderId\", request.get(\"orderId\")),"), "missing seeded evidence: return http.post(URI.create(request.get(\"carrierUrl\")), Map.of(\"orderId\", request.get(\"orderId\")),")
+
         );
     }
 }

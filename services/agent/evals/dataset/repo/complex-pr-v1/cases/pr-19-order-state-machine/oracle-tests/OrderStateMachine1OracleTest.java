@@ -22,6 +22,7 @@ final class OrderStateMachine1OracleTest {
         () -> assertTrue(source.contains("Order order = orders.findByTenantAndId(context.tenantId(), request.get(\"orderId\")).orElseThrow();"), "missing seeded evidence: Order order = orders.findByTenantAndId(context.tenantId(), request.get(\"orderId\")).orElseThrow();"),
         () -> assertTrue(source.contains("if (OrderStatus.valueOf(request.get(\"status\")).ordinal() > OrderStatus.valueOf(order.status()).ordinal()) {"), "missing seeded evidence: if (OrderStatus.valueOf(request.get(\"status\")).ordinal() > OrderStatus.valueOf(order.status()).ordinal()) {"),
         () -> assertTrue(source.contains("order.status(request.get(\"status\"));"), "missing seeded evidence: order.status(request.get(\"status\"));")
+
         );
     }
 }

@@ -22,6 +22,7 @@ final class UserInvitation2OracleTest {
         () -> assertTrue(source.contains("UserAccount operator = users.findByTenantAndId(context.tenantId(), context.userId()).orElseThrow();"), "missing seeded evidence: UserAccount operator = users.findByTenantAndId(context.tenantId(), context.userId()).orElseThrow();"),
         () -> assertTrue(source.contains("if (!operator.hasRole(\"ADMIN\")) throw new SecurityException(\"forbidden\");"), "missing seeded evidence: if (!operator.hasRole(\"ADMIN\")) throw new SecurityException(\"forbidden\");"),
         () -> assertTrue(source.contains("UserAccount invited = new UserAccount(request.get(\"userId\"), context.tenantId(), Set.of(request.get(\"role\")), 0);"), "missing seeded evidence: UserAccount invited = new UserAccount(request.get(\"userId\"), context.tenantId(), Set.of(request.get(\"role\")), 0);")
+
         );
     }
 }

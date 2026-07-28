@@ -22,6 +22,7 @@ final class RefundFlow1OracleTest {
         () -> assertTrue(source.contains("Order order = orders.findByTenantAndId(context.tenantId(), request.get(\"orderId\")).orElseThrow();"), "missing seeded evidence: Order order = orders.findByTenantAndId(context.tenantId(), request.get(\"orderId\")).orElseThrow();"),
         () -> assertTrue(source.contains("BigDecimal amount = new BigDecimal(request.get(\"amount\"));"), "missing seeded evidence: BigDecimal amount = new BigDecimal(request.get(\"amount\"));"),
         () -> assertTrue(source.contains("if (amount.compareTo(order.total()) > 0) throw new IllegalArgumentException(\"too large\");"), "missing seeded evidence: if (amount.compareTo(order.total()) > 0) throw new IllegalArgumentException(\"too large\");")
+
         );
     }
 }

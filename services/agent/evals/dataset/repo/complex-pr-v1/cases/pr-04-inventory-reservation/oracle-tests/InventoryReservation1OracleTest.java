@@ -22,6 +22,7 @@ final class InventoryReservation1OracleTest {
         () -> assertTrue(source.contains("InventoryItem item = inventory.findBySku(request.get(\"sku\")).orElseThrow();"), "missing seeded evidence: InventoryItem item = inventory.findBySku(request.get(\"sku\")).orElseThrow();"),
         () -> assertTrue(source.contains("int quantity = Integer.parseInt(request.get(\"quantity\"));"), "missing seeded evidence: int quantity = Integer.parseInt(request.get(\"quantity\"));"),
         () -> assertTrue(source.contains("if (item.available() < quantity) throw new IllegalStateException(\"insufficient\");"), "missing seeded evidence: if (item.available() < quantity) throw new IllegalStateException(\"insufficient\");")
+
         );
     }
 }

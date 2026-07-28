@@ -22,6 +22,7 @@ final class UserInvitation3OracleTest {
         () -> assertTrue(source.contains("events.publish(\"email.invitation\", request.get(\"email\"), request.get(\"token\"));"), "missing seeded evidence: events.publish(\"email.invitation\", request.get(\"email\"), request.get(\"token\"));"),
         () -> assertTrue(source.contains("UserAccount invited = new UserAccount(request.get(\"userId\"), context.tenantId(), Set.of(\"MEMBER\"), 0);"), "missing seeded evidence: UserAccount invited = new UserAccount(request.get(\"userId\"), context.tenantId(), Set.of(\"MEMBER\"), 0);"),
         () -> assertTrue(source.contains("users.save(invited);"), "missing seeded evidence: users.save(invited);")
+
         );
     }
 }

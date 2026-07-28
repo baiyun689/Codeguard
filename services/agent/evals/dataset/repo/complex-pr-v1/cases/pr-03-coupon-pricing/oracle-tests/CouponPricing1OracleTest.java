@@ -22,6 +22,7 @@ final class CouponPricing1OracleTest {
         () -> assertTrue(source.contains("BigDecimal subtotal = new BigDecimal(request.get(\"subtotal\"));"), "missing seeded evidence: BigDecimal subtotal = new BigDecimal(request.get(\"subtotal\"));"),
         () -> assertTrue(source.contains("BigDecimal percent = new BigDecimal(request.get(\"percent\"));"), "missing seeded evidence: BigDecimal percent = new BigDecimal(request.get(\"percent\"));"),
         () -> assertTrue(source.contains("BigDecimal fixed = new BigDecimal(request.get(\"fixed\"));"), "missing seeded evidence: BigDecimal fixed = new BigDecimal(request.get(\"fixed\"));")
+
         );
     }
 }

@@ -21,6 +21,7 @@ final class LoginRateLimit3OracleTest {
         assertAll(
         () -> assertTrue(source.contains("return cache.increment(\"login:\" + request.get(\"username\"), Duration.ofMinutes(10));"), "missing seeded evidence: return cache.increment(\"login:\" + request.get(\"username\"), Duration.ofMinutes(10));"),
         () -> assertTrue(source.contains("audit.record(context.tenantId(), \"RATE_LIMIT_UNAVAILABLE\", request.get(\"username\"));"), "missing seeded evidence: audit.record(context.tenantId(), \"RATE_LIMIT_UNAVAILABLE\", request.get(\"username\"));")
+
         );
     }
 }

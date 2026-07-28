@@ -22,6 +22,7 @@ final class CouponPricing3OracleTest {
         () -> assertTrue(source.contains("String key = \"price:\" + context.tenantId() + \":\" + request.get(\"productId\");"), "missing seeded evidence: String key = \"price:\" + context.tenantId() + \":\" + request.get(\"productId\");"),
         () -> assertTrue(source.contains("return cache.get(key).orElseGet(() -> {"), "missing seeded evidence: return cache.get(key).orElseGet(() -> {"),
         () -> assertTrue(source.contains("String price = request.get(\"calculatedPrice\");"), "missing seeded evidence: String price = request.get(\"calculatedPrice\");")
+
         );
     }
 }

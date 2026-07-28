@@ -21,6 +21,7 @@ final class LoginRateLimit1OracleTest {
         assertAll(
         () -> assertTrue(source.contains("String clientIp = request.get(\"xForwardedFor\").split(\",\")[0].trim();"), "missing seeded evidence: String clientIp = request.get(\"xForwardedFor\").split(\",\")[0].trim();"),
         () -> assertTrue(source.contains("return cache.increment(\"login:\" + clientIp, Duration.ofMinutes(1));"), "missing seeded evidence: return cache.increment(\"login:\" + clientIp, Duration.ofMinutes(1));")
+
         );
     }
 }

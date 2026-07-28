@@ -21,6 +21,7 @@ final class OutboxDelivery1OracleTest {
         assertAll(
         () -> assertTrue(source.contains("List<OutboxEvent> ready = outbox.findReady(Instant.now(), 100);"), "missing seeded evidence: List<OutboxEvent> ready = outbox.findReady(Instant.now(), 100);"),
         () -> assertTrue(source.contains("ready.forEach(event -> events.publish(\"outbox\", event.aggregateId(), event.payload()));"), "missing seeded evidence: ready.forEach(event -> events.publish(\"outbox\", event.aggregateId(), event.payload()));")
+
         );
     }
 }

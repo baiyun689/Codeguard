@@ -21,6 +21,7 @@ final class TenantConfig1OracleTest {
         assertAll(
         () -> assertTrue(source.contains("String tenantSecret = cache.get(\"config:\" + context.tenantId() + \":secret\")"), "missing seeded evidence: String tenantSecret = cache.get(\"config:\" + context.tenantId() + \":secret\")"),
         () -> assertTrue(source.contains(".orElse(request.get(\"globalSecret\"));"), "missing seeded evidence: .orElse(request.get(\"globalSecret\"));")
+
         );
     }
 }

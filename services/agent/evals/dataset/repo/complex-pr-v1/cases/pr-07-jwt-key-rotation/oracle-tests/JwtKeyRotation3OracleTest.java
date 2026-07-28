@@ -22,6 +22,7 @@ final class JwtKeyRotation3OracleTest {
         () -> assertTrue(source.contains("String key = \"roles:\" + request.get(\"subject\");"), "missing seeded evidence: String key = \"roles:\" + request.get(\"subject\");"),
         () -> assertTrue(source.contains("return cache.get(key).orElseGet(() -> {"), "missing seeded evidence: return cache.get(key).orElseGet(() -> {"),
         () -> assertTrue(source.contains("String roles = request.get(\"roles\");"), "missing seeded evidence: String roles = request.get(\"roles\");")
+
         );
     }
 }

@@ -22,6 +22,7 @@ final class OrderSearch2OracleTest {
         () -> assertTrue(source.contains("int page = Integer.parseInt(request.get(\"page\"));"), "missing seeded evidence: int page = Integer.parseInt(request.get(\"page\"));"),
         () -> assertTrue(source.contains("int size = Integer.parseInt(request.get(\"size\"));"), "missing seeded evidence: int size = Integer.parseInt(request.get(\"size\"));"),
         () -> assertTrue(source.contains("int offset = page * size;"), "missing seeded evidence: int offset = page * size;")
+
         );
     }
 }

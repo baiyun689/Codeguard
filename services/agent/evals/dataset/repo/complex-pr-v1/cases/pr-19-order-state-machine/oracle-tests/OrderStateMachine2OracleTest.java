@@ -22,6 +22,7 @@ final class OrderStateMachine2OracleTest {
         () -> assertTrue(source.contains("Order current = orders.findByTenantAndId(context.tenantId(), request.get(\"orderId\")).orElseThrow();"), "missing seeded evidence: Order current = orders.findByTenantAndId(context.tenantId(), request.get(\"orderId\")).orElseThrow();"),
         () -> assertTrue(source.contains("Order mapped = new Order(current.id(), current.tenantId(), current.total(), request.get(\"status\"));"), "missing seeded evidence: Order mapped = new Order(current.id(), current.tenantId(), current.total(), request.get(\"status\"));"),
         () -> assertTrue(source.contains("orders.save(mapped);"), "missing seeded evidence: orders.save(mapped);")
+
         );
     }
 }

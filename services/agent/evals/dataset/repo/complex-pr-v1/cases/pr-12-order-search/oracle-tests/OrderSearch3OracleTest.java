@@ -21,6 +21,7 @@ final class OrderSearch3OracleTest {
         assertAll(
         () -> assertTrue(source.contains("List<Order> scoped = orders.search(context.tenantId(), request.get(\"query\"), 0, 50);"), "missing seeded evidence: List<Order> scoped = orders.search(context.tenantId(), request.get(\"query\"), 0, 50);"),
         () -> assertTrue(source.contains("return scoped.isEmpty() ? orders.search(\"\", request.get(\"query\"), 0, 50) : scoped;"), "missing seeded evidence: return scoped.isEmpty() ? orders.search(\"\", request.get(\"query\"), 0, 50) : scoped;")
+
         );
     }
 }

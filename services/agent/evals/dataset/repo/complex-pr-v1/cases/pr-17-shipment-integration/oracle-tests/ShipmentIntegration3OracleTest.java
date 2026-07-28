@@ -22,6 +22,7 @@ final class ShipmentIntegration3OracleTest {
         () -> assertTrue(source.contains("long timeoutSeconds = Long.parseLong(request.get(\"timeoutSeconds\"));"), "missing seeded evidence: long timeoutSeconds = Long.parseLong(request.get(\"timeoutSeconds\"));"),
         () -> assertTrue(source.contains("return http.post(URI.create(request.get(\"carrierUrl\")), Map.of(\"orderId\", request.get(\"orderId\")),"), "missing seeded evidence: return http.post(URI.create(request.get(\"carrierUrl\")), Map.of(\"orderId\", request.get(\"orderId\")),"),
         () -> assertTrue(source.contains("Duration.ofMillis(timeoutSeconds), request.get(\"requestId\"));"), "missing seeded evidence: Duration.ofMillis(timeoutSeconds), request.get(\"requestId\"));")
+
         );
     }
 }

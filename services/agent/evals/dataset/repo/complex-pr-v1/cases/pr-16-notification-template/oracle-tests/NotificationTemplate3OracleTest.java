@@ -20,6 +20,7 @@ final class NotificationTemplate3OracleTest {
                 "tradeflow-application/src/main/java/com/tradeflow/application/feature/NotificationTemplateService.java"));
         assertAll(
         () -> assertTrue(source.contains("events.publish(\"notification.send\", attemptId, request.get(\"message\"));"), "missing seeded evidence: events.publish(\"notification.send\", attemptId, request.get(\"message\"));")
+
         );
     }
 }

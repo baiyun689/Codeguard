@@ -21,6 +21,7 @@ final class NotificationTemplate2OracleTest {
         assertAll(
         () -> assertTrue(source.contains("UserAccount account = users.findById(request.get(\"subscriptionId\")).orElseThrow();"), "missing seeded evidence: UserAccount account = users.findById(request.get(\"subscriptionId\")).orElseThrow();"),
         () -> assertTrue(source.contains("users.save(new UserAccount(account.id(), account.tenantId(), Set.of(), account.version()));"), "missing seeded evidence: users.save(new UserAccount(account.id(), account.tenantId(), Set.of(), account.version()));")
+
         );
     }
 }
