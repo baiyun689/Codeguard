@@ -767,13 +767,16 @@ def test_coordinator_edges_through_planner_to_evidence_agent():
     graph = G.build_review_graph(enable_summary=False, llm=None)
     edges = graph.get_graph().edges
     pairs = {(e.source, e.target) for e in edges}
-    # coordinator → planner → evidence_agent 是无条件边
-    assert ("council_coordinator", "evidence_planner") in pairs
+    # coordinator → concern_analyzer → planner → evidence_agent 是无条件边
+    assert ("council_coordinator", "concern_analyzer") in pairs
+    assert ("concern_analyzer", "evidence_planner") in pairs
     assert ("evidence_planner", "evidence_agent") in pairs
     # evidence_agent → council_judge 是无条件边
     assert ("evidence_agent", "council_judge") in pairs
     # 旧的 evidence → coordinator 回环已移除
     assert ("evidence_agent", "council_coordinator") not in pairs
+    # concern_analyzer 在非 discovery_only 图中存在
+    assert "concern_analyzer" in set(graph.get_graph().nodes)
 
 
 def test_evidence_agent_runs_once_before_judge(monkeypatch):

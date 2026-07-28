@@ -5,7 +5,7 @@
 
     START → diff_task_builder → risk_triage → task_rank → review_coverage → [summary]
               → context_provider → discover_* → council_coordinator(fan-in)
-              → evidence_planner → evidence_agent → council_judge → END
+              → concern_analyzer → evidence_planner → evidence_agent → council_judge → END
 
 discovery_only 拓扑(跳过归并/举证/法官，直接输出发现者原始结果):
 
@@ -84,6 +84,12 @@ from codeguard_agent.pipeline.evidence.rules.classify import (
     CandidateTagResolution,
     resolve_candidate_tags,
 )
+from codeguard_agent.models.council import ConcernAnalysis
+from codeguard_agent.pipeline.council.concern import (
+    analyze_candidate_groups,
+    build_singleton_concerns,
+)
+from codeguard_agent.pipeline.evidence.planner import plan_claim_evidence
 from codeguard_agent.pipeline.context.base import PipelineContext
 from codeguard_agent.pipeline.context.provider import ContextProviderStage
 from codeguard_agent.pipeline.reviewers.reviewers import (
@@ -187,6 +193,7 @@ class ReviewState(TypedDict, total=False):
     candidate_groups: list[CandidateGroup]
     candidate_tag_resolutions: dict[str, CandidateTagResolution]
     candidate_dedup_stats: CandidateDedupStats
+    concern_analysis: ConcernAnalysis
     evidence_requests: Annotated[list[EvidenceRequest], dedup_evidence_request_reducer]
     evidence_notes: Annotated[list[EvidenceNote], operator.add]
     council_trace: Annotated[list[CouncilTrace], operator.add]
@@ -1120,6 +1127,57 @@ def _coordinator_node(effective_judge_llm):
     return _node
 
 
+def _concern_analyzer_node():
+    """把 CandidateGroup 转换为结构化 CandidateConcern。"""
+
+    def _node(state: ReviewState) -> dict:
+        groups = state.get("candidate_groups") or []
+        priors = state.get("risk_priors") or {}
+
+        if not groups:
+            # 兼容旧路径：无 CandidateGroup 时用 singleton fallback
+            raw = state.get("candidate_issues") or []
+            if raw:
+                analysis = build_singleton_concerns(raw)
+                return {
+                    "concern_analysis": analysis,
+                    "council_trace": [
+                        CouncilTrace(
+                            node="concern_analyzer",
+                            event="singleton_fallback",
+                            detail=f"no groups, built {len(analysis.concerns)} singleton concerns",
+                        )
+                    ],
+                }
+            return {
+                "concern_analysis": ConcernAnalysis(),
+                "council_trace": [
+                    CouncilTrace(
+                        node="concern_analyzer",
+                        event="no_op",
+                        detail="no candidate groups or issues",
+                    )
+                ],
+            }
+
+        analysis = analyze_candidate_groups(groups, task_priors=priors)
+        return {
+            "concern_analysis": analysis,
+            "council_trace": [
+                CouncilTrace(
+                    node="concern_analyzer",
+                    event="concerns_built",
+                    detail=(
+                        f"concerns={len(analysis.concerns)} "
+                        f"diagnostics={len(analysis.diagnostics)}"
+                    ),
+                ),
+            ],
+        }
+
+    return _node
+
+
 def _assemble_state_dossiers(state: ReviewState):
     return assemble_dossiers(
         state.get("candidate_issues") or [],
@@ -1133,9 +1191,45 @@ def _assemble_state_dossiers(state: ReviewState):
 
 
 def _evidence_planner_node(effective_judge_llm):
-    """EvidencePlanner 是 graph 中 evidence_requests 的唯一写入者。"""
+    """EvidencePlanner 是 graph 中 evidence_requests 的唯一写入者。
+
+    当 concern_analysis 可用时，对每个 concern 使用 plan_claim_evidence()；
+    否则走旧 plan_evidence() 兼容路径。
+    """
 
     def _node(state: ReviewState) -> dict:
+        concern_analysis = state.get("concern_analysis")
+        trace: list[CouncilTrace] = []
+
+        if concern_analysis is not None and concern_analysis.concerns:
+            # 新路径：claim-driven planning
+            all_requests: list = []
+            for concern in concern_analysis.concerns:
+                plan = plan_claim_evidence(concern)
+                all_requests.extend(plan.requests)
+                trace.append(
+                    CouncilTrace(
+                        node="evidence_planner",
+                        event="concern_planned",
+                        detail=(
+                            f"concern={concern.concern_id} "
+                            f"goals={len(plan.goals)} "
+                            f"requests={len(plan.requests)} "
+                            f"uncovered={len(plan.uncovered_goals)}"
+                        ),
+                    )
+                )
+            if not all_requests:
+                trace.append(
+                    CouncilTrace(
+                        node="evidence_planner",
+                        event="no_op",
+                        detail="no evidence requests from concerns",
+                    )
+                )
+            return {"evidence_requests": all_requests, "council_trace": trace}
+
+        # 旧路径：tag-driven planning (兼容)
         assembly = _assemble_state_dossiers(state)
         plan = plan_evidence(
             assembly.dossiers,
@@ -1256,7 +1350,7 @@ def build_review_graph(
     默认拓扑:
         diff_task_builder → risk_triage → task_rank → review_coverage → summary? → context_provider
           → discover_*(×3) → council_coordinator(fan-in)
-          → evidence_planner → evidence_agent → council_judge → END
+          → concern_analyzer → evidence_planner → evidence_agent → council_judge → END
 
     discovery_only 拓扑:
         diff_task_builder → risk_triage → task_rank → review_coverage → summary? → context_provider
@@ -1282,6 +1376,7 @@ def build_review_graph(
         g.add_node("discovery_collector", _discovery_collector_node())
     else:
         g.add_node("council_coordinator", _coordinator_node(effective_judge_llm))
+        g.add_node("concern_analyzer", _concern_analyzer_node())
         g.add_node("evidence_planner", _evidence_planner_node(effective_judge_llm))
         g.add_node(
             "evidence_agent",
@@ -1314,7 +1409,8 @@ def build_review_graph(
     if discovery_only:
         g.add_edge("discovery_collector", END)
     else:
-        g.add_edge("council_coordinator", "evidence_planner")
+        g.add_edge("council_coordinator", "concern_analyzer")
+        g.add_edge("concern_analyzer", "evidence_planner")
         g.add_edge("evidence_planner", "evidence_agent")
         g.add_edge("evidence_agent", "council_judge")
         g.add_edge("council_judge", END)
