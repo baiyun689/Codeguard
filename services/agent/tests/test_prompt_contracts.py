@@ -224,6 +224,7 @@ def test_knowledge_tree_exactly_matches_routed_reviewer_tag_pairs() -> None:
     actual = {
         (path.parent.name, path.name)
         for path in (PROMPT_DIR / "knowledge").glob("*/*.txt")
+        if path.name != "BASE.txt"
     }
     assert actual == expected
 
@@ -237,6 +238,8 @@ def test_every_knowledge_fragment_has_complete_review_guidance() -> None:
         "### 排除项",
     )
     for path in (PROMPT_DIR / "knowledge").glob("*/*.txt"):
+        if path.name == "BASE.txt":
+            continue
         text = path.read_text(encoding="utf-8")
         assert all(heading in text for heading in headings), path
 
