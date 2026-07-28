@@ -97,7 +97,13 @@ def resolve_candidate_evidence_tag(
     *,
     structured_method: str,
 ) -> CandidateTagResolution:
-    """先规则解析；歧义时才用受限结构化 LLM 分类。"""
+    """先规则解析；歧义时才用受限结构化 LLM 分类。
+
+    .. note::
+        这是旧单标签路径的兼容 Adapter。新代码应优先使用
+        :func:`pipeline.council.concern.analyze_candidate_groups`
+        进行多标签 concern 解析。
+    """
     tag, exact_hit, reason = _score_candidate(dossier)
     if tag is not None:
         return CandidateTagResolution(
@@ -180,6 +186,11 @@ def resolve_candidate_tags(
 
     每个 dossier 独立调用 resolve_candidate_evidence_tag，
     失败/None 回退 GENERAL_REVIEW。
+
+    .. note::
+        这是旧单标签路径的兼容 Adapter。新代码应优先使用
+        :func:`pipeline.council.concern.analyze_candidate_groups`
+        进行多标签 concern 解析。
     """
     from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 
