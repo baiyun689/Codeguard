@@ -17,6 +17,19 @@ PROJECT_ROOT = ROOT.parents[5]
 SOURCE_ROOT = PROJECT_ROOT / ".eval-work" / "interview-v1" / "dataset" / "repo"
 CASES_ROOT = ROOT / "cases"
 
+SOURCE_SNAPSHOT_SHA256 = {
+    "gitbug-spring-guice-injection": "281b4e52172664030eea2ad2dce7cc5320689470f6b158aa109ef327f775bb1f",
+    "vul4j-42-command-injection": "9cf29e0d6673ab66ed5c30ffbae4a8c903b835e7c31e01b9b246d2327dba1ff8",
+    "vul4j-43-path-traversal": "66ad0dde4c5eea7fd84b740ee3e981c73a5186ebf539bf1562b879e5ab700230",
+    "vul4j-48-jwt-validation": "486e46cbd2c1b53bf53557585a6a11ff6f66cb1736cd16248cd4c3309a11bcba",
+    "gitbug-spring-retry-interrupt": "f1c28d8b6c5267acb11b32adb0d6abf2aab5eda50b92cc4ea1303e601585a634",
+    "gitbug-snowflake-credentials": "ffcc48e3b0a7e40fdcc9338c725da22e1f41c7f5d461171b98a349208b0e8478",
+    "gitbug-evalex-memory": "68d2cebb7a4dea7212570cb1bb4db78ab2f7bd3d150416f6406e8ee7b84b7344",
+    "gitbug-mcs-runtime-errors": "5536ed2795347d2b198c6fe1734fb4caaa9536647c5f92fc836f22fde4141118",
+    "gitbug-jaxb-uppercase": "86ba66eab0f90d12abd82acce75195434581583661bcd242ad985ae90959622f",
+    "gitbug-quality-cbor-type": "cf3f54b8b6bc0a7f9deccb18d125a2f39df7f89c98de4f35472a8ae35068b665",
+}
+
 
 @dataclass(frozen=True)
 class Seed:
@@ -770,6 +783,13 @@ def _tree_sha256(root: Path) -> str:
 
 def _build_case(spec: CaseSpec) -> dict:
     source_dir = SOURCE_ROOT / spec.source_id
+    source_hash = _tree_sha256(source_dir)
+    expected_hash = SOURCE_SNAPSHOT_SHA256[spec.source_id]
+    if source_hash != expected_hash:
+        raise ValueError(
+            f"{spec.source_id}: frozen input checksum mismatch "
+            f"(expected {expected_hash}, got {source_hash})"
+        )
     case_dir = CASES_ROOT / spec.source_id
     repo_dir = case_dir / "repo"
     case_dir.mkdir(parents=True)
@@ -878,12 +898,19 @@ def _build_case(spec: CaseSpec) -> dict:
         "id": spec.source_id,
         "repository_url": original_case["provenance"]["repository_url"],
         "source_case": spec.source_id,
-        "source_snapshot_sha256": _tree_sha256(source_dir),
+        "source_snapshot_sha256": expected_hash,
         "issue_count": len(issues),
     }
 
 
 def build() -> None:
+    actual_ids = {spec.source_id for spec in CASES}
+    if actual_ids != SOURCE_SNAPSHOT_SHA256.keys():
+        raise ValueError("case catalog and source checksum lock differ")
+    for spec in CASES:
+        source_hash = _tree_sha256(SOURCE_ROOT / spec.source_id)
+        if source_hash != SOURCE_SNAPSHOT_SHA256[spec.source_id]:
+            raise ValueError(f"{spec.source_id}: frozen input checksum mismatch")
     if CASES_ROOT.exists():
         resolved = CASES_ROOT.resolve()
         if resolved.parent != ROOT.resolve():

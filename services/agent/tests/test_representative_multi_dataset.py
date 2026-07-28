@@ -29,6 +29,18 @@ BANNED_HINTS = {
     "漏洞",
     "这里有问题",
 }
+SOURCE_HASHES = {
+    "gitbug-spring-guice-injection": "281b4e52172664030eea2ad2dce7cc5320689470f6b158aa109ef327f775bb1f",
+    "vul4j-42-command-injection": "9cf29e0d6673ab66ed5c30ffbae4a8c903b835e7c31e01b9b246d2327dba1ff8",
+    "vul4j-43-path-traversal": "66ad0dde4c5eea7fd84b740ee3e981c73a5186ebf539bf1562b879e5ab700230",
+    "vul4j-48-jwt-validation": "486e46cbd2c1b53bf53557585a6a11ff6f66cb1736cd16248cd4c3309a11bcba",
+    "gitbug-spring-retry-interrupt": "f1c28d8b6c5267acb11b32adb0d6abf2aab5eda50b92cc4ea1303e601585a634",
+    "gitbug-snowflake-credentials": "ffcc48e3b0a7e40fdcc9338c725da22e1f41c7f5d461171b98a349208b0e8478",
+    "gitbug-evalex-memory": "68d2cebb7a4dea7212570cb1bb4db78ab2f7bd3d150416f6406e8ee7b84b7344",
+    "gitbug-mcs-runtime-errors": "5536ed2795347d2b198c6fe1734fb4caaa9536647c5f92fc836f22fde4141118",
+    "gitbug-jaxb-uppercase": "86ba66eab0f90d12abd82acce75195434581583661bcd242ad985ae90959622f",
+    "gitbug-quality-cbor-type": "cf3f54b8b6bc0a7f9deccb18d125a2f39df7f89c98de4f35472a8ae35068b665",
+}
 
 
 def _yaml(path: Path) -> dict:
@@ -42,10 +54,10 @@ def test_representative_multi_dataset_has_ten_real_multi_issue_cases() -> None:
     assert manifest["id"] == "representative-multi-v1"
     assert manifest["case_count"] == 10
     assert manifest["issue_count"] == 30
-    assert all(
-        len(case["source_snapshot_sha256"]) == 64
+    assert {
+        case["id"]: case["source_snapshot_sha256"]
         for case in manifest["cases"]
-    )
+    } == SOURCE_HASHES
     assert len(cases) == 10
 
     repositories: set[str] = set()
