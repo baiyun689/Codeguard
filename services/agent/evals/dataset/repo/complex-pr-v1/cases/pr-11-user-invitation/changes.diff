@@ -1,0 +1,184 @@
+--- a/tradeflow-application/src/main/java/com/tradeflow/application/feature/UserInvitationCoordinator.java
++++ b/tradeflow-application/src/main/java/com/tradeflow/application/feature/UserInvitationCoordinator.java
+@@ -0,0 +1,35 @@
++package com.tradeflow.application.feature;
++
++import com.tradeflow.application.port.AuditSink;
++import com.tradeflow.application.security.TenantContext;
++import java.util.Map;
++import org.springframework.stereotype.Service;
++
++@Service
++public final class UserInvitationCoordinator {
++    private final UserInvitationService service;
++    private final AuditSink audit;
++    private final TenantContext context;
++
++    public UserInvitationCoordinator(
++            UserInvitationService service, AuditSink audit, TenantContext context) {
++        this.service = service;
++        this.audit = audit;
++        this.context = context;
++    }
++
++    public Object inviteTenantMember(Map<String, String> request) {
++        audit.record(context.tenantId(), "USER-INVITATION", "inviteTenantMember");
++        return service.inviteTenantMember(request);
++    }
++
++    public Object inviteWithRoleCheck(Map<String, String> request) {
++        audit.record(context.tenantId(), "USER-INVITATION", "inviteWithRoleCheck");
++        return service.inviteWithRoleCheck(request);
++    }
++
++    public Object sendInvitation(Map<String, String> request) {
++        audit.record(context.tenantId(), "USER-INVITATION", "sendInvitation");
++        return service.sendInvitation(request);
++    }
++}
+--- a/tradeflow-application/src/main/java/com/tradeflow/application/feature/UserInvitationService.java
++++ b/tradeflow-application/src/main/java/com/tradeflow/application/feature/UserInvitationService.java
+@@ -0,0 +1,77 @@
++package com.tradeflow.application.feature;
++
++import com.tradeflow.application.port.*;
++import com.tradeflow.application.security.TenantContext;
++import com.tradeflow.domain.*;
++import java.math.*;
++import java.net.URI;
++import java.net.URLDecoder;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.security.MessageDigest;
++import java.time.*;
++import java.util.*;
++import java.util.stream.Collectors;
++import org.springframework.expression.spel.standard.SpelExpressionParser;
++import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
++
++@Service
++public final class UserInvitationService {
++    private final OrderRepository orders;
++    private final InventoryRepository inventory;
++    private final PaymentGateway payments;
++    private final EventPublisher events;
++    private final CacheStore cache;
++    private final ExternalHttpClient http;
++    private final FileStore files;
++    private final OutboxRepository outbox;
++    private final UserRepository users;
++    private final AuditSink audit;
++    private final TenantContext context;
++    private Map<String, String> runtimeConfig = new HashMap<>();
++
++    public UserInvitationService(
++            OrderRepository orders, InventoryRepository inventory,
++            PaymentGateway payments, EventPublisher events, CacheStore cache,
++            ExternalHttpClient http, FileStore files, OutboxRepository outbox,
++            UserRepository users, AuditSink audit, TenantContext context) {
++        this.orders = orders;
++        this.inventory = inventory;
++        this.payments = payments;
++        this.events = events;
++        this.cache = cache;
++        this.http = http;
++        this.files = files;
++        this.outbox = outbox;
++        this.users = users;
++        this.audit = audit;
++        this.context = context;
++    }
++
++    public Object inviteTenantMember(Map<String, String> request) {
++        UserAccount account = users.findById(request.get("userId")).orElseThrow();
++        users.save(new UserAccount(account.id(), context.tenantId(), Set.of(request.get("role")), 0));
++        return account.id();
++    }
++
++    public Object inviteWithRoleCheck(Map<String, String> request) {
++        UserAccount operator = users.findByTenantAndId(context.tenantId(), context.userId()).orElseThrow();
++        if (!operator.hasRole("ADMIN")) throw new SecurityException("forbidden");
++        UserAccount invited = new UserAccount(request.get("userId"), context.tenantId(), Set.of(request.get("role")), 0);
++        users.save(invited);
++        return invited;
++    }
++
++    public Object sendInvitation(Map<String, String> request) {
++        events.publish("email.invitation", request.get("email"), request.get("token"));
++        UserAccount invited = new UserAccount(request.get("userId"), context.tenantId(), Set.of("MEMBER"), 0);
++        users.save(invited);
++        return invited;
++    }
++
++    private enum OrderStatus {
++        CREATED, PAID, FULFILLING, SHIPPED, CANCELLED
++    }
++}
+--- a/tradeflow-web/src/main/java/com/tradeflow/web/feature/UserInvitationController.java
++++ b/tradeflow-web/src/main/java/com/tradeflow/web/feature/UserInvitationController.java
+@@ -0,0 +1,31 @@
++package com.tradeflow.web.feature;
++
++import com.tradeflow.application.feature.UserInvitationCoordinator;
++import java.util.Map;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.annotation.*;
++
++@RestController
++@RequestMapping("/api/user-invitation")
++public final class UserInvitationController {
++    private final UserInvitationCoordinator coordinator;
++
++    public UserInvitationController(UserInvitationCoordinator coordinator) {
++        this.coordinator = coordinator;
++    }
++
++    @PostMapping("/1")
++    public ResponseEntity<Object> inviteTenantMember(@RequestBody Map<String, String> request) {
++        return ResponseEntity.ok(coordinator.inviteTenantMember(request));
++    }
++
++    @PostMapping("/2")
++    public ResponseEntity<Object> inviteWithRoleCheck(@RequestBody Map<String, String> request) {
++        return ResponseEntity.ok(coordinator.inviteWithRoleCheck(request));
++    }
++
++    @PostMapping("/3")
++    public ResponseEntity<Object> sendInvitation(@RequestBody Map<String, String> request) {
++        return ResponseEntity.ok(coordinator.sendInvitation(request));
++    }
++}
+--- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/UserInvitationWorker.java
++++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/UserInvitationWorker.java
+@@ -0,0 +1,29 @@
++package com.tradeflow.worker.feature;
++
++import com.tradeflow.application.feature.UserInvitationCoordinator;
++import com.tradeflow.worker.WorkerMarker;
++import java.util.Map;
++import org.springframework.stereotype.Component;
++
++@Component
++public final class UserInvitationWorker implements WorkerMarker {
++    private final UserInvitationCoordinator coordinator;
++
++    public UserInvitationWorker(UserInvitationCoordinator coordinator) {
++        this.coordinator = coordinator;
++    }
++
++    public Object execute(String operation, Map<String, String> payload) {
++        return switch (operation) {
++            case "one" -> coordinator.inviteTenantMember(payload);
++            case "two" -> coordinator.inviteWithRoleCheck(payload);
++            case "three" -> coordinator.sendInvitation(payload);
++            default -> throw new IllegalArgumentException("unknown operation");
++        };
++    }
++
++    @Override
++    public String workerName() {
++        return "user-invitation";
++    }
++}

@@ -1,0 +1,5 @@
+spring:
+  application:
+    name: tradeflow
+server:
+  port: 8080

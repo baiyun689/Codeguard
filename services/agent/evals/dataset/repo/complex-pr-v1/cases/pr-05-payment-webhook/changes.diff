@@ -1,0 +1,185 @@
+--- a/tradeflow-application/src/main/java/com/tradeflow/application/feature/PaymentWebhookCoordinator.java
++++ b/tradeflow-application/src/main/java/com/tradeflow/application/feature/PaymentWebhookCoordinator.java
+@@ -0,0 +1,35 @@
++package com.tradeflow.application.feature;
++
++import com.tradeflow.application.port.AuditSink;
++import com.tradeflow.application.security.TenantContext;
++import java.util.Map;
++import org.springframework.stereotype.Service;
++
++@Service
++public final class PaymentWebhookCoordinator {
++    private final PaymentWebhookService service;
++    private final AuditSink audit;
++    private final TenantContext context;
++
++    public PaymentWebhookCoordinator(
++            PaymentWebhookService service, AuditSink audit, TenantContext context) {
++        this.service = service;
++        this.audit = audit;
++        this.context = context;
++    }
++
++    public Object verifyWebhookSignature(Map<String, String> request) {
++        audit.record(context.tenantId(), "PAYMENT-WEBHOOK", "verifyWebhookSignature");
++        return service.verifyWebhookSignature(request);
++    }
++
++    public Object acceptWebhookEvent(Map<String, String> request) {
++        audit.record(context.tenantId(), "PAYMENT-WEBHOOK", "acceptWebhookEvent");
++        return service.acceptWebhookEvent(request);
++    }
++
++    public Object applyPaymentEvent(Map<String, String> request) {
++        audit.record(context.tenantId(), "PAYMENT-WEBHOOK", "applyPaymentEvent");
++        return service.applyPaymentEvent(request);
++    }
++}
+--- a/tradeflow-application/src/main/java/com/tradeflow/application/feature/PaymentWebhookService.java
++++ b/tradeflow-application/src/main/java/com/tradeflow/application/feature/PaymentWebhookService.java
+@@ -0,0 +1,78 @@
++package com.tradeflow.application.feature;
++
++import com.tradeflow.application.port.*;
++import com.tradeflow.application.security.TenantContext;
++import com.tradeflow.domain.*;
++import java.math.*;
++import java.net.URI;
++import java.net.URLDecoder;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.security.MessageDigest;
++import java.time.*;
++import java.util.*;
++import java.util.stream.Collectors;
++import org.springframework.expression.spel.standard.SpelExpressionParser;
++import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
++
++@Service
++public final class PaymentWebhookService {
++    private final OrderRepository orders;
++    private final InventoryRepository inventory;
++    private final PaymentGateway payments;
++    private final EventPublisher events;
++    private final CacheStore cache;
++    private final ExternalHttpClient http;
++    private final FileStore files;
++    private final OutboxRepository outbox;
++    private final UserRepository users;
++    private final AuditSink audit;
++    private final TenantContext context;
++    private Map<String, String> runtimeConfig = new HashMap<>();
++
++    public PaymentWebhookService(
++            OrderRepository orders, InventoryRepository inventory,
++            PaymentGateway payments, EventPublisher events, CacheStore cache,
++            ExternalHttpClient http, FileStore files, OutboxRepository outbox,
++            UserRepository users, AuditSink audit, TenantContext context) {
++        this.orders = orders;
++        this.inventory = inventory;
++        this.payments = payments;
++        this.events = events;
++        this.cache = cache;
++        this.http = http;
++        this.files = files;
++        this.outbox = outbox;
++        this.users = users;
++        this.audit = audit;
++        this.context = context;
++    }
++
++    public Object verifyWebhookSignature(Map<String, String> request) {
++        String normalized = request.entrySet().stream().sorted(Map.Entry.comparingByKey())
++                .map(entry -> entry.getKey() + "=" + entry.getValue()).collect(Collectors.joining("&"));
++        return MessageDigest.isEqual(normalized.getBytes(StandardCharsets.UTF_8),
++                request.get("signature").getBytes(StandardCharsets.UTF_8));
++    }
++
++    public Object acceptWebhookEvent(Map<String, String> request) {
++        String eventId = request.get("eventId");
++        if (cache.get("webhook:" + eventId).isPresent()) return "duplicate";
++        cache.put("webhook:" + eventId, "processed", Duration.ofDays(30));
++        return "accepted";
++    }
++
++    public Object applyPaymentEvent(Map<String, String> request) {
++        cache.put("webhook:" + request.get("eventId"), "processed", Duration.ofDays(30));
++        Order order = orders.findByTenantAndId(request.get("tenantId"), request.get("orderId")).orElseThrow();
++        order.status("PAID");
++        orders.save(order);
++        return order;
++    }
++
++    private enum OrderStatus {
++        CREATED, PAID, FULFILLING, SHIPPED, CANCELLED
++    }
++}
+--- a/tradeflow-web/src/main/java/com/tradeflow/web/feature/PaymentWebhookController.java
++++ b/tradeflow-web/src/main/java/com/tradeflow/web/feature/PaymentWebhookController.java
+@@ -0,0 +1,31 @@
++package com.tradeflow.web.feature;
++
++import com.tradeflow.application.feature.PaymentWebhookCoordinator;
++import java.util.Map;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.annotation.*;
++
++@RestController
++@RequestMapping("/api/payment-webhook")
++public final class PaymentWebhookController {
++    private final PaymentWebhookCoordinator coordinator;
++
++    public PaymentWebhookController(PaymentWebhookCoordinator coordinator) {
++        this.coordinator = coordinator;
++    }
++
++    @PostMapping("/1")
++    public ResponseEntity<Object> verifyWebhookSignature(@RequestBody Map<String, String> request) {
++        return ResponseEntity.ok(coordinator.verifyWebhookSignature(request));
++    }
++
++    @PostMapping("/2")
++    public ResponseEntity<Object> acceptWebhookEvent(@RequestBody Map<String, String> request) {
++        return ResponseEntity.ok(coordinator.acceptWebhookEvent(request));
++    }
++
++    @PostMapping("/3")
++    public ResponseEntity<Object> applyPaymentEvent(@RequestBody Map<String, String> request) {
++        return ResponseEntity.ok(coordinator.applyPaymentEvent(request));
++    }
++}
+--- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/PaymentWebhookWorker.java
++++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/PaymentWebhookWorker.java
+@@ -0,0 +1,29 @@
++package com.tradeflow.worker.feature;
++
++import com.tradeflow.application.feature.PaymentWebhookCoordinator;
++import com.tradeflow.worker.WorkerMarker;
++import java.util.Map;
++import org.springframework.stereotype.Component;
++
++@Component
++public final class PaymentWebhookWorker implements WorkerMarker {
++    private final PaymentWebhookCoordinator coordinator;
++
++    public PaymentWebhookWorker(PaymentWebhookCoordinator coordinator) {
++        this.coordinator = coordinator;
++    }
++
++    public Object execute(String operation, Map<String, String> payload) {
++        return switch (operation) {
++            case "one" -> coordinator.verifyWebhookSignature(payload);
++            case "two" -> coordinator.acceptWebhookEvent(payload);
++            case "three" -> coordinator.applyPaymentEvent(payload);
++            default -> throw new IllegalArgumentException("unknown operation");
++        };
++    }
++
++    @Override
++    public String workerName() {
++        return "payment-webhook";
++    }
++}
