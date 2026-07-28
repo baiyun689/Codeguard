@@ -7,6 +7,10 @@ Compatibility: old policy_for(), factor_is_proven(), and resolve_severity(tag, .
 are kept as deprecated adapters that delegate to the old policy data.
 """
 
+# Phase 4: The primary severity resolution path is resolve_severity(impact, rubric).
+# Old tag-based policy_for() and _resolve_severity_legacy() are deprecated
+# compatibility adapters. LEVELS dict is kept only for legacy callers.
+
 from __future__ import annotations
 
 import warnings
