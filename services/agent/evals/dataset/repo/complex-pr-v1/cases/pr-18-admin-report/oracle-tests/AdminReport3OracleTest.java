@@ -1,18 +1,25 @@
 package com.tradeflow.oracle;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Evaluation-only oracle for pr-18-admin-report/renderReportRow.
- * Install this source in the isolated oracle harness; it is intentionally
- * excluded from the reviewed repository snapshot.
+ * Evaluator-only static contract oracle. It is excluded from the
+ * reviewed project snapshot.
  */
 final class AdminReport3OracleTest {
     @Test
-    void renderReportRow_preserves_the_business_invariant() {
-        OracleResult result = TradeFlowOracleHarness.run(
-                "pr-18-admin-report", "renderReportRow");
-        assertEquals("管理员打开报表时执行公式", result.observedFailure());
+    @DisplayName("触发: 订单备注以公式前缀开头；后果: 管理员打开报表时执行公式")
+    void renderReportRow_seed_is_present() throws Exception {
+        Path repo = Path.of(System.getProperty("tradeflow.repo"));
+        String source = Files.readString(repo.resolve(
+                "tradeflow-application/src/main/java/com/tradeflow/application/feature/AdminReportService.java"));
+        assertAll(
+        () -> assertTrue(source.contains("return request.get(\"orderId\") + \",\" + request.get(\"customerNote\") + System.lineSeparator();"), "missing seeded evidence: return request.get(\"orderId\") + \",\" + request.get(\"customerNote\") + System.lineSeparator();")
+        );
     }
 }

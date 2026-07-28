@@ -132,24 +132,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/load-product")
 +    public ResponseEntity<Object> loadProduct(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.loadProduct(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/update-product")
 +    public ResponseEntity<Object> updateProduct(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.updateProduct(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/create-product")
 +    public ResponseEntity<Object> createProduct(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.createProduct(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/ProductCacheWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/ProductCacheWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.ProductCacheCoordinator;
@@ -167,9 +167,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.loadProduct(payload);
-+            case "two" -> coordinator.updateProduct(payload);
-+            case "three" -> coordinator.createProduct(payload);
++            case "load-product" ->
++                    coordinator.loadProduct(payload);
++            case "update-product" ->
++                    coordinator.updateProduct(payload);
++            case "create-product" ->
++                    coordinator.createProduct(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

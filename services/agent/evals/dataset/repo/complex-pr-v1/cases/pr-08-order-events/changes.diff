@@ -141,24 +141,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/change-order-status")
 +    public ResponseEntity<Object> changeOrderStatus(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.changeOrderStatus(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/consume-order-event")
 +    public ResponseEntity<Object> consumeOrderEvent(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.consumeOrderEvent(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/apply-versioned-event")
 +    public ResponseEntity<Object> applyVersionedEvent(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.applyVersionedEvent(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/OrderEventsWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/OrderEventsWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.OrderEventsCoordinator;
@@ -176,9 +176,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.changeOrderStatus(payload);
-+            case "two" -> coordinator.consumeOrderEvent(payload);
-+            case "three" -> coordinator.applyVersionedEvent(payload);
++            case "change-order-status" ->
++                    coordinator.changeOrderStatus(payload);
++            case "consume-order-event" ->
++                    coordinator.consumeOrderEvent(payload);
++            case "apply-versioned-event" ->
++                    coordinator.applyVersionedEvent(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

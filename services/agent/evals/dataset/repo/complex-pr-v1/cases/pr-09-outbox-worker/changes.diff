@@ -134,24 +134,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/deliver-ready-events")
 +    public ResponseEntity<Object> deliverReadyEvents(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.deliverReadyEvents(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/deliver-one-event")
 +    public ResponseEntity<Object> deliverOneEvent(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.deliverOneEvent(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/schedule-retry")
 +    public ResponseEntity<Object> scheduleRetry(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.scheduleRetry(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/OutboxDeliveryWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/OutboxDeliveryWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.OutboxDeliveryCoordinator;
@@ -169,9 +169,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.deliverReadyEvents(payload);
-+            case "two" -> coordinator.deliverOneEvent(payload);
-+            case "three" -> coordinator.scheduleRetry(payload);
++            case "deliver-ready-events" ->
++                    coordinator.deliverReadyEvents(payload);
++            case "deliver-one-event" ->
++                    coordinator.deliverOneEvent(payload);
++            case "schedule-retry" ->
++                    coordinator.scheduleRetry(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

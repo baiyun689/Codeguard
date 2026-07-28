@@ -9,6 +9,7 @@ issues:
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/CONCURRENCY_CONSISTENCY
   risk_coverage: exact
@@ -25,16 +26,19 @@ issues:
   - InventoryReservationController.reserveStock
   - InventoryReservationCoordinator.reserveStock
   - InventoryReservationService.reserveStock
-  - OrderRepository.saveIfVersion
+  - InventoryRepository.findBySku
+  - InventoryRepository.save
   evidence_anchors:
   - InventoryReservationService.reserveStock
-  - OrderRepository.saveIfVersion
+  - InventoryRepository.findBySku
+  - InventoryRepository.save
   fix_location: InventoryReservationService.reserveStock
   fix_action: 使用 reserveIfAvailable 条件更新并检查影响行数
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 可用库存变为负数并产生无法履约订单
   oracle_test: InventoryReservation1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -46,6 +50,7 @@ issues:
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/CONCURRENCY_CONSISTENCY
   risk_coverage: exact
@@ -62,16 +67,19 @@ issues:
   - InventoryReservationController.reserveWithLocalLock
   - InventoryReservationCoordinator.reserveWithLocalLock
   - InventoryReservationService.reserveWithLocalLock
-  - OrderRepository.saveIfVersion
+  - InventoryRepository.findBySku
+  - InventoryRepository.save
   evidence_anchors:
   - InventoryReservationService.reserveWithLocalLock
-  - OrderRepository.saveIfVersion
+  - InventoryRepository.findBySku
+  - InventoryRepository.save
   fix_location: InventoryReservationService.reserveWithLocalLock
   fix_action: 使用数据库锁、按 SKU 共享锁或原子条件更新
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 临界区实际并未串行化
   oracle_test: InventoryReservation2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -83,6 +91,7 @@ issues:
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/IDEMPOTENCY_RETRY
   risk_coverage: exact
@@ -99,16 +108,21 @@ issues:
   - InventoryReservationController.releaseExpiredReservation
   - InventoryReservationCoordinator.releaseExpiredReservation
   - InventoryReservationService.releaseExpiredReservation
-  - CacheStore.put
+  - InventoryRepository.findBySku
+  - InventoryRepository.save
+  - EventPublisher.publish
   evidence_anchors:
   - InventoryReservationService.releaseExpiredReservation
-  - CacheStore.put
+  - InventoryRepository.findBySku
+  - InventoryRepository.save
+  - EventPublisher.publish
   fix_location: InventoryReservationService.releaseExpiredReservation
   fix_action: 用 reservationId 和状态条件实现幂等释放
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 库存被多次增加
   oracle_test: InventoryReservation3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

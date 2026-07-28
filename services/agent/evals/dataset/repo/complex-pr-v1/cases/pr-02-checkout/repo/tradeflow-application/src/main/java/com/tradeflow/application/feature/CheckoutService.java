@@ -50,7 +50,7 @@ public final class CheckoutService {
         this.context = context;
     }
 
-    public Object uncompensatedCharge(Map<String, String> request) {
+    public Object placeOrder(Map<String, String> request) {
         Order order = orders.findByTenantAndId(context.tenantId(), request.get("orderId")).orElseThrow();
         String paymentId = payments.charge(context.tenantId(), order.id(), order.total(), request.get("requestId"));
         InventoryItem item = inventory.findBySku(request.get("sku")).orElseThrow();
@@ -60,7 +60,7 @@ public final class CheckoutService {
         return paymentId;
     }
 
-    public Object localTransaction(Map<String, String> request) {
+    public Object completeCheckout(Map<String, String> request) {
         return persistCheckout(request);
     }
 
@@ -69,10 +69,13 @@ public final class CheckoutService {
         Order order = orders.findByTenantAndId(context.tenantId(), request.get("orderId")).orElseThrow();
         order.status("PAID");
         orders.save(order);
+        outbox.save(new OutboxEvent(
+                UUID.randomUUID().toString(), order.id(), order.version(),
+                "CHECKOUT_COMPLETED", "PENDING", 0, Instant.now()));
         return order;
     }
 
-    public Object sharedIdempotency(Map<String, String> request) {
+    public Object submitPayment(Map<String, String> request) {
         String key = "checkout:" + request.get("requestId");
         return cache.get(key).orElseGet(() -> {
             String result = payments.charge(context.tenantId(), request.get("orderId"),

@@ -10,6 +10,7 @@ issues:
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: threat_model
   required_knowledge:
   - threat_model/AUTHORIZATION
   - behavior/AUTHORIZATION
@@ -27,16 +28,21 @@ issues:
   - UserInvitationController.inviteTenantMember
   - UserInvitationCoordinator.inviteTenantMember
   - UserInvitationService.inviteTenantMember
-  - OrderRepository.findByTenantAndId
+  - UserRepository.findById
+  - UserRepository.save
+  - TenantContext.tenantId
   evidence_anchors:
   - UserInvitationService.inviteTenantMember
-  - OrderRepository.findByTenantAndId
+  - UserRepository.findById
+  - UserRepository.save
+  - TenantContext.tenantId
   fix_location: UserInvitationService.inviteTenantMember
   fix_action: 所有邀请查询绑定可信 tenantId
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 跨租户创建或修改成员
   oracle_test: UserInvitation1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -50,6 +56,7 @@ issues:
   expected_reviewers:
   - behavior
   - threat_model
+  primary_reviewer: threat_model
   required_knowledge:
   - behavior/CONCURRENCY_CONSISTENCY
   - behavior/AUTHORIZATION
@@ -68,27 +75,35 @@ issues:
   - UserInvitationController.inviteWithRoleCheck
   - UserInvitationCoordinator.inviteWithRoleCheck
   - UserInvitationService.inviteWithRoleCheck
-  - OrderRepository.saveIfVersion
+  - UserRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - TenantContext.userId
+  - UserRepository.save
   evidence_anchors:
   - UserInvitationService.inviteWithRoleCheck
-  - OrderRepository.saveIfVersion
+  - UserRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - TenantContext.userId
+  - UserRepository.save
   fix_location: UserInvitationService.inviteWithRoleCheck
   fix_action: 在同一原子边界校验角色版本并写入
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 已撤权主体仍能创建高权限邀请
   oracle_test: UserInvitation2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-11-user-invitation-issue-3
   title: 提交前发送外部邀请
-  dimension: security
+  dimension: logic
   primary_risk_tag: TRANSACTION_ATOMICITY
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/TRANSACTION_ATOMICITY
   risk_coverage: exact
@@ -105,16 +120,21 @@ issues:
   - UserInvitationController.sendInvitation
   - UserInvitationCoordinator.sendInvitation
   - UserInvitationService.sendInvitation
-  - OrderRepository.save
+  - EventPublisher.publish
+  - TenantContext.tenantId
+  - UserRepository.save
   evidence_anchors:
   - UserInvitationService.sendInvitation
-  - OrderRepository.save
+  - EventPublisher.publish
+  - TenantContext.tenantId
+  - UserRepository.save
   fix_location: UserInvitationService.sendInvitation
   fix_action: 提交后 outbox 发送并支持幂等兑换
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 收件人得到无法兑换的幽灵邀请
   oracle_test: UserInvitation3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

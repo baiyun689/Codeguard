@@ -4,12 +4,13 @@ baseline: tradeflow-clean-v1
 issues:
 - id: pr-19-order-state-machine-issue-1
   title: 状态 ordinal 比较允许非法跳转
-  dimension: logic
+  dimension: quality
   primary_risk_tag: API_CONTRACT
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
   - maintainability
+  primary_reviewer: maintainability
   required_knowledge:
   - behavior/API_CONTRACT
   - maintainability/API_CONTRACT
@@ -27,16 +28,21 @@ issues:
   - OrderStateMachineController.transitionOrder
   - OrderStateMachineCoordinator.transitionOrder
   - OrderStateMachineService.transitionOrder
-  - domain invariant
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - OrderRepository.save
   evidence_anchors:
   - OrderStateMachineService.transitionOrder
-  - domain invariant
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - OrderRepository.save
   fix_location: OrderStateMachineService.transitionOrder
   fix_action: 在领域状态机显式列出允许边
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 已终止订单重新进入履约
   oracle_test: OrderStateMachine1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -50,6 +56,7 @@ issues:
   expected_reviewers:
   - behavior
   - maintainability
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/CONCURRENCY_CONSISTENCY
   - behavior/API_CONTRACT
@@ -68,16 +75,21 @@ issues:
   - OrderStateMachineController.mapOrderUpdate
   - OrderStateMachineCoordinator.mapOrderUpdate
   - OrderStateMachineService.mapOrderUpdate
-  - OrderRepository.saveIfVersion
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - OrderRepository.save
   evidence_anchors:
   - OrderStateMachineService.mapOrderUpdate
-  - OrderRepository.saveIfVersion
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - OrderRepository.save
   fix_location: OrderStateMachineService.mapOrderUpdate
   fix_action: 保留版本并使用 saveIfVersion 检查冲突
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 覆盖另一请求已提交的状态
   oracle_test: OrderStateMachine2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -90,6 +102,7 @@ issues:
   - CONCURRENCY_CONSISTENCY
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/MESSAGE_DELIVERY
   - behavior/CONCURRENCY_CONSISTENCY
@@ -107,9 +120,15 @@ issues:
   - OrderStateMachineController.publishCompensation
   - OrderStateMachineCoordinator.publishCompensation
   - OrderStateMachineService.publishCompensation
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - OrderRepository.save
   - EventPublisher.publish
   evidence_anchors:
   - OrderStateMachineService.publishCompensation
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - OrderRepository.save
   - EventPublisher.publish
   fix_location: OrderStateMachineService.publishCompensation
   fix_action: 事件明确携带 causationVersion 和新 aggregateVersion
@@ -117,6 +136,7 @@ issues:
   severity: WARNING
   severity_rationale: 补偿被当成后续新事件并覆盖正确状态
   oracle_test: OrderStateMachine3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

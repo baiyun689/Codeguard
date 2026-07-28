@@ -14,18 +14,18 @@ public final class CheckoutController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
-    public ResponseEntity<Object> uncompensatedCharge(@RequestBody Map<String, String> request) {
-        return ResponseEntity.ok(coordinator.uncompensatedCharge(request));
+    @PostMapping("/place-order")
+    public ResponseEntity<Object> placeOrder(@RequestBody Map<String, String> request) {
+        return ResponseEntity.ok(coordinator.placeOrder(request));
     }
 
-    @PostMapping("/2")
-    public ResponseEntity<Object> localTransaction(@RequestBody Map<String, String> request) {
-        return ResponseEntity.ok(coordinator.localTransaction(request));
+    @PostMapping("/complete-checkout")
+    public ResponseEntity<Object> completeCheckout(@RequestBody Map<String, String> request) {
+        return ResponseEntity.ok(coordinator.completeCheckout(request));
     }
 
-    @PostMapping("/3")
-    public ResponseEntity<Object> sharedIdempotency(@RequestBody Map<String, String> request) {
-        return ResponseEntity.ok(coordinator.sharedIdempotency(request));
+    @PostMapping("/submit-payment")
+    public ResponseEntity<Object> submitPayment(@RequestBody Map<String, String> request) {
+        return ResponseEntity.ok(coordinator.submitPayment(request));
     }
 }

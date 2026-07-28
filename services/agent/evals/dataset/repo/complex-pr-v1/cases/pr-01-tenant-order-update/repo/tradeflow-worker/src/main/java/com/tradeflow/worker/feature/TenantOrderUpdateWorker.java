@@ -15,9 +15,12 @@ public final class TenantOrderUpdateWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.tenantLookup(payload);
-            case "two" -> coordinator.mutableProjection(payload);
-            case "three" -> coordinator.prematureAudit(payload);
+            case "update-order" ->
+                    coordinator.updateOrder(payload);
+            case "apply-order-changes" ->
+                    coordinator.applyOrderChanges(payload);
+            case "record-order-update" ->
+                    coordinator.recordOrderUpdate(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

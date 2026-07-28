@@ -15,9 +15,12 @@ public final class BulkImportWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.resolveArchiveEntry(payload);
-            case "two" -> coordinator.importRows(payload);
-            case "three" -> coordinator.renderImportError(payload);
+            case "resolve-archive-entry" ->
+                    coordinator.resolveArchiveEntry(payload);
+            case "import-rows" ->
+                    coordinator.importRows(payload);
+            case "render-import-error" ->
+                    coordinator.renderImportError(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

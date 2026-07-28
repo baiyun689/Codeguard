@@ -10,19 +10,22 @@ expected:
 - id: pr-18-admin-report-issue-1
   type_keywords:
   - 报表
-  - 鉴权
-  - 异步
+  - 租户
+  - 越权
   file: AdminReportService.java
   line: 54
   tolerance: 5
   severity: CRITICAL
-  note: 异步报表路径绕过管理员鉴权
-  root_cause: 鉴权仅位于 Controller，worker 公开调用同一服务时无等价检查
+  note: 报表导出信任请求租户
+  root_cause: 查询租户直接取自可控请求而非可信身份上下文
   risk_tag: AUTHORIZATION
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - AdminReportController
   - AdminReportCoordinator
   - AdminReportService.runScheduledExport
+  - OrderRepository.search
 - id: pr-18-admin-report-issue-2
   type_keywords:
   - 报表
@@ -35,10 +38,14 @@ expected:
   note: 报表全量加载导致内存放大
   root_cause: 先 findAll 再在内存分页和序列化
   risk_tag: PERFORMANCE
+  primary_reviewer: maintainability
+  dimension: quality
   evidence_anchors:
   - AdminReportController
   - AdminReportCoordinator
   - AdminReportService.renderFullReport
+  - OrderRepository.search
+  - TenantContext.tenantId
 - id: pr-18-admin-report-issue-3
   type_keywords:
   - CSV注入
@@ -51,6 +58,8 @@ expected:
   note: 报表字段未防 CSV 注入
   root_cause: 用户字段直接写入电子表格可执行单元格
   risk_tag: INJECTION
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - AdminReportController
   - AdminReportCoordinator

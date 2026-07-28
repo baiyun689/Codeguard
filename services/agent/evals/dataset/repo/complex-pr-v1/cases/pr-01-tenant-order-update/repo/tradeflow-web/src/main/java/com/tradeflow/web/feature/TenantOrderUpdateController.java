@@ -14,18 +14,18 @@ public final class TenantOrderUpdateController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
-    public ResponseEntity<Object> tenantLookup(@RequestBody Map<String, String> request) {
-        return ResponseEntity.ok(coordinator.tenantLookup(request));
+    @PostMapping("/update-order")
+    public ResponseEntity<Object> updateOrder(@RequestBody Map<String, String> request) {
+        return ResponseEntity.ok(coordinator.updateOrder(request));
     }
 
-    @PostMapping("/2")
-    public ResponseEntity<Object> mutableProjection(@RequestBody Map<String, String> request) {
-        return ResponseEntity.ok(coordinator.mutableProjection(request));
+    @PostMapping("/apply-order-changes")
+    public ResponseEntity<Object> applyOrderChanges(@RequestBody Map<String, String> request) {
+        return ResponseEntity.ok(coordinator.applyOrderChanges(request));
     }
 
-    @PostMapping("/3")
-    public ResponseEntity<Object> prematureAudit(@RequestBody Map<String, String> request) {
-        return ResponseEntity.ok(coordinator.prematureAudit(request));
+    @PostMapping("/record-order-update")
+    public ResponseEntity<Object> recordOrderUpdate(@RequestBody Map<String, String> request) {
+        return ResponseEntity.ok(coordinator.recordOrderUpdate(request));
     }
 }

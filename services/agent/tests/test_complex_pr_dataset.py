@@ -33,6 +33,23 @@ BANNED_REVIEW_HINTS = {
     "unsafe",
     "故意",
     "这里有问题",
+    "uncompensated",
+    "premature",
+    "sharedidempotency",
+    "localtransaction",
+}
+ANCHOR_FIELDS = {
+    "OrderRepository": "orders",
+    "InventoryRepository": "inventory",
+    "PaymentGateway": "payments",
+    "EventPublisher": "events",
+    "CacheStore": "cache",
+    "ExternalHttpClient": "http",
+    "FileStore": "files",
+    "OutboxRepository": "outbox",
+    "UserRepository": "users",
+    "AuditSink": "audit",
+    "TenantContext": "context",
 }
 
 
@@ -51,6 +68,7 @@ def test_complex_pr_dataset_is_a_complete_twenty_pr_benchmark() -> None:
     assert len(case_dirs) == 20
 
     coverage_counts: Counter[str] = Counter()
+    primary_reviewers: Counter[str] = Counter()
     routing_hazards = 0
     knowledge_root = (
         Path(__file__).resolve().parents[1]
@@ -75,6 +93,7 @@ def test_complex_pr_dataset_is_a_complete_twenty_pr_benchmark() -> None:
         assert truth["case_id"] == case["id"]
         assert len(truth["issues"]) == 3
         assert len(oracle_tests) == 3
+        assert (case_dir / "oracle-tests" / "pom.xml").is_file()
         assert (case_dir / "changes.diff").stat().st_size > 0
         assert (repo / "pom.xml").is_file()
         assert not (repo / "ground-truth.yaml").exists()
@@ -112,6 +131,12 @@ def test_complex_pr_dataset_is_a_complete_twenty_pr_benchmark() -> None:
             assert issue["primary_risk_tag"] in valid_tags
             assert set(issue["secondary_risk_tags"]) <= valid_tags
             assert issue["expected_reviewers"]
+            assert issue["primary_reviewer"] in issue["expected_reviewers"]
+            assert issue["dimension"] == {
+                "threat_model": "security",
+                "behavior": "logic",
+                "maintainability": "quality",
+            }[issue["primary_reviewer"]]
             assert issue["required_knowledge"]
             assert len(issue["call_path"]) >= 3
             assert issue["trigger"]
@@ -126,6 +151,21 @@ def test_complex_pr_dataset_is_a_complete_twenty_pr_benchmark() -> None:
             source_lines = source.read_text(encoding="utf-8").splitlines()
             assert 0 < issue["line"] <= len(source_lines)
             assert issue["oracle_test"] in {path.name for path in oracle_tests}
+            oracle_text = (
+                case_dir / "oracle-tests" / issue["oracle_test"]
+            ).read_text(encoding="utf-8")
+            assert "TradeFlowOracleHarness" not in oracle_text
+            assert issue["trigger"] in oracle_text
+            assert issue["observable_consequence"] in oracle_text
+            assert issue["oracle_mode"] == "executable-static-contract"
+            source_text = source.read_text(encoding="utf-8")
+            for anchor in issue["evidence_anchors"]:
+                owner, operation = anchor.rsplit(".", maxsplit=1)
+                field = ANCHOR_FIELDS.get(owner)
+                if field:
+                    assert f"{field}.{operation}(" in source_text
+                elif owner.endswith("Service"):
+                    assert f" {operation}(" in source_text
             for fragment in issue["required_knowledge"]:
                 domain, tag = fragment.split("/", maxsplit=1)
                 if tag == "GENERAL_REVIEW":
@@ -138,7 +178,11 @@ def test_complex_pr_dataset_is_a_complete_twenty_pr_benchmark() -> None:
                 assert issue["taxonomy_gap"] is None
 
             coverage_counts[issue["risk_coverage"]] += 1
+            primary_reviewers[issue["primary_reviewer"]] += 1
             routing_hazards += int(issue["routing_hazard"])
 
     assert coverage_counts == Counter(exact=36, composite=16, gap=8)
+    assert primary_reviewers == Counter(
+        behavior=34, threat_model=18, maintainability=8
+    )
     assert routing_hazards >= 10

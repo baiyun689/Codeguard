@@ -139,24 +139,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/transition-order")
 +    public ResponseEntity<Object> transitionOrder(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.transitionOrder(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/map-order-update")
 +    public ResponseEntity<Object> mapOrderUpdate(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.mapOrderUpdate(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/publish-compensation")
 +    public ResponseEntity<Object> publishCompensation(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.publishCompensation(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/OrderStateMachineWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/OrderStateMachineWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.OrderStateMachineCoordinator;
@@ -174,9 +174,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.transitionOrder(payload);
-+            case "two" -> coordinator.mapOrderUpdate(payload);
-+            case "three" -> coordinator.publishCompensation(payload);
++            case "transition-order" ->
++                    coordinator.transitionOrder(payload);
++            case "map-order-update" ->
++                    coordinator.mapOrderUpdate(payload);
++            case "publish-compensation" ->
++                    coordinator.publishCompensation(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

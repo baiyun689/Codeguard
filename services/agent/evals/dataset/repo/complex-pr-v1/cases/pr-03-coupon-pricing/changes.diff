@@ -136,24 +136,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/calculate-combined-discount")
 +    public ResponseEntity<Object> calculateCombinedDiscount(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.calculateCombinedDiscount(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/apply-coupon-rules")
 +    public ResponseEntity<Object> applyCouponRules(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.applyCouponRules(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/load-customer-price")
 +    public ResponseEntity<Object> loadCustomerPrice(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.loadCustomerPrice(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/CouponPricingWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/CouponPricingWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.CouponPricingCoordinator;
@@ -171,9 +171,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.calculateCombinedDiscount(payload);
-+            case "two" -> coordinator.applyCouponRules(payload);
-+            case "three" -> coordinator.loadCustomerPrice(payload);
++            case "calculate-combined-discount" ->
++                    coordinator.calculateCombinedDiscount(payload);
++            case "apply-coupon-rules" ->
++                    coordinator.applyCouponRules(payload);
++            case "load-customer-price" ->
++                    coordinator.loadCustomerPrice(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

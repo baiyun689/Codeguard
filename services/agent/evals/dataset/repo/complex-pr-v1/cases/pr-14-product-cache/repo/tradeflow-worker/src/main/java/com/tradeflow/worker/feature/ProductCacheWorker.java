@@ -15,9 +15,12 @@ public final class ProductCacheWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.loadProduct(payload);
-            case "two" -> coordinator.updateProduct(payload);
-            case "three" -> coordinator.createProduct(payload);
+            case "load-product" ->
+                    coordinator.loadProduct(payload);
+            case "update-product" ->
+                    coordinator.updateProduct(payload);
+            case "create-product" ->
+                    coordinator.createProduct(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

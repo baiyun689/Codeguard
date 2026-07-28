@@ -10,6 +10,7 @@ issues:
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: threat_model
   required_knowledge:
   - threat_model/SSRF_OUTBOUND
   - behavior/SSRF_OUTBOUND
@@ -27,27 +28,29 @@ issues:
   - JwtKeyRotationController.loadSigningKey
   - JwtKeyRotationCoordinator.loadSigningKey
   - JwtKeyRotationService.loadSigningKey
-  - ExternalHttpClient.post
+  - ExternalHttpClient.get
   evidence_anchors:
   - JwtKeyRotationService.loadSigningKey
-  - ExternalHttpClient.post
+  - ExternalHttpClient.get
   fix_location: JwtKeyRotationService.loadSigningKey
   fix_action: kid 只能映射预配置 issuer 的本地 key set
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 服务访问内网或云元数据地址
   oracle_test: JwtKeyRotation1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-07-jwt-key-rotation-issue-2
   title: JWT 过期时间单位比较错误
-  dimension: security
+  dimension: logic
   primary_risk_tag: IDEMPOTENCY_RETRY
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/IDEMPOTENCY_RETRY
   risk_coverage: gap
@@ -64,16 +67,15 @@ issues:
   - JwtKeyRotationController.isTokenActive
   - JwtKeyRotationCoordinator.isTokenActive
   - JwtKeyRotationService.isTokenActive
-  - CacheStore.put
   evidence_anchors:
   - JwtKeyRotationService.isTokenActive
-  - CacheStore.put
   fix_location: JwtKeyRotationService.isTokenActive
   fix_action: 使用 Instant 并明确 epoch 单位
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 凭据有效期被错误延长或全部被拒绝
   oracle_test: JwtKeyRotation2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -87,6 +89,7 @@ issues:
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: threat_model
   required_knowledge:
   - behavior/CACHE_CONSISTENCY
   risk_coverage: exact
@@ -104,15 +107,18 @@ issues:
   - JwtKeyRotationCoordinator.loadTenantRoles
   - JwtKeyRotationService.loadTenantRoles
   - CacheStore.get
+  - CacheStore.put
   evidence_anchors:
   - JwtKeyRotationService.loadTenantRoles
   - CacheStore.get
+  - CacheStore.put
   fix_location: JwtKeyRotationService.loadTenantRoles
   fix_action: 缓存键包含 issuer、tenant 和 subject
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 低权限租户继承另一租户角色
   oracle_test: JwtKeyRotation3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

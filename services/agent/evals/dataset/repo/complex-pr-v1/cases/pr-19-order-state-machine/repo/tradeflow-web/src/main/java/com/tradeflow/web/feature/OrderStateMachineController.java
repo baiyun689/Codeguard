@@ -14,17 +14,17 @@ public final class OrderStateMachineController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/transition-order")
     public ResponseEntity<Object> transitionOrder(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.transitionOrder(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/map-order-update")
     public ResponseEntity<Object> mapOrderUpdate(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.mapOrderUpdate(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/publish-compensation")
     public ResponseEntity<Object> publishCompensation(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.publishCompensation(request));
     }

@@ -4,12 +4,13 @@ baseline: tradeflow-clean-v1
 issues:
 - id: pr-10-refund-flow-issue-1
   title: 退款额度使用原始金额校验
-  dimension: logic
+  dimension: quality
   primary_risk_tag: API_CONTRACT
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
   - maintainability
+  primary_reviewer: maintainability
   required_knowledge:
   - behavior/API_CONTRACT
   - maintainability/API_CONTRACT
@@ -27,16 +28,21 @@ issues:
   - RefundFlowController.refundAgainstOrder
   - RefundFlowCoordinator.refundAgainstOrder
   - RefundFlowService.refundAgainstOrder
-  - domain invariant
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - PaymentGateway.refund
   evidence_anchors:
   - RefundFlowService.refundAgainstOrder
-  - domain invariant
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - PaymentGateway.refund
   fix_location: RefundFlowService.refundAgainstOrder
   fix_action: 在聚合内维护剩余额度并原子扣减
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 累计退款超过实际支付金额
   oracle_test: RefundFlow1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -48,6 +54,7 @@ issues:
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/CONCURRENCY_CONSISTENCY
   risk_coverage: exact
@@ -64,28 +71,36 @@ issues:
   - RefundFlowController.refundRemainingAmount
   - RefundFlowCoordinator.refundRemainingAmount
   - RefundFlowService.refundRemainingAmount
-  - OrderRepository.saveIfVersion
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - OrderRepository.save
+  - PaymentGateway.refund
   evidence_anchors:
   - RefundFlowService.refundRemainingAmount
-  - OrderRepository.saveIfVersion
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - OrderRepository.save
+  - PaymentGateway.refund
   fix_location: RefundFlowService.refundRemainingAmount
   fix_action: 使用乐观锁或原子条件扣减并处理冲突
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 重复退款造成资金损失
   oracle_test: RefundFlow2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-10-refund-flow-issue-3
   title: 币种换算发生两次舍入
-  dimension: logic
+  dimension: quality
   primary_risk_tag: API_CONTRACT
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
   - maintainability
+  primary_reviewer: maintainability
   required_knowledge:
   - behavior/API_CONTRACT
   - maintainability/API_CONTRACT
@@ -103,16 +118,17 @@ issues:
   - RefundFlowController.refundConvertedAmount
   - RefundFlowCoordinator.refundConvertedAmount
   - RefundFlowService.refundConvertedAmount
-  - domain invariant
+  - PaymentGateway.refund
   evidence_anchors:
   - RefundFlowService.refundConvertedAmount
-  - domain invariant
+  - PaymentGateway.refund
   fix_location: RefundFlowService.refundConvertedAmount
   fix_action: 内部保持高精度，仅在支付边界按币种舍入一次
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 账本与渠道金额产生不可对账差异
   oracle_test: RefundFlow3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

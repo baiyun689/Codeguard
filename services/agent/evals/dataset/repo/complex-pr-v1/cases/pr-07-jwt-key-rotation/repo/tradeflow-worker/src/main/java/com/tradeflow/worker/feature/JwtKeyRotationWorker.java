@@ -15,9 +15,12 @@ public final class JwtKeyRotationWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.loadSigningKey(payload);
-            case "two" -> coordinator.isTokenActive(payload);
-            case "three" -> coordinator.loadTenantRoles(payload);
+            case "load-signing-key" ->
+                    coordinator.loadSigningKey(payload);
+            case "is-token-active" ->
+                    coordinator.isTokenActive(payload);
+            case "load-tenant-roles" ->
+                    coordinator.loadTenantRoles(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

@@ -14,17 +14,17 @@ public final class AdminReportController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/run-scheduled-export")
     public ResponseEntity<Object> runScheduledExport(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.runScheduledExport(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/render-full-report")
     public ResponseEntity<Object> renderFullReport(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.renderFullReport(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/render-report-row")
     public ResponseEntity<Object> renderReportRow(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.renderReportRow(request));
     }

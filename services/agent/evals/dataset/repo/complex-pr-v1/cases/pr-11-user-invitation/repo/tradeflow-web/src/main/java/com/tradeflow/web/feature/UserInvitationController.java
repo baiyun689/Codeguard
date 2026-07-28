@@ -14,17 +14,17 @@ public final class UserInvitationController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/invite-tenant-member")
     public ResponseEntity<Object> inviteTenantMember(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.inviteTenantMember(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/invite-with-role-check")
     public ResponseEntity<Object> inviteWithRoleCheck(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.inviteWithRoleCheck(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/send-invitation")
     public ResponseEntity<Object> sendInvitation(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.sendInvitation(request));
     }

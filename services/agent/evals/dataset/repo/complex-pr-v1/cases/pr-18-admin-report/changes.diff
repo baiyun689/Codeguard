@@ -127,24 +127,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/run-scheduled-export")
 +    public ResponseEntity<Object> runScheduledExport(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.runScheduledExport(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/render-full-report")
 +    public ResponseEntity<Object> renderFullReport(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.renderFullReport(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/render-report-row")
 +    public ResponseEntity<Object> renderReportRow(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.renderReportRow(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/AdminReportWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/AdminReportWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.AdminReportCoordinator;
@@ -162,9 +162,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.runScheduledExport(payload);
-+            case "two" -> coordinator.renderFullReport(payload);
-+            case "three" -> coordinator.renderReportRow(payload);
++            case "run-scheduled-export" ->
++                    coordinator.runScheduledExport(payload);
++            case "render-full-report" ->
++                    coordinator.renderFullReport(payload);
++            case "render-report-row" ->
++                    coordinator.renderReportRow(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

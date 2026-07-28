@@ -14,17 +14,17 @@ public final class FileExportController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/open-export")
     public ResponseEntity<Object> openExport(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.openExport(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/open-owned-export")
     public ResponseEntity<Object> openOwnedExport(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.openOwnedExport(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/open-verified-export")
     public ResponseEntity<Object> openVerifiedExport(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.openVerifiedExport(request));
     }

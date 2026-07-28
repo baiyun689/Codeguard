@@ -14,17 +14,17 @@ public final class PaymentWebhookController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/verify-webhook-signature")
     public ResponseEntity<Object> verifyWebhookSignature(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.verifyWebhookSignature(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/accept-webhook-event")
     public ResponseEntity<Object> acceptWebhookEvent(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.acceptWebhookEvent(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/apply-payment-event")
     public ResponseEntity<Object> applyPaymentEvent(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.applyPaymentEvent(request));
     }

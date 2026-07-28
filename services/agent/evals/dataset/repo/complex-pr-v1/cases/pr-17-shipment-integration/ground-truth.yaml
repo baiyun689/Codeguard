@@ -4,12 +4,13 @@ baseline: tradeflow-clean-v1
 issues:
 - id: pr-17-shipment-integration-issue-1
   title: 物流回调地址形成 SSRF
-  dimension: security
+  dimension: logic
   primary_risk_tag: SSRF_OUTBOUND
   secondary_risk_tags: []
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - threat_model/SSRF_OUTBOUND
   - behavior/SSRF_OUTBOUND
@@ -37,17 +38,19 @@ issues:
   severity: CRITICAL
   severity_rationale: 访问内网和云元数据
   oracle_test: ShipmentIntegration1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-17-shipment-integration-issue-2
   title: HTTP 重试重复创建运单
-  dimension: security
+  dimension: logic
   primary_risk_tag: IDEMPOTENCY_RETRY
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/IDEMPOTENCY_RETRY
   risk_coverage: exact
@@ -64,29 +67,31 @@ issues:
   - ShipmentIntegrationController.retryShipment
   - ShipmentIntegrationCoordinator.retryShipment
   - ShipmentIntegrationService.retryShipment
-  - CacheStore.put
+  - ExternalHttpClient.post
   evidence_anchors:
   - ShipmentIntegrationService.retryShipment
-  - CacheStore.put
+  - ExternalHttpClient.post
   fix_location: ShipmentIntegrationService.retryShipment
   fix_action: 以 orderId 生成稳定幂等键并查询已有结果
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 同一订单产生多个运单和费用
   oracle_test: ShipmentIntegration2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-17-shipment-integration-issue-3
   title: 超时单位错误占满工作线程
-  dimension: security
+  dimension: quality
   primary_risk_tag: PERFORMANCE
   secondary_risk_tags:
   - RESOURCE_LIFECYCLE
   expected_reviewers:
   - behavior
   - maintainability
+  primary_reviewer: maintainability
   required_knowledge:
   - behavior/PERFORMANCE
   - behavior/RESOURCE_LIFECYCLE
@@ -106,16 +111,17 @@ issues:
   - ShipmentIntegrationController.createShipmentWithTimeout
   - ShipmentIntegrationCoordinator.createShipmentWithTimeout
   - ShipmentIntegrationService.createShipmentWithTimeout
-  - unbounded repository/client operation
+  - ExternalHttpClient.post
   evidence_anchors:
   - ShipmentIntegrationService.createShipmentWithTimeout
-  - unbounded repository/client operation
+  - ExternalHttpClient.post
   fix_location: ShipmentIntegrationService.createShipmentWithTimeout
   fix_action: 用 Duration 配置并设置连接、响应与总预算
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 请求线程长时间阻塞并级联耗尽
   oracle_test: ShipmentIntegration3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

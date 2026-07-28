@@ -15,9 +15,12 @@ public final class LoginRateLimitWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.countByClientAddress(payload);
-            case "two" -> coordinator.recordLoginFailure(payload);
-            case "three" -> coordinator.checkRateLimit(payload);
+            case "count-by-client-address" ->
+                    coordinator.countByClientAddress(payload);
+            case "record-login-failure" ->
+                    coordinator.recordLoginFailure(payload);
+            case "check-rate-limit" ->
+                    coordinator.checkRateLimit(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

@@ -14,17 +14,17 @@ public final class TenantConfigController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/load-tenant-secret")
     public ResponseEntity<Object> loadTenantSecret(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.loadTenantSecret(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/reload-configuration")
     public ResponseEntity<Object> reloadConfiguration(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.reloadConfiguration(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/publish-configuration")
     public ResponseEntity<Object> publishConfiguration(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.publishConfiguration(request));
     }

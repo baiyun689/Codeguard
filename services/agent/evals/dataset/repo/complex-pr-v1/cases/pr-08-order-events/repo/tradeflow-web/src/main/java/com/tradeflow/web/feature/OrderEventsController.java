@@ -14,17 +14,17 @@ public final class OrderEventsController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/change-order-status")
     public ResponseEntity<Object> changeOrderStatus(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.changeOrderStatus(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/consume-order-event")
     public ResponseEntity<Object> consumeOrderEvent(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.consumeOrderEvent(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/apply-versioned-event")
     public ResponseEntity<Object> applyVersionedEvent(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.applyVersionedEvent(request));
     }

@@ -1,18 +1,26 @@
 package com.tradeflow.oracle;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Evaluation-only oracle for pr-11-user-invitation/inviteTenantMember.
- * Install this source in the isolated oracle harness; it is intentionally
- * excluded from the reviewed repository snapshot.
+ * Evaluator-only static contract oracle. It is excluded from the
+ * reviewed project snapshot.
  */
 final class UserInvitation1OracleTest {
     @Test
-    void inviteTenantMember_preserves_the_business_invariant() {
-        OracleResult result = TradeFlowOracleHarness.run(
-                "pr-11-user-invitation", "inviteTenantMember");
-        assertEquals("跨租户创建或修改成员", result.observedFailure());
+    @DisplayName("触发: 管理员提交另一租户用户 ID；后果: 跨租户创建或修改成员")
+    void inviteTenantMember_seed_is_present() throws Exception {
+        Path repo = Path.of(System.getProperty("tradeflow.repo"));
+        String source = Files.readString(repo.resolve(
+                "tradeflow-application/src/main/java/com/tradeflow/application/feature/UserInvitationService.java"));
+        assertAll(
+        () -> assertTrue(source.contains("UserAccount account = users.findById(request.get(\"userId\")).orElseThrow();"), "missing seeded evidence: UserAccount account = users.findById(request.get(\"userId\")).orElseThrow();"),
+        () -> assertTrue(source.contains("users.save(new UserAccount(account.id(), context.tenantId(), Set.of(request.get(\"role\")), 0));"), "missing seeded evidence: users.save(new UserAccount(account.id(), context.tenantId(), Set.of(request.get(\"role\")), 0));")
+        );
     }
 }

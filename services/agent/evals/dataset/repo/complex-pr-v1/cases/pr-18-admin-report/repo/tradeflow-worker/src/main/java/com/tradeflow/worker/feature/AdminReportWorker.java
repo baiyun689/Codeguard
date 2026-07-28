@@ -15,9 +15,12 @@ public final class AdminReportWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.runScheduledExport(payload);
-            case "two" -> coordinator.renderFullReport(payload);
-            case "three" -> coordinator.renderReportRow(payload);
+            case "run-scheduled-export" ->
+                    coordinator.runScheduledExport(payload);
+            case "render-full-report" ->
+                    coordinator.renderFullReport(payload);
+            case "render-report-row" ->
+                    coordinator.renderReportRow(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

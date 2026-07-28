@@ -15,9 +15,12 @@ public final class InventoryReservationWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.reserveStock(payload);
-            case "two" -> coordinator.reserveWithLocalLock(payload);
-            case "three" -> coordinator.releaseExpiredReservation(payload);
+            case "reserve-stock" ->
+                    coordinator.reserveStock(payload);
+            case "reserve-with-local-lock" ->
+                    coordinator.reserveWithLocalLock(payload);
+            case "release-expired-reservation" ->
+                    coordinator.releaseExpiredReservation(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

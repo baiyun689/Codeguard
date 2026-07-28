@@ -15,9 +15,12 @@ public final class OrderSearchWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.searchWithSort(payload);
-            case "two" -> coordinator.searchPage(payload);
-            case "three" -> coordinator.searchWithFallback(payload);
+            case "search-with-sort" ->
+                    coordinator.searchWithSort(payload);
+            case "search-page" ->
+                    coordinator.searchPage(payload);
+            case "search-with-fallback" ->
+                    coordinator.searchWithFallback(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

@@ -50,14 +50,14 @@ public final class TenantOrderUpdateService {
         this.context = context;
     }
 
-    public Object tenantLookup(Map<String, String> request) {
+    public Object updateOrder(Map<String, String> request) {
         Order order = orders.findById(request.get("orderId")).orElseThrow();
         order.status(request.get("status"));
         orders.save(order);
         return order;
     }
 
-    public Object mutableProjection(Map<String, String> request) {
+    public Object applyOrderChanges(Map<String, String> request) {
         Order order = orders.findByTenantAndId(context.tenantId(), request.get("orderId")).orElseThrow();
         order.total(new BigDecimal(request.get("total")));
         order.status(request.get("status"));
@@ -65,7 +65,7 @@ public final class TenantOrderUpdateService {
         return order;
     }
 
-    public Object prematureAudit(Map<String, String> request) {
+    public Object recordOrderUpdate(Map<String, String> request) {
         Order order = orders.findByTenantAndId(context.tenantId(), request.get("orderId")).orElseThrow();
         audit.record(context.tenantId(), "ORDER_UPDATED", order.id());
         order.status(request.get("status"));

@@ -19,10 +19,14 @@ expected:
   note: 多实例领取同一 Outbox 事件
   root_cause: 查询 ready 事件后未 claim 或 skip locked
   risk_tag: CONCURRENCY_CONSISTENCY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - OutboxDeliveryController
   - OutboxDeliveryCoordinator
   - OutboxDeliveryService.deliverReadyEvents
+  - OutboxRepository.findReady
+  - EventPublisher.publish
 - id: pr-09-outbox-worker-issue-2
   type_keywords:
   - sent
@@ -35,10 +39,15 @@ expected:
   note: Broker 确认前标记 sent
   root_cause: 本地状态先于 broker 确认变更
   risk_tag: MESSAGE_DELIVERY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - OutboxDeliveryController
   - OutboxDeliveryCoordinator
   - OutboxDeliveryService.deliverOneEvent
+  - OutboxRepository.findReady
+  - OutboxRepository.save
+  - EventPublisher.publish
 - id: pr-09-outbox-worker-issue-3
   type_keywords:
   - 退避
@@ -51,10 +60,14 @@ expected:
   note: 退避时间单位错误
   root_cause: 秒级配置被当毫秒加入 Instant
   risk_tag: IDEMPOTENCY_RETRY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - OutboxDeliveryController
   - OutboxDeliveryCoordinator
   - OutboxDeliveryService.scheduleRetry
+  - OutboxRepository.findReady
+  - OutboxRepository.save
 provenance:
   source: Codeguard controlled project-level benchmark
   repository_url: ''

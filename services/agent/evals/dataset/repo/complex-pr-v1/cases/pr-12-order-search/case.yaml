@@ -19,10 +19,14 @@ expected:
   note: 排序字段进入原生查询
   root_cause: 请求 sort 表达式未经枚举映射进入查询
   risk_tag: INJECTION
+  primary_reviewer: threat_model
+  dimension: security
   evidence_anchors:
   - OrderSearchController
   - OrderSearchCoordinator
   - OrderSearchService.searchWithSort
+  - OrderRepository.search
+  - TenantContext.tenantId
 - id: pr-12-order-search-issue-2
   type_keywords:
   - 分页
@@ -35,10 +39,14 @@ expected:
   note: 分页 offset 整数溢出
   root_cause: page 与 size 使用 int 乘法且校验发生在乘法前
   risk_tag: PERFORMANCE
+  primary_reviewer: maintainability
+  dimension: quality
   evidence_anchors:
   - OrderSearchController
   - OrderSearchCoordinator
   - OrderSearchService.searchPage
+  - OrderRepository.search
+  - TenantContext.tenantId
 - id: pr-12-order-search-issue-3
   type_keywords:
   - fallback
@@ -51,10 +59,14 @@ expected:
   note: fallback 查询遗漏访问范围
   root_cause: 主查询为空时改用不带租户条件的 fallback
   risk_tag: AUTHORIZATION
+  primary_reviewer: threat_model
+  dimension: security
   evidence_anchors:
   - OrderSearchController
   - OrderSearchCoordinator
   - OrderSearchService.searchWithFallback
+  - OrderRepository.search
+  - TenantContext.tenantId
 provenance:
   source: Codeguard controlled project-level benchmark
   repository_url: ''

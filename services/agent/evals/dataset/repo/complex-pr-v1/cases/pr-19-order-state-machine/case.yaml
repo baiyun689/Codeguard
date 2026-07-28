@@ -19,10 +19,15 @@ expected:
   note: 状态 ordinal 比较允许非法跳转
   root_cause: 用枚举顺序代替显式状态转换图
   risk_tag: API_CONTRACT
+  primary_reviewer: maintainability
+  dimension: quality
   evidence_anchors:
   - OrderStateMachineController
   - OrderStateMachineCoordinator
   - OrderStateMachineService.transitionOrder
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - OrderRepository.save
 - id: pr-19-order-state-machine-issue-2
   type_keywords:
   - 版本
@@ -35,10 +40,15 @@ expected:
   note: 映射过程丢失乐观锁版本
   root_cause: 重建 Order 时 version 回到默认值
   risk_tag: CONCURRENCY_CONSISTENCY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - OrderStateMachineController
   - OrderStateMachineCoordinator
   - OrderStateMachineService.mapOrderUpdate
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - OrderRepository.save
 - id: pr-19-order-state-machine-issue-3
   type_keywords:
   - 补偿
@@ -51,10 +61,16 @@ expected:
   note: 补偿事件携带新版本而非被补偿版本
   root_cause: 事件版本在状态递增后取值
   risk_tag: MESSAGE_DELIVERY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - OrderStateMachineController
   - OrderStateMachineCoordinator
   - OrderStateMachineService.publishCompensation
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - OrderRepository.save
+  - EventPublisher.publish
 provenance:
   source: Codeguard controlled project-level benchmark
   repository_url: ''

@@ -15,9 +15,12 @@ public final class OrderStateMachineWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.transitionOrder(payload);
-            case "two" -> coordinator.mapOrderUpdate(payload);
-            case "three" -> coordinator.publishCompensation(payload);
+            case "transition-order" ->
+                    coordinator.transitionOrder(payload);
+            case "map-order-update" ->
+                    coordinator.mapOrderUpdate(payload);
+            case "publish-compensation" ->
+                    coordinator.publishCompensation(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

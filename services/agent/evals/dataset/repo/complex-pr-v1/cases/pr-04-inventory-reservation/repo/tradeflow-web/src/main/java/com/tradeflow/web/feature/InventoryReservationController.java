@@ -14,17 +14,17 @@ public final class InventoryReservationController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/reserve-stock")
     public ResponseEntity<Object> reserveStock(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.reserveStock(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/reserve-with-local-lock")
     public ResponseEntity<Object> reserveWithLocalLock(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.reserveWithLocalLock(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/release-expired-reservation")
     public ResponseEntity<Object> releaseExpiredReservation(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.releaseExpiredReservation(request));
     }

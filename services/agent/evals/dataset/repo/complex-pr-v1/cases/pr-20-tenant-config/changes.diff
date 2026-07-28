@@ -134,24 +134,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/load-tenant-secret")
 +    public ResponseEntity<Object> loadTenantSecret(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.loadTenantSecret(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/reload-configuration")
 +    public ResponseEntity<Object> reloadConfiguration(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.reloadConfiguration(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/publish-configuration")
 +    public ResponseEntity<Object> publishConfiguration(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.publishConfiguration(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/TenantConfigWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/TenantConfigWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.TenantConfigCoordinator;
@@ -169,9 +169,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.loadTenantSecret(payload);
-+            case "two" -> coordinator.reloadConfiguration(payload);
-+            case "three" -> coordinator.publishConfiguration(payload);
++            case "load-tenant-secret" ->
++                    coordinator.loadTenantSecret(payload);
++            case "reload-configuration" ->
++                    coordinator.reloadConfiguration(payload);
++            case "publish-configuration" ->
++                    coordinator.publishConfiguration(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

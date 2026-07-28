@@ -135,24 +135,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/invite-tenant-member")
 +    public ResponseEntity<Object> inviteTenantMember(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.inviteTenantMember(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/invite-with-role-check")
 +    public ResponseEntity<Object> inviteWithRoleCheck(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.inviteWithRoleCheck(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/send-invitation")
 +    public ResponseEntity<Object> sendInvitation(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.sendInvitation(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/UserInvitationWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/UserInvitationWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.UserInvitationCoordinator;
@@ -170,9 +170,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.inviteTenantMember(payload);
-+            case "two" -> coordinator.inviteWithRoleCheck(payload);
-+            case "three" -> coordinator.sendInvitation(payload);
++            case "invite-tenant-member" ->
++                    coordinator.inviteTenantMember(payload);
++            case "invite-with-role-check" ->
++                    coordinator.inviteWithRoleCheck(payload);
++            case "send-invitation" ->
++                    coordinator.sendInvitation(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

@@ -11,6 +11,7 @@ issues:
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: threat_model
   required_knowledge:
   - threat_model/INJECTION
   - behavior/INJECTION
@@ -29,29 +30,33 @@ issues:
   - OrderSearchController.searchWithSort
   - OrderSearchCoordinator.searchWithSort
   - OrderSearchService.searchWithSort
-  - expression/query interpreter
+  - OrderRepository.search
+  - TenantContext.tenantId
   evidence_anchors:
   - OrderSearchService.searchWithSort
-  - expression/query interpreter
+  - OrderRepository.search
+  - TenantContext.tenantId
   fix_location: OrderSearchService.searchWithSort
   fix_action: 将公开排序键映射到固定列集合
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 查询语义被篡改或数据泄露
   oracle_test: OrderSearch1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-12-order-search-issue-2
   title: 分页 offset 整数溢出
-  dimension: security
+  dimension: quality
   primary_risk_tag: PERFORMANCE
   secondary_risk_tags:
   - INPUT_VALIDATION
   expected_reviewers:
   - threat_model
   - maintainability
+  primary_reviewer: maintainability
   required_knowledge:
   - threat_model/INPUT_VALIDATION
   - maintainability/PERFORMANCE
@@ -69,16 +74,19 @@ issues:
   - OrderSearchController.searchPage
   - OrderSearchCoordinator.searchPage
   - OrderSearchService.searchPage
-  - unbounded repository/client operation
+  - OrderRepository.search
+  - TenantContext.tenantId
   evidence_anchors:
   - OrderSearchService.searchPage
-  - unbounded repository/client operation
+  - OrderRepository.search
+  - TenantContext.tenantId
   fix_location: OrderSearchService.searchPage
   fix_action: 使用 long/Math.multiplyExact 并设置总上限
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 负 offset 绕过限制并触发大范围查询
   oracle_test: OrderSearch2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -92,6 +100,7 @@ issues:
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: threat_model
   required_knowledge:
   - threat_model/AUTHORIZATION
   - behavior/AUTHORIZATION
@@ -110,16 +119,19 @@ issues:
   - OrderSearchController.searchWithFallback
   - OrderSearchCoordinator.searchWithFallback
   - OrderSearchService.searchWithFallback
-  - OrderRepository.findByTenantAndId
+  - OrderRepository.search
+  - TenantContext.tenantId
   evidence_anchors:
   - OrderSearchService.searchWithFallback
-  - OrderRepository.findByTenantAndId
+  - OrderRepository.search
+  - TenantContext.tenantId
   fix_location: OrderSearchService.searchWithFallback
   fix_action: 所有查询分支共享强制租户 predicate
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 返回其他租户订单
   oracle_test: OrderSearch3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

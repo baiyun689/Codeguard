@@ -19,10 +19,16 @@ expected:
   note: 订单事件在事务提交前发布
   root_cause: 外部事件发布先于订单事务提交
   risk_tag: MESSAGE_DELIVERY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - OrderEventsController
   - OrderEventsCoordinator
   - OrderEventsService.changeOrderStatus
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - EventPublisher.publish
+  - OrderRepository.save
 - id: pr-08-order-events-issue-2
   type_keywords:
   - 异常
@@ -35,10 +41,15 @@ expected:
   note: 消费异常被吞后仍确认消息
   root_cause: 宽泛 catch 将处理失败转换为正常返回
   risk_tag: ERROR_HANDLING
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - OrderEventsController
   - OrderEventsCoordinator
   - OrderEventsService.consumeOrderEvent
+  - OrderRepository.findByTenantAndId
+  - OrderRepository.save
+  - AuditSink.record
 - id: pr-08-order-events-issue-3
   type_keywords:
   - 版本
@@ -51,10 +62,14 @@ expected:
   note: 旧版本事件覆盖新状态
   root_cause: 消费者未比较事件聚合版本
   risk_tag: CONCURRENCY_CONSISTENCY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - OrderEventsController
   - OrderEventsCoordinator
   - OrderEventsService.applyVersionedEvent
+  - OrderRepository.findByTenantAndId
+  - OrderRepository.save
 provenance:
   source: Codeguard controlled project-level benchmark
   repository_url: ''

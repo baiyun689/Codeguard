@@ -14,17 +14,17 @@ public final class RefundFlowController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/refund-against-order")
     public ResponseEntity<Object> refundAgainstOrder(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.refundAgainstOrder(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/refund-remaining-amount")
     public ResponseEntity<Object> refundRemainingAmount(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.refundRemainingAmount(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/refund-converted-amount")
     public ResponseEntity<Object> refundConvertedAmount(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.refundConvertedAmount(request));
     }

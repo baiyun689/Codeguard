@@ -14,17 +14,17 @@ public final class ProductCacheController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/load-product")
     public ResponseEntity<Object> loadProduct(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.loadProduct(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/update-product")
     public ResponseEntity<Object> updateProduct(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.updateProduct(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/create-product")
     public ResponseEntity<Object> createProduct(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.createProduct(request));
     }

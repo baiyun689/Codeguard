@@ -15,9 +15,12 @@ public final class OrderEventsWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.changeOrderStatus(payload);
-            case "two" -> coordinator.consumeOrderEvent(payload);
-            case "three" -> coordinator.applyVersionedEvent(payload);
+            case "change-order-status" ->
+                    coordinator.changeOrderStatus(payload);
+            case "consume-order-event" ->
+                    coordinator.consumeOrderEvent(payload);
+            case "apply-versioned-event" ->
+                    coordinator.applyVersionedEvent(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

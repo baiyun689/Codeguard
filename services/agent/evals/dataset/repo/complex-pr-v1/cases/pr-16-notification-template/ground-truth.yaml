@@ -10,6 +10,7 @@ issues:
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: threat_model
   required_knowledge:
   - threat_model/INJECTION
   - behavior/INJECTION
@@ -27,28 +28,28 @@ issues:
   - NotificationTemplateController.renderNotification
   - NotificationTemplateCoordinator.renderNotification
   - NotificationTemplateService.renderNotification
-  - expression/query interpreter
   evidence_anchors:
   - NotificationTemplateService.renderNotification
-  - expression/query interpreter
   fix_location: NotificationTemplateService.renderNotification
   fix_action: 使用无表达式模板或严格变量白名单
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 读取服务数据或执行危险方法
   oracle_test: NotificationTemplate1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-16-notification-template-issue-2
   title: 退订查询遗漏租户
-  dimension: security
+  dimension: logic
   primary_risk_tag: AUTHORIZATION
   secondary_risk_tags: []
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - threat_model/AUTHORIZATION
   - behavior/AUTHORIZATION
@@ -66,27 +67,31 @@ issues:
   - NotificationTemplateController.unsubscribeRecipient
   - NotificationTemplateCoordinator.unsubscribeRecipient
   - NotificationTemplateService.unsubscribeRecipient
-  - OrderRepository.findByTenantAndId
+  - UserRepository.findById
+  - UserRepository.save
   evidence_anchors:
   - NotificationTemplateService.unsubscribeRecipient
-  - OrderRepository.findByTenantAndId
+  - UserRepository.findById
+  - UserRepository.save
   fix_location: NotificationTemplateService.unsubscribeRecipient
   fix_action: token 绑定 tenant、recipient 和用途并按归属查询
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 取消他人通知订阅
   oracle_test: NotificationTemplate2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-16-notification-template-issue-3
   title: 通知重试缺少业务幂等键
-  dimension: security
+  dimension: logic
   primary_risk_tag: IDEMPOTENCY_RETRY
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/IDEMPOTENCY_RETRY
   risk_coverage: exact
@@ -103,16 +108,17 @@ issues:
   - NotificationTemplateController.sendNotification
   - NotificationTemplateCoordinator.sendNotification
   - NotificationTemplateService.sendNotification
-  - CacheStore.put
+  - EventPublisher.publish
   evidence_anchors:
   - NotificationTemplateService.sendNotification
-  - CacheStore.put
+  - EventPublisher.publish
   fix_location: NotificationTemplateService.sendNotification
   fix_action: 以 notificationId 作为稳定幂等键
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 用户收到重复邮件或短信
   oracle_test: NotificationTemplate3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

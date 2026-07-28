@@ -18,18 +18,18 @@ public final class TenantOrderUpdateCoordinator {
         this.context = context;
     }
 
-    public Object tenantLookup(Map<String, String> request) {
-        audit.record(context.tenantId(), "TENANT-ORDER-UPDATE", "tenantLookup");
-        return service.tenantLookup(request);
+    public Object updateOrder(Map<String, String> request) {
+        audit.record(context.tenantId(), "TENANT-ORDER-UPDATE", "updateOrder");
+        return service.updateOrder(request);
     }
 
-    public Object mutableProjection(Map<String, String> request) {
-        audit.record(context.tenantId(), "TENANT-ORDER-UPDATE", "mutableProjection");
-        return service.mutableProjection(request);
+    public Object applyOrderChanges(Map<String, String> request) {
+        audit.record(context.tenantId(), "TENANT-ORDER-UPDATE", "applyOrderChanges");
+        return service.applyOrderChanges(request);
     }
 
-    public Object prematureAudit(Map<String, String> request) {
-        audit.record(context.tenantId(), "TENANT-ORDER-UPDATE", "prematureAudit");
-        return service.prematureAudit(request);
+    public Object recordOrderUpdate(Map<String, String> request) {
+        audit.record(context.tenantId(), "TENANT-ORDER-UPDATE", "recordOrderUpdate");
+        return service.recordOrderUpdate(request);
     }
 }

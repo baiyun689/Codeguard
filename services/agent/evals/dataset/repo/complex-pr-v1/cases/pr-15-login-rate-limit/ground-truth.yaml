@@ -11,6 +11,7 @@ issues:
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: threat_model
   required_knowledge:
   - threat_model/AUTHENTICATION_SESSION
   - threat_model/INPUT_VALIDATION
@@ -30,27 +31,29 @@ issues:
   - LoginRateLimitController.countByClientAddress
   - LoginRateLimitCoordinator.countByClientAddress
   - LoginRateLimitService.countByClientAddress
-  - authentication decision
+  - CacheStore.increment
   evidence_anchors:
   - LoginRateLimitService.countByClientAddress
-  - authentication decision
+  - CacheStore.increment
   fix_location: LoginRateLimitService.countByClientAddress
   fix_action: 只接受可信代理重写的规范化客户端地址
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 绕过登录失败限流
   oracle_test: LoginRateLimit1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-15-login-rate-limit-issue-2
   title: Redis 计数 get/increment 非原子
-  dimension: security
+  dimension: logic
   primary_risk_tag: CONCURRENCY_CONSISTENCY
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/CONCURRENCY_CONSISTENCY
   risk_coverage: exact
@@ -67,16 +70,19 @@ issues:
   - LoginRateLimitController.recordLoginFailure
   - LoginRateLimitCoordinator.recordLoginFailure
   - LoginRateLimitService.recordLoginFailure
-  - OrderRepository.saveIfVersion
+  - CacheStore.get
+  - CacheStore.increment
   evidence_anchors:
   - LoginRateLimitService.recordLoginFailure
-  - OrderRepository.saveIfVersion
+  - CacheStore.get
+  - CacheStore.increment
   fix_location: LoginRateLimitService.recordLoginFailure
   fix_action: Lua/原子 increment 后判断返回值
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 多个请求同时低于阈值并绕过锁定
   oracle_test: LoginRateLimit2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -90,6 +96,7 @@ issues:
   expected_reviewers:
   - behavior
   - threat_model
+  primary_reviewer: threat_model
   required_knowledge:
   - behavior/ERROR_HANDLING
   - behavior/AUTHENTICATION_SESSION
@@ -108,16 +115,21 @@ issues:
   - LoginRateLimitController.checkRateLimit
   - LoginRateLimitCoordinator.checkRateLimit
   - LoginRateLimitService.checkRateLimit
-  - message acknowledgement
+  - CacheStore.increment
+  - AuditSink.record
+  - TenantContext.tenantId
   evidence_anchors:
   - LoginRateLimitService.checkRateLimit
-  - message acknowledgement
+  - CacheStore.increment
+  - AuditSink.record
+  - TenantContext.tenantId
   fix_location: LoginRateLimitService.checkRateLimit
   fix_action: 采用本地受限降级或对高风险入口 fail-closed
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 敏感登录入口失去暴力破解保护
   oracle_test: LoginRateLimit3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

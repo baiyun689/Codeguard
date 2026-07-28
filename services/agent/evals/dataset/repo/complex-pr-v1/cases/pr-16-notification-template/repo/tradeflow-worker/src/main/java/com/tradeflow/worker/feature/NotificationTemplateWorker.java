@@ -15,9 +15,12 @@ public final class NotificationTemplateWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.renderNotification(payload);
-            case "two" -> coordinator.unsubscribeRecipient(payload);
-            case "three" -> coordinator.sendNotification(payload);
+            case "render-notification" ->
+                    coordinator.renderNotification(payload);
+            case "unsubscribe-recipient" ->
+                    coordinator.unsubscribeRecipient(payload);
+            case "send-notification" ->
+                    coordinator.sendNotification(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

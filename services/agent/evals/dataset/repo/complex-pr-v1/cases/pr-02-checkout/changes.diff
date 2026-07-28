@@ -21,24 +21,24 @@
 +        this.context = context;
 +    }
 +
-+    public Object uncompensatedCharge(Map<String, String> request) {
-+        audit.record(context.tenantId(), "CHECKOUT", "uncompensatedCharge");
-+        return service.uncompensatedCharge(request);
++    public Object placeOrder(Map<String, String> request) {
++        audit.record(context.tenantId(), "CHECKOUT", "placeOrder");
++        return service.placeOrder(request);
 +    }
 +
-+    public Object localTransaction(Map<String, String> request) {
-+        audit.record(context.tenantId(), "CHECKOUT", "localTransaction");
-+        return service.localTransaction(request);
++    public Object completeCheckout(Map<String, String> request) {
++        audit.record(context.tenantId(), "CHECKOUT", "completeCheckout");
++        return service.completeCheckout(request);
 +    }
 +
-+    public Object sharedIdempotency(Map<String, String> request) {
-+        audit.record(context.tenantId(), "CHECKOUT", "sharedIdempotency");
-+        return service.sharedIdempotency(request);
++    public Object submitPayment(Map<String, String> request) {
++        audit.record(context.tenantId(), "CHECKOUT", "submitPayment");
++        return service.submitPayment(request);
 +    }
 +}
 --- a/tradeflow-application/src/main/java/com/tradeflow/application/feature/CheckoutService.java
 +++ b/tradeflow-application/src/main/java/com/tradeflow/application/feature/CheckoutService.java
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,91 @@
 +package com.tradeflow.application.feature;
 +
 +import com.tradeflow.application.port.*;
@@ -91,7 +91,7 @@
 +        this.context = context;
 +    }
 +
-+    public Object uncompensatedCharge(Map<String, String> request) {
++    public Object placeOrder(Map<String, String> request) {
 +        Order order = orders.findByTenantAndId(context.tenantId(), request.get("orderId")).orElseThrow();
 +        String paymentId = payments.charge(context.tenantId(), order.id(), order.total(), request.get("requestId"));
 +        InventoryItem item = inventory.findBySku(request.get("sku")).orElseThrow();
@@ -101,7 +101,7 @@
 +        return paymentId;
 +    }
 +
-+    public Object localTransaction(Map<String, String> request) {
++    public Object completeCheckout(Map<String, String> request) {
 +        return persistCheckout(request);
 +    }
 +
@@ -110,10 +110,13 @@
 +        Order order = orders.findByTenantAndId(context.tenantId(), request.get("orderId")).orElseThrow();
 +        order.status("PAID");
 +        orders.save(order);
++        outbox.save(new OutboxEvent(
++                UUID.randomUUID().toString(), order.id(), order.version(),
++                "CHECKOUT_COMPLETED", "PENDING", 0, Instant.now()));
 +        return order;
 +    }
 +
-+    public Object sharedIdempotency(Map<String, String> request) {
++    public Object submitPayment(Map<String, String> request) {
 +        String key = "checkout:" + request.get("requestId");
 +        return cache.get(key).orElseGet(() -> {
 +            String result = payments.charge(context.tenantId(), request.get("orderId"),
@@ -146,24 +149,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
-+    public ResponseEntity<Object> uncompensatedCharge(@RequestBody Map<String, String> request) {
-+        return ResponseEntity.ok(coordinator.uncompensatedCharge(request));
++    @PostMapping("/place-order")
++    public ResponseEntity<Object> placeOrder(@RequestBody Map<String, String> request) {
++        return ResponseEntity.ok(coordinator.placeOrder(request));
 +    }
 +
-+    @PostMapping("/2")
-+    public ResponseEntity<Object> localTransaction(@RequestBody Map<String, String> request) {
-+        return ResponseEntity.ok(coordinator.localTransaction(request));
++    @PostMapping("/complete-checkout")
++    public ResponseEntity<Object> completeCheckout(@RequestBody Map<String, String> request) {
++        return ResponseEntity.ok(coordinator.completeCheckout(request));
 +    }
 +
-+    @PostMapping("/3")
-+    public ResponseEntity<Object> sharedIdempotency(@RequestBody Map<String, String> request) {
-+        return ResponseEntity.ok(coordinator.sharedIdempotency(request));
++    @PostMapping("/submit-payment")
++    public ResponseEntity<Object> submitPayment(@RequestBody Map<String, String> request) {
++        return ResponseEntity.ok(coordinator.submitPayment(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/CheckoutWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/CheckoutWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.CheckoutCoordinator;
@@ -181,9 +184,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.uncompensatedCharge(payload);
-+            case "two" -> coordinator.localTransaction(payload);
-+            case "three" -> coordinator.sharedIdempotency(payload);
++            case "place-order" ->
++                    coordinator.placeOrder(payload);
++            case "complete-checkout" ->
++                    coordinator.completeCheckout(payload);
++            case "submit-payment" ->
++                    coordinator.submitPayment(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

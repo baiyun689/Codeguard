@@ -19,10 +19,14 @@ expected:
   note: 库存读改写导致超卖
   root_cause: 校验与保存之间没有版本条件或数据库原子更新
   risk_tag: CONCURRENCY_CONSISTENCY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - InventoryReservationController
   - InventoryReservationCoordinator
   - InventoryReservationService.reserveStock
+  - InventoryRepository.findBySku
+  - InventoryRepository.save
 - id: pr-04-inventory-reservation-issue-2
   type_keywords:
   - 锁
@@ -35,10 +39,14 @@ expected:
   note: 按请求创建的锁无法互斥
   root_cause: 每次调用都创建新的锁对象
   risk_tag: CONCURRENCY_CONSISTENCY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - InventoryReservationController
   - InventoryReservationCoordinator
   - InventoryReservationService.reserveWithLocalLock
+  - InventoryRepository.findBySku
+  - InventoryRepository.save
 - id: pr-04-inventory-reservation-issue-3
   type_keywords:
   - 幂等
@@ -51,10 +59,15 @@ expected:
   note: 超时释放任务可重复归还库存
   root_cause: 释放操作未记录 reservation 的完成状态
   risk_tag: IDEMPOTENCY_RETRY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - InventoryReservationController
   - InventoryReservationCoordinator
   - InventoryReservationService.releaseExpiredReservation
+  - InventoryRepository.findBySku
+  - InventoryRepository.save
+  - EventPublisher.publish
 provenance:
   source: Codeguard controlled project-level benchmark
   repository_url: ''

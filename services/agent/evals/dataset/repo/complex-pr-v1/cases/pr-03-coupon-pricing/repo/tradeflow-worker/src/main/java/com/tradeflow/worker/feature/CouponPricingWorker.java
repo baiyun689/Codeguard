@@ -15,9 +15,12 @@ public final class CouponPricingWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.calculateCombinedDiscount(payload);
-            case "two" -> coordinator.applyCouponRules(payload);
-            case "three" -> coordinator.loadCustomerPrice(payload);
+            case "calculate-combined-discount" ->
+                    coordinator.calculateCombinedDiscount(payload);
+            case "apply-coupon-rules" ->
+                    coordinator.applyCouponRules(payload);
+            case "load-customer-price" ->
+                    coordinator.loadCustomerPrice(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

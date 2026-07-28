@@ -11,6 +11,7 @@ issues:
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: threat_model
   required_knowledge:
   - threat_model/INPUT_VALIDATION
   - behavior/INPUT_VALIDATION
@@ -28,27 +29,27 @@ issues:
   - PaymentWebhookController.verifyWebhookSignature
   - PaymentWebhookCoordinator.verifyWebhookSignature
   - PaymentWebhookService.verifyWebhookSignature
-  - sensitive business operation
   evidence_anchors:
   - PaymentWebhookService.verifyWebhookSignature
-  - sensitive business operation
   fix_location: PaymentWebhookService.verifyWebhookSignature
   fix_action: 在反序列化前保留原始 body 并做恒时签名比较
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 合法回调被拒绝或错误实现下可绕过认证
   oracle_test: PaymentWebhook1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-05-payment-webhook-issue-2
   title: Webhook 缺少重放窗口
-  dimension: security
+  dimension: logic
   primary_risk_tag: IDEMPOTENCY_RETRY
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/IDEMPOTENCY_RETRY
   risk_coverage: exact
@@ -65,9 +66,11 @@ issues:
   - PaymentWebhookController.acceptWebhookEvent
   - PaymentWebhookCoordinator.acceptWebhookEvent
   - PaymentWebhookService.acceptWebhookEvent
+  - CacheStore.get
   - CacheStore.put
   evidence_anchors:
   - PaymentWebhookService.acceptWebhookEvent
+  - CacheStore.get
   - CacheStore.put
   fix_location: PaymentWebhookService.acceptWebhookEvent
   fix_action: 校验时间戳窗口并持久化事件 ID 去重
@@ -75,18 +78,20 @@ issues:
   severity: WARNING
   severity_rationale: 订单状态或退款副作用重复执行
   oracle_test: PaymentWebhook2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-05-payment-webhook-issue-3
   title: 先标记回调完成再更新订单
-  dimension: security
+  dimension: logic
   primary_risk_tag: TRANSACTION_ATOMICITY
   secondary_risk_tags:
   - MESSAGE_DELIVERY
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/TRANSACTION_ATOMICITY
   risk_coverage: exact
@@ -103,9 +108,13 @@ issues:
   - PaymentWebhookController.applyPaymentEvent
   - PaymentWebhookCoordinator.applyPaymentEvent
   - PaymentWebhookService.applyPaymentEvent
+  - CacheStore.put
+  - OrderRepository.findByTenantAndId
   - OrderRepository.save
   evidence_anchors:
   - PaymentWebhookService.applyPaymentEvent
+  - CacheStore.put
+  - OrderRepository.findByTenantAndId
   - OrderRepository.save
   fix_location: PaymentWebhookService.applyPaymentEvent
   fix_action: 在同一事务中更新状态和 inbox，提交后再确认
@@ -113,6 +122,7 @@ issues:
   severity: WARNING
   severity_rationale: 重试被完成标记挡住，支付状态永久丢失
   oracle_test: PaymentWebhook3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

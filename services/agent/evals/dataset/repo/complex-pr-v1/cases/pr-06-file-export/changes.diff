@@ -132,24 +132,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/open-export")
 +    public ResponseEntity<Object> openExport(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.openExport(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/open-owned-export")
 +    public ResponseEntity<Object> openOwnedExport(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.openOwnedExport(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/open-verified-export")
 +    public ResponseEntity<Object> openVerifiedExport(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.openVerifiedExport(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/FileExportWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/FileExportWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.FileExportCoordinator;
@@ -167,9 +167,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.openExport(payload);
-+            case "two" -> coordinator.openOwnedExport(payload);
-+            case "three" -> coordinator.openVerifiedExport(payload);
++            case "open-export" ->
++                    coordinator.openExport(payload);
++            case "open-owned-export" ->
++                    coordinator.openOwnedExport(payload);
++            case "open-verified-export" ->
++                    coordinator.openVerifiedExport(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

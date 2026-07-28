@@ -19,10 +19,13 @@ expected:
   note: 无条件信任转发来源地址
   root_cause: 限流主体直接取首个 X-Forwarded-For
   risk_tag: AUTHENTICATION_SESSION
+  primary_reviewer: threat_model
+  dimension: security
   evidence_anchors:
   - LoginRateLimitController
   - LoginRateLimitCoordinator
   - LoginRateLimitService.countByClientAddress
+  - CacheStore.increment
 - id: pr-15-login-rate-limit-issue-2
   type_keywords:
   - Redis
@@ -35,10 +38,14 @@ expected:
   note: Redis 计数 get/increment 非原子
   root_cause: 阈值检查和增加是两个操作
   risk_tag: CONCURRENCY_CONSISTENCY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - LoginRateLimitController
   - LoginRateLimitCoordinator
   - LoginRateLimitService.recordLoginFailure
+  - CacheStore.get
+  - CacheStore.increment
 - id: pr-15-login-rate-limit-issue-3
   type_keywords:
   - fail-open
@@ -51,10 +58,15 @@ expected:
   note: Redis 故障时登录限流 fail-open
   root_cause: 缓存异常被捕获并直接允许认证继续
   risk_tag: ERROR_HANDLING
+  primary_reviewer: threat_model
+  dimension: security
   evidence_anchors:
   - LoginRateLimitController
   - LoginRateLimitCoordinator
   - LoginRateLimitService.checkRateLimit
+  - CacheStore.increment
+  - AuditSink.record
+  - TenantContext.tenantId
 provenance:
   source: Codeguard controlled project-level benchmark
   repository_url: ''

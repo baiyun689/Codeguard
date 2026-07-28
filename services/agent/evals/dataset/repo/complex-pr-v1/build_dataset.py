@@ -8,6 +8,7 @@ annotations, and isolated oracle tests in sync.
 from __future__ import annotations
 
 import difflib
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -779,7 +780,10 @@ def _scenario(
 ) -> Scenario:
     method_names = cast(
         tuple[str, str, str],
-        tuple(item.slug for item in issues),
+        tuple(
+            NEUTRAL_METHOD_NAMES.get((number, item.slug), item.slug)
+            for item in issues
+        ),
     )
     return Scenario(
         number,
@@ -792,6 +796,16 @@ def _scenario(
         _normalise_method_source(methods),
         issues,
     )
+
+
+NEUTRAL_METHOD_NAMES: dict[tuple[int, str], str] = {
+    (1, "tenantLookup"): "updateOrder",
+    (1, "mutableProjection"): "applyOrderChanges",
+    (1, "prematureAudit"): "recordOrderUpdate",
+    (2, "uncompensatedCharge"): "placeOrder",
+    (2, "localTransaction"): "completeCheckout",
+    (2, "sharedIdempotency"): "submitPayment",
+}
 
 
 def _normalise_method_source(methods: str) -> str:
@@ -872,6 +886,9 @@ SCENARIOS = [
             Order order = orders.findByTenantAndId(context.tenantId(), request.get("orderId")).orElseThrow();
             order.status("PAID");
             orders.save(order);
+            outbox.save(new OutboxEvent(
+                    UUID.randomUUID().toString(), order.id(), order.version(),
+                    "CHECKOUT_COMPLETED", "PENDING", 0, Instant.now()));
             return order;
         }
 
@@ -1115,7 +1132,7 @@ ISSUE_DESCRIPTIONS: dict[int, tuple[dict, dict, dict]] = {
         dict(title="超时单位错误占满工作线程", root="秒级配置被构造成 Duration.ofMillis", trigger="物流端延迟或失联", consequence="请求线程长时间阻塞并级联耗尽", fix="用 Duration 配置并设置连接、响应与总预算", keywords=("超时", "线程", "性能"), secondary=("RESOURCE_LIFECYCLE",), coverage="composite", reviewers=("behavior", "maintainability")),
     ),
     18: (
-        dict(title="异步报表路径绕过管理员鉴权", root="鉴权仅位于 Controller，worker 公开调用同一服务时无等价检查", trigger="低权限用户能投递导出任务", consequence="导出全租户敏感报表", fix="在应用用例 seam 强制授权", keywords=("报表", "鉴权", "异步"), severity="CRITICAL", routing_hazard=True),
+        dict(title="报表导出信任请求租户", root="查询租户直接取自可控请求而非可信身份上下文", trigger="调用方提交另一租户的 tenantId", consequence="导出其他租户的订单明细", fix="只从 TenantContext 获取租户并在查询层强制过滤", keywords=("报表", "租户", "越权"), severity="CRITICAL", routing_hazard=True),
         dict(title="报表全量加载导致内存放大", root="先 findAll 再在内存分页和序列化", trigger="大租户导出多年数据", consequence="堆内存耗尽并影响在线请求", fix="流式分页、背压和导出上限", keywords=("报表", "内存", "分页"), severity="CRITICAL"),
         dict(title="报表字段未防 CSV 注入", root="用户字段直接写入电子表格可执行单元格", trigger="订单备注以公式前缀开头", consequence="管理员打开报表时执行公式", fix="转义公式前缀并采用安全导出格式", keywords=("CSV注入", "报表", "公式"), severity="CRITICAL"),
     ),
@@ -1513,6 +1530,42 @@ METHOD_TEMPLATES: dict[int, tuple[str, str, str]] = {
 SCENARIOS.extend(_more_scenarios())
 
 
+def _build_primary_reviewer_map() -> dict[tuple[str, int], str]:
+    items = [
+        (scenario, index, spec)
+        for scenario in SCENARIOS
+        for index, spec in enumerate(scenario.issues, 1)
+    ]
+    result: dict[tuple[str, int], str] = {}
+    maintainability = [
+        item for item in items if "maintainability" in item[2].reviewers
+    ][:8]
+    for scenario, index, _ in maintainability:
+        result[(scenario.case_id, index)] = "maintainability"
+    threat = [
+        item
+        for item in items
+        if "threat_model" in item[2].reviewers
+        and (item[0].case_id, item[1]) not in result
+    ][:18]
+    for scenario, index, _ in threat:
+        result[(scenario.case_id, index)] = "threat_model"
+    for scenario, index, _ in items:
+        result.setdefault((scenario.case_id, index), "behavior")
+    return result
+
+
+PRIMARY_REVIEWERS = _build_primary_reviewer_map()
+
+
+def _dimension_for(reviewer: str) -> str:
+    return {
+        "threat_model": "security",
+        "behavior": "logic",
+        "maintainability": "quality",
+    }[reviewer]
+
+
 def _normalise(text: str) -> str:
     return dedent(text).strip() + "\n"
 
@@ -1533,7 +1586,14 @@ def _materialize_baseline() -> None:
 
 
 def _service_source(scenario: Scenario) -> str:
-    methods = _indent(scenario.methods, 4)
+    method_source = scenario.methods
+    for spec, public_name in zip(
+        scenario.issues, scenario.method_names, strict=True
+    ):
+        method_source = re.sub(
+            rf"\b{re.escape(spec.slug)}\b", public_name, method_source
+        )
+    methods = _indent(method_source, 4)
     return f"""package com.tradeflow.application.feature;
 
 import com.tradeflow.application.port.*;
@@ -1630,11 +1690,11 @@ public final class {scenario.class_name}Coordinator {{
 
 def _controller_source(scenario: Scenario) -> str:
     endpoints = "\n\n".join(
-        f"""    @PostMapping("/{index}")
+        f"""    @PostMapping("/{_kebab_case(name)}")
     public ResponseEntity<Object> {name}(@RequestBody Map<String, String> request) {{
         return ResponseEntity.ok(coordinator.{name}(request));
     }}"""
-        for index, name in enumerate(scenario.method_names, 1)
+        for name in scenario.method_names
     )
     return f"""package com.tradeflow.web.feature;
 
@@ -1675,9 +1735,12 @@ public final class {scenario.class_name}Worker implements WorkerMarker {{
 
     public Object execute(String operation, Map<String, String> payload) {{
         return switch (operation) {{
-            case "one" -> coordinator.{scenario.method_names[0]}(payload);
-            case "two" -> coordinator.{scenario.method_names[1]}(payload);
-            case "three" -> coordinator.{scenario.method_names[2]}(payload);
+            case "{_kebab_case(scenario.method_names[0])}" ->
+                    coordinator.{scenario.method_names[0]}(payload);
+            case "{_kebab_case(scenario.method_names[1])}" ->
+                    coordinator.{scenario.method_names[1]}(payload);
+            case "{_kebab_case(scenario.method_names[2])}" ->
+                    coordinator.{scenario.method_names[2]}(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         }};
     }}
@@ -1693,6 +1756,10 @@ public final class {scenario.class_name}Worker implements WorkerMarker {{
 def _indent(text: str, spaces: int) -> str:
     prefix = " " * spaces
     return "\n".join(prefix + line if line else "" for line in text.splitlines())
+
+
+def _kebab_case(value: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "-", value).lower()
 
 
 def _scenario_files(scenario: Scenario) -> dict[str, str]:
@@ -1737,46 +1804,216 @@ def _line_for(source: Path, method_name: str) -> int:
     raise ValueError(f"{method_name} not found in {source}")
 
 
-def _oracle_source(scenario: Scenario, issue_spec: IssueSpec, index: int) -> str:
+PORT_TYPES = {
+    "orders": "OrderRepository",
+    "inventory": "InventoryRepository",
+    "payments": "PaymentGateway",
+    "events": "EventPublisher",
+    "cache": "CacheStore",
+    "http": "ExternalHttpClient",
+    "files": "FileStore",
+    "outbox": "OutboxRepository",
+    "users": "UserRepository",
+    "audit": "AuditSink",
+    "context": "TenantContext",
+}
+
+
+def _method_text(source_text: str, method_name: str) -> str:
+    match = re.search(
+        rf"\b(?:public|private|protected)\s+\S+\s+{re.escape(method_name)}\s*\(",
+        source_text,
+    )
+    if match is None:
+        raise ValueError(f"{method_name} not found")
+    opening = source_text.find("{", match.start())
+    depth = 0
+    for position in range(opening, len(source_text)):
+        char = source_text[position]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source_text[match.start():position + 1]
+    raise ValueError(f"unterminated method {method_name}")
+
+
+def _call_anchors(
+    source_text: str, scenario: Scenario, method_name: str
+) -> list[str]:
+    method = _method_text(source_text, method_name)
+    anchors = [
+        f"{PORT_TYPES[field]}.{operation}"
+        for field, operation in re.findall(
+            r"\b(" + "|".join(PORT_TYPES) + r")\.(\w+)\s*\(", method
+        )
+    ]
+    helper_calls = re.findall(r"\breturn\s+(\w+)\s*\(", method)
+    for helper in helper_calls:
+        if helper == method_name:
+            continue
+        anchors.append(f"{scenario.class_name}Service.{helper}")
+        try:
+            helper_method = _method_text(source_text, helper)
+        except ValueError:
+            continue
+        anchors.extend(
+            f"{PORT_TYPES[field]}.{operation}"
+            for field, operation in re.findall(
+                r"\b(" + "|".join(PORT_TYPES) + r")\.(\w+)\s*\(",
+                helper_method,
+            )
+        )
+    return list(dict.fromkeys(anchors))
+
+
+def _oracle_fragments(source_text: str, method_name: str) -> list[str]:
+    method = _method_text(source_text, method_name)
+    candidates = []
+    for line in method.splitlines()[1:-1]:
+        stripped = line.strip()
+        if not stripped or stripped in {"}", "});"}:
+            continue
+        if (
+            any(f"{field}." in stripped for field in PORT_TYPES)
+            or stripped.startswith(("if (", "catch (", "synchronized ("))
+            or any(token in stripped for token in (" + ", " * ", " / ", ".get("))
+        ):
+            candidates.append(stripped)
+    if not candidates:
+        candidates = [
+            line.strip()
+            for line in method.splitlines()[1:-1]
+            if line.strip() and line.strip() != "}"
+        ]
+    return list(dict.fromkeys(candidates))[:3]
+
+
+def _java_string(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+    )
+
+
+def _oracle_source(
+    scenario: Scenario,
+    issue_spec: IssueSpec,
+    index: int,
+    method_name: str,
+    source_relative: str,
+    source_text: str,
+) -> str:
+    assertions = "\n".join(
+        "                () -> assertTrue(source.contains("
+        f"\"{_java_string(fragment)}\"), "
+        f"\"missing seeded evidence: {_java_string(fragment)}\")"
+        + ("," if position < len(_oracle_fragments(source_text, method_name)) else "")
+        for position, fragment in enumerate(
+            _oracle_fragments(source_text, method_name), 1
+        )
+    )
     return f"""
         package com.tradeflow.oracle;
 
-        import static org.junit.jupiter.api.Assertions.assertEquals;
+        import static org.junit.jupiter.api.Assertions.assertAll;
+        import static org.junit.jupiter.api.Assertions.assertTrue;
+        import java.nio.file.Files;
+        import java.nio.file.Path;
+        import org.junit.jupiter.api.DisplayName;
         import org.junit.jupiter.api.Test;
 
         /**
-         * Evaluation-only oracle for {scenario.case_id}/{issue_spec.slug}.
-         * Install this source in the isolated oracle harness; it is intentionally
-         * excluded from the reviewed repository snapshot.
+         * Evaluator-only static contract oracle. It is excluded from the
+         * reviewed project snapshot.
          */
         final class {scenario.class_name}{index}OracleTest {{
             @Test
-            void {issue_spec.slug}_preserves_the_business_invariant() {{
-                OracleResult result = TradeFlowOracleHarness.run(
-                        "{scenario.case_id}", "{issue_spec.slug}");
-                assertEquals("{issue_spec.consequence}", result.observedFailure());
+            @DisplayName("触发: {_java_string(issue_spec.trigger)}；后果: {_java_string(issue_spec.consequence)}")
+            void {issue_spec.slug}_seed_is_present() throws Exception {{
+                Path repo = Path.of(System.getProperty("tradeflow.repo"));
+                String source = Files.readString(repo.resolve(
+                        "{_java_string(source_relative)}"));
+                assertAll(
+{assertions}
+                );
             }}
         }}
     """
 
 
+def _oracle_pom() -> str:
+    return """
+        <project xmlns="http://maven.apache.org/POM/4.0.0"
+                 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                 xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                                     https://maven.apache.org/xsd/maven-4.0.0.xsd">
+          <modelVersion>4.0.0</modelVersion>
+          <groupId>com.codeguard.benchmark</groupId>
+          <artifactId>tradeflow-oracle</artifactId>
+          <version>1.0.0</version>
+          <properties>
+            <maven.compiler.release>17</maven.compiler.release>
+            <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+          </properties>
+          <dependencies>
+            <dependency>
+              <groupId>org.junit.jupiter</groupId>
+              <artifactId>junit-jupiter</artifactId>
+              <version>5.10.2</version>
+              <scope>test</scope>
+            </dependency>
+          </dependencies>
+          <build>
+            <testSourceDirectory>${project.basedir}</testSourceDirectory>
+            <plugins>
+              <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+              </plugin>
+              <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                  <systemPropertyVariables>
+                    <tradeflow.repo>${project.basedir}/../repo</tradeflow.repo>
+                  </systemPropertyVariables>
+                </configuration>
+              </plugin>
+            </plugins>
+          </build>
+        </project>
+    """
+
+
 def _case_yaml(scenario: Scenario, source_relative: str, source: Path) -> dict:
+    source_text = source.read_text(encoding="utf-8")
     expected = []
     for index, spec in enumerate(scenario.issues, 1):
+        method_name = scenario.method_names[index - 1]
+        primary_reviewer = PRIMARY_REVIEWERS[(scenario.case_id, index)]
         expected.append({
             "id": f"{scenario.case_id}-issue-{index}",
             "type_keywords": list(spec.keywords),
             "file": f"{scenario.class_name}Service.java",
-            "line": _line_for(source, spec.slug),
+            "line": _line_for(source, method_name),
             "tolerance": 5,
             "severity": spec.severity,
             "note": spec.title,
             "root_cause": spec.root_cause,
             "risk_tag": spec.primary,
+            "primary_reviewer": primary_reviewer,
+            "dimension": _dimension_for(primary_reviewer),
             "evidence_anchors": [
                 f"{scenario.class_name}Controller",
                 f"{scenario.class_name}Coordinator",
-                f"{scenario.class_name}Service.{spec.slug}",
+                f"{scenario.class_name}Service.{method_name}",
+                *_call_anchors(source_text, scenario, method_name),
             ],
         })
     return {
@@ -1804,17 +2041,22 @@ def _case_yaml(scenario: Scenario, source_relative: str, source: Path) -> dict:
 def _ground_truth(
     scenario: Scenario, source_relative: str, source: Path
 ) -> dict:
+    source_text = source.read_text(encoding="utf-8")
     issues = []
     for index, spec in enumerate(scenario.issues, 1):
-        method_line = _line_for(source, spec.slug)
+        method_name = scenario.method_names[index - 1]
+        method_line = _line_for(source, method_name)
+        anchors = _call_anchors(source_text, scenario, method_name)
+        primary_reviewer = PRIMARY_REVIEWERS[(scenario.case_id, index)]
         oracle_name = f"{scenario.class_name}{index}OracleTest.java"
         issues.append({
             "id": f"{scenario.case_id}-issue-{index}",
             "title": spec.title,
-            "dimension": scenario.dimension,
+            "dimension": _dimension_for(primary_reviewer),
             "primary_risk_tag": spec.primary,
             "secondary_risk_tags": list(spec.secondary),
             "expected_reviewers": list(spec.reviewers),
+            "primary_reviewer": primary_reviewer,
             "required_knowledge": list(spec.knowledge),
             "risk_coverage": spec.coverage,
             "routing_hazard": spec.routing_hazard,
@@ -1826,16 +2068,16 @@ def _ground_truth(
             "line": method_line,
             "expected_trigger_lines": [method_line],
             "call_path": [
-                f"{scenario.class_name}Controller.{spec.slug}",
-                f"{scenario.class_name}Coordinator.{spec.slug}",
-                f"{scenario.class_name}Service.{spec.slug}",
-                _sink_for(spec.primary),
+                f"{scenario.class_name}Controller.{method_name}",
+                f"{scenario.class_name}Coordinator.{method_name}",
+                f"{scenario.class_name}Service.{method_name}",
+                *anchors,
             ],
             "evidence_anchors": [
-                f"{scenario.class_name}Service.{spec.slug}",
-                _sink_for(spec.primary),
+                f"{scenario.class_name}Service.{method_name}",
+                *anchors,
             ],
-            "fix_location": f"{scenario.class_name}Service.{spec.slug}",
+            "fix_location": f"{scenario.class_name}Service.{method_name}",
             "fix_action": spec.fix_action,
             "why_independent": (
                 "该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他"
@@ -1844,6 +2086,7 @@ def _ground_truth(
             "severity": spec.severity,
             "severity_rationale": spec.consequence,
             "oracle_test": oracle_name,
+            "oracle_mode": "executable-static-contract",
             "review_visibility": {
                 "repo_snapshot": True,
                 "oracle_test": False,
@@ -1856,27 +2099,6 @@ def _ground_truth(
         "baseline": "tradeflow-clean-v1",
         "issues": issues,
     }
-
-
-def _sink_for(tag: str) -> str:
-    return {
-        "AUTHORIZATION": "OrderRepository.findByTenantAndId",
-        "SQL_DATA_ACCESS": "OrderRepository.search",
-        "TRANSACTION_ATOMICITY": "OrderRepository.save",
-        "CONCURRENCY_CONSISTENCY": "OrderRepository.saveIfVersion",
-        "IDEMPOTENCY_RETRY": "CacheStore.put",
-        "CACHE_CONSISTENCY": "CacheStore.get",
-        "MESSAGE_DELIVERY": "EventPublisher.publish",
-        "ERROR_HANDLING": "message acknowledgement",
-        "FILE_PATH_IO": "FileStore.open",
-        "SSRF_OUTBOUND": "ExternalHttpClient.post",
-        "INJECTION": "expression/query interpreter",
-        "PERFORMANCE": "unbounded repository/client operation",
-        "AUTHENTICATION_SESSION": "authentication decision",
-        "INPUT_VALIDATION": "sensitive business operation",
-        "CONFIG_SECURITY": "tenant runtime configuration",
-        "API_CONTRACT": "domain invariant",
-    }.get(tag, "application side effect")
 
 
 def _materialize_case(scenario: Scenario) -> None:
@@ -1895,6 +2117,7 @@ def _materialize_case(scenario: Scenario) -> None:
         f"{scenario.class_name}Service.java"
     )
     source = snapshot / source_relative
+    source_text = source.read_text(encoding="utf-8")
     (case_dir / "case.yaml").write_text(
         yaml.safe_dump(
             _case_yaml(scenario, source_relative, source),
@@ -1914,10 +2137,19 @@ def _materialize_case(scenario: Scenario) -> None:
         newline="\n",
     )
     for index, spec in enumerate(scenario.issues, 1):
+        method_name = scenario.method_names[index - 1]
         _write(
             case_dir / "oracle-tests" / f"{scenario.class_name}{index}OracleTest.java",
-            _oracle_source(scenario, spec, index),
+            _oracle_source(
+                scenario,
+                spec,
+                index,
+                method_name,
+                source_relative,
+                source_text,
+            ),
         )
+    _write(case_dir / "oracle-tests" / "pom.xml", _oracle_pom())
 
 
 def _write_manifest() -> None:

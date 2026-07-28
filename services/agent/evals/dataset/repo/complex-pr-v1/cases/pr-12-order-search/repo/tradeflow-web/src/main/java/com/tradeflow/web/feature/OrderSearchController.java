@@ -14,17 +14,17 @@ public final class OrderSearchController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/search-with-sort")
     public ResponseEntity<Object> searchWithSort(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.searchWithSort(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/search-page")
     public ResponseEntity<Object> searchPage(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.searchPage(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/search-with-fallback")
     public ResponseEntity<Object> searchWithFallback(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.searchWithFallback(request));
     }

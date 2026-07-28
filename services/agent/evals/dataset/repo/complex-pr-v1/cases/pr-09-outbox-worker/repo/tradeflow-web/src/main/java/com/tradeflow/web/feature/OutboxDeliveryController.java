@@ -14,17 +14,17 @@ public final class OutboxDeliveryController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/deliver-ready-events")
     public ResponseEntity<Object> deliverReadyEvents(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.deliverReadyEvents(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/deliver-one-event")
     public ResponseEntity<Object> deliverOneEvent(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.deliverOneEvent(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/schedule-retry")
     public ResponseEntity<Object> scheduleRetry(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.scheduleRetry(request));
     }

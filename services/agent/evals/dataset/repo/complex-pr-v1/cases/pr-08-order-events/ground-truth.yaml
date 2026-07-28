@@ -10,6 +10,7 @@ issues:
   - TRANSACTION_ATOMICITY
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/MESSAGE_DELIVERY
   risk_coverage: exact
@@ -26,16 +27,23 @@ issues:
   - OrderEventsController.changeOrderStatus
   - OrderEventsCoordinator.changeOrderStatus
   - OrderEventsService.changeOrderStatus
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
   - EventPublisher.publish
+  - OrderRepository.save
   evidence_anchors:
   - OrderEventsService.changeOrderStatus
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
   - EventPublisher.publish
+  - OrderRepository.save
   fix_location: OrderEventsService.changeOrderStatus
   fix_action: 使用 transactional outbox 并在提交后投递
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 消费者观察到不存在的订单状态
   oracle_test: OrderEvents1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -48,6 +56,7 @@ issues:
   - MESSAGE_DELIVERY
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/ERROR_HANDLING
   risk_coverage: exact
@@ -64,16 +73,21 @@ issues:
   - OrderEventsController.consumeOrderEvent
   - OrderEventsCoordinator.consumeOrderEvent
   - OrderEventsService.consumeOrderEvent
-  - message acknowledgement
+  - OrderRepository.findByTenantAndId
+  - OrderRepository.save
+  - AuditSink.record
   evidence_anchors:
   - OrderEventsService.consumeOrderEvent
-  - message acknowledgement
+  - OrderRepository.findByTenantAndId
+  - OrderRepository.save
+  - AuditSink.record
   fix_location: OrderEventsService.consumeOrderEvent
   fix_action: 传播异常触发重试并配置 DLQ
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 消息 offset 前进且事件永久丢失
   oracle_test: OrderEvents2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -86,6 +100,7 @@ issues:
   - MESSAGE_DELIVERY
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/CONCURRENCY_CONSISTENCY
   risk_coverage: exact
@@ -102,16 +117,19 @@ issues:
   - OrderEventsController.applyVersionedEvent
   - OrderEventsCoordinator.applyVersionedEvent
   - OrderEventsService.applyVersionedEvent
-  - OrderRepository.saveIfVersion
+  - OrderRepository.findByTenantAndId
+  - OrderRepository.save
   evidence_anchors:
   - OrderEventsService.applyVersionedEvent
-  - OrderRepository.saveIfVersion
+  - OrderRepository.findByTenantAndId
+  - OrderRepository.save
   fix_location: OrderEventsService.applyVersionedEvent
   fix_action: 持久化最后版本并仅原子接受更大版本
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 订单回退到旧状态
   oracle_test: OrderEvents3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

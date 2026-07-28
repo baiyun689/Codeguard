@@ -19,6 +19,8 @@ expected:
   note: 使用解析后 JSON 验证 Webhook 签名
   root_cause: 签名输入不是支付方发送的原始字节
   risk_tag: INPUT_VALIDATION
+  primary_reviewer: threat_model
+  dimension: security
   evidence_anchors:
   - PaymentWebhookController
   - PaymentWebhookCoordinator
@@ -35,10 +37,14 @@ expected:
   note: Webhook 缺少重放窗口
   root_cause: 事件去重没有绑定签名时间戳和有效窗口
   risk_tag: IDEMPOTENCY_RETRY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - PaymentWebhookController
   - PaymentWebhookCoordinator
   - PaymentWebhookService.acceptWebhookEvent
+  - CacheStore.get
+  - CacheStore.put
 - id: pr-05-payment-webhook-issue-3
   type_keywords:
   - 事务
@@ -51,10 +57,15 @@ expected:
   note: 先标记回调完成再更新订单
   root_cause: 处理标记和业务状态更新顺序错误且不原子
   risk_tag: TRANSACTION_ATOMICITY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - PaymentWebhookController
   - PaymentWebhookCoordinator
   - PaymentWebhookService.applyPaymentEvent
+  - CacheStore.put
+  - OrderRepository.findByTenantAndId
+  - OrderRepository.save
 provenance:
   source: Codeguard controlled project-level benchmark
   repository_url: ''

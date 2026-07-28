@@ -15,9 +15,12 @@ public final class RefundFlowWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.refundAgainstOrder(payload);
-            case "two" -> coordinator.refundRemainingAmount(payload);
-            case "three" -> coordinator.refundConvertedAmount(payload);
+            case "refund-against-order" ->
+                    coordinator.refundAgainstOrder(payload);
+            case "refund-remaining-amount" ->
+                    coordinator.refundRemainingAmount(payload);
+            case "refund-converted-amount" ->
+                    coordinator.refundConvertedAmount(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

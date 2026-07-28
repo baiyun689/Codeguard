@@ -11,6 +11,7 @@ issues:
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: threat_model
   required_knowledge:
   - threat_model/AUTHORIZATION
   - behavior/AUTHORIZATION
@@ -26,19 +27,22 @@ issues:
   expected_trigger_lines:
   - 54
   call_path:
-  - TenantOrderUpdateController.tenantLookup
-  - TenantOrderUpdateCoordinator.tenantLookup
-  - TenantOrderUpdateService.tenantLookup
-  - OrderRepository.findByTenantAndId
+  - TenantOrderUpdateController.updateOrder
+  - TenantOrderUpdateCoordinator.updateOrder
+  - TenantOrderUpdateService.updateOrder
+  - OrderRepository.findById
+  - OrderRepository.save
   evidence_anchors:
-  - TenantOrderUpdateService.tenantLookup
-  - OrderRepository.findByTenantAndId
-  fix_location: TenantOrderUpdateService.tenantLookup
+  - TenantOrderUpdateService.updateOrder
+  - OrderRepository.findById
+  - OrderRepository.save
+  fix_location: TenantOrderUpdateService.updateOrder
   fix_action: 使用 findByTenantAndId 并以可信 TenantContext 约束查询
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 跨租户订单状态被修改
   oracle_test: TenantOrderUpdate1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -52,6 +56,7 @@ issues:
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: threat_model
   required_knowledge:
   - threat_model/INPUT_VALIDATION
   - behavior/INPUT_VALIDATION
@@ -67,31 +72,37 @@ issues:
   expected_trigger_lines:
   - 61
   call_path:
-  - TenantOrderUpdateController.mutableProjection
-  - TenantOrderUpdateCoordinator.mutableProjection
-  - TenantOrderUpdateService.mutableProjection
-  - sensitive business operation
+  - TenantOrderUpdateController.applyOrderChanges
+  - TenantOrderUpdateCoordinator.applyOrderChanges
+  - TenantOrderUpdateService.applyOrderChanges
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - OrderRepository.save
   evidence_anchors:
-  - TenantOrderUpdateService.mutableProjection
-  - sensitive business operation
-  fix_location: TenantOrderUpdateService.mutableProjection
+  - TenantOrderUpdateService.applyOrderChanges
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - OrderRepository.save
+  fix_location: TenantOrderUpdateService.applyOrderChanges
   fix_action: 使用按动作定义的命令并在领域层计算金额和状态
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 订单金额或状态机被绕过
   oracle_test: TenantOrderUpdate2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-01-tenant-order-update-issue-3
   title: 提交前发布审计副作用
-  dimension: security
+  dimension: logic
   primary_risk_tag: TRANSACTION_ATOMICITY
   secondary_risk_tags:
   - MESSAGE_DELIVERY
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/TRANSACTION_ATOMICITY
   - behavior/MESSAGE_DELIVERY
@@ -106,19 +117,26 @@ issues:
   expected_trigger_lines:
   - 69
   call_path:
-  - TenantOrderUpdateController.prematureAudit
-  - TenantOrderUpdateCoordinator.prematureAudit
-  - TenantOrderUpdateService.prematureAudit
+  - TenantOrderUpdateController.recordOrderUpdate
+  - TenantOrderUpdateCoordinator.recordOrderUpdate
+  - TenantOrderUpdateService.recordOrderUpdate
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - AuditSink.record
   - OrderRepository.save
   evidence_anchors:
-  - TenantOrderUpdateService.prematureAudit
+  - TenantOrderUpdateService.recordOrderUpdate
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - AuditSink.record
   - OrderRepository.save
-  fix_location: TenantOrderUpdateService.prematureAudit
+  fix_location: TenantOrderUpdateService.recordOrderUpdate
   fix_action: 提交后通过 outbox 发布审计事件
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 审计系统记录不存在的成功操作
   oracle_test: TenantOrderUpdate3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

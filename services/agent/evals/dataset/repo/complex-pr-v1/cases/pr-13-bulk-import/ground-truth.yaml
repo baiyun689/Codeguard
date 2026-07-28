@@ -10,6 +10,7 @@ issues:
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: threat_model
   required_knowledge:
   - threat_model/FILE_PATH_IO
   - behavior/FILE_PATH_IO
@@ -27,28 +28,32 @@ issues:
   - BulkImportController.resolveArchiveEntry
   - BulkImportCoordinator.resolveArchiveEntry
   - BulkImportService.resolveArchiveEntry
-  - FileStore.open
+  - FileStore.exportRoot
+  - TenantContext.tenantId
   evidence_anchors:
   - BulkImportService.resolveArchiveEntry
-  - FileStore.open
+  - FileStore.exportRoot
+  - TenantContext.tenantId
   fix_location: BulkImportService.resolveArchiveEntry
   fix_action: normalize 后检查根目录并限制条目和总大小
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 覆盖应用可写的任意文件
   oracle_test: BulkImport1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-13-bulk-import-issue-2
   title: 捕获行异常导致部分导入提交
-  dimension: security
+  dimension: logic
   primary_risk_tag: ERROR_HANDLING
   secondary_risk_tags:
   - TRANSACTION_ATOMICITY
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/ERROR_HANDLING
   - behavior/TRANSACTION_ATOMICITY
@@ -66,16 +71,21 @@ issues:
   - BulkImportController.importRows
   - BulkImportCoordinator.importRows
   - BulkImportService.importRows
-  - message acknowledgement
+  - EventPublisher.publish
+  - TenantContext.tenantId
+  - AuditSink.record
   evidence_anchors:
   - BulkImportService.importRows
-  - message acknowledgement
+  - EventPublisher.publish
+  - TenantContext.tenantId
+  - AuditSink.record
   fix_location: BulkImportService.importRows
   fix_action: 按明确策略回滚整个批次或返回可恢复的逐行结果
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 调用方收到成功但数据仅部分导入
   oracle_test: BulkImport2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -88,6 +98,7 @@ issues:
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: threat_model
   required_knowledge:
   - threat_model/INJECTION
   - behavior/INJECTION
@@ -105,16 +116,15 @@ issues:
   - BulkImportController.renderImportError
   - BulkImportCoordinator.renderImportError
   - BulkImportService.renderImportError
-  - expression/query interpreter
   evidence_anchors:
   - BulkImportService.renderImportError
-  - expression/query interpreter
   fix_location: BulkImportService.renderImportError
   fix_action: 按 CSV 消费场景转义公式前缀
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 运营人员打开文件时执行公式
   oracle_test: BulkImport3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

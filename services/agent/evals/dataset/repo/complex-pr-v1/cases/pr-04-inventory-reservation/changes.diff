@@ -141,24 +141,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/reserve-stock")
 +    public ResponseEntity<Object> reserveStock(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.reserveStock(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/reserve-with-local-lock")
 +    public ResponseEntity<Object> reserveWithLocalLock(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.reserveWithLocalLock(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/release-expired-reservation")
 +    public ResponseEntity<Object> releaseExpiredReservation(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.releaseExpiredReservation(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/InventoryReservationWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/InventoryReservationWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.InventoryReservationCoordinator;
@@ -176,9 +176,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.reserveStock(payload);
-+            case "two" -> coordinator.reserveWithLocalLock(payload);
-+            case "three" -> coordinator.releaseExpiredReservation(payload);
++            case "reserve-stock" ->
++                    coordinator.reserveStock(payload);
++            case "reserve-with-local-lock" ->
++                    coordinator.reserveWithLocalLock(payload);
++            case "release-expired-reservation" ->
++                    coordinator.releaseExpiredReservation(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

@@ -15,9 +15,12 @@ public final class OutboxDeliveryWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.deliverReadyEvents(payload);
-            case "two" -> coordinator.deliverOneEvent(payload);
-            case "three" -> coordinator.scheduleRetry(payload);
+            case "deliver-ready-events" ->
+                    coordinator.deliverReadyEvents(payload);
+            case "deliver-one-event" ->
+                    coordinator.deliverOneEvent(payload);
+            case "schedule-retry" ->
+                    coordinator.scheduleRetry(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

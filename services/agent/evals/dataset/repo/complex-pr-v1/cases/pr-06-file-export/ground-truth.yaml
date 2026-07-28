@@ -10,6 +10,7 @@ issues:
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: threat_model
   required_knowledge:
   - threat_model/FILE_PATH_IO
   - behavior/FILE_PATH_IO
@@ -27,9 +28,13 @@ issues:
   - FileExportController.openExport
   - FileExportCoordinator.openExport
   - FileExportService.openExport
+  - FileStore.exportRoot
+  - TenantContext.tenantId
   - FileStore.open
   evidence_anchors:
   - FileExportService.openExport
+  - FileStore.exportRoot
+  - TenantContext.tenantId
   - FileStore.open
   fix_location: FileExportService.openExport
   fix_action: 规范化并验证 startsWith 专用根目录
@@ -37,6 +42,7 @@ issues:
   severity: CRITICAL
   severity_rationale: 读取其他租户或服务器文件
   oracle_test: FileExport1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -49,6 +55,7 @@ issues:
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: threat_model
   required_knowledge:
   - threat_model/AUTHORIZATION
   - behavior/AUTHORIZATION
@@ -66,16 +73,19 @@ issues:
   - FileExportController.openOwnedExport
   - FileExportCoordinator.openOwnedExport
   - FileExportService.openOwnedExport
-  - OrderRepository.findByTenantAndId
+  - FileStore.exportRoot
+  - FileStore.open
   evidence_anchors:
   - FileExportService.openOwnedExport
-  - OrderRepository.findByTenantAndId
+  - FileStore.exportRoot
+  - FileStore.open
   fix_location: FileExportService.openOwnedExport
   fix_action: 从 TenantContext 获取主体并按资源归属查询
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 下载他人的报表
   oracle_test: FileExport2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -89,6 +99,7 @@ issues:
   expected_reviewers:
   - behavior
   - threat_model
+  primary_reviewer: threat_model
   required_knowledge:
   - behavior/CONCURRENCY_CONSISTENCY
   risk_coverage: exact
@@ -105,16 +116,23 @@ issues:
   - FileExportController.openVerifiedExport
   - FileExportCoordinator.openVerifiedExport
   - FileExportService.openVerifiedExport
-  - OrderRepository.saveIfVersion
+  - FileStore.exportRoot
+  - TenantContext.tenantId
+  - AuditSink.record
+  - FileStore.open
   evidence_anchors:
   - FileExportService.openVerifiedExport
-  - OrderRepository.saveIfVersion
+  - FileStore.exportRoot
+  - TenantContext.tenantId
+  - AuditSink.record
+  - FileStore.open
   fix_location: FileExportService.openVerifiedExport
   fix_action: 使用安全文件句柄或不可变对象存储键消除 TOCTOU
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 打开与已授权文件不同的对象
   oracle_test: FileExport3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

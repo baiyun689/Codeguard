@@ -19,6 +19,8 @@ expected:
   note: 租户模板进入表达式求值
   root_cause: 用户可控模板作为表达式源码解析
   risk_tag: INJECTION
+  primary_reviewer: threat_model
+  dimension: security
   evidence_anchors:
   - NotificationTemplateController
   - NotificationTemplateCoordinator
@@ -35,10 +37,14 @@ expected:
   note: 退订查询遗漏租户
   root_cause: 退订 token 解析后只按 subscriptionId 查询
   risk_tag: AUTHORIZATION
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - NotificationTemplateController
   - NotificationTemplateCoordinator
   - NotificationTemplateService.unsubscribeRecipient
+  - UserRepository.findById
+  - UserRepository.save
 - id: pr-16-notification-template-issue-3
   type_keywords:
   - 重试
@@ -51,10 +57,13 @@ expected:
   note: 通知重试缺少业务幂等键
   root_cause: 每次尝试生成新的外部 requestId
   risk_tag: IDEMPOTENCY_RETRY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - NotificationTemplateController
   - NotificationTemplateCoordinator
   - NotificationTemplateService.sendNotification
+  - EventPublisher.publish
 provenance:
   source: Codeguard controlled project-level benchmark
   repository_url: ''

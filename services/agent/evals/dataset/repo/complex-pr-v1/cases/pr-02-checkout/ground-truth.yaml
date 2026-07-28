@@ -9,6 +9,7 @@ issues:
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/TRANSACTION_ATOMICITY
   risk_coverage: exact
@@ -22,19 +23,28 @@ issues:
   expected_trigger_lines:
   - 54
   call_path:
-  - CheckoutController.uncompensatedCharge
-  - CheckoutCoordinator.uncompensatedCharge
-  - CheckoutService.uncompensatedCharge
-  - OrderRepository.save
+  - CheckoutController.placeOrder
+  - CheckoutCoordinator.placeOrder
+  - CheckoutService.placeOrder
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - PaymentGateway.charge
+  - InventoryRepository.findBySku
+  - InventoryRepository.reserveIfAvailable
   evidence_anchors:
-  - CheckoutService.uncompensatedCharge
-  - OrderRepository.save
-  fix_location: CheckoutService.uncompensatedCharge
+  - CheckoutService.placeOrder
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - PaymentGateway.charge
+  - InventoryRepository.findBySku
+  - InventoryRepository.reserveIfAvailable
+  fix_location: CheckoutService.placeOrder
   fix_action: 先可靠预留或实现持久化 Saga/补偿退款
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 用户被扣款但订单无法履约
   oracle_test: Checkout1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -46,6 +56,7 @@ issues:
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/TRANSACTION_ATOMICITY
   risk_coverage: exact
@@ -59,19 +70,28 @@ issues:
   expected_trigger_lines:
   - 64
   call_path:
-  - CheckoutController.localTransaction
-  - CheckoutCoordinator.localTransaction
-  - CheckoutService.localTransaction
+  - CheckoutController.completeCheckout
+  - CheckoutCoordinator.completeCheckout
+  - CheckoutService.completeCheckout
+  - CheckoutService.persistCheckout
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
   - OrderRepository.save
+  - OutboxRepository.save
   evidence_anchors:
-  - CheckoutService.localTransaction
+  - CheckoutService.completeCheckout
+  - CheckoutService.persistCheckout
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
   - OrderRepository.save
-  fix_location: CheckoutService.localTransaction
+  - OutboxRepository.save
+  fix_location: CheckoutService.completeCheckout
   fix_action: 将事务 seam 移到独立 Spring bean 的公开入口
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 预期原子更新可能部分提交
   oracle_test: Checkout2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -83,6 +103,7 @@ issues:
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/IDEMPOTENCY_RETRY
   risk_coverage: exact
@@ -92,23 +113,30 @@ issues:
   trigger: 两个租户使用相同 requestId
   observable_consequence: 一个租户收到另一租户的支付结果或请求被错误抑制
   file: tradeflow-application/src/main/java/com/tradeflow/application/feature/CheckoutService.java
-  line: 76
+  line: 79
   expected_trigger_lines:
-  - 76
+  - 79
   call_path:
-  - CheckoutController.sharedIdempotency
-  - CheckoutCoordinator.sharedIdempotency
-  - CheckoutService.sharedIdempotency
+  - CheckoutController.submitPayment
+  - CheckoutCoordinator.submitPayment
+  - CheckoutService.submitPayment
+  - CacheStore.get
+  - PaymentGateway.charge
+  - TenantContext.tenantId
   - CacheStore.put
   evidence_anchors:
-  - CheckoutService.sharedIdempotency
+  - CheckoutService.submitPayment
+  - CacheStore.get
+  - PaymentGateway.charge
+  - TenantContext.tenantId
   - CacheStore.put
-  fix_location: CheckoutService.sharedIdempotency
+  fix_location: CheckoutService.submitPayment
   fix_action: 以 tenantId、业务动作和 requestId 共同组成唯一键
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 一个租户收到另一租户的支付结果或请求被错误抑制
   oracle_test: Checkout3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

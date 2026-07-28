@@ -15,9 +15,12 @@ public final class PaymentWebhookWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.verifyWebhookSignature(payload);
-            case "two" -> coordinator.acceptWebhookEvent(payload);
-            case "three" -> coordinator.applyPaymentEvent(payload);
+            case "verify-webhook-signature" ->
+                    coordinator.verifyWebhookSignature(payload);
+            case "accept-webhook-event" ->
+                    coordinator.acceptWebhookEvent(payload);
+            case "apply-payment-event" ->
+                    coordinator.applyPaymentEvent(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

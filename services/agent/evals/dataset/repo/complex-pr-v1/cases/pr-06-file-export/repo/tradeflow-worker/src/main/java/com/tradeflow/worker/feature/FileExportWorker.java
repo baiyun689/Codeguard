@@ -15,9 +15,12 @@ public final class FileExportWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.openExport(payload);
-            case "two" -> coordinator.openOwnedExport(payload);
-            case "three" -> coordinator.openVerifiedExport(payload);
+            case "open-export" ->
+                    coordinator.openExport(payload);
+            case "open-owned-export" ->
+                    coordinator.openOwnedExport(payload);
+            case "open-verified-export" ->
+                    coordinator.openVerifiedExport(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

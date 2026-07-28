@@ -15,9 +15,12 @@ public final class ShipmentIntegrationWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.createShipment(payload);
-            case "two" -> coordinator.retryShipment(payload);
-            case "three" -> coordinator.createShipmentWithTimeout(payload);
+            case "create-shipment" ->
+                    coordinator.createShipment(payload);
+            case "retry-shipment" ->
+                    coordinator.retryShipment(payload);
+            case "create-shipment-with-timeout" ->
+                    coordinator.createShipmentWithTimeout(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

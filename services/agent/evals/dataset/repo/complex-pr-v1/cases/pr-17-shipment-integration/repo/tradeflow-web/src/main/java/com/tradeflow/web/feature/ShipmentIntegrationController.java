@@ -14,17 +14,17 @@ public final class ShipmentIntegrationController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/create-shipment")
     public ResponseEntity<Object> createShipment(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.createShipment(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/retry-shipment")
     public ResponseEntity<Object> retryShipment(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.retryShipment(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/create-shipment-with-timeout")
     public ResponseEntity<Object> createShipmentWithTimeout(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.createShipmentWithTimeout(request));
     }

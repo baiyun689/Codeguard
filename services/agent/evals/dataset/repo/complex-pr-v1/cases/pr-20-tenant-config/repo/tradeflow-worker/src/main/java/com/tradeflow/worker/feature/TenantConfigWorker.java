@@ -15,9 +15,12 @@ public final class TenantConfigWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.loadTenantSecret(payload);
-            case "two" -> coordinator.reloadConfiguration(payload);
-            case "three" -> coordinator.publishConfiguration(payload);
+            case "load-tenant-secret" ->
+                    coordinator.loadTenantSecret(payload);
+            case "reload-configuration" ->
+                    coordinator.reloadConfiguration(payload);
+            case "publish-configuration" ->
+                    coordinator.publishConfiguration(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

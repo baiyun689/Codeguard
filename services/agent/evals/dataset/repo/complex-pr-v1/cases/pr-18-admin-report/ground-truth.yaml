@@ -3,22 +3,23 @@ project: TradeFlow
 baseline: tradeflow-clean-v1
 issues:
 - id: pr-18-admin-report-issue-1
-  title: 异步报表路径绕过管理员鉴权
-  dimension: security
+  title: 报表导出信任请求租户
+  dimension: logic
   primary_risk_tag: AUTHORIZATION
   secondary_risk_tags: []
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - threat_model/AUTHORIZATION
   - behavior/AUTHORIZATION
   risk_coverage: exact
   routing_hazard: true
   taxonomy_gap: null
-  root_cause: 鉴权仅位于 Controller，worker 公开调用同一服务时无等价检查
-  trigger: 低权限用户能投递导出任务
-  observable_consequence: 导出全租户敏感报表
+  root_cause: 查询租户直接取自可控请求而非可信身份上下文
+  trigger: 调用方提交另一租户的 tenantId
+  observable_consequence: 导出其他租户的订单明细
   file: tradeflow-application/src/main/java/com/tradeflow/application/feature/AdminReportService.java
   line: 54
   expected_trigger_lines:
@@ -27,28 +28,30 @@ issues:
   - AdminReportController.runScheduledExport
   - AdminReportCoordinator.runScheduledExport
   - AdminReportService.runScheduledExport
-  - OrderRepository.findByTenantAndId
+  - OrderRepository.search
   evidence_anchors:
   - AdminReportService.runScheduledExport
-  - OrderRepository.findByTenantAndId
+  - OrderRepository.search
   fix_location: AdminReportService.runScheduledExport
-  fix_action: 在应用用例 seam 强制授权
+  fix_action: 只从 TenantContext 获取租户并在查询层强制过滤
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
-  severity_rationale: 导出全租户敏感报表
+  severity_rationale: 导出其他租户的订单明细
   oracle_test: AdminReport1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-18-admin-report-issue-2
   title: 报表全量加载导致内存放大
-  dimension: security
+  dimension: quality
   primary_risk_tag: PERFORMANCE
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
   - maintainability
+  primary_reviewer: maintainability
   required_knowledge:
   - behavior/PERFORMANCE
   - maintainability/PERFORMANCE
@@ -66,28 +69,32 @@ issues:
   - AdminReportController.renderFullReport
   - AdminReportCoordinator.renderFullReport
   - AdminReportService.renderFullReport
-  - unbounded repository/client operation
+  - OrderRepository.search
+  - TenantContext.tenantId
   evidence_anchors:
   - AdminReportService.renderFullReport
-  - unbounded repository/client operation
+  - OrderRepository.search
+  - TenantContext.tenantId
   fix_location: AdminReportService.renderFullReport
   fix_action: 流式分页、背压和导出上限
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 堆内存耗尽并影响在线请求
   oracle_test: AdminReport2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-18-admin-report-issue-3
   title: 报表字段未防 CSV 注入
-  dimension: security
+  dimension: logic
   primary_risk_tag: INJECTION
   secondary_risk_tags: []
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - threat_model/INJECTION
   - behavior/INJECTION
@@ -105,16 +112,15 @@ issues:
   - AdminReportController.renderReportRow
   - AdminReportCoordinator.renderReportRow
   - AdminReportService.renderReportRow
-  - expression/query interpreter
   evidence_anchors:
   - AdminReportService.renderReportRow
-  - expression/query interpreter
   fix_location: AdminReportService.renderReportRow
   fix_action: 转义公式前缀并采用安全导出格式
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 管理员打开报表时执行公式
   oracle_test: AdminReport3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

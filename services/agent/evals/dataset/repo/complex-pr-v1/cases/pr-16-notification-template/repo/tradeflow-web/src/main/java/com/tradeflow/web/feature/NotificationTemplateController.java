@@ -14,17 +14,17 @@ public final class NotificationTemplateController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/render-notification")
     public ResponseEntity<Object> renderNotification(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.renderNotification(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/unsubscribe-recipient")
     public ResponseEntity<Object> unsubscribeRecipient(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.unsubscribeRecipient(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/send-notification")
     public ResponseEntity<Object> sendNotification(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.sendNotification(request));
     }

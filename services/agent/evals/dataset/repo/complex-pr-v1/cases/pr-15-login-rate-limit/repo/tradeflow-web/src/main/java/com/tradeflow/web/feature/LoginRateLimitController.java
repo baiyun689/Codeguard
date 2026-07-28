@@ -14,17 +14,17 @@ public final class LoginRateLimitController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/count-by-client-address")
     public ResponseEntity<Object> countByClientAddress(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.countByClientAddress(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/record-login-failure")
     public ResponseEntity<Object> recordLoginFailure(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.recordLoginFailure(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/check-rate-limit")
     public ResponseEntity<Object> checkRateLimit(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.checkRateLimit(request));
     }

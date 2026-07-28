@@ -19,10 +19,14 @@ expected:
   note: 租户配置回退暴露全局密钥
   root_cause: 租户缺失 secret 时返回全局生产 secret
   risk_tag: CONFIG_SECURITY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - TenantConfigController
   - TenantConfigCoordinator
   - TenantConfigService.loadTenantSecret
+  - CacheStore.get
+  - TenantContext.tenantId
 - id: pr-20-tenant-config-issue-2
   type_keywords:
   - 配置
@@ -35,6 +39,8 @@ expected:
   note: 共享配置 Map 并发修改
   root_cause: 请求线程读取的可变 Map 被 reload 原地更新
   risk_tag: CONCURRENCY_CONSISTENCY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - TenantConfigController
   - TenantConfigCoordinator
@@ -51,10 +57,13 @@ expected:
   note: 配置未构造完成就发布引用
   root_cause: reload 在填充所有字段前替换可见引用
   risk_tag: IDEMPOTENCY_RETRY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - TenantConfigController
   - TenantConfigCoordinator
   - TenantConfigService.publishConfiguration
+  - TenantContext.tenantId
 provenance:
   source: Codeguard controlled project-level benchmark
   repository_url: ''

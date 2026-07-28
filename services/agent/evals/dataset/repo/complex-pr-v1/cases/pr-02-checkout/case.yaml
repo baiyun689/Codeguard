@@ -19,10 +19,17 @@ expected:
   note: 扣款后库存失败无补偿
   root_cause: 不可逆支付先于库存预留且失败路径没有退款补偿
   risk_tag: TRANSACTION_ATOMICITY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - CheckoutController
   - CheckoutCoordinator
-  - CheckoutService.uncompensatedCharge
+  - CheckoutService.placeOrder
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - PaymentGateway.charge
+  - InventoryRepository.findBySku
+  - InventoryRepository.reserveIfAvailable
 - id: pr-02-checkout-issue-2
   type_keywords:
   - Transactional
@@ -35,26 +42,39 @@ expected:
   note: 事务方法通过同类调用绕过代理
   root_cause: 事务方法由同一实例直接调用
   risk_tag: TRANSACTION_ATOMICITY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - CheckoutController
   - CheckoutCoordinator
-  - CheckoutService.localTransaction
+  - CheckoutService.completeCheckout
+  - CheckoutService.persistCheckout
+  - OrderRepository.findByTenantAndId
+  - TenantContext.tenantId
+  - OrderRepository.save
+  - OutboxRepository.save
 - id: pr-02-checkout-issue-3
   type_keywords:
   - 幂等
   - tenant
   - requestId
   file: CheckoutService.java
-  line: 76
+  line: 79
   tolerance: 5
   severity: CRITICAL
   note: 幂等键未包含租户
   root_cause: 全局缓存键只使用客户端 requestId
   risk_tag: IDEMPOTENCY_RETRY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - CheckoutController
   - CheckoutCoordinator
-  - CheckoutService.sharedIdempotency
+  - CheckoutService.submitPayment
+  - CacheStore.get
+  - PaymentGateway.charge
+  - TenantContext.tenantId
+  - CacheStore.put
 provenance:
   source: Codeguard controlled project-level benchmark
   repository_url: ''

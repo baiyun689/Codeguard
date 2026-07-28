@@ -15,9 +15,12 @@ public final class CheckoutWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.uncompensatedCharge(payload);
-            case "two" -> coordinator.localTransaction(payload);
-            case "three" -> coordinator.sharedIdempotency(payload);
+            case "place-order" ->
+                    coordinator.placeOrder(payload);
+            case "complete-checkout" ->
+                    coordinator.completeCheckout(payload);
+            case "submit-payment" ->
+                    coordinator.submitPayment(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

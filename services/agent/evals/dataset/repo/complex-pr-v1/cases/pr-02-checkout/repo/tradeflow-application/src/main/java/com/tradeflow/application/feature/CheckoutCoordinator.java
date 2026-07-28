@@ -18,18 +18,18 @@ public final class CheckoutCoordinator {
         this.context = context;
     }
 
-    public Object uncompensatedCharge(Map<String, String> request) {
-        audit.record(context.tenantId(), "CHECKOUT", "uncompensatedCharge");
-        return service.uncompensatedCharge(request);
+    public Object placeOrder(Map<String, String> request) {
+        audit.record(context.tenantId(), "CHECKOUT", "placeOrder");
+        return service.placeOrder(request);
     }
 
-    public Object localTransaction(Map<String, String> request) {
-        audit.record(context.tenantId(), "CHECKOUT", "localTransaction");
-        return service.localTransaction(request);
+    public Object completeCheckout(Map<String, String> request) {
+        audit.record(context.tenantId(), "CHECKOUT", "completeCheckout");
+        return service.completeCheckout(request);
     }
 
-    public Object sharedIdempotency(Map<String, String> request) {
-        audit.record(context.tenantId(), "CHECKOUT", "sharedIdempotency");
-        return service.sharedIdempotency(request);
+    public Object submitPayment(Map<String, String> request) {
+        audit.record(context.tenantId(), "CHECKOUT", "submitPayment");
+        return service.submitPayment(request);
     }
 }

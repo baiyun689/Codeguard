@@ -14,17 +14,17 @@ public final class BulkImportController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/resolve-archive-entry")
     public ResponseEntity<Object> resolveArchiveEntry(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.resolveArchiveEntry(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/import-rows")
     public ResponseEntity<Object> importRows(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.importRows(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/render-import-error")
     public ResponseEntity<Object> renderImportError(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.renderImportError(request));
     }

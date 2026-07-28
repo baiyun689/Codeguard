@@ -138,24 +138,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/resolve-archive-entry")
 +    public ResponseEntity<Object> resolveArchiveEntry(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.resolveArchiveEntry(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/import-rows")
 +    public ResponseEntity<Object> importRows(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.importRows(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/render-import-error")
 +    public ResponseEntity<Object> renderImportError(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.renderImportError(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/BulkImportWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/BulkImportWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.BulkImportCoordinator;
@@ -173,9 +173,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.resolveArchiveEntry(payload);
-+            case "two" -> coordinator.importRows(payload);
-+            case "three" -> coordinator.renderImportError(payload);
++            case "resolve-archive-entry" ->
++                    coordinator.resolveArchiveEntry(payload);
++            case "import-rows" ->
++                    coordinator.importRows(payload);
++            case "render-import-error" ->
++                    coordinator.renderImportError(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

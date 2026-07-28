@@ -15,9 +15,12 @@ public final class UserInvitationWorker implements WorkerMarker {
 
     public Object execute(String operation, Map<String, String> payload) {
         return switch (operation) {
-            case "one" -> coordinator.inviteTenantMember(payload);
-            case "two" -> coordinator.inviteWithRoleCheck(payload);
-            case "three" -> coordinator.sendInvitation(payload);
+            case "invite-tenant-member" ->
+                    coordinator.inviteTenantMember(payload);
+            case "invite-with-role-check" ->
+                    coordinator.inviteWithRoleCheck(payload);
+            case "send-invitation" ->
+                    coordinator.sendInvitation(payload);
             default -> throw new IllegalArgumentException("unknown operation");
         };
     }

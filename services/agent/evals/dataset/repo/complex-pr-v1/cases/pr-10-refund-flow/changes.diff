@@ -138,24 +138,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/refund-against-order")
 +    public ResponseEntity<Object> refundAgainstOrder(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.refundAgainstOrder(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/refund-remaining-amount")
 +    public ResponseEntity<Object> refundRemainingAmount(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.refundRemainingAmount(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/refund-converted-amount")
 +    public ResponseEntity<Object> refundConvertedAmount(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.refundConvertedAmount(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/RefundFlowWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/RefundFlowWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.RefundFlowCoordinator;
@@ -173,9 +173,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.refundAgainstOrder(payload);
-+            case "two" -> coordinator.refundRemainingAmount(payload);
-+            case "three" -> coordinator.refundConvertedAmount(payload);
++            case "refund-against-order" ->
++                    coordinator.refundAgainstOrder(payload);
++            case "refund-remaining-amount" ->
++                    coordinator.refundRemainingAmount(payload);
++            case "refund-converted-amount" ->
++                    coordinator.refundConvertedAmount(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

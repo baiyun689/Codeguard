@@ -11,6 +11,7 @@ issues:
   expected_reviewers:
   - behavior
   - threat_model
+  primary_reviewer: threat_model
   required_knowledge:
   - behavior/CACHE_CONSISTENCY
   - behavior/AUTHORIZATION
@@ -39,18 +40,20 @@ issues:
   severity: CRITICAL
   severity_rationale: 读取另一租户价格或配置
   oracle_test: ProductCache1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-14-product-cache-issue-2
   title: 事务提交前驱逐缓存
-  dimension: security
+  dimension: logic
   primary_risk_tag: TRANSACTION_ATOMICITY
   secondary_risk_tags:
   - CACHE_CONSISTENCY
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/TRANSACTION_ATOMICITY
   - behavior/CACHE_CONSISTENCY
@@ -68,27 +71,33 @@ issues:
   - ProductCacheController.updateProduct
   - ProductCacheCoordinator.updateProduct
   - ProductCacheService.updateProduct
-  - OrderRepository.save
+  - TenantContext.tenantId
+  - CacheStore.evict
+  - EventPublisher.publish
   evidence_anchors:
   - ProductCacheService.updateProduct
-  - OrderRepository.save
+  - TenantContext.tenantId
+  - CacheStore.evict
+  - EventPublisher.publish
   fix_location: ProductCacheService.updateProduct
   fix_action: 提交后发布失效事件
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 缓存固化未提交状态或长期不一致
   oracle_test: ProductCache2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-14-product-cache-issue-3
   title: 创建后未清除 negative cache
-  dimension: security
+  dimension: logic
   primary_risk_tag: CACHE_CONSISTENCY
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/CACHE_CONSISTENCY
   risk_coverage: exact
@@ -105,9 +114,13 @@ issues:
   - ProductCacheController.createProduct
   - ProductCacheCoordinator.createProduct
   - ProductCacheService.createProduct
+  - TenantContext.tenantId
+  - EventPublisher.publish
   - CacheStore.get
   evidence_anchors:
   - ProductCacheService.createProduct
+  - TenantContext.tenantId
+  - EventPublisher.publish
   - CacheStore.get
   fix_location: ProductCacheService.createProduct
   fix_action: 创建提交后驱逐 negative cache
@@ -115,6 +128,7 @@ issues:
   severity: WARNING
   severity_rationale: 有效商品在 TTL 内持续显示不存在
   oracle_test: ProductCache3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

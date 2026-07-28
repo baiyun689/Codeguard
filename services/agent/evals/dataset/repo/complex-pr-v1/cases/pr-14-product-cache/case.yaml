@@ -19,10 +19,13 @@ expected:
   note: 商品缓存键遗漏租户
   root_cause: 缓存 key 只使用商品 ID
   risk_tag: CACHE_CONSISTENCY
+  primary_reviewer: threat_model
+  dimension: security
   evidence_anchors:
   - ProductCacheController
   - ProductCacheCoordinator
   - ProductCacheService.loadProduct
+  - CacheStore.get
 - id: pr-14-product-cache-issue-2
   type_keywords:
   - 缓存
@@ -35,10 +38,15 @@ expected:
   note: 事务提交前驱逐缓存
   root_cause: 更新事务尚未成功就向其他实例广播失效
   risk_tag: TRANSACTION_ATOMICITY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - ProductCacheController
   - ProductCacheCoordinator
   - ProductCacheService.updateProduct
+  - TenantContext.tenantId
+  - CacheStore.evict
+  - EventPublisher.publish
 - id: pr-14-product-cache-issue-3
   type_keywords:
   - negative cache
@@ -51,10 +59,15 @@ expected:
   note: 创建后未清除 negative cache
   root_cause: 未找到结果被缓存，创建路径不驱逐该 key
   risk_tag: CACHE_CONSISTENCY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - ProductCacheController
   - ProductCacheCoordinator
   - ProductCacheService.createProduct
+  - TenantContext.tenantId
+  - EventPublisher.publish
+  - CacheStore.get
 provenance:
   source: Codeguard controlled project-level benchmark
   repository_url: ''

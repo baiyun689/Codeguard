@@ -19,10 +19,15 @@ expected:
   note: 导出路径可逃逸租户目录
   root_cause: resolve 后未 normalize 并验证根目录
   risk_tag: FILE_PATH_IO
+  primary_reviewer: threat_model
+  dimension: security
   evidence_anchors:
   - FileExportController
   - FileExportCoordinator
   - FileExportService.openExport
+  - FileStore.exportRoot
+  - TenantContext.tenantId
+  - FileStore.open
 - id: pr-06-file-export-issue-2
   type_keywords:
   - 越权
@@ -35,10 +40,14 @@ expected:
   note: 导出授权信任请求 owner
   root_cause: 资源所有者来自调用方而非可信身份上下文
   risk_tag: AUTHORIZATION
+  primary_reviewer: threat_model
+  dimension: security
   evidence_anchors:
   - FileExportController
   - FileExportCoordinator
   - FileExportService.openOwnedExport
+  - FileStore.exportRoot
+  - FileStore.open
 - id: pr-06-file-export-issue-3
   type_keywords:
   - TOCTOU
@@ -51,10 +60,16 @@ expected:
   note: 检查与打开之间存在文件竞态
   root_cause: 权限检查和实际打开使用两个独立路径解析步骤
   risk_tag: CONCURRENCY_CONSISTENCY
+  primary_reviewer: threat_model
+  dimension: security
   evidence_anchors:
   - FileExportController
   - FileExportCoordinator
   - FileExportService.openVerifiedExport
+  - FileStore.exportRoot
+  - TenantContext.tenantId
+  - AuditSink.record
+  - FileStore.open
 provenance:
   source: Codeguard controlled project-level benchmark
   repository_url: ''

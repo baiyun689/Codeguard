@@ -136,24 +136,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/count-by-client-address")
 +    public ResponseEntity<Object> countByClientAddress(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.countByClientAddress(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/record-login-failure")
 +    public ResponseEntity<Object> recordLoginFailure(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.recordLoginFailure(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/check-rate-limit")
 +    public ResponseEntity<Object> checkRateLimit(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.checkRateLimit(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/LoginRateLimitWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/LoginRateLimitWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.LoginRateLimitCoordinator;
@@ -171,9 +171,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.countByClientAddress(payload);
-+            case "two" -> coordinator.recordLoginFailure(payload);
-+            case "three" -> coordinator.checkRateLimit(payload);
++            case "count-by-client-address" ->
++                    coordinator.countByClientAddress(payload);
++            case "record-login-failure" ->
++                    coordinator.recordLoginFailure(payload);
++            case "check-rate-limit" ->
++                    coordinator.checkRateLimit(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

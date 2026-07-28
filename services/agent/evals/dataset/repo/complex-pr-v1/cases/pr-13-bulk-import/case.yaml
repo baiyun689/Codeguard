@@ -19,10 +19,14 @@ expected:
   note: ZIP 条目逃逸导入目录
   root_cause: entry name 直接 resolve 到目标目录
   risk_tag: FILE_PATH_IO
+  primary_reviewer: threat_model
+  dimension: security
   evidence_anchors:
   - BulkImportController
   - BulkImportCoordinator
   - BulkImportService.resolveArchiveEntry
+  - FileStore.exportRoot
+  - TenantContext.tenantId
 - id: pr-13-bulk-import-issue-2
   type_keywords:
   - 事务
@@ -35,10 +39,15 @@ expected:
   note: 捕获行异常导致部分导入提交
   root_cause: 行级异常被吞且外层事务继续提交
   risk_tag: ERROR_HANDLING
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - BulkImportController
   - BulkImportCoordinator
   - BulkImportService.importRows
+  - EventPublisher.publish
+  - TenantContext.tenantId
+  - AuditSink.record
 - id: pr-13-bulk-import-issue-3
   type_keywords:
   - CSV注入
@@ -51,6 +60,8 @@ expected:
   note: 错误报告存在 CSV 公式注入
   root_cause: 外部字段以公式前缀原样写入 CSV
   risk_tag: INJECTION
+  primary_reviewer: threat_model
+  dimension: security
   evidence_anchors:
   - BulkImportController
   - BulkImportCoordinator

@@ -19,10 +19,13 @@ expected:
   note: JWT kid 可控制远程密钥地址
   root_cause: 未受信任 kid 被拼成任意 URI
   risk_tag: SSRF_OUTBOUND
+  primary_reviewer: threat_model
+  dimension: security
   evidence_anchors:
   - JwtKeyRotationController
   - JwtKeyRotationCoordinator
   - JwtKeyRotationService.loadSigningKey
+  - ExternalHttpClient.get
 - id: pr-07-jwt-key-rotation-issue-2
   type_keywords:
   - 过期
@@ -35,6 +38,8 @@ expected:
   note: JWT 过期时间单位比较错误
   root_cause: 秒级 exp 与毫秒级当前时间直接比较
   risk_tag: IDEMPOTENCY_RETRY
+  primary_reviewer: behavior
+  dimension: logic
   evidence_anchors:
   - JwtKeyRotationController
   - JwtKeyRotationCoordinator
@@ -51,10 +56,14 @@ expected:
   note: 角色缓存键遗漏租户
   root_cause: 角色缓存只按用户 ID 建键
   risk_tag: CACHE_CONSISTENCY
+  primary_reviewer: threat_model
+  dimension: security
   evidence_anchors:
   - JwtKeyRotationController
   - JwtKeyRotationCoordinator
   - JwtKeyRotationService.loadTenantRoles
+  - CacheStore.get
+  - CacheStore.put
 provenance:
   source: Codeguard controlled project-level benchmark
   repository_url: ''

@@ -136,24 +136,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/verify-webhook-signature")
 +    public ResponseEntity<Object> verifyWebhookSignature(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.verifyWebhookSignature(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/accept-webhook-event")
 +    public ResponseEntity<Object> acceptWebhookEvent(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.acceptWebhookEvent(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/apply-payment-event")
 +    public ResponseEntity<Object> applyPaymentEvent(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.applyPaymentEvent(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/PaymentWebhookWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/PaymentWebhookWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.PaymentWebhookCoordinator;
@@ -171,9 +171,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.verifyWebhookSignature(payload);
-+            case "two" -> coordinator.acceptWebhookEvent(payload);
-+            case "three" -> coordinator.applyPaymentEvent(payload);
++            case "verify-webhook-signature" ->
++                    coordinator.verifyWebhookSignature(payload);
++            case "accept-webhook-event" ->
++                    coordinator.acceptWebhookEvent(payload);
++            case "apply-payment-event" ->
++                    coordinator.applyPaymentEvent(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }

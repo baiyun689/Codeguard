@@ -4,13 +4,14 @@ baseline: tradeflow-clean-v1
 issues:
 - id: pr-20-tenant-config-issue-1
   title: 租户配置回退暴露全局密钥
-  dimension: security
+  dimension: logic
   primary_risk_tag: CONFIG_SECURITY
   secondary_risk_tags:
   - DATA_EXPOSURE
   expected_reviewers:
   - threat_model
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - threat_model/CONFIG_SECURITY
   - threat_model/DATA_EXPOSURE
@@ -29,27 +30,31 @@ issues:
   - TenantConfigController.loadTenantSecret
   - TenantConfigCoordinator.loadTenantSecret
   - TenantConfigService.loadTenantSecret
-  - tenant runtime configuration
+  - CacheStore.get
+  - TenantContext.tenantId
   evidence_anchors:
   - TenantConfigService.loadTenantSecret
-  - tenant runtime configuration
+  - CacheStore.get
+  - TenantContext.tenantId
   fix_location: TenantConfigService.loadTenantSecret
   fix_action: 缺失安全配置时拒绝服务并使用租户隔离 secret
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: CRITICAL
   severity_rationale: 租户获得共享高权限凭据
   oracle_test: TenantConfig1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-20-tenant-config-issue-2
   title: 共享配置 Map 并发修改
-  dimension: security
+  dimension: logic
   primary_risk_tag: CONCURRENCY_CONSISTENCY
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/CONCURRENCY_CONSISTENCY
   risk_coverage: exact
@@ -66,27 +71,27 @@ issues:
   - TenantConfigController.reloadConfiguration
   - TenantConfigCoordinator.reloadConfiguration
   - TenantConfigService.reloadConfiguration
-  - OrderRepository.saveIfVersion
   evidence_anchors:
   - TenantConfigService.reloadConfiguration
-  - OrderRepository.saveIfVersion
   fix_location: TenantConfigService.reloadConfiguration
   fix_action: 构建不可变快照后用原子引用整体替换
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 读取到混合版本或抛出并发异常
   oracle_test: TenantConfig2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-20-tenant-config-issue-3
   title: 配置未构造完成就发布引用
-  dimension: security
+  dimension: logic
   primary_risk_tag: IDEMPOTENCY_RETRY
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/IDEMPOTENCY_RETRY
   risk_coverage: gap
@@ -103,16 +108,17 @@ issues:
   - TenantConfigController.publishConfiguration
   - TenantConfigCoordinator.publishConfiguration
   - TenantConfigService.publishConfiguration
-  - CacheStore.put
+  - TenantContext.tenantId
   evidence_anchors:
   - TenantConfigService.publishConfiguration
-  - CacheStore.put
+  - TenantContext.tenantId
   fix_location: TenantConfigService.publishConfiguration
   fix_action: 离线验证完整快照后一次原子发布
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 认证或支付读取到半初始化配置
   oracle_test: TenantConfig3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

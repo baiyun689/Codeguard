@@ -10,6 +10,7 @@ issues:
   - MESSAGE_DELIVERY
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/CONCURRENCY_CONSISTENCY
   risk_coverage: exact
@@ -26,16 +27,19 @@ issues:
   - OutboxDeliveryController.deliverReadyEvents
   - OutboxDeliveryCoordinator.deliverReadyEvents
   - OutboxDeliveryService.deliverReadyEvents
-  - OrderRepository.saveIfVersion
+  - OutboxRepository.findReady
+  - EventPublisher.publish
   evidence_anchors:
   - OutboxDeliveryService.deliverReadyEvents
-  - OrderRepository.saveIfVersion
+  - OutboxRepository.findReady
+  - EventPublisher.publish
   fix_location: OutboxDeliveryService.deliverReadyEvents
   fix_action: 原子 claim、数据库锁或租约领取
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 相同业务事件重复投递
   oracle_test: OutboxDelivery1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -48,6 +52,7 @@ issues:
   - TRANSACTION_ATOMICITY
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/MESSAGE_DELIVERY
   risk_coverage: exact
@@ -64,9 +69,13 @@ issues:
   - OutboxDeliveryController.deliverOneEvent
   - OutboxDeliveryCoordinator.deliverOneEvent
   - OutboxDeliveryService.deliverOneEvent
+  - OutboxRepository.findReady
+  - OutboxRepository.save
   - EventPublisher.publish
   evidence_anchors:
   - OutboxDeliveryService.deliverOneEvent
+  - OutboxRepository.findReady
+  - OutboxRepository.save
   - EventPublisher.publish
   fix_location: OutboxDeliveryService.deliverOneEvent
   fix_action: 确认成功后更新，或让未确认状态可安全重试
@@ -74,6 +83,7 @@ issues:
   severity: WARNING
   severity_rationale: 事件被永久标记完成但实际未送达
   oracle_test: OutboxDelivery2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -85,6 +95,7 @@ issues:
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/IDEMPOTENCY_RETRY
   risk_coverage: gap
@@ -101,16 +112,19 @@ issues:
   - OutboxDeliveryController.scheduleRetry
   - OutboxDeliveryCoordinator.scheduleRetry
   - OutboxDeliveryService.scheduleRetry
-  - CacheStore.put
+  - OutboxRepository.findReady
+  - OutboxRepository.save
   evidence_anchors:
   - OutboxDeliveryService.scheduleRetry
-  - CacheStore.put
+  - OutboxRepository.findReady
+  - OutboxRepository.save
   fix_location: OutboxDeliveryService.scheduleRetry
   fix_action: 使用 Duration 类型贯穿配置和计算
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 形成高频重试并压垮依赖
   oracle_test: OutboxDelivery3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

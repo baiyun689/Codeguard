@@ -14,17 +14,17 @@ public final class CouponPricingController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/calculate-combined-discount")
     public ResponseEntity<Object> calculateCombinedDiscount(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.calculateCombinedDiscount(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/apply-coupon-rules")
     public ResponseEntity<Object> applyCouponRules(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.applyCouponRules(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/load-customer-price")
     public ResponseEntity<Object> loadCustomerPrice(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.loadCustomerPrice(request));
     }

@@ -4,12 +4,13 @@ baseline: tradeflow-clean-v1
 issues:
 - id: pr-03-coupon-pricing-issue-1
   title: 折扣计算顺序破坏价格规则
-  dimension: logic
+  dimension: quality
   primary_risk_tag: API_CONTRACT
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
   - maintainability
+  primary_reviewer: maintainability
   required_knowledge:
   - behavior/API_CONTRACT
   - maintainability/API_CONTRACT
@@ -27,28 +28,28 @@ issues:
   - CouponPricingController.calculateCombinedDiscount
   - CouponPricingCoordinator.calculateCombinedDiscount
   - CouponPricingService.calculateCombinedDiscount
-  - domain invariant
   evidence_anchors:
   - CouponPricingService.calculateCombinedDiscount
-  - domain invariant
   fix_location: CouponPricingService.calculateCombinedDiscount
   fix_action: 把折扣顺序封装为领域策略并用明确阶段执行
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 应付金额系统性偏高或偏低
   oracle_test: CouponPricing1OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
     ground_truth: false
 - id: pr-03-coupon-pricing-issue-2
   title: 同一优惠券经两条规则重复应用
-  dimension: logic
+  dimension: quality
   primary_risk_tag: API_CONTRACT
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
   - maintainability
+  primary_reviewer: maintainability
   required_knowledge:
   - behavior/API_CONTRACT
   - maintainability/API_CONTRACT
@@ -66,16 +67,15 @@ issues:
   - CouponPricingController.applyCouponRules
   - CouponPricingCoordinator.applyCouponRules
   - CouponPricingService.applyCouponRules
-  - domain invariant
   evidence_anchors:
   - CouponPricingService.applyCouponRules
-  - domain invariant
   fix_location: CouponPricingService.applyCouponRules
   fix_action: 按券实例建立唯一应用记录并在原子边界内消费
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 同一优惠被扣减两次
   oracle_test: CouponPricing2OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false
@@ -87,6 +87,7 @@ issues:
   secondary_risk_tags: []
   expected_reviewers:
   - behavior
+  primary_reviewer: behavior
   required_knowledge:
   - behavior/CACHE_CONSISTENCY
   risk_coverage: exact
@@ -103,16 +104,21 @@ issues:
   - CouponPricingController.loadCustomerPrice
   - CouponPricingCoordinator.loadCustomerPrice
   - CouponPricingService.loadCustomerPrice
+  - TenantContext.tenantId
   - CacheStore.get
+  - CacheStore.put
   evidence_anchors:
   - CouponPricingService.loadCustomerPrice
+  - TenantContext.tenantId
   - CacheStore.get
+  - CacheStore.put
   fix_location: CouponPricingService.loadCustomerPrice
   fix_action: 把所有定价维度纳入 key 或缓存基础价格
   why_independent: 该主张拥有独立触发条件、可观察后果和修复动作；修复同 PR 的其他两条主张不会消除本问题。
   severity: WARNING
   severity_rationale: 后一个客户读取前一个等级价格
   oracle_test: CouponPricing3OracleTest.java
+  oracle_mode: executable-static-contract
   review_visibility:
     repo_snapshot: true
     oracle_test: false

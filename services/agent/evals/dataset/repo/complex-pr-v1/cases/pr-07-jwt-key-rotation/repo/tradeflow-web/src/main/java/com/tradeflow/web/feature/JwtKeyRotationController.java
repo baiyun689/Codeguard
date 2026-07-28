@@ -14,17 +14,17 @@ public final class JwtKeyRotationController {
         this.coordinator = coordinator;
     }
 
-    @PostMapping("/1")
+    @PostMapping("/load-signing-key")
     public ResponseEntity<Object> loadSigningKey(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.loadSigningKey(request));
     }
 
-    @PostMapping("/2")
+    @PostMapping("/is-token-active")
     public ResponseEntity<Object> isTokenActive(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.isTokenActive(request));
     }
 
-    @PostMapping("/3")
+    @PostMapping("/load-tenant-roles")
     public ResponseEntity<Object> loadTenantRoles(@RequestBody Map<String, String> request) {
         return ResponseEntity.ok(coordinator.loadTenantRoles(request));
     }

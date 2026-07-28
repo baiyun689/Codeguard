@@ -133,24 +133,24 @@
 +        this.coordinator = coordinator;
 +    }
 +
-+    @PostMapping("/1")
++    @PostMapping("/load-signing-key")
 +    public ResponseEntity<Object> loadSigningKey(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.loadSigningKey(request));
 +    }
 +
-+    @PostMapping("/2")
++    @PostMapping("/is-token-active")
 +    public ResponseEntity<Object> isTokenActive(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.isTokenActive(request));
 +    }
 +
-+    @PostMapping("/3")
++    @PostMapping("/load-tenant-roles")
 +    public ResponseEntity<Object> loadTenantRoles(@RequestBody Map<String, String> request) {
 +        return ResponseEntity.ok(coordinator.loadTenantRoles(request));
 +    }
 +}
 --- a/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/JwtKeyRotationWorker.java
 +++ b/tradeflow-worker/src/main/java/com/tradeflow/worker/feature/JwtKeyRotationWorker.java
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,32 @@
 +package com.tradeflow.worker.feature;
 +
 +import com.tradeflow.application.feature.JwtKeyRotationCoordinator;
@@ -168,9 +168,12 @@
 +
 +    public Object execute(String operation, Map<String, String> payload) {
 +        return switch (operation) {
-+            case "one" -> coordinator.loadSigningKey(payload);
-+            case "two" -> coordinator.isTokenActive(payload);
-+            case "three" -> coordinator.loadTenantRoles(payload);
++            case "load-signing-key" ->
++                    coordinator.loadSigningKey(payload);
++            case "is-token-active" ->
++                    coordinator.isTokenActive(payload);
++            case "load-tenant-roles" ->
++                    coordinator.loadTenantRoles(payload);
 +            default -> throw new IllegalArgumentException("unknown operation");
 +        };
 +    }
