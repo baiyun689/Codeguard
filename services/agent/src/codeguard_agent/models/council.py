@@ -463,3 +463,90 @@ class ConcernEvidencePlan(BaseModel):
     requests: tuple[EvidenceRequest, ...] = ()
     uncovered_goals: tuple[str, ...] = ()
     diagnostics: tuple[str, ...] = ()
+
+
+# ── Phase 4: Evidence-factor Severity ──
+
+
+class ImpactFactor(str, Enum):
+    """可证明的影响因子——每个 factor 描述一个具体的后果维度。"""
+
+    RUNTIME_REACHABLE = "runtime_reachable"
+    EXTERNAL_ACTOR_CONTROLLED = "external_actor_controlled"
+    AUTHORIZATION_BYPASS = "authorization_bypass"
+    CROSS_TENANT_SCOPE = "cross_tenant_scope"
+    PRIVILEGED_OPERATION = "privileged_operation"
+    CONFIDENTIALITY_LOSS = "confidentiality_loss"
+    INTEGRITY_LOSS = "integrity_loss"
+    AVAILABILITY_LOSS = "availability_loss"
+    FINANCIAL_IMPACT = "financial_impact"
+    PERSISTENT_STATE_CORRUPTION = "persistent_state_corruption"
+    EXTERNAL_SIDE_EFFECT = "external_side_effect"
+    MULTI_ENTITY_BLAST_RADIUS = "multi_entity_blast_radius"
+    REPEATED_OR_AUTOMATIC_TRIGGER = "repeated_or_automatic_trigger"
+    IRREVERSIBLE = "irreversible"
+    AUTO_RECOVERABLE = "auto_recoverable"
+    OPERATOR_RECOVERABLE = "operator_recoverable"
+    LOCAL_MAINTAINABILITY_ONLY = "local_maintainability_only"
+
+
+class FactorStatus(str, Enum):
+    PROVEN = "proven"
+    DISPROVEN = "disproven"
+    UNKNOWN = "unknown"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class ImpactFactorAssessment(BaseModel):
+    """单个影响因子的证据评估。"""
+
+    factor: ImpactFactor
+    status: FactorStatus
+    evidence_ids: tuple[str, ...] = ()
+    reason: str = ""
+
+
+class ImpactClass(str, Enum):
+    MAINTAINABILITY = "maintainability"
+    RUNTIME_CORRECTNESS = "runtime_correctness"
+    SECURITY = "security"
+    AVAILABILITY = "availability"
+
+
+class ImpactAssessment(BaseModel):
+    """一个 concern 的完整影响评估——所有 factor 的状态汇总。"""
+
+    concern_id: str = ""
+    impact_class: ImpactClass = ImpactClass.RUNTIME_CORRECTNESS
+    factors: tuple[ImpactFactorAssessment, ...] = ()
+    diagnostics: tuple[str, ...] = ()
+
+
+class SeverityResolution(BaseModel):
+    """确定性的严重级别裁决结果。"""
+
+    concern_id: str = ""
+    severity: Severity = Severity.WARNING
+    rule_id: str = ""
+    proven_factors: tuple[ImpactFactor, ...] = ()
+    limiting_factors: tuple[ImpactFactor, ...] = ()
+    evidence_ids: tuple[str, ...] = ()
+    fallback_used: bool = False
+    rationale: str = ""
+
+
+class CriticalPredicate(BaseModel):
+    """CRITICAL 判定规则：一组 factor 条件的组合。"""
+
+    rule_id: str = ""
+    all_of: tuple[ImpactFactor, ...] = ()
+    any_of: tuple[ImpactFactor, ...] = ()
+    none_of: tuple[ImpactFactor, ...] = ()
+
+
+class ImpactRubric(BaseModel):
+    """一组 concern tags 对应的评估标准。"""
+
+    rubric_id: str = ""
+    required_factors: tuple[ImpactFactor, ...] = ()
+    critical_predicates: tuple[CriticalPredicate, ...] = ()
