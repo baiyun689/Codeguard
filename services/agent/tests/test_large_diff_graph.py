@@ -193,7 +193,8 @@ def test_summary_runs_after_task_selection_in_graph():
     graph = G.build_review_graph(enable_summary=True, llm=None).get_graph()
     edges = {(edge.source, edge.target) for edge in graph.edges}
 
-    assert ("task_rank", "summary") in edges
+    assert ("review_coverage", "summary") in edges
+    assert ("task_rank", "summary") not in edges
     assert ("summary", "context_provider") in edges
     assert ("__start__", "summary") not in edges
 

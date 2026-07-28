@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from codeguard_agent.models.tasks import ReviewBudget, RiskProfile, RiskSignal, ReviewTask, RiskTag
+from codeguard_agent.models.tasks import (
+    ReviewBudget, RiskProfile, RiskSignal, ReviewTask, RiskTag,
+    RiskCoverage, RiskHypothesis, TaskRiskPrior,
+)
 from codeguard_agent.pipeline.risk.task_prep import (
     _changed_lines,
     _is_production_path,
@@ -135,6 +138,16 @@ def test_rank_tasks_prefers_concrete_risk_over_general_review():
     selection = rank_tasks(tasks, profiles, ReviewBudget(max_tasks_to_review=1, max_tasks_per_file=None))
 
     assert selection.selected_task_ids == ["specific#h0"]
+
+
+def test_rank_tasks_with_priors_uses_priority_then_production_and_id():
+    tasks = [_rank_task("z#h0", "src/main/Z.java"), _rank_task("a#h0", "src/main/A.java"), _rank_task("test#h0", "src/test/T.java")]
+    profiles = {task.id: _rank_profile(task.id, RiskTag.GENERAL_REVIEW, 1) for task in tasks}
+    def prior(task_id: str) -> TaskRiskPrior:
+        return TaskRiskPrior(task_id=task_id, coverage=RiskCoverage.CONFIDENT, hypotheses=[RiskHypothesis(tag=RiskTag.PERFORMANCE, match_confidence=.9, review_priority=2, source_kind="diff_text", source="test", reason="test")])
+    priors = {task.id: prior(task.id) for task in tasks}
+    selection = rank_tasks(tasks, profiles, ReviewBudget(max_tasks_to_review=2, max_tasks_per_file=None), priors)
+    assert selection.selected_task_ids == ["a#h0", "z#h0"]
 
 
 def test_generated_and_nested_test_paths_are_not_production():

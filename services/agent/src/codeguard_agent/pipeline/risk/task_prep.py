@@ -20,6 +20,7 @@ from codeguard_agent.models.tasks import (
     RiskTag,
     SkippedTask,
     TaskSelection,
+    TaskRiskPrior,
 )
 from codeguard_agent.pipeline.risk.rules.catalog import (
     TriageResult,
@@ -279,11 +280,14 @@ def rank_tasks(
     tasks: list[ReviewTask],
     profiles: dict[str, RiskProfile],
     budget: ReviewBudget,
+    priors: dict[str, TaskRiskPrior] | None = None,
 ) -> TaskSelection:
     """按确定性风险优先级选择任务，不把排序分数写回共享状态。"""
 
-    def rank_key(task: ReviewTask) -> tuple[int, int, int, int, int, int, str]:
+    def rank_key(task: ReviewTask) -> tuple[int, float, int, int, int, int, str]:
         profile = profiles.get(task.id)
+        prior = (priors or {}).get(task.id)
+        hypotheses = prior.hypotheses if prior is not None else ()
         tag_scores = profile.tag_scores if profile is not None else {}
         signals = profile.signals if profile is not None else []
         has_concrete_tag = any(tag is not RiskTag.GENERAL_REVIEW for tag in tag_scores)
@@ -291,6 +295,16 @@ def rank_tasks(
         has_deleted_evidence = any(
             signal.source.startswith("text:deleted:") for signal in signals
         )
+        if priors is not None:
+            return (
+                -max((hypothesis.review_priority for hypothesis in hypotheses), default=0),
+                -int(has_concrete_tag),
+                -int(_is_production_path(task.file)),
+                -int(has_high_risk_signal),
+                -int(has_deleted_evidence),
+                0,
+                task.id,
+            )
         return (
             -max(tag_scores.values(), default=0),
             -sum(tag_scores.values()),

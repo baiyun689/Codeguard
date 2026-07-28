@@ -45,6 +45,80 @@ class RiskTag(str, Enum):
     GENERAL_REVIEW = "GENERAL_REVIEW"
 
 
+class RiskCoverage(str, Enum):
+    """确定性风险先验的覆盖状态。"""
+
+    CONFIDENT = "confident"
+    AMBIGUOUS = "ambiguous"
+    UNCLASSIFIED = "unclassified"
+
+
+class ReviewerKind(str, Enum):
+    """发现者的稳定 source_agent 标识。"""
+
+    THREAT_MODEL = "threat_model"
+    BEHAVIOR = "behavior"
+    MAINTAINABILITY = "maintainability"
+
+
+class ReviewTier(str, Enum):
+    DIRECT = "direct"
+    REACT = "react"
+
+
+class AssignmentReason(str, Enum):
+    BASELINE = "baseline"
+    RISK_ADDED = "risk_added"
+    RISK_UPGRADED = "risk_upgraded"
+    AMBIGUITY_FALLBACK = "ambiguity_fallback"
+
+
+class RiskHypothesis(BaseModel):
+    """从旧 RiskProfile 派生的、不可直接裁决问题成立的先验。"""
+
+    tag: RiskTag
+    match_confidence: float = Field(ge=0.0, le=1.0)
+    review_priority: int = Field(ge=1, le=3)
+    source_kind: Literal["diff_text", "path", "symbol", "ast", "fallback"]
+    source: str
+    reason: str
+    line: int | None = None
+
+
+class TaskRiskPrior(BaseModel):
+    task_id: str
+    hypotheses: tuple[RiskHypothesis, ...] = ()
+    coverage: RiskCoverage
+
+
+class ReviewerAssignment(BaseModel):
+    reviewer: ReviewerKind
+    tier: ReviewTier
+    reasons: tuple[AssignmentReason, ...]
+    hypothesis_tags: tuple[RiskTag, ...] = ()
+
+
+class TaskReviewPlan(BaseModel):
+    task_id: str
+    assignments: tuple[ReviewerAssignment, ...] = ()
+
+
+class ReviewCoveragePlan(BaseModel):
+    """选中任务的基础覆盖、风险增强和 ReAct 预算结果。"""
+
+    tasks: tuple[TaskReviewPlan, ...] = ()
+    baseline_assignments: int = 0
+    risk_added_assignments: int = 0
+    ambiguity_fallback_assignments: int = 0
+    react_candidate_tasks: int = 0
+    react_task_count: int = 0
+    react_assignment_count: int = 0
+    risk_upgraded_assignments: int = 0
+    truncated_react_task_count: int = 0
+    unclassified_tasks: int = 0
+    tasks_with_zero_assignments: int = 0
+
+
 class ReviewTask(BaseModel):
     """最小调度单位：一个 hunk 或一个文件级 fallback 片段。"""
 

@@ -13,7 +13,7 @@ Codeguard 是一个 **AI 代码审查引擎**,以 Agent 为最终核心,双语�
 默认审查使用证据驱动的多 Agent ReviewCouncil、风险任务链、task-scoped reviewer、风险感知上下文/知识注入，以及策略驱动的证据规划与裁决链。双语言边界保持不变:Python 智能层 + Java 护栏层。默认审查路径为:
 
 ```
-git diff → DiffTaskBuilder → RiskTriage → TaskRank → [Summary] → ContextProvider
+git diff → DiffTaskBuilder → RiskTriage → TaskRank → ReviewCoverage → [Summary] → ContextProvider
          → task-scoped Discover × 3 → CouncilCoordinator
          → EvidencePlanner → EvidenceAgent → CouncilJudge → ReviewResult
 ```
@@ -24,8 +24,10 @@ H2 状态、非阻塞重试、恢复、反馈与停机；workspace 按完整 SHA
 ReviewCouncil 发现者由 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent` 方法论分工;最终 category 仍兼容 `security` / `logic` / `quality`。三类发现者各自声明工具 allowlist，并通过 `CandidateIssue` / `EvidenceRequest` / `EvidenceNote(findings)` / `Verdict` / `CouncilTrace` 结构化黑板通信。三路发现者只通过 ID reducer 汇集 raw candidates；CouncilCoordinator 在 fan-in 后复用候选 RiskTag 解析、按完整路径和局部位置构块，并以最多 8 个并行结构化 LLM 调用进行保守归并。非法、低置信或失败结果一律保留候选。EvidencePlanner 复用已解析 RiskTag，后续候选级证据和 Judge 契约不变。旧 Supervisor 图迁移到 `services/agent/legacy/supervisor_graph/`,仅作历史参考,不作为默认路径、feature flag 或 eval profile 回退。
 
 风险路由包含 24 个具体 `RiskTag` + `GENERAL_REVIEW`，风险规则只消费
-path/diff-text 变化方向；普通 diff 默认全选 task，旧 100/10 配置只作为大 diff 的更严格上限；reviewer 范围由 `RiskProfile.tag_scores`
-派生，不增加 `assigned_reviewers` 或其他 State 字段。证据策略完整覆盖 25 个标签的
+path/diff-text 变化方向；普通 diff 默认全选 task，旧 100/10 配置只作为大 diff 的更严格上限。
+`RiskProfile` 先派生为 `TaskRiskPrior`，再由 `ReviewCoveragePlanner` 组合基础覆盖、风险增强
+和 ReAct task 预算；Risk 只能增加/升级 Reviewer，不能排除基础覆盖。内部 State 保存
+`risk_priors` 和 `review_coverage_plan`，不增加产品输出字段。证据策略完整覆盖 25 个标签的
 counter/support/severity，候选证据主题从候选语义解析，task RiskTag 只作先验。
 
 ---
@@ -46,7 +48,7 @@ counter/support/severity，候选证据主题从候选语义解析，task RiskTa
 Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执行方式按是否配置工具服务分流:
 
 ```
-默认(无工具):git diff → 任务/风险/上下文 → 三路直连发现者 → Planner → Agent(insufficient 安全回退) → Judge → 打印
+默认(无工具):git diff → 任务/风险/覆盖计划/上下文 → 三路直连发现者 → Planner → Agent(insufficient 安全回退) → Judge → 打印
 默认(有工具):配置 CODEGUARD_TOOL_SERVER_URL 后,Tool Server 按 revision 构建完整 Java ProjectSnapshot；
               ContextProvider 注入 symbol_context，三路发现者分别使用 inspect_security_path /
               inspect_change_impact / inspect_structure，EvidenceAgent 按语义证据能力复用同一图谱事实
@@ -136,7 +138,7 @@ Codeguard/
 4. **`llm/client.py:build_llm`** 按 provider 造 LangChain Chat 模型;`provider=mock` 返回 `None`。
 5. **工具会话(可选)**:配置 `CODEGUARD_TOOL_SERVER_URL` 且非 mock 时,CLI 为本次 diff 创建 Java 工具会话;否则走无工具直连基准。
 6. **`pipeline/orchestrator.py:PipelineOrchestrator.run`** 是审查唯一门面,内部构建 `pipeline/graph.py` 的 ADR-032 LangGraph:
-   - `DiffTaskBuilder → RiskTriage → TaskRank` 把 diff 拆成 hunk task、生成风险画像并按预算选择任务。
+   - `DiffTaskBuilder → RiskTriage → TaskRank → ReviewCoverage` 把 diff 拆成 hunk task、生成风险画像、按预算选择任务并生成 Reviewer 覆盖计划。
    - `[Summary]` 对 TaskRank 选中范围产出可选变更摘要。
    - `ContextProvider` 构造只读 `ContextBundle`。
    - `ReviewCouncil` 并行运行 task-scoped 发现者 Agent；没有匹配任务的 reviewer 记录 `no_tasks_routed`。

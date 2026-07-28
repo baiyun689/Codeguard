@@ -3,7 +3,7 @@
 
 默认拓扑:
 
-    START → diff_task_builder → risk_triage → task_rank → [summary]
+    START → diff_task_builder → risk_triage → task_rank → review_coverage → [summary]
               → context_provider → discover_* → council_coordinator(fan-in)
               → evidence_planner → evidence_agent → council_judge → END
 """
@@ -30,10 +30,12 @@ from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.models.tasks import (
     ContextStatus,
     ReviewBudget,
+    ReviewCoveragePlan,
     ReviewTask,
     RiskProfile,
     RiskTag,
     TaskContextBundle,
+    TaskRiskPrior,
     TaskSelection,
 )
 from codeguard_agent.pipeline.context import rules as context_rules
@@ -53,8 +55,11 @@ from codeguard_agent.pipeline.risk.discovery import (
 from codeguard_agent.pipeline.risk.knowledge import load_knowledge
 from codeguard_agent.pipeline.risk.large_diff import LargeDiffPlan, plan_large_diff
 from codeguard_agent.pipeline.risk.routing import (
-    plan_task_tiers,
-    routed_task_ids,
+    build_risk_priors,
+    coverage_task_ids,
+    coverage_tiers,
+    ensure_review_coverage,
+    plan_review_coverage,
 )
 from codeguard_agent.pipeline.engines import (
     DirectEngine,
@@ -161,7 +166,9 @@ class ReviewState(TypedDict, total=False):
     review_budget: ReviewBudget
     review_tasks: list[ReviewTask]
     risk_profiles: dict[str, RiskProfile]
+    risk_priors: dict[str, TaskRiskPrior]
     task_selection: TaskSelection
+    review_coverage_plan: ReviewCoveragePlan
     task_context_bundles: dict[str, TaskContextBundle]
 
     context_bundle: ContextBundle
@@ -307,6 +314,7 @@ def _risk_triage_node():
         )
         return {
             "risk_profiles": result.profiles,
+            "risk_priors": build_risk_priors(tasks, result.profiles),
             "council_trace": trace,
         }
 
@@ -319,9 +327,10 @@ def _task_rank_node():
     def _node(state: ReviewState) -> dict:
         tasks = state.get("review_tasks") or []
         profiles = state.get("risk_profiles") or {}
+        priors = state.get("risk_priors") or build_risk_priors(tasks, profiles)
         scope = _scope_plan(state)
         budget = scope.effective_budget
-        selection = task_prep.rank_tasks(tasks, profiles, budget)
+        selection = task_prep.rank_tasks(tasks, profiles, budget, priors)
         trace = [
             CouncilTrace(
                 node="task_rank",
@@ -348,6 +357,65 @@ def _task_rank_node():
             "task_selection": selection,
             "council_trace": trace,
         }
+
+    return _node
+
+
+def _review_coverage_node(tool_client=None):
+    """把 Risk prior 转成基础覆盖 + 风险增强的 Reviewer 计划。"""
+
+    def _node(state: ReviewState) -> dict:
+        tasks = state.get("review_tasks") or []
+        selection = state.get("task_selection")
+        if selection is None:
+            raise ValueError("task_selection is required before review coverage")
+        priors = state.get("risk_priors") or build_risk_priors(
+            tasks, state.get("risk_profiles") or {}
+        )
+        scope = _scope_plan(state)
+        budget = scope.effective_budget
+        plan = plan_review_coverage(
+            tasks,
+            priors,
+            selection,
+            react_budget=budget.max_react_tasks,
+            tools_available=tool_client is not None,
+        )
+        assignment_count = sum(len(item.assignments) for item in plan.tasks)
+        trace = [
+            CouncilTrace(
+                node="review_coverage",
+                event="planned",
+                detail=(
+                    f"tasks={len(plan.tasks)} assignments={assignment_count} "
+                    f"baseline={plan.baseline_assignments} "
+                    f"risk_added={plan.risk_added_assignments} "
+                    f"fallback={plan.ambiguity_fallback_assignments} "
+                    f"unclassified={plan.unclassified_tasks} "
+                    f"react_candidates={plan.react_candidate_tasks} "
+                    f"react_tasks={plan.react_task_count} "
+                    f"react_assignments={plan.react_assignment_count} "
+                    f"risk_upgraded={plan.risk_upgraded_assignments} "
+                    f"react_tasks_truncated={plan.truncated_react_task_count} "
+                    f"zero_assignments={plan.tasks_with_zero_assignments}"
+                ),
+            )
+        ]
+        trace.extend(
+            CouncilTrace(
+                node="review_coverage",
+                event="assignment",
+                detail=(
+                    f"task={item.task_id} reviewer={assignment.reviewer.value} "
+                    f"tier={assignment.tier.value} "
+                    f"reasons={','.join(reason.value for reason in assignment.reasons)} "
+                    f"tags={','.join(tag.value for tag in assignment.hypothesis_tags)}"
+                ),
+            )
+            for item in plan.tasks
+            for assignment in item.assignments
+        )
+        return {"risk_priors": priors, "review_coverage_plan": plan, "council_trace": trace}
 
     return _node
 
@@ -626,6 +694,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
     def _node(state: ReviewState) -> dict:
         tasks = state.get("review_tasks") or []
         profiles = state.get("risk_profiles") or {}
+        coverage = state.get("review_coverage_plan")
         selection = state.get("task_selection")
         if selection is None:
             raise ValueError("task_selection is required before discovery")
@@ -648,9 +717,9 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 complete_patch_files=complete_patch_files,
             )
 
-        routed_ids = set(routed_task_ids(
-            reviewer.source_agent, tasks, profiles, selection
-        ))
+        coverage = ensure_review_coverage(tasks, coverage, selection)
+        ordered_ids = list(coverage_task_ids(reviewer.source_agent, coverage, selection))
+        routed_ids = set(ordered_ids)
         if not routed_ids:
             return {
                 "raw_candidate_issues": [],
@@ -673,14 +742,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         # 每个路由到的 task 独立调用，task 间并发派发。
         task_by_id = {t.id: t for t in tasks}
         task_context_bundles = state.get("task_context_bundles") or {}
-        ordered_ids = list(routed_task_ids(reviewer.source_agent, tasks, profiles, selection))
-        budget = state.get("review_budget") or ReviewBudget()
-        tier_by_task = plan_task_tiers(
-            selection.selected_task_ids,
-            profiles,
-            budget.max_react_tasks,
-            tools_available=tool_client is not None,
-        )
+        tier_by_task = coverage_tiers(reviewer.source_agent, coverage, selection)
 
         def _invoke_one(task_id: str) -> dict:
             task = task_by_id[task_id]
@@ -1131,6 +1193,7 @@ def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=No
     g.add_node("diff_task_builder", _diff_task_builder_node())
     g.add_node("risk_triage", _risk_triage_node())
     g.add_node("task_rank", _task_rank_node())
+    g.add_node("review_coverage", _review_coverage_node(tool_client))
     for reviewer in DEFAULT_REVIEWERS:
         g.add_node(
             _discover_node_name(reviewer),
@@ -1150,9 +1213,10 @@ def build_review_graph(*, enable_summary: bool = True, checkpointer=None, llm=No
     g.add_edge(START, "diff_task_builder")
     g.add_edge("diff_task_builder", "risk_triage")
     g.add_edge("risk_triage", "task_rank")
+    g.add_edge("task_rank", "review_coverage")
     if enable_summary:
         g.add_node("summary", _summary_node(llm, tool_client))
-        g.add_edge("task_rank", "summary")
+        g.add_edge("review_coverage", "summary")
         g.add_edge("summary", "context_provider")
     else:
         g.add_edge("task_rank", "context_provider")

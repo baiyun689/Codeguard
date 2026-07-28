@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
-from codeguard_agent.models.tasks import RiskProfile, RiskSignal, RiskTag, ReviewTask, TaskSelection
+from codeguard_agent.models.tasks import (
+    AssignmentReason,
+    ReviewTier,
+    RiskCoverage,
+    RiskProfile,
+    RiskSignal,
+    RiskTag,
+    ReviewTask,
+    TaskSelection,
+)
 from codeguard_agent.pipeline.risk.routing import (
     decide_tier,
     plan_task_tiers,
@@ -10,6 +19,9 @@ from codeguard_agent.pipeline.risk.routing import (
     render_task_scope,
     reviewers_for_profile,
     routed_task_ids,
+    build_risk_prior,
+    ensure_review_coverage,
+    plan_review_coverage,
 )
 
 
@@ -230,3 +242,111 @@ def test_render_single_task_risk_omits_zero_score_tags():
     )
     rendered = render_single_task_risk(task, profile)
     assert "PERFORMANCE" not in rendered
+
+
+def test_build_risk_prior_treats_general_review_as_unclassified():
+    task = ReviewTask(id="A.java#h0", file="A.java", patch="+x")
+    prior = build_risk_prior(task, _profile(task.id, RiskTag.GENERAL_REVIEW))
+
+    assert prior.coverage is RiskCoverage.UNCLASSIFIED
+    assert prior.hypotheses == ()
+
+
+def test_review_coverage_keeps_behavior_baseline_when_risk_is_wrong_or_narrow():
+    task = ReviewTask(id="Order.java#h0", file="Order.java", patch="+TokenBucket")
+    profile = _profile(task.id, RiskTag.CONFIG_SECURITY)
+    prior = build_risk_prior(task, profile)
+    coverage = plan_review_coverage(
+        [task],
+        {task.id: prior},
+        TaskSelection(selected_task_ids=[task.id]),
+        react_budget=0,
+        tools_available=True,
+    )
+
+    reviewers = {assignment.reviewer.value for assignment in coverage.tasks[0].assignments}
+    assert "behavior" in reviewers
+    assert "threat_model" in reviewers
+    assert all(assignment.tier is ReviewTier.DIRECT for assignment in coverage.tasks[0].assignments)
+
+
+def test_ambiguous_prior_falls_back_to_all_three_reviewers():
+    task = ReviewTask(id="Order.java#h0", file="Order.java", patch="+query")
+    prior = build_risk_prior(task, _profile(task.id, RiskTag.SQL_DATA_ACCESS))
+    assert prior.coverage is RiskCoverage.AMBIGUOUS
+    coverage = plan_review_coverage(
+        [task],
+        {task.id: prior},
+        TaskSelection(selected_task_ids=[task.id]),
+        react_budget=20,
+        tools_available=True,
+    )
+
+    assert [assignment.reviewer.value for assignment in coverage.tasks[0].assignments] == [
+        "threat_model", "behavior", "maintainability"
+    ]
+    assert all(assignment.tier is ReviewTier.DIRECT for assignment in coverage.tasks[0].assignments)
+    assert all(AssignmentReason.AMBIGUITY_FALLBACK in assignment.reasons for assignment in coverage.tasks[0].assignments)
+    assert all(AssignmentReason.BASELINE not in assignment.reasons for assignment in coverage.tasks[0].assignments)
+
+
+def test_partial_coverage_is_filled_for_every_selected_task():
+    tasks = [
+        ReviewTask(id="A.java#h0", file="A.java", patch="+a"),
+        ReviewTask(id="B.java#h0", file="B.java", patch="+b"),
+    ]
+    selection = TaskSelection(selected_task_ids=[task.id for task in tasks])
+    partial = plan_review_coverage(
+        tasks[:1],
+        {tasks[0].id: build_risk_prior(tasks[0], _profile(tasks[0].id, RiskTag.SQL_DATA_ACCESS))},
+        TaskSelection(selected_task_ids=[tasks[0].id]),
+        react_budget=0,
+        tools_available=False,
+    )
+
+    completed = ensure_review_coverage(tasks, partial, selection)
+    assert {plan.task_id for plan in completed.tasks} == {task.id for task in tasks}
+    assert len(completed.tasks[1].assignments) == 3
+
+
+def test_react_budget_upgrades_assignments_without_dropping_coverage():
+    tasks = [
+        ReviewTask(id="Auth.java#h0", file="Auth.java", patch="+authorize"),
+        ReviewTask(id="Order.java#h0", file="Order.java", patch="+lock"),
+    ]
+    profiles = {
+        tasks[0].id: _profile(tasks[0].id, RiskTag.AUTHORIZATION),
+        tasks[1].id: RiskProfile(
+            task_id=tasks[1].id,
+            tag_scores={RiskTag.CONCURRENCY_CONSISTENCY: 3},
+            signals=[
+                RiskSignal(
+                    tag=RiskTag.CONCURRENCY_CONSISTENCY,
+                    score=3,
+                    source="text:added:lock",
+                    reason="concurrency signal",
+                )
+            ],
+        ),
+    }
+    # Explicitly strengthen both old profiles for the ReAct eligibility test.
+    profiles[tasks[0].id].tag_scores[RiskTag.AUTHORIZATION] = 3
+    priors = {task.id: build_risk_prior(task, profiles[task.id]) for task in tasks}
+    coverage = plan_review_coverage(
+        tasks,
+        priors,
+        TaskSelection(selected_task_ids=[task.id for task in tasks]),
+        react_budget=1,
+        tools_available=True,
+    )
+
+    assignments = [assignment for plan in coverage.tasks for assignment in plan.assignments]
+    assert len(assignments) >= 2
+    react_task_ids = {
+        plan.task_id
+        for plan in coverage.tasks
+        if any(assignment.tier is ReviewTier.REACT for assignment in plan.assignments)
+    }
+    assert len(react_task_ids) == 1
+    assert sum(assignment.tier is ReviewTier.REACT for assignment in assignments) >= 1
+    assert coverage.truncated_react_task_count > 0

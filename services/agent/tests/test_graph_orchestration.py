@@ -681,7 +681,7 @@ class _CountingToolClient:
 def test_build_graph_has_task_prep_nodes():
     graph = G.build_review_graph(enable_summary=True, llm=None)
     names = set(graph.get_graph().nodes)
-    assert {"diff_task_builder", "risk_triage", "task_rank"} <= names
+    assert {"diff_task_builder", "risk_triage", "task_rank", "review_coverage"} <= names
 
 
 def test_task_prep_nodes_populate_state():
@@ -692,6 +692,28 @@ def test_task_prep_nodes_populate_state():
     profiles = task_prep.triage_tasks(tasks).profiles
     sel = task_prep.rank_tasks(tasks, profiles, G.ReviewBudget())
     assert sel.selected_task_ids == ["A.java#h0"]
+
+
+def test_review_coverage_node_assigns_selected_task_without_exclusive_risk_route():
+    task = G.ReviewTask(id="Order.java#h0", file="Order.java", patch="+TokenBucket")
+    profile = G.RiskProfile(
+        task_id=task.id,
+        tag_scores={G.RiskTag.CONFIG_SECURITY: 2},
+    )
+    out = G._review_coverage_node()(
+        {
+            "review_tasks": [task],
+            "risk_profiles": {task.id: profile},
+            "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
+            "review_budget": G.ReviewBudget(max_react_tasks=1),
+        }
+    )
+
+    assignments = out["review_coverage_plan"].tasks[0].assignments
+    reviewers = {assignment.reviewer.value for assignment in assignments}
+    assert "behavior" in reviewers
+    assert "threat_model" in reviewers
+    assert all(assignment.tier.value == "direct" for assignment in assignments)
 
 
 def test_risk_triage_node_emits_profile_and_rule_failure_trace(monkeypatch):
@@ -840,13 +862,13 @@ def test_make_reviewer_node_only_invokes_routed_and_selected_tasks(monkeypatch):
 def test_make_reviewer_node_skips_reviewer_without_routed_tasks(monkeypatch):
     calls = 0
 
-    class _ShouldNotRun:
+    class _FallbackRunsDirect:
         def review(self, *args, **kwargs):
             nonlocal calls
             calls += 1
-            raise AssertionError("reviewer engine must not run without routed tasks")
+            return ReviewOutcome(ReviewResult(summary=""))
 
-    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _ShouldNotRun())
+    monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _FallbackRunsDirect())
     node = G.make_reviewer_node(G.DEFAULT_REVIEWERS[0], llm=_FakeLLM())
     task = G.ReviewTask(id="A.java#h0", file="A.java", patch="+query", changed_lines=[1])
     out = node(
@@ -872,9 +894,9 @@ def test_make_reviewer_node_skips_reviewer_without_routed_tasks(monkeypatch):
         }
     )
 
-    assert calls == 0
+    assert calls == 1
     assert out["raw_candidate_issues"] == []
-    assert any(trace.event == "no_tasks_routed" for trace in out["council_trace"])
+    assert any(trace.event == "discover_done" for trace in out["council_trace"])
 
 
 def test_make_reviewer_node_rejects_candidate_with_mismatched_file(monkeypatch):
