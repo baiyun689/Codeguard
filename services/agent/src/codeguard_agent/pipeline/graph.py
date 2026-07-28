@@ -40,6 +40,7 @@ from codeguard_agent.pipeline.context import rules as context_rules
 from codeguard_agent.pipeline.risk import task_prep
 from codeguard_agent.pipeline.council.judge import judge_candidates
 from codeguard_agent.pipeline.council.dedup import (
+    CandidateGroup,
     CandidateDedupStats,
     deduplicate_candidates,
 )
@@ -166,6 +167,7 @@ class ReviewState(TypedDict, total=False):
     context_bundle: ContextBundle
     raw_candidate_issues: Annotated[list[CandidateIssue], collect_candidate_reducer]
     candidate_issues: list[CandidateIssue]
+    candidate_groups: list[CandidateGroup]
     candidate_tag_resolutions: dict[str, CandidateTagResolution]
     candidate_dedup_stats: CandidateDedupStats
     evidence_requests: Annotated[list[EvidenceRequest], dedup_evidence_request_reducer]
@@ -918,8 +920,9 @@ def _coordinator_node(effective_judge_llm):
                 node="council_coordinator",
                 event="candidate_dedup_completed",
                 detail=(
-                    f"raw={result.raw_candidate_count} final={len(result.candidates)} "
-                    f"removed={result.raw_candidate_count - len(result.candidates)} "
+                    f"raw={result.raw_candidate_count} "
+                    f"logical={result.logical_candidate_count} "
+                    f"grouped={result.grouped_member_count} "
                     f"blocks={result.block_count} multi={result.multi_member_block_count} "
                     f"llm_calls={result.llm_call_count} "
                     f"accepted_groups={len(result.accepted_groups)} "
@@ -930,18 +933,17 @@ def _coordinator_node(effective_judge_llm):
         )
 
         for group in result.accepted_groups:
-            removed_ids = [
-                member_id
-                for member_id in group.member_ids
-                if member_id != group.representative_id
-            ]
             trace.append(
                 CouncilTrace(
                     node="council_coordinator",
                     event="candidate_dedup_group_accepted",
                     detail=(
-                        f"rep={group.representative_id} removed={removed_ids} "
-                        f"confidence={group.confidence:.2f} reason={group.reason}"
+                        f"group={group.id} members={list(group.member_ids)} "
+                        f"tag={group.primary_risk_tag.value} "
+                        f"severity={group.severity_proposal.value} "
+                        f"confidence={group.confidence:.2f} "
+                        f"root_cause={group.shared_root_cause} "
+                        f"behavior={group.shared_behavior} fix={group.shared_fix}"
                     ),
                 )
             )
@@ -975,10 +977,11 @@ def _coordinator_node(effective_judge_llm):
 
         return {
             "candidate_issues": list(result.candidates),
+            "candidate_groups": list(result.accepted_groups),
             "candidate_tag_resolutions": dict(resolutions),
             "candidate_dedup_stats": {
                 "raw_candidate_count": result.raw_candidate_count,
-                "removed_count": result.raw_candidate_count - len(result.candidates),
+                "removed_count": result.grouped_member_count,
                 "llm_call_count": result.llm_call_count,
                 "block_failure_count": len(result.block_failures),
             },

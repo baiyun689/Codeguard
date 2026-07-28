@@ -1433,7 +1433,7 @@ class TestCandidateCollectReducer:
 
 def test_coordinator_batches_tag_resolution_and_emits_complete_trace(monkeypatch):
     from codeguard_agent.pipeline.council.dedup import (
-        AcceptedCandidateGroup,
+        CandidateGroup,
         CandidateBlockFailure,
         CandidateDedupResult,
     )
@@ -1465,17 +1465,21 @@ def test_coordinator_batches_tag_resolution_and_emits_complete_trace(monkeypatch
         G,
         "deduplicate_candidates",
         lambda candidates, **kwargs: CandidateDedupResult(
-            candidates=(first,),
+            candidates=(first, second),
             raw_candidate_count=2,
             block_count=1,
             multi_member_block_count=1,
             llm_call_count=1,
             accepted_groups=(
-                AcceptedCandidateGroup(
-                    member_ids=(first.id, second.id),
-                    representative_id=first.id,
-                    confidence=0.95,
-                    reason="same defect",
+                CandidateGroup(
+                    id="candidate-group-test",
+                    members=(first, second),
+                    primary_risk_tag=RiskTag.ERROR_HANDLING,
+                    severity_proposal=first.severity_proposal,
+                    confidence=0.99,
+                    shared_root_cause="same defect",
+                    shared_behavior="same behavior",
+                    shared_fix="same fix",
                 ),
             ),
             rejected_groups=(),
@@ -1496,14 +1500,16 @@ def test_coordinator_batches_tag_resolution_and_emits_complete_trace(monkeypatch
     )
 
     assert calls == [[first.id, second.id]]
-    assert output["candidate_issues"] == [first]
+    assert output["candidate_issues"] == [first, second]
+    assert output["candidate_groups"][0].members == (first, second)
     traces = {trace.event: trace.detail for trace in output["council_trace"]}
     assert "rule=2" in traces["candidate_tags_resolved"]
     assert "singleton=0" in traces["candidate_dedup_blocks_built"]
-    assert f"removed=['{second.id}']" in traces["candidate_dedup_group_accepted"]
-    assert "reason=same defect" in traces["candidate_dedup_group_accepted"]
+    assert f"members=['{first.id}', '{second.id}']" in traces["candidate_dedup_group_accepted"]
+    assert "root_cause=same defect" in traces["candidate_dedup_group_accepted"]
     assert "reason=empty_response" in traces["candidate_dedup_block_failed"]
-    assert "removed=1" in traces["candidate_dedup_completed"]
+    assert "logical=1" in traces["candidate_dedup_completed"]
+    assert "grouped=1" in traces["candidate_dedup_completed"]
 
 
 def test_coordinator_scopes_large_diff_patch_before_classification_and_dedup(

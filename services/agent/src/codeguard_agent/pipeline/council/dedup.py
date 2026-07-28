@@ -7,6 +7,7 @@ LLM 语义归并在 deduplicate_candidates() 中通过可注入的 _invoke_block
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import logging
 from collections.abc import Mapping, Sequence
@@ -17,12 +18,13 @@ from typing import Any, TypedDict
 from pydantic import BaseModel, Field
 
 from codeguard_agent.models.council import CandidateIssue
+from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import ReviewTask, RiskTag
 from codeguard_agent.pipeline.evidence.rules.classify import CandidateTagResolution
 
 logger = logging.getLogger("codeguard")
 
-MIN_DEDUP_CONFIDENCE = 0.90
+MIN_DEDUP_CONFIDENCE = 0.98
 CANDIDATE_LINE_WINDOW = 5
 MAX_DEDUP_WORKERS = 8
 
@@ -40,12 +42,17 @@ class DuplicateGroup(BaseModel):
     """LLM 归并建议：一组描述同一底层问题的候选。"""
 
     member_ids: list[str]
-    representative_id: str
     same_root_cause: bool
+    same_trigger: bool
     same_affected_behavior: bool
+    same_observable_consequence: bool
+    same_fix_location: bool
     single_fix_resolves_all: bool
+    information_lossless: bool
     confidence: float = Field(ge=0.0, le=1.0)
-    reason: str
+    shared_root_cause: str
+    shared_behavior: str
+    shared_fix: str
 
 
 class CandidateDedupDecision(BaseModel):
@@ -58,11 +65,21 @@ class CandidateDedupDecision(BaseModel):
 
 
 @dataclass(frozen=True)
-class AcceptedCandidateGroup:
-    member_ids: tuple[str, ...]
-    representative_id: str
+class CandidateGroup:
+    """严格等价候选的非破坏性逻辑组。"""
+
+    id: str
+    members: tuple[CandidateIssue, ...]
+    primary_risk_tag: RiskTag
+    severity_proposal: Severity
     confidence: float
-    reason: str
+    shared_root_cause: str
+    shared_behavior: str
+    shared_fix: str
+
+    @property
+    def member_ids(self) -> tuple[str, ...]:
+        return tuple(member.id for member in self.members)
 
 
 @dataclass(frozen=True)
@@ -93,7 +110,7 @@ class _CandidateBlock:
 @dataclass(frozen=True)
 class _BlockApplyResult:
     candidates: tuple[CandidateIssue, ...]
-    accepted_groups: tuple[AcceptedCandidateGroup, ...]
+    accepted_groups: tuple[CandidateGroup, ...]
     rejected_groups: tuple[RejectedCandidateGroup, ...]
 
 
@@ -110,9 +127,17 @@ class CandidateDedupResult:
     block_count: int
     multi_member_block_count: int
     llm_call_count: int
-    accepted_groups: tuple[AcceptedCandidateGroup, ...]
+    accepted_groups: tuple[CandidateGroup, ...]
     rejected_groups: tuple[RejectedCandidateGroup, ...]
     block_failures: tuple[CandidateBlockFailure, ...]
+
+    @property
+    def grouped_member_count(self) -> int:
+        return sum(max(0, len(group.members) - 1) for group in self.accepted_groups)
+
+    @property
+    def logical_candidate_count(self) -> int:
+        return self.raw_candidate_count - self.grouped_member_count
 
 
 # ── 排序 ──
@@ -205,6 +230,7 @@ def _group_rejection_reason(
     block: _CandidateBlock,
     group: DuplicateGroup,
     overlapping_ids: set[str],
+    tag_resolutions: Mapping[str, CandidateTagResolution] | None,
 ) -> str | None:
     if len(group.member_ids) != len(set(group.member_ids)):
         return "duplicate_member_id"
@@ -214,21 +240,39 @@ def _group_rejection_reason(
         return "too_few_members"
     if any(member_id not in known for member_id in member_ids):
         return "unknown_member"
-    if group.representative_id not in set(member_ids):
-        return "invalid_representative"
     if any(member_id in overlapping_ids for member_id in member_ids):
         return "overlapping_group"
-    if not group.reason.strip():
-        return "empty_reason"
+    if not (
+        group.shared_root_cause.strip()
+        and group.shared_behavior.strip()
+        and group.shared_fix.strip()
+    ):
+        return "missing_shared_equivalence"
     if group.confidence < MIN_DEDUP_CONFIDENCE:
         return "low_confidence"
     if not (
         group.same_root_cause
+        and group.same_trigger
         and group.same_affected_behavior
+        and group.same_observable_consequence
+        and group.same_fix_location
         and group.single_fix_resolves_all
+        and group.information_lossless
     ):
         return "semantic_criteria_not_met"
     members = [known[member_id] for member_id in member_ids]
+    if len({_normalize_candidate_path(member.file) for member in members}) != 1:
+        return "different_file"
+    if len({member.task_id for member in members}) != 1:
+        return "different_task"
+    if len({member.severity_proposal for member in members}) != 1:
+        return "different_severity"
+    if tag_resolutions is not None:
+        resolutions = [tag_resolutions.get(member.id) for member in members]
+        if any(resolution is None for resolution in resolutions):
+            return "missing_tag_resolution"
+        if len({resolution.tag for resolution in resolutions if resolution is not None}) != 1:
+            return "different_risk_tag"
     if any(
         not _adjacent(left, right)
         for index, left in enumerate(members)
@@ -241,10 +285,12 @@ def _group_rejection_reason(
 def _apply_decision(
     block: _CandidateBlock,
     decision: CandidateDedupDecision,
+    tag_resolutions: Mapping[str, CandidateTagResolution] | None = None,
 ) -> _BlockApplyResult:
-    """保守校验每个 group，通过的保留代表，拒绝的保留全部原候选。"""
-    accepted: list[AcceptedCandidateGroup] = []
+    """保守校验每个 group，并始终保留全部原候选供后续独立举证。"""
+    accepted: list[CandidateGroup] = []
     rejected: list[RejectedCandidateGroup] = []
+    resolutions = tag_resolutions
 
     # 先检测重叠
     overlapping_ids: set[str] = set()
@@ -257,52 +303,40 @@ def _apply_decision(
             overlapping_ids.add(member_id)
 
     for group in decision.groups:
-        reason = _group_rejection_reason(block, group, overlapping_ids)
+        reason = _group_rejection_reason(block, group, overlapping_ids, resolutions)
         member_ids = tuple(group.member_ids)
         if reason is not None:
             rejected.append(RejectedCandidateGroup(member_ids, reason))
             continue
+        members = tuple(
+            candidate
+            for candidate in block.candidates
+            if candidate.id in set(member_ids)
+        )
+        resolution = resolutions.get(members[0].id) if resolutions is not None else None
+        digest = hashlib.sha256(
+            "\0".join(sorted(member_ids)).encode("utf-8")
+        ).hexdigest()[:16]
         accepted.append(
-            AcceptedCandidateGroup(
-                member_ids=member_ids,
-                representative_id=group.representative_id,
+            CandidateGroup(
+                id=f"candidate-group-{digest}",
+                members=members,
+                primary_risk_tag=(
+                    resolution.tag if resolution is not None else RiskTag.GENERAL_REVIEW
+                ),
+                severity_proposal=members[0].severity_proposal,
                 confidence=group.confidence,
-                reason=group.reason,
+                shared_root_cause=group.shared_root_cause,
+                shared_behavior=group.shared_behavior,
+                shared_fix=group.shared_fix,
             )
         )
 
     return _BlockApplyResult(
-        candidates=_replay_accepted_groups(block.candidates, accepted),
+        candidates=block.candidates,
         accepted_groups=tuple(accepted),
         rejected_groups=tuple(rejected),
     )
-
-
-def _replay_accepted_groups(
-    ordered: Sequence[CandidateIssue],
-    accepted_groups: Sequence[AcceptedCandidateGroup],
-) -> tuple[CandidateIssue, ...]:
-    """在组内最早位置回放代表，保留其余候选的全局相对顺序。"""
-    index_by_id = {
-        candidate.id: index for index, candidate in enumerate(ordered)
-    }
-    candidate_by_id = {candidate.id: candidate for candidate in ordered}
-    removed_ids: set[str] = set()
-    replacement_at_index: dict[int, CandidateIssue] = {}
-    for group in accepted_groups:
-        removed_ids.update(group.member_ids)
-        anchor = min(index_by_id[member_id] for member_id in group.member_ids)
-        replacement_at_index[anchor] = candidate_by_id[group.representative_id]
-
-    survivors: list[CandidateIssue] = []
-    for index, candidate in enumerate(ordered):
-        replacement = replacement_at_index.get(index)
-        if replacement is not None:
-            survivors.append(replacement)
-        if candidate.id not in removed_ids:
-            survivors.append(candidate)
-    return tuple(survivors)
-
 
 # ── 公开接口 ──
 
@@ -377,7 +411,7 @@ def deduplicate_candidates(
                 )
 
     # 5. 组装结果
-    all_accepted: list[AcceptedCandidateGroup] = []
+    all_accepted: list[CandidateGroup] = []
     all_rejected: list[RejectedCandidateGroup] = []
 
     for block in blocks:
@@ -386,12 +420,16 @@ def deduplicate_candidates(
         outcome = block_decisions.get(block.id)
         if outcome is None or outcome.decision is None:
             continue
-        result = _apply_decision(block, outcome.decision)
+        result = _apply_decision(
+            block,
+            outcome.decision,
+            tag_resolutions=tag_resolutions,
+        )
         all_accepted.extend(result.accepted_groups)
         all_rejected.extend(result.rejected_groups)
 
-    # 按全局规范顺序重放接受组，避免连通分量把其间的其他块挪位。
-    all_candidates = _replay_accepted_groups(ordered, all_accepted)
+    # 语义组只描述逻辑重复关系，不在证据/裁决前删除任何成员。
+    all_candidates = ordered
 
     return CandidateDedupResult(
         candidates=all_candidates,
@@ -430,6 +468,7 @@ def _build_user_prompt(
                 "line": candidate.line,
                 "task_id": candidate.task_id,
                 "type": candidate.type,
+                "severity_proposal": candidate.severity_proposal.value,
                 "primary_risk_tag": (
                     resolution.tag.value
                     if (resolution := tag_resolutions.get(candidate.id))
@@ -505,7 +544,7 @@ __all__ = [
     "CANDIDATE_LINE_WINDOW",
     "MIN_DEDUP_CONFIDENCE",
     "MAX_DEDUP_WORKERS",
-    "AcceptedCandidateGroup",
+    "CandidateGroup",
     "CandidateBlockFailure",
     "CandidateDedupDecision",
     "CandidateDedupResult",
