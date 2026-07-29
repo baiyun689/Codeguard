@@ -350,3 +350,63 @@ def test_react_budget_upgrades_assignments_without_dropping_coverage():
     assert len(react_task_ids) == 1
     assert sum(assignment.tier is ReviewTier.REACT for assignment in assignments) >= 1
     assert coverage.truncated_react_task_count > 0
+
+
+def test_react_budget_counts_each_task_reviewer_assignment_once():
+    tasks = [
+        ReviewTask(id="Checkout.java#h0", file="Checkout.java", patch="+commit"),
+        ReviewTask(id="Inventory.java#h0", file="Inventory.java", patch="+lock"),
+    ]
+    profiles = {
+        tasks[0].id: RiskProfile(
+            task_id=tasks[0].id,
+            tag_scores={
+                RiskTag.TRANSACTION_ATOMICITY: 3,
+                RiskTag.MESSAGE_DELIVERY: 3,
+            },
+            signals=[
+                RiskSignal(
+                    tag=tag,
+                    score=3,
+                    source=f"text:added:{tag.value.lower()}",
+                    reason=tag.value,
+                )
+                for tag in (
+                    RiskTag.TRANSACTION_ATOMICITY,
+                    RiskTag.MESSAGE_DELIVERY,
+                )
+            ],
+        ),
+        tasks[1].id: RiskProfile(
+            task_id=tasks[1].id,
+            tag_scores={RiskTag.CONCURRENCY_CONSISTENCY: 3},
+            signals=[
+                RiskSignal(
+                    tag=RiskTag.CONCURRENCY_CONSISTENCY,
+                    score=3,
+                    source="text:added:lock",
+                    reason="concurrency",
+                )
+            ],
+        ),
+    }
+    priors = {
+        task.id: build_risk_prior(task, profiles[task.id])
+        for task in tasks
+    }
+
+    coverage = plan_review_coverage(
+        tasks,
+        priors,
+        TaskSelection(selected_task_ids=[task.id for task in tasks]),
+        react_budget=2,
+        tools_available=True,
+    )
+
+    assert coverage.react_assignment_count == 2
+    assert coverage.truncated_react_assignment_count == 0
+    assert {
+        plan.task_id
+        for plan in coverage.tasks
+        if any(assignment.tier is ReviewTier.REACT for assignment in plan.assignments)
+    } == {task.id for task in tasks}

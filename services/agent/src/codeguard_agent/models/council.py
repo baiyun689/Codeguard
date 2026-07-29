@@ -116,16 +116,23 @@ class EvidenceRequest(BaseModel):
     @model_validator(mode="after")
     def assign_stable_id(self) -> "EvidenceRequest":
         if not self.id:
-            payload = "\0".join(
-                [
-                    self.candidate_id,
-                    self.strategy_id,
-                    self.purpose,
-                    self.target,
-                    self.question,
-                    *self.preferred_tools,
-                ]
-            )
+            parts = [
+                self.candidate_id,
+                self.strategy_id,
+                self.purpose,
+                self.target,
+                self.question,
+                *self.preferred_tools,
+            ]
+            # 保持旧 request 的稳定 ID；claim-driven request 才加入对齐维度。
+            if self.goal_id is not None:
+                parts.extend([
+                    self.goal_id,
+                    self.concern_id or "",
+                    ",".join(self.claim_ids),
+                    self.fact_type.value if self.fact_type is not None else "",
+                ])
+            payload = "\0".join(parts)
             self.id = f"evidence-{sha256(payload.encode('utf-8')).hexdigest()[:16]}"
         return self
 
@@ -371,6 +378,7 @@ class CandidateClaim(BaseModel):
     """候选的结构化主张——代码中的错误机制，而非风险类别。"""
 
     claim_id: str = ""
+    candidate_id: str = ""
     root_cause: str = ""
     trigger: str = ""
     observable_consequence: str = ""
@@ -383,7 +391,7 @@ class CandidateClaim(BaseModel):
     def assign_claim_id(self) -> "CandidateClaim":
         if not self.claim_id:
             payload = "\0".join(
-                [self.root_cause, self.trigger, self.observable_consequence,
+                [self.candidate_id, self.root_cause, self.trigger, self.observable_consequence,
                  self.fix_location, self.fix_action]
             )
             self.claim_id = f"claim-{sha256(payload.encode('utf-8')).hexdigest()[:12]}"
@@ -398,6 +406,22 @@ class ConcernTagResolution(BaseModel):
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     source: Literal["deterministic", "llm", "mixed", "unclassified"] = "unclassified"
     reasons: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_tag_set(self) -> "ConcernTagResolution":
+        if len(self.secondary_tags) > 2:
+            raise ValueError("secondary_tags must contain at most two tags")
+        if len(set(self.secondary_tags)) != len(self.secondary_tags):
+            raise ValueError("secondary_tags must be unique")
+        if self.primary_tag is not None and self.primary_tag in self.secondary_tags:
+            raise ValueError("primary_tag must not appear in secondary_tags")
+        tags = tuple(
+            tag for tag in (self.primary_tag, *self.secondary_tags)
+            if tag is not None
+        )
+        if any(tag.value == "GENERAL_REVIEW" for tag in tags) and len(tags) > 1:
+            raise ValueError("GENERAL_REVIEW cannot coexist with concrete tags")
+        return self
 
 
 class CandidateConcern(BaseModel):
@@ -504,6 +528,23 @@ class ImpactFactorAssessment(BaseModel):
     status: FactorStatus
     evidence_ids: tuple[str, ...] = ()
     reason: str = ""
+
+    @model_validator(mode="after")
+    def validate_evidence_binding(self) -> "ImpactFactorAssessment":
+        if (
+            self.status in (FactorStatus.PROVEN, FactorStatus.DISPROVEN)
+            and not self.evidence_ids
+        ):
+            self.status = FactorStatus.UNKNOWN
+            self.reason = (
+                f"{self.reason}; " if self.reason else ""
+            ) + "factor status downgraded because no evidence_id was cited"
+        if (
+            self.status in (FactorStatus.UNKNOWN, FactorStatus.NOT_APPLICABLE)
+            and self.evidence_ids
+        ):
+            self.evidence_ids = ()
+        return self
 
 
 class ImpactClass(str, Enum):

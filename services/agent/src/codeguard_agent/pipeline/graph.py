@@ -62,7 +62,6 @@ from codeguard_agent.pipeline.risk.discovery import (
 from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
 from codeguard_agent.pipeline.knowledge.selector import select_knowledge
 from codeguard_agent.models.knowledge import KnowledgeBudget
-from codeguard_agent.pipeline.risk.knowledge import load_knowledge
 from codeguard_agent.pipeline.risk.large_diff import LargeDiffPlan, plan_large_diff
 from codeguard_agent.pipeline.risk.routing import (
     build_risk_priors,
@@ -87,7 +86,6 @@ from codeguard_agent.pipeline.evidence.rules.classify import (
 from codeguard_agent.models.council import ConcernAnalysis
 from codeguard_agent.pipeline.council.concern import (
     analyze_candidate_groups,
-    build_singleton_concerns,
 )
 from codeguard_agent.pipeline.evidence.planner import plan_claim_evidence
 from codeguard_agent.pipeline.context.base import PipelineContext
@@ -414,6 +412,8 @@ def _review_coverage_node(tool_client=None):
                     f"react_assignments={plan.react_assignment_count} "
                     f"risk_upgraded={plan.risk_upgraded_assignments} "
                     f"react_tasks_truncated={plan.truncated_react_task_count} "
+                    f"react_assignments_truncated="
+                    f"{plan.truncated_react_assignment_count} "
                     f"zero_assignments={plan.tasks_with_zero_assignments}"
                 ),
             )
@@ -789,7 +789,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 reviewer=reviewer_kind,
                 task=scoped_task,
                 prior=prior,
-                context=None,  # ContextBundle not available in per-task scope yet; future phase adds
+                context=bundle,
                 catalog=catalog,
                 budget=budget,
             )
@@ -1127,18 +1127,29 @@ def _coordinator_node(effective_judge_llm):
     return _node
 
 
-def _concern_analyzer_node():
+def _concern_analyzer_node(effective_judge_llm=None):
     """把 CandidateGroup 转换为结构化 CandidateConcern。"""
 
     def _node(state: ReviewState) -> dict:
         groups = state.get("candidate_groups") or []
+        candidates = state.get("candidate_issues") or []
         priors = state.get("risk_priors") or {}
+        tag_resolutions = state.get("candidate_tag_resolutions") or {}
 
         if not groups:
             # 兼容旧路径：无 CandidateGroup 时用 singleton fallback
-            raw = state.get("candidate_issues") or []
+            raw = candidates
             if raw:
-                analysis = build_singleton_concerns(raw)
+                analysis = analyze_candidate_groups(
+                    (),
+                    candidates=raw,
+                    candidate_tag_resolutions=tag_resolutions,
+                    task_priors=priors,
+                    llm=effective_judge_llm,
+                    structured_method=state.get(
+                        "structured_method", "function_calling",
+                    ),
+                )
                 return {
                     "concern_analysis": analysis,
                     "council_trace": [
@@ -1160,7 +1171,16 @@ def _concern_analyzer_node():
                 ],
             }
 
-        analysis = analyze_candidate_groups(groups, task_priors=priors)
+        analysis = analyze_candidate_groups(
+            groups,
+            candidates=candidates,
+            candidate_tag_resolutions=tag_resolutions,
+            task_priors=priors,
+            llm=effective_judge_llm,
+            structured_method=state.get(
+                "structured_method", "function_calling",
+            ),
+        )
         return {
             "concern_analysis": analysis,
             "council_trace": [
@@ -1205,17 +1225,17 @@ def _evidence_planner_node(effective_judge_llm):
             # 新路径：claim-driven planning
             all_requests: list = []
             for concern in concern_analysis.concerns:
-                plan = plan_claim_evidence(concern)
-                all_requests.extend(plan.requests)
+                concern_plan = plan_claim_evidence(concern)
+                all_requests.extend(concern_plan.requests)
                 trace.append(
                     CouncilTrace(
                         node="evidence_planner",
                         event="concern_planned",
                         detail=(
                             f"concern={concern.concern_id} "
-                            f"goals={len(plan.goals)} "
-                            f"requests={len(plan.requests)} "
-                            f"uncovered={len(plan.uncovered_goals)}"
+                            f"goals={len(concern_plan.goals)} "
+                            f"requests={len(concern_plan.requests)} "
+                            f"uncovered={len(concern_plan.uncovered_goals)}"
                         ),
                     )
                 )
@@ -1231,7 +1251,7 @@ def _evidence_planner_node(effective_judge_llm):
 
         # 旧路径：tag-driven planning (兼容)
         assembly = _assemble_state_dossiers(state)
-        plan = plan_evidence(
+        legacy_plan = plan_evidence(
             assembly.dossiers,
             classifier_llm=effective_judge_llm,
             structured_method=state.get("structured_method", "function_calling"),
@@ -1239,7 +1259,7 @@ def _evidence_planner_node(effective_judge_llm):
         )
         trace = [
             CouncilTrace(node="evidence_planner", event=event, detail=detail)
-            for event, detail in (*assembly.trace, *plan.trace)
+            for event, detail in (*assembly.trace, *legacy_plan.trace)
         ]
         if not assembly.dossiers:
             trace.append(
@@ -1249,7 +1269,10 @@ def _evidence_planner_node(effective_judge_llm):
                     detail="no valid candidate dossiers",
                 )
             )
-        return {"evidence_requests": plan.requests, "council_trace": trace}
+        return {
+            "evidence_requests": legacy_plan.requests,
+            "council_trace": trace,
+        }
 
     return _node
 
@@ -1305,6 +1328,7 @@ def _council_judge_node(llm, judge_llm=None):
             structured_method=state.get("structured_method", "function_calling"),
             max_retries=state.get("max_retries", 2),
             candidate_groups=state.get("candidate_groups") or [],
+            concern_analysis=state.get("concern_analysis"),
         )
         judge_trace = [
             CouncilTrace(node="council_judge", event=event, detail=detail)
@@ -1376,7 +1400,10 @@ def build_review_graph(
         g.add_node("discovery_collector", _discovery_collector_node())
     else:
         g.add_node("council_coordinator", _coordinator_node(effective_judge_llm))
-        g.add_node("concern_analyzer", _concern_analyzer_node())
+        g.add_node(
+            "concern_analyzer",
+            _concern_analyzer_node(effective_judge_llm),
+        )
         g.add_node("evidence_planner", _evidence_planner_node(effective_judge_llm))
         g.add_node(
             "evidence_agent",

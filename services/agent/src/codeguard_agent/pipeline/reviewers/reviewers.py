@@ -175,9 +175,9 @@ def build_reviewer_user_prompt(
             parts.append("  </context_status>")
     if task_knowledge.strip():
         parts.extend([
-            '  <tag_knowledge role="methodology_not_repository_fact">',
+            '  <knowledge_bundle role="methodology_not_repository_fact">',
             _text(task_knowledge.strip()),
-            "  </tag_knowledge>",
+            "  </knowledge_bundle>",
         ])
     parts.extend([
         "",
@@ -211,10 +211,10 @@ def build_reviewer_user_prompt(
         "      empty=查询无结果(如当前文件无敏感API命中)。empty 和 unavailable 的上下文在当前审查中不可用，"
         "      不要假设它们的内容；但也不需要为「无法获取」而反复调用工具。",
         "",
-        "  - <tag_knowledge role=\"methodology_not_repository_fact\">:",
-        "      你命中的风险标签对应的**领域知识图谱**——不是当前仓库的代码事实，而是教你「这类问题通常长什么样、怎么识别」。",
-        "      把它当成分析框架和排查清单，用于引导你的审查思路；但它不包含当前仓库的任何具体信息，"
-        "      你不能引用 tag_knowledge 里的示例代码或假设场景作为证据——所有证据必须来自 task patch 和工具返回的事实。",
+        "  - <knowledge_bundle role=\"methodology_not_repository_fact\">:",
+        "      它由当前审查员稳定的 BASE 方法论和按 task 线索选出的少量专项检查组成。专项主题可能来自风险先验、",
+        "      patch 文本或 symbol context；被选中只表示值得检查，不表示对应缺陷存在，也不限制你发现其他真实问题。",
+        "      不能引用 knowledge_bundle 中的示例、风险名称或假设场景作为证据——所有证据必须来自 task patch 和工具事实。",
         "",
         "  </context_guide>",
     ])

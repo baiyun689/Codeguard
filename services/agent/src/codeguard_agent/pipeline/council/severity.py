@@ -191,9 +191,21 @@ def rubric_for(
             if p.rule_id not in seen:
                 seen.add(p.rule_id)
                 preds.append(p)
-    if not preds:
-        # 通用 predicates：任何运行时问题都可能命中
-        preds = [CRITICAL_PREDICATES[1], CRITICAL_PREDICATES[2]]  # financial + persistent
+    # 无标签 concern 使用通用 rubric，但不允许仅凭宽泛关键词达到 CRITICAL。
+    # 若证据证明了具体高影响语义，应先形成具体 concern tag 再选择 predicate。
+    if preds:
+        referenced = {
+            factor
+            for predicate in preds
+            for factor in (
+                *predicate.all_of,
+                *predicate.any_of,
+                *predicate.none_of,
+            )
+        }
+        factors = tuple(dict.fromkeys((*factors, *sorted(
+            referenced, key=lambda factor: factor.value,
+        ))))
 
     tag_names = "+".join(sorted(t.value for t in tags)) if tags else "generic"
     return ImpactRubric(
@@ -205,9 +217,15 @@ def rubric_for(
 
 # ── Deterministic resolver ─────────────────────────────────────────────────────
 
-def _factor_is_proven(assessment: ImpactFactorAssessment) -> bool:
+def _factor_is_proven(
+    assessment: ImpactFactorAssessment | None,
+) -> bool:
     """PROVEN 且至少有一个 evidence_id。"""
-    return assessment.status == FactorStatus.PROVEN and len(assessment.evidence_ids) > 0
+    return (
+        assessment is not None
+        and assessment.status == FactorStatus.PROVEN
+        and len(assessment.evidence_ids) > 0
+    )
 
 
 def _predicate_matched(
@@ -235,6 +253,35 @@ def _predicate_matched(
             return False
 
     return True
+
+
+def _nearest_critical_blockers(
+    rubric: ImpactRubric,
+    factors: Sequence[ImpactFactorAssessment],
+) -> tuple[ImpactFactor, ...]:
+    """返回最接近命中的 CRITICAL predicate 仍缺少/被阻止的因子。"""
+    by_factor = {assessment.factor: assessment for assessment in factors}
+    candidates: list[tuple[ImpactFactor, ...]] = []
+    for predicate in rubric.critical_predicates:
+        blockers: list[ImpactFactor] = [
+            factor
+            for factor in predicate.all_of
+            if not _factor_is_proven(by_factor.get(factor))
+        ]
+        if predicate.any_of and not any(
+            _factor_is_proven(by_factor.get(factor))
+            for factor in predicate.any_of
+        ):
+            blockers.extend(predicate.any_of)
+        blockers.extend(
+            factor
+            for factor in predicate.none_of
+            if _factor_is_proven(by_factor.get(factor))
+        )
+        candidates.append(tuple(dict.fromkeys(blockers)))
+    if not candidates:
+        return ()
+    return min(candidates, key=lambda item: (len(item), tuple(f.value for f in item)))
 
 
 def resolve_severity(
@@ -309,12 +356,15 @@ def resolve_severity(
             )
 
     # WARNING: 有运行时影响但未达 CRITICAL
+    critical_blockers = _nearest_critical_blockers(
+        rubric, impact.factors,
+    )
     return SeverityResolution(
         concern_id=impact.concern_id,
         severity=Severity.WARNING,
         rule_id="warning.proven_runtime_bounded_or_unknown",
         proven_factors=proven,
-        limiting_factors=disproven,
+        limiting_factors=critical_blockers or disproven,
         evidence_ids=tuple(dict.fromkeys(
             eid for a in impact.factors if _factor_is_proven(a)
             for eid in a.evidence_ids

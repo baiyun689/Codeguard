@@ -115,6 +115,7 @@ class ReviewCoveragePlan(BaseModel):
     react_assignment_count: int = 0
     risk_upgraded_assignments: int = 0
     truncated_react_task_count: int = 0
+    truncated_react_assignment_count: int = 0
     unclassified_tasks: int = 0
     tasks_with_zero_assignments: int = 0
 

@@ -11,7 +11,9 @@ from typing import Any
 
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.council import (
+    CandidateConcern,
     CandidateEvidenceAssessment,
+    ConcernAnalysis,
     EvidenceFinding,
     EvidenceRequest,
     Verdict,
@@ -27,9 +29,12 @@ from codeguard_agent.pipeline.evidence.agent import (
 )
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
 from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID
-from codeguard_agent.pipeline.council.impact import assess_impact, assess_impact_fallback
+from codeguard_agent.pipeline.council.impact import (
+    assess_impact,
+    assess_impact_fallback,
+)
 from codeguard_agent.pipeline.council.severity import (
-    policy_for,
+    FACTOR_INFO,
     resolve_severity as resolve_severity_new,
     resolve_severity_fallback,
     rubric_for,
@@ -133,7 +138,12 @@ def _emit_supported_issues(
         )
 
 
-def _primary_tag(dossier: CandidateDossier) -> RiskTag:
+def _primary_tag(
+    dossier: CandidateDossier,
+    concern: CandidateConcern | None = None,
+) -> RiskTag:
+    if concern is not None and concern.tags.primary_tag is not None:
+        return concern.tags.primary_tag
     tags: set[RiskTag] = set()
     for request in dossier.requests:
         if request_strategy_mismatch(request, dossier) is not None:
@@ -151,6 +161,23 @@ def _primary_tag(dossier: CandidateDossier) -> RiskTag:
         tags,
     )
     return RiskTag.GENERAL_REVIEW
+
+
+def _rubric_tags(
+    dossier: CandidateDossier,
+    concern: CandidateConcern | None,
+) -> tuple[RiskTag, ...]:
+    if concern is not None:
+        return tuple(
+            tag
+            for tag in (
+                concern.tags.primary_tag,
+                *concern.tags.secondary_tags,
+            )
+            if tag is not None and tag is not RiskTag.GENERAL_REVIEW
+        )
+    inferred = _primary_tag(dossier)
+    return () if inferred is RiskTag.GENERAL_REVIEW else (inferred,)
 
 
 # ── evidence gate (deterministic, runs before LLM) ───────────────────────────
@@ -225,9 +252,11 @@ def _purpose_findings(
 def _synthesis_payload(
     dossier: CandidateDossier,
     evidence: list[BoundEvidence],
+    concern: CandidateConcern | None,
 ) -> str:
-    primary = _primary_tag(dossier)
-    policy = policy_for(primary)
+    primary = _primary_tag(dossier, concern)
+    concern_tags = _rubric_tags(dossier, concern)
+    rubric = rubric_for(tags=concern_tags)
     findings_by_request: dict[str, list[EvidenceFinding]] = {}
     for item in evidence:
         findings_by_request.setdefault(item.request.id, []).append(item.finding)
@@ -251,6 +280,27 @@ def _synthesis_payload(
             "file": dossier.candidate.file,
             "line": dossier.candidate.line,
         },
+        "concern": (
+            {
+                "concern_id": concern.concern_id,
+                "member_candidate_ids": concern.member_candidate_ids,
+                "claims": [
+                    claim.model_dump(mode="json")
+                    for claim in concern.claims
+                    if claim.candidate_id in ("", dossier.candidate.id)
+                ],
+                "primary_tag": (
+                    concern.tags.primary_tag.value
+                    if concern.tags.primary_tag is not None
+                    else None
+                ),
+                "secondary_tags": [
+                    tag.value for tag in concern.tags.secondary_tags
+                ],
+            }
+            if concern is not None
+            else None
+        ),
         "task_patch": dossier.task.patch,
         "primary_tag": primary.value,
         "task_tags": [
@@ -260,8 +310,8 @@ def _synthesis_payload(
         ],
         "requests": requests_payload,
         "allowed_factors": [
-            {"id": factor.id, "description": factor.description}
-            for factor in policy.factors
+            {"id": factor.value, "description": FACTOR_INFO[factor]}
+            for factor in rubric.required_factors
         ],
     })
 
@@ -276,6 +326,7 @@ def _synthesize(
     judge_llm: Any,
     structured_method: str,
     max_retries: int,
+    concern: CandidateConcern | None = None,
 ) -> CandidateEvidenceAssessment | None:
     try:
         structured = judge_llm.with_structured_output(
@@ -287,7 +338,7 @@ def _synthesize(
             structured,
             [
                 ("system", system_prompt),
-                ("user", _synthesis_payload(dossier, evidence)),
+                ("user", _synthesis_payload(dossier, evidence, concern)),
             ],
             max_retries=max_retries,
         )
@@ -325,6 +376,7 @@ def _judge_one_candidate(
     judge_llm: Any,
     structured_method: str,
     max_retries: int,
+    concern: CandidateConcern | None = None,
 ) -> tuple[Verdict, Issue | None, str, list[tuple[str, str]]]:
     """对单个候选执行证据门控 → LLM 综合 → 裁决，返回 (verdict, issue, candidate_id, traces)。"""
     traces: list[tuple[str, str]] = []
@@ -346,13 +398,12 @@ def _judge_one_candidate(
         return verdict, None, "", traces
 
     # LLM synthesis
-    primary = _primary_tag(dossier)
-    policy = policy_for(primary)
     assessment = _synthesize(
         dossier, findings,
         judge_llm=judge_llm,
         structured_method=structured_method,
         max_retries=max_retries,
+        concern=concern,
     )
 
     if assessment is None:
@@ -361,7 +412,7 @@ def _judge_one_candidate(
         verdict = Verdict(
             dossier.candidate.id, "keep",
             "severity_evidence_incomplete",
-            "LLM synthesis failed, using policy default severity",
+            "LLM synthesis failed, using conservative severity fallback",
             resolved_severity=resolved_severity,
         )
         issue = dossier.candidate.to_issue().model_copy(
@@ -374,8 +425,9 @@ def _judge_one_candidate(
         })
         _add_trace("severity_resolved", {
             "candidate_id": dossier.candidate.id,
-            "matched_rule": f"{primary.value.lower()}.default",
+            "matched_rule": fallback.rule_id,
             "severity": resolved_severity.value,
+            "fallback_used": True,
         })
         return verdict, issue, dossier.candidate.id, traces
 
@@ -419,20 +471,32 @@ def _judge_one_candidate(
 
     # claim_status == "supported" → new severity resolution
     try:
-        # Build rubric from concern tags (fallback: empty)
-        tags: tuple = ()
-        # Note: concern info not available in current _judge_one_candidate signature;
-        # use empty tags for now. Phase 4 follow-up will thread concern through.
+        tags = _rubric_tags(dossier, concern)
         rubric = rubric_for(tags=tags)
+        impact_findings = [
+            item.finding
+            for item in findings
+            if item.request.purpose == "severity"
+            and (
+                concern is None
+                or item.finding.concern_id in (None, concern.concern_id)
+            )
+        ]
         impact = assess_impact(
-            concern_id=dossier.candidate.id,
-            findings=[item.finding for item in findings],
+            concern_id=(
+                concern.concern_id if concern is not None
+                else dossier.candidate.id
+            ),
+            findings=impact_findings,
             rubric=rubric,
             llm=judge_llm,
         )
         resolution = resolve_severity_new(impact, rubric)
     except Exception:
         logger.warning("New severity resolution failed, using fallback", exc_info=True)
+        impact = assess_impact_fallback(
+            concern.concern_id if concern is not None else dossier.candidate.id
+        )
         resolution = resolve_severity_fallback()
 
     verdict = Verdict(
@@ -451,9 +515,14 @@ def _judge_one_candidate(
     })
     _add_trace("severity_resolved", {
         "candidate_id": dossier.candidate.id,
+        "concern_id": impact.concern_id,
+        "impact_class": impact.impact_class.value,
         "matched_rule": resolution.rule_id,
         "severity": resolution.severity.value,
         "proven_factors": [f.value for f in resolution.proven_factors],
+        "limiting_factors": [f.value for f in resolution.limiting_factors],
+        "evidence_ids": list(resolution.evidence_ids),
+        "impact_diagnostics": list(impact.diagnostics),
         "fallback_used": resolution.fallback_used,
     })
     return verdict, issue, dossier.candidate.id, traces
@@ -466,8 +535,16 @@ def judge_candidates(
     structured_method: str,
     max_retries: int,
     candidate_groups: Sequence[CandidateGroup] = (),
+    concern_analysis: ConcernAnalysis | None = None,
 ) -> JudgeBatch:
     batch = JudgeBatch()
+    concern_by_candidate = {
+        candidate_id: concern
+        for concern in (
+            concern_analysis.concerns if concern_analysis is not None else ()
+        )
+        for candidate_id in concern.member_candidate_ids
+    }
 
     # Binding failures → drop（确定性，无需并行）
     for failure in assembly.failures:
@@ -494,6 +571,7 @@ def judge_candidates(
             judge_llm=judge_llm,
             structured_method=structured_method,
             max_retries=max_retries,
+            concern=concern_by_candidate.get(dossier.candidate.id),
         )
 
     results = run_bounded_parallel(assembly.dossiers, _invoke, max_workers=6)

@@ -20,7 +20,18 @@ from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.engines import GatheredContext
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID
-from codeguard_agent.pipeline.evidence.rules.types import ToolCallSpec, as_capability
+from codeguard_agent.pipeline.evidence.capability import capabilities_for_fact_type
+from codeguard_agent.pipeline.evidence.rules.recipes import (
+    callers_upstream,
+    file_metrics,
+    file_only,
+    file_sensitive,
+)
+from codeguard_agent.pipeline.evidence.rules.types import (
+    EvidenceStrategy,
+    ToolCallSpec,
+    as_capability,
+)
 
 logger = logging.getLogger("codeguard")
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
@@ -110,6 +121,10 @@ def _insufficient(request: EvidenceRequest, limitation: str, *, detail: str = ""
                 relation="insufficient",
                 strength="contextual",
                 limitation=limitation,
+                goal_id=request.goal_id,
+                concern_id=request.concern_id,
+                claim_ids=request.claim_ids,
+                fact_type=request.fact_type,
             )
         ],
     )
@@ -117,6 +132,61 @@ def _insufficient(request: EvidenceRequest, limitation: str, *, detail: str = ""
 
 def _expected_tools(calls: list[ToolCallSpec]) -> list[str]:
     return list(dict.fromkeys(call.tool_name for call in calls))
+
+
+def _claim_tool_calls(
+    request: EvidenceRequest,
+    dossier: CandidateDossier,
+) -> list[ToolCallSpec]:
+    desired = set(request.preferred_tools)
+    available = [
+        *file_only(dossier),
+        *callers_upstream(dossier),
+        *file_sensitive(dossier),
+        *file_metrics(dossier),
+    ]
+    calls: list[ToolCallSpec] = []
+    seen: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
+    for call in available:
+        key = (call.tool_name, call.arguments)
+        if call.tool_name not in desired or key in seen:
+            continue
+        seen.add(key)
+        calls.append(call)
+    return calls
+
+
+def _strategy_for_request(
+    request: EvidenceRequest,
+    dossier: CandidateDossier,
+) -> EvidenceStrategy | None:
+    registered = STRATEGIES_BY_ID.get(request.strategy_id)
+    if registered is not None:
+        return registered
+    if not request.strategy_id.startswith("claim.") or request.fact_type is None:
+        return None
+    capabilities = capabilities_for_fact_type(request.fact_type)
+    context_kinds = tuple(dict.fromkeys(
+        ["task_patch", "symbol_context"]
+        + [
+            fact.kind
+            for fact in (
+                dossier.context_bundle.facts
+                if dossier.context_bundle is not None
+                else ()
+            )
+        ]
+    ))
+    return EvidenceStrategy(
+        id=request.strategy_id,
+        tags=frozenset(),
+        purpose=request.purpose,
+        priority=0,
+        question_template=request.question,
+        context_kinds=context_kinds,
+        allowed_capabilities=capabilities,
+        build_tool_calls=lambda bound: _claim_tool_calls(request, bound),
+    )
 
 
 def request_strategy_mismatch(
@@ -127,9 +197,16 @@ def request_strategy_mismatch(
         return "missing_dossier"
     if request.candidate_id != dossier.candidate.id:
         return "candidate_id"
-    strategy = STRATEGIES_BY_ID.get(request.strategy_id)
+    strategy = _strategy_for_request(request, dossier)
     if strategy is None:
         return "strategy_id"
+    if request.strategy_id.startswith("claim.") and (
+        not request.goal_id
+        or not request.concern_id
+        or not request.claim_ids
+        or request.fact_type is None
+    ):
+        return "claim_alignment"
     if request.purpose != strategy.purpose:
         return "purpose"
     target = context_rules.normalize_path(request.target)
@@ -274,7 +351,9 @@ def _base_facts(dossier: CandidateDossier, request: EvidenceRequest) -> list[_Ra
             raw=dossier.task.patch,
         )
     ]
-    strategy = STRATEGIES_BY_ID[request.strategy_id]
+    strategy = _strategy_for_request(request, dossier)
+    if strategy is None:  # guarded by request_strategy_mismatch
+        return facts
     bundle = dossier.context_bundle
     if bundle is not None:
         selected_symbol_contexts = _selected_symbol_contexts(dossier)
@@ -640,6 +719,17 @@ def _analysis_user_prompt(
         ),
         "purpose": request.purpose,
         "strategy_question": request.question,
+        "evidence_goal": {
+            "goal_id": request.goal_id,
+            "concern_id": request.concern_id,
+            "claim_ids": request.claim_ids,
+            "fact_type": (
+                request.fact_type.value
+                if request.fact_type is not None
+                else None
+            ),
+            "proposition": request.question,
+        },
         "task_patch": dossier.task.patch,
         "risk_profile": risk,
         "task_context": (
@@ -915,7 +1005,10 @@ def collect_evidence(
             )
             continue
         assert dossier is not None
-        strategy = STRATEGIES_BY_ID[request.strategy_id]
+        strategy = _strategy_for_request(request, dossier)
+        if strategy is None:  # guarded by request_strategy_mismatch
+            work.ready_note = _insufficient(request, "request_strategy_mismatch")
+            continue
         work.facts = _base_facts(dossier, request)
         calls = strategy.build_tool_calls(dossier)
         for call in calls:
@@ -1112,6 +1205,17 @@ def collect_evidence(
         findings = findings_by_work.get(work_index, [])
         if not findings:
             findings = _insufficient(request, "no_evidence").findings
+        findings = [
+            finding.model_copy(
+                update={
+                    "goal_id": request.goal_id,
+                    "concern_id": request.concern_id,
+                    "claim_ids": request.claim_ids,
+                    "fact_type": request.fact_type,
+                }
+            )
+            for finding in findings
+        ]
         note = EvidenceNote(
             request_id=request.id,
             candidate_id=request.candidate_id,

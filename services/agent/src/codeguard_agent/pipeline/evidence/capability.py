@@ -6,8 +6,6 @@ RiskTag 用于排序 capability 而非唯一 lookup key。
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 from codeguard_agent.models.council import EvidenceFactType
 from codeguard_agent.pipeline.evidence.rules.types import EvidenceCapability
 

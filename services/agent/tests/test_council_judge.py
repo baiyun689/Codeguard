@@ -23,7 +23,6 @@ from codeguard_agent.pipeline.council.judge import (
     judge_candidates as _judge_impl,
 )
 from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID, strategies_for
-from codeguard_agent.pipeline.council.severity import policy_for
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -151,31 +150,54 @@ def _supported_dossier(
 def _dossier_with_observations(
     observations: list[str],
     *,
-    tag: RiskTag = RiskTag.AUTHORIZATION,
+    tag: RiskTag = RiskTag.TRANSACTION_ATOMICITY,
     proposed: Severity = Severity.WARNING,
 ) -> CandidateDossier:
     """Create a supported dossier with keyword-rich observation findings
     for ImpactAssessor deterministic factor detection."""
-    strategy = strategies_for(tag, "support")[0]
-    request = EvidenceRequest(
+    support_strategy = strategies_for(tag, "support")[0]
+    support_request = EvidenceRequest(
         candidate_id="candidate-1",
-        strategy_id=strategy.id,
+        strategy_id=support_strategy.id,
         purpose="support",
         target="src/Service.java",
-        question=strategy.question_template,
-        preferred_tools=list(strategy.allowed_tools),
+        question=support_strategy.question_template,
+        preferred_tools=list(support_strategy.allowed_tools),
+    )
+    severity_strategy = strategies_for(tag, "severity")[0]
+    severity_request = EvidenceRequest(
+        candidate_id="candidate-1",
+        strategy_id=severity_strategy.id,
+        purpose="severity",
+        target="src/Service.java",
+        question=severity_strategy.question_template,
+        preferred_tools=list(severity_strategy.allowed_tools),
     )
     findings = [
         _finding("supports", "direct", evidence_id=f"obs-{i}", observation=obs)
         for i, obs in enumerate(observations)
     ]
-    note = EvidenceNote(
-        request_id=request.id,
+    support_note = EvidenceNote(
+        request_id=support_request.id,
+        candidate_id="candidate-1",
+        findings=[_finding(
+            "supports",
+            "direct",
+            evidence_id="claim-support",
+            observation="候选根因由当前变更直接建立",
+        )],
+    )
+    severity_note = EvidenceNote(
+        request_id=severity_request.id,
         candidate_id="candidate-1",
         findings=findings,
     )
     base = _dossier(severity=proposed)
-    return replace(base, requests=(request,), notes=(note,))
+    return replace(
+        base,
+        requests=(support_request, severity_request),
+        notes=(support_note, severity_note),
+    )
 
 
 # ── LLM test doubles ─────────────────────────────────────────────────────────
@@ -228,21 +250,6 @@ def _supported_assessment(**updates):
     }
     values.update(updates)
     return CandidateEvidenceAssessment(**values)
-
-
-def _injection_critical_assessment():
-    factors = policy_for(RiskTag.INJECTION).critical_requires
-    return _supported_assessment(
-        severity_factors=[
-            SeverityFactorAssessment(
-                factor_id=fid,
-                status="proven",
-                evidence_ids=[f"factor-{i}"],
-                reason=f"{fid} is directly proven",
-            )
-            for i, fid in enumerate(factors)
-        ]
-    )
 
 
 # ── gate: direct counter → drop ──────────────────────────────────────────────
@@ -330,7 +337,7 @@ def test_synthesis_payload_includes_factor_descriptions():
 
     payload = json.loads(llm.messages[1][1])
     factors = {item["id"]: item["description"] for item in payload["allowed_factors"]}
-    assert factors["untrusted_input"] == "攻击者可控输入能够到达受影响代码路径"
+    assert factors["external_actor_controlled"] == "攻击者或未授权调用者能够控制输入或触发条件"
     assert "allowed_factor_ids" not in payload
 
 
@@ -419,7 +426,7 @@ def test_proposed_severity_never_changes_resolved_severity():
         "变更代码可达且被外部调用",  # RUNTIME_REACHABLE
         "涉及支付金额计算逻辑",      # FINANCIAL_IMPACT
         "可能导致数据完整性损坏",    # INTEGRITY_LOSS
-        "涉及数据库持久化写入",     # PERSISTENT_STATE_CORRUPTION (any_of)
+        "错误写入造成持久状态损坏", # PERSISTENT_STATE_CORRUPTION (any_of)
     ]
     low = _dossier_with_observations(critical_obs, proposed=Severity.INFO)
     high = _dossier_with_observations(critical_obs, proposed=Severity.CRITICAL)
@@ -437,7 +444,7 @@ def test_all_critical_factors_proven_resolves_critical():
         "变更代码可达且被外部调用",  # RUNTIME_REACHABLE
         "涉及支付金额计算逻辑",      # FINANCIAL_IMPACT
         "可能导致数据完整性损坏",    # INTEGRITY_LOSS
-        "涉及数据库持久化写入",     # PERSISTENT_STATE_CORRUPTION (any_of)
+        "错误写入造成持久状态损坏", # PERSISTENT_STATE_CORRUPTION (any_of)
     ]
     dossier = _dossier_with_observations(critical_obs)
     llm = _AssessmentLLM(_supported_assessment())
@@ -464,7 +471,7 @@ def test_unknown_factor_evidence_citation_is_traced_and_ignored():
     assessment = _supported_assessment(
         severity_factors=[
             SeverityFactorAssessment(
-                factor_id=policy_for(RiskTag.INJECTION).critical_requires[0],
+                factor_id="runtime_reachable",
                 status="proven",
                 evidence_ids=["unknown-evidence"],
             )
@@ -487,7 +494,7 @@ def test_unknown_evidence_citation_is_traced_even_when_claim_is_refuted():
         claim_status="refuted",
         severity_factors=[
             SeverityFactorAssessment(
-                factor_id=policy_for(RiskTag.INJECTION).critical_requires[0],
+                factor_id="runtime_reachable",
                 status="proven",
                 evidence_ids=["unknown-before-refutation"],
             )

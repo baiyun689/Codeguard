@@ -129,13 +129,24 @@ def compute_council_run_stats(
         for verdict in verdicts
     )
     critical_policy_matched = sum(
-        str(event.get("matched_rule", "")).endswith(".critical")
+        (
+            str(event.get("matched_rule", "")).startswith("critical.")
+            or str(event.get("matched_rule", "")).endswith(".critical")
+        )
         for event in severity_events
     )
     critical_missing_factors = sum(
         len(missing)
         for event in severity_events
-        if isinstance((missing := event.get("missing_critical_factors", [])), list)
+        if isinstance(
+            (
+                missing := event.get(
+                    "limiting_factors",
+                    event.get("missing_critical_factors", []),
+                )
+            ),
+            list,
+        )
     )
     proposals = {candidate.id: candidate.severity_proposal for candidate in candidates}
     severity_transitions: dict[str, int] = {}

@@ -7,7 +7,9 @@ LLM 不接触 Severity 枚举——它只输出 factor 状态。
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from codeguard_agent.models.council import (
@@ -22,34 +24,75 @@ from codeguard_agent.models.council import (
 from codeguard_agent.pipeline.council.severity import FACTOR_INFO
 
 logger = logging.getLogger("codeguard")
+_PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
 
 # factor → 从 finding 文本中确定性检测的关键词
 _FACTOR_KEYWORDS: dict[ImpactFactor, tuple[str, ...]] = {
     ImpactFactor.RUNTIME_REACHABLE: ("可达", "reachable", "调用路径", "call path"),
     ImpactFactor.LOCAL_MAINTAINABILITY_ONLY: ("可读性", "readability", "复杂度", "complexity",
                                                 "命名", "naming", "重复", "duplication"),
-    ImpactFactor.AUTO_RECOVERABLE: ("重试", "retry", "自动恢复", "auto recover", "幂等", "idempotent"),
+    ImpactFactor.AUTO_RECOVERABLE: (
+        "可自动恢复", "自动重试可恢复", "auto recoverable",
+    ),
     ImpactFactor.OPERATOR_RECOVERABLE: ("手动", "manual", "运维", "operator", "人工"),
     ImpactFactor.IRREVERSIBLE: ("不可逆", "irreversible", "永久", "permanent"),
-    ImpactFactor.PERSISTENT_STATE_CORRUPTION: ("持久化", "persist", "数据库", "database", "写入", "write"),
+    ImpactFactor.PERSISTENT_STATE_CORRUPTION: (
+        "持久状态损坏", "持久化错误", "错误写入", "数据损坏",
+        "persistent state corruption", "corrupt persisted", "incorrectly persisted",
+    ),
     ImpactFactor.EXTERNAL_SIDE_EFFECT: ("消息", "message", "事件", "event", "发布", "publish", "回调", "callback"),
-    ImpactFactor.MULTI_ENTITY_BLAST_RADIUS: ("多租户", "multi tenant", "批量", "batch", "全部", "all"),
+    ImpactFactor.MULTI_ENTITY_BLAST_RADIUS: (
+        "多租户", "跨租户", "multi tenant", "cross tenant",
+        "批量实体", "多个订单", "多个用户", "multiple entities",
+    ),
     ImpactFactor.INTEGRITY_LOSS: ("完整性", "integrity", "不一致", "inconsistent", "错误数据", "corrupt"),
     ImpactFactor.FINANCIAL_IMPACT: ("金额", "amount", "支付", "payment", "财务", "financial", "资金"),
     ImpactFactor.CONFIDENTIALITY_LOSS: ("泄露", "leak", "暴露", "expose", "敏感", "sensitive", "PII"),
     ImpactFactor.AVAILABILITY_LOSS: ("不可用", "unavailable", "宕机", "downtime", "崩溃", "crash"),
-    ImpactFactor.AUTHORIZATION_BYPASS: ("越权", "authorization", "权限", "permission", "绕过", "bypass"),
+    ImpactFactor.AUTHORIZATION_BYPASS: (
+        "越权", "绕过授权", "缺少授权校验",
+        "authorization bypass", "missing authorization",
+    ),
     ImpactFactor.EXTERNAL_ACTOR_CONTROLLED: ("攻击者", "attacker", "外部输入", "external input", "用户输入", "user input"),
 }
 
 
-def _deterministic_factors(findings: Sequence[EvidenceFinding]) -> dict[ImpactFactor, ImpactFactorAssessment]:
+def _contains_asserted_keyword(text: str, keyword: str) -> bool:
+    """只接受未被局部否定的关键词，避免“不可达/无法恢复”反向证明因子。"""
+    lowered = text.lower()
+    needle = keyword.lower()
+    start = 0
+    while (index := lowered.find(needle, start)) >= 0:
+        prefix = lowered[max(0, index - 12):index]
+        if not (
+            re.search(r"(?:不|未|无|无法|不能|并非|not|never|without)\s*$", prefix)
+            or prefix.endswith("un")
+        ):
+            return True
+        start = index + len(needle)
+    return False
+
+
+def _deterministic_factors(
+    findings: Sequence[EvidenceFinding],
+) -> dict[ImpactFactor, ImpactFactorAssessment]:
     """从 findings 文本确定性检测已知 factor 状态。"""
-    joined = " ".join(f.observation.lower() for f in findings)
     result: dict[ImpactFactor, ImpactFactorAssessment] = {}
+    supporting = [
+        finding
+        for finding in findings
+        if finding.relation == "supports" and finding.observation.strip()
+    ]
 
     for factor, keywords in _FACTOR_KEYWORDS.items():
-        matching = [f for f in findings if any(kw in f.observation.lower() for kw in keywords)]
+        matching = [
+            finding
+            for finding in supporting
+            if any(
+                _contains_asserted_keyword(finding.observation, keyword)
+                for keyword in keywords
+            )
+        ]
         if matching:
             status = FactorStatus.PROVEN
             evidence_ids = tuple(f.evidence_id for f in matching)
@@ -107,7 +150,12 @@ def assess_impact(
     diagnostics: list[str] = []
 
     # 确定性填充
-    factors = _deterministic_factors(findings)
+    aligned_findings = [
+        finding
+        for finding in findings
+        if finding.concern_id in (None, concern_id)
+    ]
+    factors = _deterministic_factors(aligned_findings)
 
     # 只保留 rubric 要求的 factors
     required = {f: factors.get(f, ImpactFactorAssessment(
@@ -118,7 +166,7 @@ def assess_impact(
 
     # LLM 补充（可选）：对 UNKNOWN 的关键 factor 做语义归纳
     if llm is not None:
-        unknown_critical = [
+        unknown_critical: list[ImpactFactor] = [
             f for f in rubric.required_factors
             if required[f].status == FactorStatus.UNKNOWN
             and f in (
@@ -130,7 +178,9 @@ def assess_impact(
         ]
         if unknown_critical:
             try:
-                llm_factors = _llm_assess_factors(concern_id, findings, unknown_critical, llm)
+                llm_factors = _llm_assess_factors(
+                    concern_id, aligned_findings, unknown_critical, llm,
+                )
                 for fa in llm_factors:
                     if fa.factor in required:
                         required[fa.factor] = fa
@@ -138,6 +188,7 @@ def assess_impact(
                 logger.warning("ImpactAssessor LLM failed, using deterministic only", exc_info=True)
                 diagnostics.append("llm_assessment_failed")
 
+    impact_class = _determine_impact_class(required)
     return ImpactAssessment(
         concern_id=concern_id,
         impact_class=impact_class,
@@ -169,32 +220,44 @@ def _llm_assess_factors(
         f"[{f.evidence_id}] ({f.relation}) {f.observation}"
         for f in findings[:20]  # limit to avoid token overflow
     )
-    factor_names = ", ".join(f.value for f in factors)
     factor_descs = "\n".join(f"- {f.value}: {FACTOR_INFO.get(f, '')}" for f in factors)
 
-    prompt = f"""根据以下 evidence findings，判断每个因子的状态（proven / disproven / unknown）。
-
-Evidence findings:
-{findings_text}
-
-需要评估的因子：
-{factor_descs}
-
-规则：
-- proven: 有明确证据支持该因子成立
-- disproven: 有明确证据排除该因子
-- unknown: 证据不足以判断
-- 每个 proven/disproven 必须引用至少一个 evidence_id
-- 不要猜测，不要从命名推断"""
+    prompt = (
+        "Evidence findings:\n"
+        f"{findings_text}\n\n"
+        "需要评估的因子：\n"
+        f"{factor_descs}"
+    )
 
     try:
         structured = llm.with_structured_output(_AssessmentOutput, method="function_calling")
-        result = invoke_with_retry(structured, [("user", prompt)], max_retries=1)
+        result = invoke_with_retry(
+            structured,
+            [
+                (
+                    "system",
+                    (_PROMPT_DIR / "impact-factor-assessor.txt").read_text(
+                        encoding="utf-8",
+                    ),
+                ),
+                ("user", prompt),
+            ],
+            max_retries=1,
+        )
         if result is None or not isinstance(result, _AssessmentOutput):
             return []
 
         out: list[ImpactFactorAssessment] = []
-        valid_ids = {f.evidence_id for f in findings}
+        valid_ids = {
+            f.evidence_id
+            for f in findings
+            if f.relation != "insufficient"
+        }
+        supporting_ids = {
+            f.evidence_id
+            for f in findings
+            if f.relation == "supports"
+        }
         for a in result.assessments:
             try:
                 factor = ImpactFactor(a.factor)
@@ -208,6 +271,13 @@ Evidence findings:
             valid_evidence = [eid for eid in a.evidence_ids if eid in valid_ids]
             if status in (FactorStatus.PROVEN, FactorStatus.DISPROVEN) and not valid_evidence:
                 status = FactorStatus.UNKNOWN
+            if (
+                status == FactorStatus.PROVEN
+                and not any(eid in supporting_ids for eid in valid_evidence)
+            ):
+                status = FactorStatus.UNKNOWN
+            if status in (FactorStatus.UNKNOWN, FactorStatus.NOT_APPLICABLE):
+                valid_evidence = []
 
             out.append(ImpactFactorAssessment(
                 factor=factor, status=status,

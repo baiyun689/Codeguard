@@ -10,19 +10,17 @@ import logging
 import re
 import unicodedata
 
-from codeguard_agent.models.council import ContextBundle
 from codeguard_agent.models.knowledge import (
     KnowledgeBudget,
     KnowledgeBundle,
     KnowledgeFragment,
-    KnowledgeKind,
     KnowledgeSelectionSource,
     SelectedKnowledge,
 )
 from codeguard_agent.models.tasks import (
     ReviewerKind,
-    RiskCoverage,
     ReviewTask,
+    TaskContextBundle,
     TaskRiskPrior,
 )
 from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
@@ -145,7 +143,7 @@ def _score_file_role(
 
 
 def _score_context_symbols(
-    fragment: KnowledgeFragment, context: ContextBundle | None,
+    fragment: KnowledgeFragment, context: TaskContextBundle | None,
 ) -> tuple[float, KnowledgeSelectionSource | None]:
     if context is None or not context.facts or fragment.risk_tag is None:
         return 0.0, None
@@ -171,7 +169,7 @@ def _select_specialized(
     fragments: list[KnowledgeFragment],
     task: ReviewTask,
     prior: TaskRiskPrior,
-    context: ContextBundle | None,
+    context: TaskContextBundle | None,
     budget: KnowledgeBudget,
 ) -> tuple[list[SelectedKnowledge], tuple[str, ...], tuple[str, ...]]:
     scored: list[SelectedKnowledge] = []
@@ -220,7 +218,7 @@ def _select_specialized(
     if omitted:
         diagnostics.append(f"omitted topics: {', '.join(omitted)}")
 
-    return selected, tuple(), tuple(diagnostics)
+    return selected, omitted, tuple(diagnostics)
 
 
 def _render_bundle(
@@ -310,7 +308,7 @@ def select_knowledge(
     reviewer: ReviewerKind,
     task: ReviewTask,
     prior: TaskRiskPrior,
-    context: ContextBundle | None,
+    context: TaskContextBundle | None,
     catalog: KnowledgeCatalog,
     budget: KnowledgeBudget,
 ) -> KnowledgeBundle:

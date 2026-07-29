@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from codeguard_agent.models.council import (
+    CandidateClaim,
     CandidateConcern,
     CandidateIssue,
     ConcernEvidencePlan,
@@ -26,6 +27,10 @@ from codeguard_agent.pipeline.evidence.rules import (
     EvidenceStrategy,
     resolve_candidate_tags,
     strategies_for,
+)
+from codeguard_agent.pipeline.evidence.rules.types import (
+    CAPABILITY_TO_TOOL,
+    EvidenceCapability,
 )
 
 if TYPE_CHECKING:
@@ -518,7 +523,7 @@ def _select_fact_type_for_support(claim_text: str) -> EvidenceFactType:
 
 
 def _build_support_goal(
-    concern: CandidateConcern, claim: "CandidateClaim",
+    concern: CandidateConcern, claim: CandidateClaim,
 ) -> EvidenceGoal | None:
     """构建 support goal：证明 root cause 的关键机制成立。"""
     rc = claim.root_cause[:200]
@@ -527,7 +532,7 @@ def _build_support_goal(
     fact_type = _select_fact_type_for_support(rc)
     return EvidenceGoal(
         concern_id=concern.concern_id,
-        claim_ids=tuple(c.claim_id for c in concern.claims),
+        claim_ids=(claim.claim_id,),
         fact_type=fact_type,
         polarity=EvidencePolarity.SUPPORT,
         proposition=f"变更引入的机制成立：{rc}",
@@ -540,18 +545,19 @@ def _build_support_goal(
 
 
 def _build_counter_goal(
-    concern: CandidateConcern, claim: "CandidateClaim",
+    concern: CandidateConcern, claim: CandidateClaim,
 ) -> EvidenceGoal | None:
     """构建 counter goal：寻找足以推翻主张的最强反证。"""
     trigger_text = claim.trigger or claim.root_cause[:100]
     return EvidenceGoal(
         concern_id=concern.concern_id,
-        claim_ids=tuple(c.claim_id for c in concern.claims),
+        claim_ids=(claim.claim_id,),
         fact_type=EvidenceFactType.GUARD_PRESENCE,
         polarity=EvidencePolarity.COUNTER,
-        proposition=(
-            f"是否存在 guard、补偿或保护机制使问题不可达：{trigger_text}"
-        ),
+        # proposition 始终保持为候选的正向主张；counter 只决定取证方向。
+        # 因此发现有效 guard 时 finding.relation=contradicts，能与 Judge gate
+        # 的稳定语义保持一致。
+        proposition=f"问题的触发条件仍可满足且未被有效保护：{trigger_text}",
         why_needed="寻找调用前 guard、补偿事务、幂等保护或不可达证据",
         preferred_capabilities=tuple(
             c.value for c in capabilities_for_fact_type(EvidenceFactType.GUARD_PRESENCE)
@@ -561,7 +567,7 @@ def _build_counter_goal(
 
 
 def _build_impact_goal(
-    concern: CandidateConcern, claim: "CandidateClaim",
+    concern: CandidateConcern, claim: CandidateClaim,
 ) -> EvidenceGoal | None:
     """构建 impact goal：证明后果和影响范围。"""
     consequence = claim.observable_consequence or claim.root_cause[:200]
@@ -598,11 +604,34 @@ def _goals_to_requests(
     }
 
     requests: list[EvidenceRequest] = []
+    claim_by_id = {
+        claim.claim_id: claim for claim in concern.claims
+    }
     for goal in goals:
-        # 选 preferred capability 对应的 tool name 作为 preferred_tools
-        tools = list(goal.preferred_capabilities[:2])
+        tools: list[str] = list(dict.fromkeys(
+            CAPABILITY_TO_TOOL[EvidenceCapability(capability)]
+            for capability in goal.preferred_capabilities[:2]
+        ))
+        claim = next(
+            (
+                claim_by_id[claim_id]
+                for claim_id in goal.claim_ids
+                if claim_id in claim_by_id
+            ),
+            None,
+        )
+        anchor_id = (
+            claim.candidate_id
+            if claim is not None and claim.candidate_id
+            else concern.member_candidate_ids[0]
+            if concern.member_candidate_ids
+            else ""
+        )
         primary_file = concern.files[0] if concern.files else ""
-        anchor_id = concern.member_candidate_ids[0] if concern.member_candidate_ids else ""
+        if claim is not None and claim.fix_location:
+            location = claim.fix_location
+            head, separator, tail = location.rpartition(":")
+            primary_file = head if separator and tail.isdigit() else location
         purpose_value = _polarity_to_purpose.get(goal.polarity.value, "support")
         request = EvidenceRequest(
             candidate_id=anchor_id,
@@ -632,33 +661,23 @@ def plan_claim_evidence(
     goals: list[EvidenceGoal] = []
     diagnostics: list[str] = []
 
-    primary_claim = concern.claims[0] if concern.claims else None
-    if primary_claim is None:
+    if not concern.claims:
         return ConcernEvidencePlan(
             concern_id=concern.concern_id,
             diagnostics=("no claims in concern",),
         )
 
-    # 1. Support goal — 证明 root cause 机制成立
-    support_goal = _build_support_goal(concern, primary_claim)
-    if support_goal:
-        goals.append(support_goal)
-
-    # 2. Counter goal — 寻找最强反证
-    counter_goal = _build_counter_goal(concern, primary_claim)
-    if counter_goal:
-        goals.append(counter_goal)
-
-    # 3. Impact goal — 证明影响范围
-    impact_goal = _build_impact_goal(concern, primary_claim)
-    if impact_goal:
-        goals.append(impact_goal)
-
-    # 4. 成员独有影响（每个额外 claim 一个 impact goal）
-    for claim in concern.claims[1:]:
-        member_goal = _build_impact_goal(concern, claim)
-        if member_goal:
-            goals.append(member_goal)
+    # 当前 Judge 仍按 candidate 执行 evidence gate，因此每个成员必须有自己对齐的
+    # support/counter/impact 请求。工具层会按规范化参数去重共享事实。
+    for claim in concern.claims:
+        for builder in (
+            _build_support_goal,
+            _build_counter_goal,
+            _build_impact_goal,
+        ):
+            goal = builder(concern, claim)
+            if goal is not None:
+                goals.append(goal)
 
     uncovered = [g.goal_id for g in goals if not g.preferred_capabilities]
     if uncovered:

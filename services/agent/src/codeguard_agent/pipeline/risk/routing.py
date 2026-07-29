@@ -282,7 +282,18 @@ def plan_review_coverage(
         )
         plans.append(TaskReviewPlan(task_id=task_id, assignments=assignments))
 
-    ordered_candidates = sorted(react_candidates)
+    # 同一 task/reviewer 可能被多个风险假设同时增强；ReAct 预算按 assignment
+    # 计算，必须先保留该 assignment 的最佳排序项，否则重复假设会消耗多个名额。
+    best_candidate_by_assignment: dict[
+        tuple[str, ReviewerKind],
+        tuple[int, float, int, int, str, ReviewerKind, RiskTag],
+    ] = {}
+    for candidate in react_candidates:
+        key = (candidate[4], candidate[5])
+        current = best_candidate_by_assignment.get(key)
+        if current is None or candidate < current:
+            best_candidate_by_assignment[key] = candidate
+    ordered_candidates = sorted(best_candidate_by_assignment.values())
     upgraded = {
         (task_id, reviewer)
         for _priority, _confidence, _task_index, _reviewer_index, task_id, reviewer, _tag
@@ -309,7 +320,9 @@ def plan_review_coverage(
             for assignment in plan.assignments
         )
         updated_plans.append(plan.model_copy(update={"assignments": assignments}))
-    candidate_keys = {(task_id, reviewer) for *_, task_id, reviewer, _tag in react_candidates}
+    candidate_keys = set(best_candidate_by_assignment)
+    candidate_task_ids = {task_id for task_id, _reviewer in candidate_keys}
+    truncated_assignment_count = max(0, len(candidate_keys) - len(upgraded))
     baseline_assignments = sum(
         AssignmentReason.BASELINE in assignment.reasons
         for plan in plans
@@ -330,11 +343,12 @@ def plan_review_coverage(
         baseline_assignments=baseline_assignments,
         risk_added_assignments=risk_added_assignments,
         ambiguity_fallback_assignments=ambiguity_fallback_assignments,
-        react_candidate_tasks=len(candidate_keys),
+        react_candidate_tasks=len(candidate_task_ids),
         react_task_count=len(selected_react_tasks),
         react_assignment_count=len(upgraded),
         risk_upgraded_assignments=len(upgraded),
-        truncated_react_task_count=max(0, len(react_candidates) - len(upgraded)),
+        truncated_react_task_count=len(candidate_task_ids - selected_react_tasks),
+        truncated_react_assignment_count=truncated_assignment_count,
         unclassified_tasks=sum(
             (priors.get(task_id) or TaskRiskPrior(task_id=task_id, coverage=RiskCoverage.UNCLASSIFIED)).coverage
             is RiskCoverage.UNCLASSIFIED
@@ -388,6 +402,10 @@ def ensure_review_coverage(
             "react_task_count": len({plan.task_id for plan in merged_tasks for a in plan.assignments if a.tier is ReviewTier.REACT}),
             "react_assignment_count": sum(a.tier is ReviewTier.REACT for a in assignments),
             "risk_upgraded_assignments": sum(AssignmentReason.RISK_UPGRADED in a.reasons for a in assignments),
+            "truncated_react_assignment_count": max(
+                0,
+                coverage.truncated_react_assignment_count,
+            ),
             "unclassified_tasks": coverage.unclassified_tasks + len(missing),
             "tasks_with_zero_assignments": sum(not plan.assignments for plan in merged_tasks),
         }

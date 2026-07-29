@@ -96,7 +96,8 @@ def test_graph_wires_one_pass_planner_before_agent():
     drawable = graph.get_graph()
     pairs = {(edge.source, edge.target) for edge in drawable.edges}
 
-    assert ("council_coordinator", "evidence_planner") in pairs
+    assert ("council_coordinator", "concern_analyzer") in pairs
+    assert ("concern_analyzer", "evidence_planner") in pairs
     assert ("evidence_planner", "evidence_agent") in pairs
     assert ("evidence_agent", "council_judge") in pairs
     assert "evidence_planner" in drawable.nodes

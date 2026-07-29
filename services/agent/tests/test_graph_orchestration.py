@@ -538,7 +538,7 @@ def test_graph_fanin_three_discoverers(monkeypatch):
         "maintainability": 1,
     }
     assert meta["council"]["severity_defaulted_count"] == 0
-    assert meta["council"]["severity_transitions"] == {"WARNING->WARNING": 3}
+    assert meta["council"]["severity_transitions"] == {"WARNING->INFO": 3}
 
 
 def test_build_graph_default_nodes_are_adr032():
@@ -963,20 +963,42 @@ def test_make_reviewer_node_invokes_tasks_concurrently_with_correct_tier(monkeyp
         G.ReviewTask(id="A.java#h0", file="A.java", patch="+strong", changed_lines=[1]),
         G.ReviewTask(id="B.java#h0", file="B.java", patch="+weak", changed_lines=[1]),
     ]
+    profiles = {
+        "A.java#h0": G.RiskProfile(
+            task_id="A.java#h0",
+            tag_scores={RiskTag.CONCURRENCY_CONSISTENCY: 3},
+            signals=[
+                RiskSignal(
+                    tag=RiskTag.CONCURRENCY_CONSISTENCY,
+                    score=3,
+                    source="text:added:lock",
+                    reason="strong concurrency signal",
+                )
+            ],
+        ),
+        "B.java#h0": G.RiskProfile(
+            task_id="B.java#h0",
+            tag_scores={RiskTag.SQL_DATA_ACCESS: 1},
+        ),
+    }
+    selection = G.TaskSelection(
+        selected_task_ids=["A.java#h0", "B.java#h0"]
+    )
+    priors = G.build_risk_priors(tasks, profiles)
+    coverage = G.plan_review_coverage(
+        tasks,
+        priors,
+        selection,
+        react_budget=1,
+        tools_available=True,
+    )
     out = node({
         "diff_text": "+strong\n+weak",
         "review_tasks": tasks,
-        "risk_profiles": {
-            "A.java#h0": G.RiskProfile(
-                task_id="A.java#h0", tag_scores={RiskTag.CONCURRENCY_CONSISTENCY: 2},
-            ),
-            "B.java#h0": G.RiskProfile(
-                task_id="B.java#h0", tag_scores={RiskTag.SQL_DATA_ACCESS: 1},
-            ),
-        },
-        "task_selection": G.TaskSelection(
-            selected_task_ids=["A.java#h0", "B.java#h0"]
-        ),
+        "risk_profiles": profiles,
+        "risk_priors": priors,
+        "review_coverage_plan": coverage,
+        "task_selection": selection,
     })
     assert seen_tiers["+strong"] == "react"
     assert seen_tiers["+weak"] == "direct"
@@ -1021,7 +1043,7 @@ def test_make_reviewer_node_without_tools_forces_strong_task_to_direct(monkeypat
     assert seen_tiers == ["direct"]
 
 
-def test_make_reviewer_node_injects_matched_tag_knowledge_into_user_prompt(monkeypatch):
+def test_make_reviewer_node_injects_selected_knowledge_bundle_into_user_prompt(monkeypatch):
     captured: dict[str, str] = {}
 
     class _CapturingEngine:
@@ -1063,7 +1085,7 @@ def test_make_reviewer_node_injects_matched_tag_knowledge_into_user_prompt(monke
 
     assert "KNOWLEDGE_MARKER" not in captured["system_prompt"]
     assert "KNOWLEDGE_MARKER" in captured["user_prompt"]
-    assert '<tag_knowledge role="methodology_not_repository_fact">' in captured[
+    assert '<knowledge_bundle role="methodology_not_repository_fact">' in captured[
         "user_prompt"
     ]
     assert captured["user_prompt"].count("+lock") == 1

@@ -7,9 +7,14 @@
 from __future__ import annotations
 
 import logging
+import json
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, Field
+
+from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.council import (
     CandidateClaim,
     CandidateConcern,
@@ -29,6 +34,21 @@ ConcernTagResolution.model_rebuild(_types_namespace=_CouncilNS)
 CandidateConcern.model_rebuild(_types_namespace=_CouncilNS)
 
 logger = logging.getLogger("codeguard")
+_PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
+
+
+class _ParsedClaim(BaseModel):
+    candidate_id: str
+    root_cause: str = ""
+    trigger: str = ""
+    observable_consequence: str = ""
+    fix_location: str = ""
+    fix_action: str = ""
+    affected_path: list[str] = Field(default_factory=list)
+
+
+class _ParsedClaimBatch(BaseModel):
+    claims: list[_ParsedClaim] = Field(default_factory=list)
 
 
 def _extract_claim_from_candidate(candidate: CandidateIssue) -> CandidateClaim:
@@ -36,28 +56,125 @@ def _extract_claim_from_candidate(candidate: CandidateIssue) -> CandidateClaim:
     unresolved: list[str] = []
     if not candidate.suggestion:
         unresolved.append("fix_action")
-    # trigger 和 observable_consequence 需要 LLM 解析（当前阶段确定性不可得）
+    # trigger 和 observable_consequence 仍需语义解析；先保留完整原文，不能留空后
+    # 让 EvidencePlanner 退化为与候选无关的通用问题。
     unresolved.extend(["trigger", "observable_consequence"])
 
     return CandidateClaim(
+        candidate_id=candidate.id,
         root_cause=candidate.claim,
         trigger="",
-        observable_consequence="",
+        observable_consequence=candidate.claim,
         fix_location=f"{candidate.file}:{candidate.line}" if candidate.line else candidate.file,
         fix_action=candidate.suggestion,
         unresolved_fields=tuple(unresolved),
     )
 
 
+def _parse_candidate_claims(
+    candidates: Sequence[CandidateIssue],
+    *,
+    llm: Any,
+    structured_method: str,
+) -> tuple[dict[str, CandidateClaim], tuple[str, ...]]:
+    if llm is None or not candidates:
+        return {}, ()
+    payload = {
+        "candidates": [
+            {
+                "candidate_id": candidate.id,
+                "claim": candidate.claim,
+                "suggestion": candidate.suggestion,
+                "file": candidate.file,
+                "line": candidate.line,
+                "type": candidate.type,
+            }
+            for candidate in candidates
+        ]
+    }
+    try:
+        structured = llm.with_structured_output(
+            _ParsedClaimBatch, method=structured_method,
+        )
+        result = invoke_with_retry(
+            structured,
+            [
+                (
+                    "system",
+                    (_PROMPT_DIR / "concern-analyzer.txt").read_text(
+                        encoding="utf-8",
+                    ),
+                ),
+                ("user", json.dumps(payload, ensure_ascii=False, sort_keys=True)),
+            ],
+            max_retries=1,
+        )
+        if result is None:
+            return {}, ("concern_claim_parse_none",)
+        batch = (
+            result
+            if isinstance(result, _ParsedClaimBatch)
+            else _ParsedClaimBatch.model_validate(result)
+        )
+    except Exception:
+        logger.warning("ConcernAnalyzer claim parsing failed", exc_info=True)
+        return {}, ("concern_claim_parse_failed",)
+
+    candidates_by_id = {candidate.id: candidate for candidate in candidates}
+    parsed: dict[str, CandidateClaim] = {}
+    diagnostics: list[str] = []
+    for item in batch.claims:
+        candidate = candidates_by_id.get(item.candidate_id)
+        if candidate is None:
+            diagnostics.append(f"unknown parsed candidate: {item.candidate_id}")
+            continue
+        if item.candidate_id in parsed:
+            diagnostics.append(f"duplicate parsed candidate: {item.candidate_id}")
+            continue
+        fallback = _extract_claim_from_candidate(candidate)
+        trigger = item.trigger.strip()
+        consequence = item.observable_consequence.strip()
+        unresolved = [
+            field
+            for field, value in (
+                ("trigger", trigger),
+                ("observable_consequence", consequence),
+                ("fix_action", item.fix_action.strip() or fallback.fix_action),
+            )
+            if not value
+        ]
+        parsed[item.candidate_id] = CandidateClaim(
+            candidate_id=candidate.id,
+            root_cause=item.root_cause.strip() or fallback.root_cause,
+            trigger=trigger,
+            observable_consequence=consequence or fallback.observable_consequence,
+            fix_location=item.fix_location.strip() or fallback.fix_location,
+            fix_action=item.fix_action.strip() or fallback.fix_action,
+            affected_path=tuple(
+                value.strip() for value in item.affected_path if value.strip()
+            ),
+            unresolved_fields=tuple(unresolved),
+        )
+    missing = set(candidates_by_id) - set(parsed)
+    if missing:
+        diagnostics.append(f"missing parsed candidates: {sorted(missing)}")
+    return parsed, tuple(diagnostics)
+
+
 def _extract_tags_from_members(
     members: Sequence[CandidateIssue],
     group: CandidateGroup | None = None,
+    tag_resolutions: Mapping[str, Any] | None = None,
 ) -> ConcernTagResolution:
     """从成员和 group 聚合候选标签。"""
     all_tags: list[RiskTag] = []
 
     # 从 member type 字段提取
     for member in members:
+        resolution = (tag_resolutions or {}).get(member.id)
+        resolved_tag = getattr(resolution, "tag", None)
+        if isinstance(resolved_tag, RiskTag) and resolved_tag is not RiskTag.GENERAL_REVIEW:
+            all_tags.append(resolved_tag)
         try:
             tag = RiskTag(member.type)
             if tag is not RiskTag.GENERAL_REVIEW:
@@ -113,13 +230,30 @@ def _members_share_core(
 
 def _build_singleton_concern(
     candidate: CandidateIssue,
+    *,
+    tag_resolutions: Mapping[str, Any] | None = None,
+    parsed_claims: Mapping[str, CandidateClaim] | None = None,
 ) -> CandidateConcern:
     """为单个候选构造最小 CandidateConcern（singleton fallback）。"""
-    claim = _extract_claim_from_candidate(candidate)
+    claim = (parsed_claims or {}).get(
+        candidate.id, _extract_claim_from_candidate(candidate),
+    )
     return CandidateConcern(
         member_candidate_ids=(candidate.id,),
         claims=(claim,),
-        tags=_extract_tags_from_members((candidate,)),
+        tags=_extract_tags_from_members(
+            (candidate,), tag_resolutions=tag_resolutions,
+        ),
+        member_risk_tags={
+            candidate.id: tuple(
+                tag
+                for tag in (
+                    getattr((tag_resolutions or {}).get(candidate.id), "tag", None),
+                )
+                if isinstance(tag, RiskTag)
+                and tag is not RiskTag.GENERAL_REVIEW
+            )
+        },
         source_agents=(candidate.source_agent,),
         task_ids=(candidate.task_id,),
         files=(candidate.file,),
@@ -130,8 +264,11 @@ def _build_singleton_concern(
 def analyze_candidate_groups(
     groups: Sequence[CandidateGroup],
     *,
+    candidates: Sequence[CandidateIssue] = (),
+    candidate_tag_resolutions: Mapping[str, Any] | None = None,
     task_priors: Mapping[str, TaskRiskPrior] | None = None,
     llm: Any = None,
+    structured_method: str = "function_calling",
 ) -> ConcernAnalysis:
     """从候选组无损构造 CandidateConcern 列表。
 
@@ -141,22 +278,51 @@ def analyze_candidate_groups(
     concerns: list[CandidateConcern] = []
     candidate_to_concern: dict[str, str] = {}
     diagnostics: list[str] = []
+    candidate_universe = {
+        candidate.id: candidate
+        for candidate in (
+            *(member for group in groups for member in group.members),
+            *candidates,
+        )
+    }
+    parsed_claims, parse_diagnostics = _parse_candidate_claims(
+        tuple(candidate_universe.values()),
+        llm=llm,
+        structured_method=structured_method,
+    )
+    diagnostics.extend(parse_diagnostics)
 
     for group in groups:
         members = list(group.members)
         if not members:
             continue
 
-        claims = [_extract_claim_from_candidate(m) for m in members]
+        claims = [
+            parsed_claims.get(m.id, _extract_claim_from_candidate(m))
+            for m in members
+        ]
 
         if _members_share_core(claims):
             concern = CandidateConcern(
                 group_id=group.id,
                 member_candidate_ids=tuple(m.id for m in members),
                 claims=tuple(claims),
-                tags=_extract_tags_from_members(members, group),
+                tags=_extract_tags_from_members(
+                    members, group, candidate_tag_resolutions,
+                ),
                 member_risk_tags={
-                    m.id: (group.primary_risk_tag,)
+                    m.id: tuple(
+                        tag
+                        for tag in (
+                            getattr(
+                                (candidate_tag_resolutions or {}).get(m.id),
+                                "tag",
+                                group.primary_risk_tag,
+                            ),
+                        )
+                        if isinstance(tag, RiskTag)
+                        and tag is not RiskTag.GENERAL_REVIEW
+                    )
                     for m in members
                 },
                 source_agents=tuple(dict.fromkeys(m.source_agent for m in members)),
@@ -172,12 +338,30 @@ def analyze_candidate_groups(
                 f"group {group.id} split: members do not share core claim"
             )
             for m in members:
-                singleton = _build_singleton_concern(m)
+                singleton = _build_singleton_concern(
+                    m,
+                    tag_resolutions=candidate_tag_resolutions,
+                    parsed_claims=parsed_claims,
+                )
                 concerns.append(singleton)
                 candidate_to_concern[m.id] = singleton.concern_id
 
+    # accepted groups 只覆盖真正归并的成员；所有未归组候选必须以 singleton
+    # 进入 concern，否则一旦存在任意 group，普通候选会被整批漏掉。
+    grouped_ids = {m.id for g in groups for m in g.members}
+    for candidate in candidates:
+        if candidate.id in grouped_ids or candidate.id in candidate_to_concern:
+            continue
+        singleton = _build_singleton_concern(
+            candidate,
+            tag_resolutions=candidate_tag_resolutions,
+            parsed_claims=parsed_claims,
+        )
+        concerns.append(singleton)
+        candidate_to_concern[candidate.id] = singleton.concern_id
+
     # 验证覆盖率
-    all_candidate_ids = {m.id for g in groups for m in g.members}
+    all_candidate_ids = grouped_ids | {candidate.id for candidate in candidates}
     covered = set(candidate_to_concern.keys())
     missing = all_candidate_ids - covered
     if missing:
@@ -194,12 +378,16 @@ def analyze_candidate_groups(
 
 def build_singleton_concerns(
     candidates: Sequence[CandidateIssue],
+    *,
+    candidate_tag_resolutions: Mapping[str, Any] | None = None,
 ) -> ConcernAnalysis:
     """为无 CandidateGroup 的候选构造 singleton concerns（兼容旧路径）。"""
     concerns: list[CandidateConcern] = []
     candidate_to_concern: dict[str, str] = {}
     for c in candidates:
-        concern = _build_singleton_concern(c)
+        concern = _build_singleton_concern(
+            c, tag_resolutions=candidate_tag_resolutions,
+        )
         concerns.append(concern)
         candidate_to_concern[c.id] = concern.concern_id
     return ConcernAnalysis(
