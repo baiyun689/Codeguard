@@ -170,12 +170,12 @@ class ReviewBudget(BaseModel):
     # ── PR 体量分类阈值（可配置，方便评测调参） ──
     # 设为 0 时该模式永不被选中（如 small_max_files=0 → 永远不走 small）
     small_max_files: StrictInt = Field(default=3, ge=0)
-    small_max_changed_lines: StrictInt = Field(default=200, ge=0)
     small_max_hunks: StrictInt = Field(default=5, ge=0)
+    small_max_diff_chars: StrictInt = Field(default=8000, ge=0)
     medium_max_files: StrictInt = Field(default=15, ge=0)
-    medium_max_changed_lines: StrictInt = Field(default=2000, ge=0)
-    # 文件级审查时，单文件变更行数超过此阈值则内部回退 hunk 级
-    medium_file_changed_lines_fallback: StrictInt = Field(default=500, gt=0)
+    medium_max_diff_chars: StrictInt = Field(default=60000, ge=0)
+    # 文件级审查时，单文件 diff 字符数超过此阈值则内部回退 hunk 级
+    medium_file_diff_chars_fallback: StrictInt = Field(default=12000, gt=0)
 
 
 class SkippedTask(BaseModel):

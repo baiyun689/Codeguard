@@ -296,7 +296,9 @@ def _classify_mode_node():
     def _node(state: ReviewState) -> dict:
         tasks = state.get("review_tasks") or []
         budget = state.get("review_budget") or ReviewBudget()
-        mode = task_prep.classify_pr_mode(tasks, budget)
+        mode = task_prep.classify_pr_mode(
+            state.get("diff_text", ""), tasks, budget,
+        )
         return {
             "review_mode": mode.value,
             "council_trace": [

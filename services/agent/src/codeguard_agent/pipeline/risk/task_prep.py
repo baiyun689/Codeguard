@@ -264,7 +264,7 @@ def build_file_tasks(diff_text: str, budget: ReviewBudget) -> list[ReviewTask]:
     tasks: list[ReviewTask] = []
     seen_files: set[str] = set()
     skipped_artifacts = 0
-    fallback_lines = budget.medium_file_changed_lines_fallback
+    fallback_chars = budget.medium_file_diff_chars_fallback
     for file, section in split_diff_by_file(diff_text).items():
         if _is_build_artifact(file):
             skipped_artifacts += 1
@@ -280,8 +280,8 @@ def build_file_tasks(diff_text: str, budget: ReviewBudget) -> list[ReviewTask]:
         all_changed: list[int] = []
         for _header, body, new_start in hunks:
             all_changed.extend(_changed_lines(body, new_start))
-        # 单文件超过阈值 → 该文件内部回退 hunk 级
-        if len(all_changed) > fallback_lines:
+        # 单文件 diff 字符数超过阈值 → 该文件内部回退 hunk 级
+        if len(section) > fallback_chars:
             for i, (header, body, new_start) in enumerate(hunks):
                 tasks.append(
                     ReviewTask(
@@ -410,31 +410,33 @@ def rank_tasks(
     )
 
 
-def classify_pr_mode(tasks: list[ReviewTask], budget: ReviewBudget) -> ReviewMode:
+def classify_pr_mode(
+    diff_text: str, tasks: list[ReviewTask], budget: ReviewBudget,
+) -> ReviewMode:
     """根据 PR 体量决定审查模式。
 
-    纯确定性函数：仅依赖 task 统计量和 budget 中的可配置阈值。
+    纯确定性函数：依赖 diff 字符数、task 统计量和 budget 可配置阈值。
     不调 LLM，不读仓库文件。
 
-    判定逻辑：
-    - small：文件数、变更行、hunk 数均不超过对应阈值
+    判定逻辑（字符数主导——核心问题是 diff 能否装进上下文窗口）：
+    - small：文件数、hunk 数、diff 字符数均不超过对应阈值
     - medium：不超过中型阈值，否则
     - large：超出中型阈值
     """
     file_count = len({t.file for t in tasks})
-    total_changed = sum(len(t.changed_lines) for t in tasks)
     hunk_count = len([t for t in tasks if t.hunk_header])
+    diff_chars = len(diff_text)
 
     if (
         file_count <= budget.small_max_files
-        and total_changed <= budget.small_max_changed_lines
         and hunk_count <= budget.small_max_hunks
+        and diff_chars <= budget.small_max_diff_chars
     ):
         return ReviewMode.SMALL
 
     if (
         file_count <= budget.medium_max_files
-        and total_changed <= budget.medium_max_changed_lines
+        and diff_chars <= budget.medium_max_diff_chars
     ):
         return ReviewMode.MEDIUM
 
