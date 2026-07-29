@@ -224,6 +224,7 @@ class ReviewerState(TypedDict, total=False):
     risk_profile: RiskProfile
     task_context_bundle: TaskContextBundle
     tier: str
+    task_scope: str  # "current_hunk" | "current_file"
     review_tool_client: Any
 
     issues: list
@@ -677,6 +678,7 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                 risk_profile=state.get("risk_profile"),
                 context_bundle=state.get("task_context_bundle"),
                 task_knowledge=state.get("task_knowledge", ""),
+                task_scope=state.get("task_scope", "current_hunk"),
             )
         }
 
@@ -899,6 +901,9 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 budget=budget,
             )
             task_knowledge = knowledge_bundle.rendered_text
+            # 根据审查模式推导 task_scope：文件级 → current_file，其余 → current_hunk
+            mode = state.get("review_mode", "large")
+            task_scope = "current_file" if mode == "medium" else "current_hunk"
             # 子图未挂 checkpointer（见 make_reviewer_node），因此线程池中的每次 task
             # invoke 都不需要也不应创建独立 thread_id；审查级恢复仍由外层图承担。
             result = subgraph.invoke(
@@ -915,6 +920,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     "task_context_bundle": bundle,
                     "task_knowledge": task_knowledge,
                     "tier": tier,
+                    "task_scope": task_scope,
                     "review_tool_client": _task_tool_client(scoped_task),
                 },
             )

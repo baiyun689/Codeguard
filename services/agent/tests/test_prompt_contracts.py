@@ -355,7 +355,9 @@ def test_eval_judge_prompt_names_case_judgement_fields() -> None:
 
 def test_effective_reviewer_prompts_explain_prefetched_context_and_hard_tool_gate() -> None:
     required = (
-        "task patch 是当前 hunk",
+        "task patch 是当前审查单元",
+        "scope=\"current_hunk\"",
+        "scope=\"current_file\"",
         "不保证包含整个文件",
         "symbol context",
         "稳定 `symbol_id`",
