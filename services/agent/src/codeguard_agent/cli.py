@@ -140,7 +140,8 @@ def main(argv: list[str] | None = None) -> int:
             review_budget=ReviewBudget(
                 max_tasks_to_review=settings.max_review_tasks,
                 max_tasks_per_file=settings.max_tasks_per_file,
-                max_react_tasks=settings.max_react_tasks,
+                max_react_assignments=settings.max_react_assignments,
+                force_react=settings.force_react,
             ),
             checkpoint_backend=settings.checkpoint_backend,
             checkpoint_db=settings.checkpoint_db,

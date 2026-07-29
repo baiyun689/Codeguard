@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from codeguard_agent.models.tasks import RiskSignal, RiskTag
+from codeguard_agent.pipeline.risk.signals import make_risk_signal
 from codeguard_agent.pipeline.risk.rules.features import DiffFeatures
 
 
@@ -38,13 +39,13 @@ def _signal(
         score = changed_score if changed_score is not None else max(added_score, deleted_score)
         source = f"text:changed:{rule_id}"
         line = added[0]
-        return [RiskSignal(tag=tag, score=score, source=source, reason=f"{reason}：命中 {added[2]}，需审查", line=line)]
+        return [make_risk_signal(tag=tag, priority=score, source=source, reason=f"{reason}：命中 {added[2]}，需审查", line=line)]
     signals: list[RiskSignal] = []
     if added:
         signals.append(
-            RiskSignal(
+            make_risk_signal(
                 tag=tag,
-                score=added_score,
+                priority=added_score,
                 source=f"text:added:{rule_id}",
                 reason=f"{reason}：命中 {added[2]}，需审查",
                 line=added[0],
@@ -52,9 +53,9 @@ def _signal(
         )
     if deleted:
         signals.append(
-            RiskSignal(
+            make_risk_signal(
                 tag=tag,
-                score=deleted_score,
+                priority=deleted_score,
                 source=f"text:deleted:{rule_id}",
                 reason=f"{reason}：命中 {deleted[2]}，需审查",
                 line=None,

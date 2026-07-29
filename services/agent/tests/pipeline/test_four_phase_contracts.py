@@ -135,7 +135,6 @@ def test_claim_plan_is_executable_and_covers_every_group_member() -> None:
         (first, duplicate),
         tasks,
         {},
-        {},
         plan.requests,
         (),
         (group,),

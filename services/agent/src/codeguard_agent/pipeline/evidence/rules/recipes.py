@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from codeguard_agent.pipeline.evidence.rules.types import (
+from codeguard_agent.pipeline.evidence.strategy_types import (
     EvidenceCapability,
     ToolCallSpec,
 )

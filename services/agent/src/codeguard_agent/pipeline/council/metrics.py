@@ -13,11 +13,9 @@ from codeguard_agent.models.council import (
     Verdict,
 )
 from codeguard_agent.models.schemas import Severity
-from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.evidence.agent import bound_evidence, request_strategy_mismatch
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
 from codeguard_agent.pipeline.council.dedup import CandidateDedupStats
-from codeguard_agent.pipeline.evidence.rules import strategies_for
 
 
 def _ratio(numerator: int, denominator: int) -> float | None:
@@ -33,19 +31,6 @@ def _has_valid_request(dossier: CandidateDossier) -> bool:
         request_strategy_mismatch(request, dossier) is None
         for request in dossier.requests
     )
-
-
-def _registry_coverage() -> tuple[int, int]:
-    required_purposes = {"counter", "support", "severity"}
-    covered = sum(
-        {
-            strategy.purpose
-            for strategy in strategies_for(tag)
-        }
-        >= required_purposes
-        for tag in RiskTag
-    )
-    return covered, len(RiskTag)
 
 
 def compute_council_run_stats(
@@ -94,7 +79,6 @@ def compute_council_run_stats(
         )
         for dossier in final_dossiers
     )
-    registry_covered, registry_total = _registry_coverage()
     actual_tool_calls = sum(
         trace.node == "evidence_agent" and trace.event == "evidence_tool_called"
         for trace in council_trace
@@ -222,7 +206,6 @@ def compute_council_run_stats(
             insufficient_retained,
             len(all_insufficient_ids),
         ),
-        severity_defaulted_count=severity_defaulted,
         critical_candidate_count=sum(
             verdict.action == "keep" and verdict.resolved_severity is Severity.CRITICAL
             for verdict in verdicts
@@ -235,9 +218,6 @@ def compute_council_run_stats(
         final_issue_strategy_coverage=_ratio(strategy_covered, final_issue_count),
         final_issue_fact_covered_count=fact_covered,
         final_issue_fact_coverage=_ratio(fact_covered, final_issue_count),
-        registry_risk_tag_covered_count=registry_covered,
-        registry_risk_tag_total=registry_total,
-        registry_risk_tag_coverage=_ratio(registry_covered, registry_total),
         actual_evidence_tool_calls=actual_tool_calls,
         average_evidence_tool_calls=(
             actual_tool_calls / candidate_count if candidate_count else 0.0

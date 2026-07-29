@@ -331,7 +331,7 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
 
     node("summary", {"diff_summary": "summary"})
     node("diff_task_builder", {"review_tasks": [{"id": "task-1"}]})
-    node("risk_triage", {"risk_profiles": {"task-1": {}}})
+    node("risk_triage", {"risk_priors": {"task-1": {}}})
     node("task_rank", {"task_selection": {"selected_task_ids": ["task-1"]}})
     node("context_provider", {"task_context_bundles": {"task-1": {}}})
     for reviewer in (
@@ -378,7 +378,7 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
         "evidence_agent",
         "council_judge",
     }
-    assert {"review_tasks", "risk_profiles", "task_selection", "evidence_requests"} <= set(
+    assert {"review_tasks", "risk_priors", "task_selection", "evidence_requests"} <= set(
         view["state_writes"]
     )
 

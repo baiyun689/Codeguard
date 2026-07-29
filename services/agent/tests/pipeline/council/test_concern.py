@@ -1,14 +1,10 @@
 """ConcernAnalyzer 单元测试。"""
 from __future__ import annotations
 
-import pytest
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import RiskTag
-from codeguard_agent.pipeline.council.concern import (
-    analyze_candidate_groups,
-    build_singleton_concerns,
-)
+from codeguard_agent.pipeline.council.concern import analyze_candidate_groups
 from codeguard_agent.pipeline.council.dedup import CandidateGroup
 
 
@@ -125,10 +121,10 @@ class TestConcernAnalyzer:
         covered = set(analysis.candidate_to_concern.keys())
         assert all_ids == covered
 
-    def test_build_singleton_concerns_no_group(self):
-        """无 CandidateGroup 时 singleton 兼容。"""
+    def test_ungrouped_candidates_become_singleton_concerns(self):
+        """未归组候选直接进入 singleton concern。"""
         c = _make_candidate()
-        analysis = build_singleton_concerns([c])
+        analysis = analyze_candidate_groups([], candidates=[c])
         assert len(analysis.concerns) == 1
         assert analysis.concerns[0].member_candidate_ids == (c.id,)
 

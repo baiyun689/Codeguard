@@ -1,4 +1,8 @@
-"""风险证据策略的不可变值对象。"""
+"""证据策略的不可变值对象。
+
+该模块位于 ``rules`` package 之外，避免 capability registry 与规则注册表
+通过 package ``__init__`` 形成循环导入。
+"""
 
 from __future__ import annotations
 
@@ -7,8 +11,6 @@ from enum import Enum
 from typing import TYPE_CHECKING, Callable, Literal
 
 from codeguard_agent.models.council import EvidencePurpose
-from codeguard_agent.models.tasks import RiskTag
-
 if TYPE_CHECKING:
     from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 
@@ -42,19 +44,10 @@ CAPABILITY_TO_TOOL: dict[EvidenceCapability, ToolName] = {
     EvidenceCapability.INHERITANCE_IMPACT: "inspect_structure",
 }
 
-_LEGACY_TOOL_CAPABILITY: dict[str, EvidenceCapability] = {
-    "get_file_content": EvidenceCapability.CURRENT_IMPLEMENTATION,
-    "find_callers": EvidenceCapability.UPSTREAM_REACHABILITY,
-    "find_sensitive_apis": EvidenceCapability.SECURITY_PATH,
-    "get_code_metrics": EvidenceCapability.STRUCTURAL_METRICS,
-}
-
-
 def as_capability(value: EvidenceCapability | str) -> EvidenceCapability:
     if isinstance(value, EvidenceCapability):
         return value
-    legacy = _LEGACY_TOOL_CAPABILITY.get(value)
-    return legacy if legacy is not None else EvidenceCapability(value)
+    return EvidenceCapability(value)
 
 
 @dataclass(frozen=True)
@@ -71,10 +64,9 @@ class ToolCallSpec:
 
 @dataclass(frozen=True)
 class EvidenceStrategy:
-    """一个 RiskTag 在特定证据目的下的声明式策略。"""
+    """一个 claim fact 在特定证据目的下的声明式策略。"""
 
     id: str
-    tags: frozenset[RiskTag]
     purpose: EvidencePurpose
     priority: int
     question_template: str
@@ -84,5 +76,5 @@ class EvidenceStrategy:
 
     @property
     def allowed_tools(self) -> tuple[ToolName, ...]:
-        """Legacy request-envelope projection; planning policy is capability-based."""
+        """供 EvidenceRequest 校验使用的 Gateway 工具投影。"""
         return tuple(CAPABILITY_TO_TOOL[capability] for capability in self.allowed_capabilities)

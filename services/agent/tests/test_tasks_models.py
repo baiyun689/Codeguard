@@ -9,11 +9,12 @@ from codeguard_agent.models.council import ContextFact
 from codeguard_agent.models.tasks import (
     ReviewBudget,
     ReviewTask,
-    RiskProfile,
+    RiskCoverage,
     RiskSignal,
     RiskTag,
     SkippedTask,
     TaskContextBundle,
+    TaskRiskPrior,
     TaskSelection,
 )
 
@@ -24,10 +25,12 @@ def test_review_task_minimal_fields():
     assert task.changed_lines == []
 
 
-def test_risk_profile_defaults_empty():
-    profile = RiskProfile(task_id="A.java#h0")
-    assert profile.tag_scores == {}
-    assert profile.signals == []
+def test_unclassified_prior_defaults_to_no_hypotheses():
+    prior = TaskRiskPrior(
+        task_id="A.java#h0",
+        coverage=RiskCoverage.UNCLASSIFIED,
+    )
+    assert prior.hypotheses == ()
 
 
 def test_risk_tag_has_exact_phase_2_values():
@@ -61,7 +64,14 @@ def test_risk_tag_has_exact_phase_2_values():
 
 
 def test_risk_signal_carries_source_and_reason():
-    sig = RiskSignal(tag=RiskTag.AUTHORIZATION, score=3, source="rule:auth", reason="Controller 无权限注解")
+    sig = RiskSignal(
+        tag=RiskTag.AUTHORIZATION,
+        match_confidence=0.85,
+        review_priority=3,
+        source_kind="diff_text",
+        source="text:added:auth",
+        reason="Controller 鉴权边界变化",
+    )
     assert sig.line is None
     assert sig.tag == RiskTag.AUTHORIZATION
 
@@ -70,7 +80,7 @@ def test_review_budget_has_phase_2_defaults():
     budget = ReviewBudget()
     assert budget.max_tasks_to_review == 100
     assert budget.max_tasks_per_file == 10
-    assert budget.max_react_tasks == 20
+    assert budget.max_react_assignments == 20
     assert budget.max_final_issues is None
 
 
@@ -85,7 +95,7 @@ def test_review_budget_defaults_context_chars_per_task_to_4000():
         "max_tasks_to_review",
         "max_tasks_per_file",
         "max_context_chars_per_task",
-        "max_react_tasks",
+        "max_react_assignments",
         "max_final_issues",
     ],
 )
@@ -101,7 +111,7 @@ def test_review_budget_rejects_non_positive_values(field, value):
         "max_tasks_to_review",
         "max_tasks_per_file",
         "max_context_chars_per_task",
-        "max_react_tasks",
+        "max_react_assignments",
         "max_final_issues",
     ],
 )
@@ -116,13 +126,13 @@ def test_review_budget_accepts_positive_integer_values():
         max_tasks_to_review=1,
         max_tasks_per_file=2,
         max_context_chars_per_task=3,
-        max_react_tasks=5,
+        max_react_assignments=5,
         max_final_issues=4,
     )
     assert budget.max_tasks_to_review == 1
     assert budget.max_tasks_per_file == 2
     assert budget.max_context_chars_per_task == 3
-    assert budget.max_react_tasks == 5
+    assert budget.max_react_assignments == 5
     assert budget.max_final_issues == 4
 
 
@@ -132,7 +142,7 @@ def test_task_selection_records_skips():
         skipped_tasks=[SkippedTask(task_id="B.java#h0", reason="低价值文件")],
     )
     assert sel.selected_task_ids == ["A.java#h0"]
-    assert sel.skipped_tasks[0].risk_score == 0
+    assert sel.skipped_tasks[0].review_priority == 0
 
 
 def test_task_context_bundle_does_not_duplicate_task_facts():
@@ -146,8 +156,12 @@ def test_task_context_bundle_does_not_duplicate_task_facts():
     assert "patch" not in keys
 
 
-def test_profile_has_only_task_id_scores_and_signals_fields():
-    assert set(RiskProfile.model_fields) == {"task_id", "tag_scores", "signals"}
+def test_prior_has_only_hypotheses_and_coverage():
+    assert set(TaskRiskPrior.model_fields) == {
+        "task_id",
+        "hypotheses",
+        "coverage",
+    }
 
 
 def test_task_context_bundle_render_empty_facts():

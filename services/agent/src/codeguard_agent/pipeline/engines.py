@@ -101,7 +101,10 @@ class DirectEngine(ReviewEngine):
         # 结构化输出可能返回 None(模型没正确发起工具调用),兜底为空(沿用既有 None 防御)。
         if result is None:
             logger.warning("[%s] 审查员未返回结构化结果,本次按空处理", reviewer_name)
-            return ReviewOutcome(ReviewResult(summary=""))
+            return ReviewOutcome(
+                ReviewResult(summary=""),
+                execution_events=["structured_output_missing"],
+            )
         # 直连无工具:gathered_context 恒空。
         return ReviewOutcome(result)
 

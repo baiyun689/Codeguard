@@ -3,8 +3,8 @@
 职责：
 - build_tasks：解析 unified diff → 每 hunk 一个 ReviewTask；无 hunk（含删除文件、
   纯重命名）退化为文件级 fallback task。不判断风险、不读仓库文件、不调 LLM。
-- triage_tasks：调用风险规则目录，产出画像和规则诊断。
-- rank_tasks：按 RiskProfile 派生排序分数并应用预算。
+- triage_tasks：调用风险规则目录，直接产出风险先验和规则诊断。
+- rank_tasks：按 TaskRiskPrior 排序并应用预算。
 """
 
 from __future__ import annotations
@@ -17,8 +17,6 @@ from codeguard_agent.models.tasks import (
     ReviewBudget,
     ReviewMode,
     ReviewTask,
-    RiskProfile,
-    RiskTag,
     SkippedTask,
     TaskSelection,
     TaskRiskPrior,
@@ -77,9 +75,12 @@ def _is_build_artifact(file_path: str) -> bool:
         if normalized.endswith(suffix):
             return True
     # Maven/Gradle 生成的列表文件
-    if normalized.endswith("/createdfiles.lst") or normalized.endswith("/inputfiles.lst"):
+    if normalized.endswith("/createdfiles.lst") or normalized.endswith(
+        "/inputfiles.lst"
+    ):
         return True
     return False
+
 
 # @@ -oldStart[,oldLen] +newStart[,newLen] @@ [section heading]
 _HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
@@ -123,7 +124,7 @@ def _old_path(block: list[str]) -> str | None:
     """从 diff 块提取旧文件路径：优先 `--- a/<path>`，退化到 `diff --git a/<path> b/`。"""
     for line in block:
         if line.startswith("--- a/"):
-            return line[len("--- a/"):].split("\t", 1)[0].strip()
+            return line[len("--- a/") :].split("\t", 1)[0].strip()
     m = re.match(r"^diff --git a/(.+?) b/", block[0]) if block else None
     return m.group(1).strip() if m else None
 
@@ -144,7 +145,11 @@ def _fallback_targets(diff_text: str) -> dict[str, str]:
         )
         has_plus_header = any(line.startswith("+++ b/") for line in block)
         rename_to = next(
-            (line[len("rename to "):].strip() for line in block if line.startswith("rename to ")),
+            (
+                line[len("rename to ") :].strip()
+                for line in block
+                if line.startswith("rename to ")
+            ),
             None,
         )
         if is_deletion:
@@ -186,7 +191,9 @@ def _changed_lines(hunk_body: str, new_start: int) -> list[int]:
             line.startswith("@@")
             or line.startswith("+++")
             or line.startswith("---")
-            or line.startswith("\\ ")  # `\ No newline at end of file` 非文件行，不占行号
+            or line.startswith(
+                "\\ "
+            )  # `\ No newline at end of file` 非文件行，不占行号
         ):
             continue
         if line.startswith("+"):
@@ -229,7 +236,9 @@ def build_tasks(diff_text: str) -> list[ReviewTask]:
         hunks = _split_hunks(section)
         if not hunks:
             tasks.append(
-                ReviewTask(id=f"{file}#file", file=file, patch=section, changed_lines=[])
+                ReviewTask(
+                    id=f"{file}#file", file=file, patch=section, changed_lines=[]
+                )
             )
             continue
         for i, (header, body, new_start) in enumerate(hunks):
@@ -253,18 +262,15 @@ def build_tasks(diff_text: str) -> list[ReviewTask]:
     return tasks
 
 
-def build_file_tasks(diff_text: str, budget: ReviewBudget) -> list[ReviewTask]:
+def build_file_tasks(diff_text: str) -> list[ReviewTask]:
     """解析 unified diff → 每文件一个 ReviewTask。
 
     - 有内容变更的文件：合并该文件所有 hunk 为一个 task，patch 为完整文件级 diff section
-    - 单文件变更行数超过 medium_file_changed_lines_fallback 时，
-      该文件内部回退 hunk 级拆分（避免上下文窗口溢出）
     - 删除文件 / 纯重命名：文件级 fallback task
     """
     tasks: list[ReviewTask] = []
     seen_files: set[str] = set()
     skipped_artifacts = 0
-    fallback_chars = budget.medium_file_diff_chars_fallback
     for file, section in split_diff_by_file(diff_text).items():
         if _is_build_artifact(file):
             skipped_artifacts += 1
@@ -273,26 +279,15 @@ def build_file_tasks(diff_text: str, budget: ReviewBudget) -> list[ReviewTask]:
         hunks = _split_hunks(section)
         if not hunks:
             tasks.append(
-                ReviewTask(id=f"{file}#file", file=file, patch=section, changed_lines=[])
+                ReviewTask(
+                    id=f"{file}#file", file=file, patch=section, changed_lines=[]
+                )
             )
             continue
         # 收集所有 hunk 的变更行
         all_changed: list[int] = []
         for _header, body, new_start in hunks:
             all_changed.extend(_changed_lines(body, new_start))
-        # 单文件 diff 字符数超过阈值 → 该文件内部回退 hunk 级
-        if len(section) > fallback_chars:
-            for i, (header, body, new_start) in enumerate(hunks):
-                tasks.append(
-                    ReviewTask(
-                        id=f"{file}#h{i}",
-                        file=file,
-                        hunk_header=header,
-                        patch=body,
-                        changed_lines=_changed_lines(body, new_start),
-                    )
-                )
-            continue
         tasks.append(
             ReviewTask(
                 id=f"{file}#file",
@@ -328,9 +323,8 @@ def _is_production_path(path: str) -> bool:
         "/build/",
         "/target/",
     )
-    if (
-        normalized.startswith(("test/", "tests/", "docs/", "generated/"))
-        or any(marker in normalized for marker in non_production_markers)
+    if normalized.startswith(("test/", "tests/", "docs/", "generated/")) or any(
+        marker in normalized for marker in non_production_markers
     ):
         return False
     return True
@@ -338,40 +332,24 @@ def _is_production_path(path: str) -> bool:
 
 def rank_tasks(
     tasks: list[ReviewTask],
-    profiles: dict[str, RiskProfile],
+    priors: dict[str, TaskRiskPrior],
     budget: ReviewBudget,
-    priors: dict[str, TaskRiskPrior] | None = None,
 ) -> TaskSelection:
     """按确定性风险优先级选择任务，不把排序分数写回共享状态。"""
 
-    def rank_key(task: ReviewTask) -> tuple[int, float, int, int, int, int, str]:
-        profile = profiles.get(task.id)
-        prior = (priors or {}).get(task.id)
+    def rank_key(task: ReviewTask) -> tuple[int, float, int, int, str]:
+        prior = priors.get(task.id)
         hypotheses = prior.hypotheses if prior is not None else ()
-        tag_scores = profile.tag_scores if profile is not None else {}
-        signals = profile.signals if profile is not None else []
-        has_concrete_tag = any(tag is not RiskTag.GENERAL_REVIEW for tag in tag_scores)
-        has_high_risk_signal = any(signal.score == 3 for signal in signals)
         has_deleted_evidence = any(
-            signal.source.startswith("text:deleted:") for signal in signals
+            "text:deleted:" in hypothesis.source for hypothesis in hypotheses
         )
-        if priors is not None:
-            return (
-                -max((hypothesis.review_priority for hypothesis in hypotheses), default=0),
-                -int(has_concrete_tag),
-                -int(_is_production_path(task.file)),
-                -int(has_high_risk_signal),
-                -int(has_deleted_evidence),
-                0,
-                task.id,
-            )
         return (
-            -max(tag_scores.values(), default=0),
-            -sum(tag_scores.values()),
-            -int(has_concrete_tag),
-            -int(has_high_risk_signal),
-            -int(has_deleted_evidence),
+            -max((hypothesis.review_priority for hypothesis in hypotheses), default=0),
+            -max(
+                (hypothesis.match_confidence for hypothesis in hypotheses), default=0.0
+            ),
             -int(_is_production_path(task.file)),
+            -int(has_deleted_evidence),
             task.id,
         )
 
@@ -381,7 +359,10 @@ def rank_tasks(
     selected_per_file: dict[str, int] = {}
 
     for task in ranked:
-        if budget.max_tasks_to_review is not None and len(selected) >= budget.max_tasks_to_review:
+        if (
+            budget.max_tasks_to_review is not None
+            and len(selected) >= budget.max_tasks_to_review
+        ):
             skipped.append((task, "total_limit"))
             continue
         file_key = _norm(task.file)
@@ -400,8 +381,13 @@ def rank_tasks(
             SkippedTask(
                 task_id=task.id,
                 reason=reason,
-                risk_score=max(
-                    profiles.get(task.id, RiskProfile(task_id=task.id)).tag_scores.values(),
+                review_priority=max(
+                    (
+                        hypothesis.review_priority
+                        for hypothesis in (
+                            priors[task.id].hypotheses if task.id in priors else ()
+                        )
+                    ),
                     default=0,
                 ),
             )
@@ -421,13 +407,15 @@ def classify_diff(diff_text: str, budget: ReviewBudget) -> ReviewMode:
     - medium：不超过中型阈值，否则
     - large：超出中型阈值
     """
-    import re
-    from codeguard_agent.git.diff_collector import split_diff_by_file
-
     diff_chars = len(diff_text)
-    # 轻量统计：只计数，不拆分 hunk
-    file_sections = split_diff_by_file(diff_text)
-    file_count = len(file_sections)
+    # 每个 git diff section 对应一个 changed file，包含删除、纯重命名和
+    # binary diff；缺少标准 section header 时才回退到 +++ 文件头解析。
+    file_count = sum(
+        line.startswith("diff --git ")
+        for line in diff_text.splitlines()
+    )
+    if file_count == 0:
+        file_count = len(split_diff_by_file(diff_text))
     hunk_count = len(_HUNK_HEADER.findall(diff_text))
 
     if (
@@ -453,24 +441,39 @@ _TEST_PATH_MARKERS = ("/test/", "/tests/", "Test.java", "Tests.java")
 
 # 噪声类型关键词（匹配 issue.type 或 issue.message）
 _NOISE_TYPE_KEYWORDS = (
-    "copyright", "版权", "license", "许可证",
-    "@author", "import",
-    "whitespace", "空白", "格式", "formatting",
-    "注释", "comment",
+    "copyright",
+    "版权",
+    "license",
+    "许可证",
+    "@author",
+    "import",
+    "whitespace",
+    "空白",
+    "格式",
+    "formatting",
+    "注释",
+    "comment",
 )
 
 # 测试覆盖噪声关键词
 _TEST_DELETION_KEYWORDS = (
-    "测试覆盖", "test coverage", "test_coverage",
-    "测试方法", "test method",
-    "回归保护", "regression protection",
-    "测试删除", "test delet",
+    "测试覆盖",
+    "test coverage",
+    "test_coverage",
+    "测试方法",
+    "test method",
+    "回归保护",
+    "regression protection",
+    "测试删除",
+    "test delet",
     "OBSERVABILITY_TESTABILITY",
 )
 
 
 def is_noise_issue(
-    file: str, issue_type: str, message: str = "",
+    file: str,
+    issue_type: str,
+    message: str = "",
 ) -> bool:
     """判定一个 issue 是否属于 diff 元信息噪声，不应进入后续管线。
 
@@ -496,11 +499,3 @@ def is_noise_issue(
         return True
 
     return False
-
-
-# 保留旧签名兼容（已测代码过渡期使用）
-def classify_pr_mode(
-    diff_text: str, tasks: list[ReviewTask], budget: ReviewBudget,
-) -> ReviewMode:
-    """Deprecated: 请使用 classify_diff(diff_text, budget)。"""
-    return classify_diff(diff_text, budget)

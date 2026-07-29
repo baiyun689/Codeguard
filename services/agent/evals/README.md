@@ -60,10 +60,10 @@ ADR-032 默认路径还会在报告中追加 **ReviewCouncil 过程统计**:候�
 SelfChecker 移除来源与 trace 事件数。这些中间态只用于诊断和展示,不参与判分,也不进入产品
 `ReviewResult`。
 
-Phase 2 的风险路由同样属于诊断链路，不改变 `expected` matcher 契约。每个 hunk 的
-`RiskProfile`、`TaskSelection`、reviewer scope 和跳过原因保留在 State/trace 中；产品结果仍然
-只比较 `ReviewResult.issues`。因此可以用 `GENERAL_REVIEW` 兜底普通变更，同时用
-`CODEGUARD_MAX_REVIEW_TASKS` / `CODEGUARD_MAX_TASKS_PER_FILE` 对大 diff 做预算回归。
+风险先验同样属于诊断链路，不改变 `expected` matcher 契约。每个 task 的
+`TaskRiskPrior`、覆盖 assignment 和跳过原因保留在 State/trace 中；产品结果仍然
+只比较 `ReviewResult.issues`。风险只能增强 reviewer 方法与 ReAct 执行层级，不能删除基础覆盖；
+`CODEGUARD_MAX_REVIEW_TASKS` / `CODEGUARD_MAX_TASKS_PER_FILE` 只用于大型 diff 的预算回归。
 
 Phase 2 最小样本包括：删除 `@PreAuthorize`、新增 repository update、多步共享状态无锁更新、
 普通 getter 兜底，以及多 hunk 大 diff。它们用于验证方向信号、三路路由和 TaskRank 选择行为；

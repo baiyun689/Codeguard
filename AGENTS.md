@@ -13,9 +13,13 @@ Codeguard 是一个 **AI 代码审查引擎**,以 Agent 为最终核心,双语�
 默认审查使用证据驱动的多 Agent ReviewCouncil、风险任务链、task-scoped reviewer、风险感知上下文/知识注入，以及策略驱动的证据规划与裁决链。双语言边界保持不变:Python 智能层 + Java 护栏层。默认审查路径为:
 
 ```
-git diff → DiffTaskBuilder → RiskTriage → TaskRank → ReviewCoverage → [Summary] → ContextProvider
-         → task-scoped Discover × 3 → CouncilCoordinator → ConcernAnalyzer
-         → ClaimEvidencePlanner → EvidenceAgent → ImpactAssessor → CouncilJudge → ReviewResult
+git diff → PRModeClassifier
+         ├─ SMALL  → WholeDiffDirectReview → ReviewResult
+         └─ MEDIUM/LARGE
+              → FileTaskBuilder/HunkTaskBuilder → RiskTriage → TaskRank → ReviewCoverage
+              → [Summary] → ContextProvider → task-scoped Discover × 3
+              → CouncilCoordinator → ConcernAnalyzer → ClaimEvidencePlanner
+              → EvidenceAgent → ImpactAssessor → CouncilJudge → ReviewResult
 ```
 
 Java Gateway 的单实例 CI 执行底座一次执行返回结构化 outcome，调度器负责
@@ -26,11 +30,11 @@ Compose 的 `observability` profile 提供 Prometheus、预置告警规则和自
 ReviewCouncil 发现者由 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent` 方法论分工;最终 category 仍兼容 `security` / `logic` / `quality`。三类发现者各自声明工具 allowlist，并通过 `CandidateIssue` / `CandidateConcern` / `EvidenceGoal` / `EvidenceRequest` / `EvidenceNote(findings)` / `Verdict` / `CouncilTrace` 结构化黑板通信。三路发现者只通过 ID reducer 汇集 raw candidates；CouncilCoordinator 在 fan-in 后复用候选 RiskTag 解析、按完整路径和局部位置构块，并以最多 8 个并行结构化 LLM 调用进行保守归并。非法、低置信或失败结果一律保留候选。ConcernAnalyzer 为已分组和未分组成员建立无损 concern/claim 映射；ClaimEvidencePlanner 按 root cause、trigger、impact 等事实类型规划并保留成员对齐字段。旧 Supervisor 图迁移到 `services/agent/legacy/supervisor_graph/`,仅作历史参考,不作为默认路径、feature flag 或 eval profile 回退。
 
 风险路由包含 24 个具体 `RiskTag` + `GENERAL_REVIEW`，风险规则只消费
-path/diff-text 变化方向；普通 diff 默认全选 task，旧 100/10 配置只作为大 diff 的更严格上限。
-`RiskProfile` 先派生为 `TaskRiskPrior`，再由 `ReviewCoveragePlanner` 组合基础覆盖、风险增强
+path/diff-text 变化方向；普通 diff 默认全选 task，100/10 配置只作为超大 diff 的更严格上限。
+风险规则直接生成 `TaskRiskPrior`，再由 `ReviewCoveragePlanner` 组合基础覆盖、风险增强
 和 ReAct assignment 预算；Risk 只能增加/升级 Reviewer，不能排除基础覆盖。内部 State 保存
-`risk_priors` 和 `review_coverage_plan`，不增加产品输出字段。证据策略完整覆盖 25 个标签的
-counter/support/severity，候选证据主题从候选语义解析，task RiskTag 只作先验。知识注入固定包含
+`risk_priors` 和 `review_coverage_plan`，不增加产品输出字段。证据策略只按候选 claim 的
+fact type 与 support/counter/impact 极性规划，候选标签也只从候选语义解析；task RiskTag 不进入举证、裁决或定级。知识注入固定包含
 reviewer BASE 方法论，并由 risk prior、patch 与 symbol context 共同选择有预算上限的专项主题。
 
 ---
@@ -60,6 +64,7 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 默认节点:
 
 - **SummaryStage(可选)**:在 TaskRank 后对选中任务范围产出变更摘要,作为 ContextBundle 和 ReviewCouncil 的共享背景。由 `CODEGUARD_ENABLE_SUMMARY` 控制(默认开)。
+- **PR 规模路由**:`PRModeClassifier` 在 task 构建前只按 diff 体量选择执行形态：小型 PR 整体直审且正常成功时不运行 Risk/证据链；中型 PR 按文件建 task；大型 PR 按 hunk 建 task。Risk 不参与规模判定。小型直审异常或缺少结构化输出时安全回退到文件级完整管线，不能把调用失败伪装成“零问题”。
 - **ContextProvider**:在 ReviewCouncil 前构造轻量 `ContextBundle`,只产出事实、来源与截断标记,不判断"是不是问题"。
 - **大 diff 降级**:仅在超过 5000 行时，Python 确定性收紧为最多 20 个任务、每文件 3 个、每任务上下文 2000 字符；普通 diff 全选 task，并只让风险排序前 `CODEGUARD_MAX_REACT_TASKS`（默认 20）个合格 task 使用 ReAct，其余 Direct。Summary/AST/发现者在大 diff 时只看选中范围，结果摘要披露部分覆盖。Java 不重复判断。
 - **ReviewCouncilSubgraph**:三个 task-scoped 发现者 fan-out 产出 raw `CandidateIssue`;system prompt 定义稳定的上下文语义与工具门槛，user prompt 动态携带本 task 的 patch、风险画像、预取事实、缺失/失败状态和 BASE+专项 knowledge bundle。`CouncilCoordinator` 在显式 fan-in 后批量解析 RiskTag、构建局部候选块并保守归并。
@@ -141,7 +146,8 @@ Codeguard/
 4. **`llm/client.py:build_llm`** 按 provider 造 LangChain Chat 模型;`provider=mock` 返回 `None`。
 5. **工具会话(可选)**:配置 `CODEGUARD_TOOL_SERVER_URL` 且非 mock 时,CLI 为本次 diff 创建 Java 工具会话;否则走无工具直连基准。
 6. **`pipeline/orchestrator.py:PipelineOrchestrator.run`** 是审查唯一门面,内部构建 `pipeline/graph.py` 的 ADR-032 LangGraph:
-   - `DiffTaskBuilder → RiskTriage → TaskRank → ReviewCoverage` 把 diff 拆成 hunk task、生成风险画像、按预算选择任务并生成 Reviewer 覆盖计划。
+   - `PRModeClassifier` 先按规模选择整体直审、file task 或 hunk task；小型 PR 在整体直审后结束。
+   - 中/大型 PR 进入 `RiskTriage → TaskRank → ReviewCoverage`，直接生成风险先验、按预算选择任务并生成 Reviewer 覆盖计划。
    - `[Summary]` 对 TaskRank 选中范围产出可选变更摘要。
    - `ContextProvider` 构造只读 `ContextBundle`。
    - `ReviewCouncil` 并行运行 task-scoped 发现者 Agent；没有匹配任务的 reviewer 记录 `no_tasks_routed`。
@@ -236,6 +242,7 @@ python -m evals.interview_eval run --workspace ../../.eval-work/interview-v1 --c
 | `CODEGUARD_MAX_REVIEW_TASKS` | `100` | 仅作为大 diff 的更严格总任务上限 |
 | `CODEGUARD_MAX_TASKS_PER_FILE` | `10` | 仅作为大 diff 的更严格单文件上限 |
 | `CODEGUARD_MAX_REACT_TASKS` | `20` | 普通/大 diff 选中范围内允许使用 ReAct 的 task 上限；其余 Direct |
+| `CODEGUARD_FORCE_REACT` | `false` | 评测/诊断开关；有工具时让已选 assignment 进入 ReAct 候选，仍受 `MAX_REACT_TASKS` 约束且不改变 Reviewer 覆盖 |
 | `CODEGUARD_TRACE_ENABLED` | `false` | 历史本地 HTML Trace；仅在传 `--trace` 或显式设为 true 时运行 |
 | `LANGSMITH_TRACING` | `false` | LangSmith 标准开关；设为 true 后由 LangGraph/LangChain 自动追踪 |
 | `LANGSMITH_PROJECT` | `codeguard` | LangSmith 追踪项目名；需同时设置 `LANGSMITH_API_KEY` |

@@ -1,412 +1,207 @@
-"""Phase 2 RiskTag-to-reviewer routing tests."""
-
-from __future__ import annotations
+"""Risk prior → additive reviewer coverage contracts."""
 
 from codeguard_agent.models.tasks import (
     AssignmentReason,
+    ReviewCoveragePlan,
     ReviewTier,
-    RiskCoverage,
-    RiskProfile,
-    RiskSignal,
-    RiskTag,
+    ReviewerKind,
     ReviewTask,
+    RiskCoverage,
+    RiskHypothesis,
+    RiskTag,
+    TaskRiskPrior,
+    TaskReviewPlan,
     TaskSelection,
 )
 from codeguard_agent.pipeline.risk.routing import (
-    decide_tier,
-    plan_task_tiers,
-    render_single_task_risk,
-    render_task_scope,
-    reviewers_for_profile,
-    routed_task_ids,
-    build_risk_prior,
+    coverage_task_ids,
+    coverage_tiers,
     ensure_review_coverage,
     plan_review_coverage,
 )
 
 
-def _profile(task_id: str, *tags: RiskTag) -> RiskProfile:
-    return RiskProfile(
-        task_id=task_id,
-        tag_scores={tag: 1 for tag in tags},
-        signals=[
-            RiskSignal(
+def _task(task_id: str = "src/main/java/OrderService.java#h0") -> ReviewTask:
+    file = task_id.split("#", 1)[0]
+    return ReviewTask(id=task_id, file=file, patch="+ service.save(order);")
+
+
+def _prior(
+    task_id: str,
+    tag: RiskTag | None = None,
+    *,
+    coverage: RiskCoverage = RiskCoverage.CONFIDENT,
+    confidence: float = 0.85,
+    priority: int = 3,
+) -> TaskRiskPrior:
+    hypotheses = ()
+    if tag is not None:
+        hypotheses = (
+            RiskHypothesis(
                 tag=tag,
-                score=1,
-                source=f"text:added:{tag.value.lower()}",
-                reason=f"reason-{tag.value.lower()}",
-            )
-            for tag in tags
-        ],
-    )
-
-
-def test_reviewers_for_profile_uses_fixed_tag_mapping():
-    assert reviewers_for_profile(_profile("auth", RiskTag.AUTHORIZATION)) == frozenset(
-        {"ThreatModelAgent", "BehaviorAgent"}
-    )
-    assert reviewers_for_profile(_profile("sql", RiskTag.SQL_DATA_ACCESS)) == frozenset(
-        {"BehaviorAgent"}
-    )
-    assert reviewers_for_profile(_profile("general", RiskTag.GENERAL_REVIEW)) == frozenset(
-        {"ThreatModelAgent", "BehaviorAgent", "MaintainabilityAgent"}
-    )
-
-
-def test_routed_task_ids_unions_tags_without_duplicates_and_skips_unselected():
-    tasks = [
-        ReviewTask(id="auth", file="Auth.java", patch="+auth"),
-        ReviewTask(id="sql", file="Order.java", patch="+sql"),
-        ReviewTask(id="general", file="Other.java", patch="+other"),
-    ]
-    profiles = {
-        "auth": _profile("auth", RiskTag.AUTHORIZATION, RiskTag.INPUT_VALIDATION),
-        "sql": _profile("sql", RiskTag.SQL_DATA_ACCESS),
-        "general": _profile("general", RiskTag.GENERAL_REVIEW),
-    }
-    selection = TaskSelection(selected_task_ids=["auth", "sql"])
-
-    assert routed_task_ids("ThreatModelAgent", tasks, profiles, selection) == ("auth",)
-    assert routed_task_ids("BehaviorAgent", tasks, profiles, selection) == ("auth", "sql")
-    assert routed_task_ids("MaintainabilityAgent", tasks, profiles, selection) == ()
-
-
-def test_render_task_scope_contains_only_routed_selected_tasks_and_is_stable():
-    tasks = [
-        ReviewTask(id="auth", file="Auth.java", patch="+check auth"),
-        ReviewTask(id="sql", file="Order.java", patch="+query sql"),
-    ]
-    profiles = {
-        "auth": _profile("auth", RiskTag.AUTHORIZATION),
-        "sql": _profile("sql", RiskTag.SQL_DATA_ACCESS),
-    }
-    selection = TaskSelection(selected_task_ids=["auth", "sql"])
-
-    first = render_task_scope("behavior", tasks, profiles, selection)
-    second = render_task_scope("behavior", tasks, profiles, selection)
-
-    assert first == second
-    assert '<review_scope reviewer="behavior">' in first
-    assert 'id="auth"' in first
-    assert "AUTHORIZATION" in first
-    assert "+check auth" in first
-    assert "query sql" in first
-    assert 'id="sql"' in first
-
-    threat_scope = render_task_scope("threat_model", tasks, profiles, selection)
-    assert 'id="auth"' in threat_scope
-    assert 'id="sql"' not in threat_scope
-
-
-def test_decide_tier_react_when_any_tag_score_at_least_two():
-    profile = RiskProfile(
-        task_id="t1",
-        tag_scores={RiskTag.RESOURCE_LIFECYCLE: 2},
-    )
-    assert decide_tier(profile) == "react"
-
-
-def test_decide_tier_direct_when_only_weak_signal():
-    profile = RiskProfile(
-        task_id="t1",
-        tag_scores={RiskTag.SQL_DATA_ACCESS: 1},
-    )
-    assert decide_tier(profile) == "direct"
-
-
-def test_decide_tier_direct_for_general_review():
-    profile = RiskProfile(
-        task_id="t1",
-        tag_scores={RiskTag.GENERAL_REVIEW: 2},
-    )
-    assert decide_tier(profile) == "direct"
-
-
-def test_decide_tier_react_when_strong_signal_present():
-    profile = RiskProfile(
-        task_id="t1",
-        tag_scores={RiskTag.AUTHORIZATION: 3},
-    )
-    assert decide_tier(profile) == "react"
-
-
-def test_decide_tier_direct_when_profile_missing():
-    assert decide_tier(None) == "direct"
-
-
-def test_plan_task_tiers_limits_react_without_dropping_tasks():
-    selected = [f"t{i:02d}" for i in range(25)]
-    profiles = {
-        task_id: RiskProfile(
-            task_id=task_id,
-            tag_scores={RiskTag.AUTHORIZATION: 3},
+                match_confidence=confidence,
+                review_priority=priority,
+                source_kind="diff_text",
+                source="text:added:test",
+                reason="test signal",
+            ),
         )
-        for task_id in selected
-    }
-
-    tiers = plan_task_tiers(
-        selected,
-        profiles,
-        20,
-        tools_available=True,
+    return TaskRiskPrior(
+        task_id=task_id,
+        hypotheses=hypotheses,
+        coverage=coverage,
     )
 
-    assert list(tiers) == selected
-    assert list(tiers.values()).count("react") == 20
-    assert list(tiers.values()).count("direct") == 5
-    assert tiers["t19"] == "react"
-    assert tiers["t20"] == "direct"
 
-
-def test_plan_task_tiers_weak_tasks_do_not_consume_react_budget():
-    selected = ["weak", "general", "strong-1", "strong-2"]
-    profiles = {
-        "weak": RiskProfile(
-            task_id="weak", tag_scores={RiskTag.SQL_DATA_ACCESS: 1}
-        ),
-        "general": RiskProfile(
-            task_id="general", tag_scores={RiskTag.GENERAL_REVIEW: 1}
-        ),
-        "strong-1": RiskProfile(
-            task_id="strong-1", tag_scores={RiskTag.AUTHORIZATION: 3}
-        ),
-        "strong-2": RiskProfile(
-            task_id="strong-2", tag_scores={RiskTag.PERFORMANCE: 2}
-        ),
-    }
-
-    tiers = plan_task_tiers(selected, profiles, 1, tools_available=True)
-
-    assert tiers == {
-        "weak": "direct",
-        "general": "direct",
-        "strong-1": "react",
-        "strong-2": "direct",
+def _assignments(plan, task_id: str):
+    return {
+        item.reviewer: item
+        for task in plan.tasks
+        if task.task_id == task_id
+        for item in task.assignments
     }
 
 
-def test_plan_task_tiers_without_tools_is_all_direct():
-    selected = ["strong"]
-    profiles = {
-        "strong": RiskProfile(
-            task_id="strong", tag_scores={RiskTag.AUTHORIZATION: 3}
-        )
-    }
-
-    assert plan_task_tiers(
-        selected, profiles, 20, tools_available=False
-    ) == {"strong": "direct"}
-
-
-def test_routed_task_ids_routes_missing_profile_to_all_reviewers():
-    task = ReviewTask(id="A.java#h0", file="A.java", patch="+x")
-    selection = TaskSelection(selected_task_ids=[task.id])
-
-    for reviewer in ("threat_model", "behavior", "maintainability"):
-        assert routed_task_ids(reviewer, [task], {}, selection) == (task.id,)
-
-
-def test_render_single_task_risk_includes_tags_and_signals():
-    task = ReviewTask(id="A.java#h0", file="A.java", patch="+x")
-    profile = RiskProfile(
-        task_id="A.java#h0",
-        tag_scores={RiskTag.AUTHORIZATION: 3},
-        signals=[
-            RiskSignal(
-                tag=RiskTag.AUTHORIZATION,
-                score=3,
-                source="text:deleted:authorization_guard_removed",
-                reason="删除 @PreAuthorize",
-            )
-        ],
-    )
-    rendered = render_single_task_risk(task, profile)
-    assert "AUTHORIZATION" in rendered
-    assert "删除 @PreAuthorize" in rendered
-    assert "+x" in rendered
-
-
-def test_render_single_task_risk_omits_zero_score_tags():
-    task = ReviewTask(id="A.java#h0", file="A.java", patch="+x")
-    profile = RiskProfile(
-        task_id="A.java#h0",
-        tag_scores={RiskTag.AUTHORIZATION: 3, RiskTag.PERFORMANCE: 0},
-        signals=[
-            RiskSignal(
-                tag=RiskTag.AUTHORIZATION,
-                score=3,
-                source="text:deleted:authorization_guard_removed",
-                reason="删除 @PreAuthorize",
-            )
-        ],
-    )
-    rendered = render_single_task_risk(task, profile)
-    assert "PERFORMANCE" not in rendered
-
-
-def test_build_risk_prior_treats_general_review_as_unclassified():
-    task = ReviewTask(id="A.java#h0", file="A.java", patch="+x")
-    prior = build_risk_prior(task, _profile(task.id, RiskTag.GENERAL_REVIEW))
-
-    assert prior.coverage is RiskCoverage.UNCLASSIFIED
-    assert prior.hypotheses == ()
-
-
-def test_review_coverage_keeps_behavior_baseline_when_risk_is_wrong_or_narrow():
-    task = ReviewTask(id="Order.java#h0", file="Order.java", patch="+TokenBucket")
-    profile = _profile(task.id, RiskTag.CONFIG_SECURITY)
-    prior = build_risk_prior(task, profile)
-    coverage = plan_review_coverage(
+def test_unclassified_task_gets_all_three_reviewers_direct():
+    task = _task()
+    prior = _prior(task.id, coverage=RiskCoverage.UNCLASSIFIED)
+    plan = plan_review_coverage(
         [task],
         {task.id: prior},
         TaskSelection(selected_task_ids=[task.id]),
-        react_budget=0,
+        react_budget=10,
         tools_available=True,
     )
 
-    reviewers = {assignment.reviewer.value for assignment in coverage.tasks[0].assignments}
-    assert "behavior" in reviewers
-    assert "threat_model" in reviewers
-    assert all(assignment.tier is ReviewTier.DIRECT for assignment in coverage.tasks[0].assignments)
+    assignments = _assignments(plan, task.id)
+    assert set(assignments) == set(ReviewerKind)
+    assert all(item.tier is ReviewTier.DIRECT for item in assignments.values())
+    assert all(
+        AssignmentReason.AMBIGUITY_FALLBACK in item.reasons
+        for item in assignments.values()
+    )
 
 
-def test_ambiguous_prior_falls_back_to_all_three_reviewers():
-    task = ReviewTask(id="Order.java#h0", file="Order.java", patch="+query")
-    prior = build_risk_prior(task, _profile(task.id, RiskTag.SQL_DATA_ACCESS))
-    assert prior.coverage is RiskCoverage.AMBIGUOUS
-    coverage = plan_review_coverage(
+def test_risk_can_add_and_upgrade_but_not_remove_baseline():
+    task = _task()
+    prior = _prior(task.id, RiskTag.AUTHORIZATION)
+    plan = plan_review_coverage(
         [task],
         {task.id: prior},
         TaskSelection(selected_task_ids=[task.id]),
-        react_budget=20,
+        react_budget=10,
         tools_available=True,
     )
 
-    assert [assignment.reviewer.value for assignment in coverage.tasks[0].assignments] == [
-        "threat_model", "behavior", "maintainability"
-    ]
-    assert all(assignment.tier is ReviewTier.DIRECT for assignment in coverage.tasks[0].assignments)
-    assert all(AssignmentReason.AMBIGUITY_FALLBACK in assignment.reasons for assignment in coverage.tasks[0].assignments)
-    assert all(AssignmentReason.BASELINE not in assignment.reasons for assignment in coverage.tasks[0].assignments)
+    assignments = _assignments(plan, task.id)
+    assert ReviewerKind.BEHAVIOR in assignments
+    assert ReviewerKind.THREAT_MODEL in assignments
+    assert assignments[ReviewerKind.THREAT_MODEL].tier is ReviewTier.REACT
+    assert AssignmentReason.RISK_UPGRADED in assignments[
+        ReviewerKind.THREAT_MODEL
+    ].reasons
 
 
-def test_partial_coverage_is_filled_for_every_selected_task():
-    tasks = [
-        ReviewTask(id="A.java#h0", file="A.java", patch="+a"),
-        ReviewTask(id="B.java#h0", file="B.java", patch="+b"),
-    ]
-    selection = TaskSelection(selected_task_ids=[task.id for task in tasks])
-    partial = plan_review_coverage(
-        tasks[:1],
-        {tasks[0].id: build_risk_prior(tasks[0], _profile(tasks[0].id, RiskTag.SQL_DATA_ACCESS))},
-        TaskSelection(selected_task_ids=[tasks[0].id]),
-        react_budget=0,
+def test_tools_unavailable_keeps_assignments_direct():
+    task = _task()
+    plan = plan_review_coverage(
+        [task],
+        {task.id: _prior(task.id, RiskTag.TRANSACTION_ATOMICITY)},
+        TaskSelection(selected_task_ids=[task.id]),
+        react_budget=10,
         tools_available=False,
     )
+    assert all(
+        assignment.tier is ReviewTier.DIRECT
+        for assignment in _assignments(plan, task.id).values()
+    )
 
-    completed = ensure_review_coverage(tasks, partial, selection)
-    assert {plan.task_id for plan in completed.tasks} == {task.id for task in tasks}
-    assert len(completed.tasks[1].assignments) == 3
 
-
-def test_react_budget_upgrades_assignments_without_dropping_coverage():
-    tasks = [
-        ReviewTask(id="Auth.java#h0", file="Auth.java", patch="+authorize"),
-        ReviewTask(id="Order.java#h0", file="Order.java", patch="+lock"),
-    ]
-    profiles = {
-        tasks[0].id: _profile(tasks[0].id, RiskTag.AUTHORIZATION),
-        tasks[1].id: RiskProfile(
-            task_id=tasks[1].id,
-            tag_scores={RiskTag.CONCURRENCY_CONSISTENCY: 3},
-            signals=[
-                RiskSignal(
-                    tag=RiskTag.CONCURRENCY_CONSISTENCY,
-                    score=3,
-                    source="text:added:lock",
-                    reason="concurrency signal",
-                )
-            ],
-        ),
-    }
-    # Explicitly strengthen both old profiles for the ReAct eligibility test.
-    profiles[tasks[0].id].tag_scores[RiskTag.AUTHORIZATION] = 3
-    priors = {task.id: build_risk_prior(task, profiles[task.id]) for task in tasks}
-    coverage = plan_review_coverage(
-        tasks,
-        priors,
-        TaskSelection(selected_task_ids=[task.id for task in tasks]),
+def test_react_budget_exhaustion_keeps_remaining_assignment_direct():
+    first = _task("src/main/java/AService.java#h0")
+    second = _task("src/main/java/BService.java#h0")
+    selection = TaskSelection(selected_task_ids=[first.id, second.id])
+    plan = plan_review_coverage(
+        [first, second],
+        {
+            first.id: _prior(first.id, RiskTag.TRANSACTION_ATOMICITY),
+            second.id: _prior(second.id, RiskTag.TRANSACTION_ATOMICITY),
+        },
+        selection,
         react_budget=1,
         tools_available=True,
     )
-
-    assignments = [assignment for plan in coverage.tasks for assignment in plan.assignments]
-    assert len(assignments) >= 2
-    react_task_ids = {
-        plan.task_id
-        for plan in coverage.tasks
-        if any(assignment.tier is ReviewTier.REACT for assignment in plan.assignments)
-    }
-    assert len(react_task_ids) == 1
-    assert sum(assignment.tier is ReviewTier.REACT for assignment in assignments) >= 1
-    assert coverage.truncated_react_task_count > 0
-
-
-def test_react_budget_counts_each_task_reviewer_assignment_once():
-    tasks = [
-        ReviewTask(id="Checkout.java#h0", file="Checkout.java", patch="+commit"),
-        ReviewTask(id="Inventory.java#h0", file="Inventory.java", patch="+lock"),
+    tiers = [
+        assignment.tier
+        for task in plan.tasks
+        for assignment in task.assignments
+        if assignment.reviewer is ReviewerKind.BEHAVIOR
     ]
-    profiles = {
-        tasks[0].id: RiskProfile(
-            task_id=tasks[0].id,
-            tag_scores={
-                RiskTag.TRANSACTION_ATOMICITY: 3,
-                RiskTag.MESSAGE_DELIVERY: 3,
-            },
-            signals=[
-                RiskSignal(
-                    tag=tag,
-                    score=3,
-                    source=f"text:added:{tag.value.lower()}",
-                    reason=tag.value,
-                )
-                for tag in (
-                    RiskTag.TRANSACTION_ATOMICITY,
-                    RiskTag.MESSAGE_DELIVERY,
-                )
-            ],
-        ),
-        tasks[1].id: RiskProfile(
-            task_id=tasks[1].id,
-            tag_scores={RiskTag.CONCURRENCY_CONSISTENCY: 3},
-            signals=[
-                RiskSignal(
-                    tag=RiskTag.CONCURRENCY_CONSISTENCY,
-                    score=3,
-                    source="text:added:lock",
-                    reason="concurrency",
-                )
-            ],
-        ),
-    }
-    priors = {
-        task.id: build_risk_prior(task, profiles[task.id])
-        for task in tasks
-    }
+    assert tiers.count(ReviewTier.REACT) == 1
+    assert tiers.count(ReviewTier.DIRECT) == 1
+    assert plan.truncated_react_assignment_count == 1
 
-    coverage = plan_review_coverage(
-        tasks,
-        priors,
-        TaskSelection(selected_task_ids=[task.id for task in tasks]),
-        react_budget=2,
-        tools_available=True,
+
+def test_missing_coverage_is_repaired_as_unclassified():
+    task = _task()
+    selection = TaskSelection(selected_task_ids=[task.id])
+    repaired = ensure_review_coverage([task], None, selection)
+    assert set(_assignments(repaired, task.id)) == set(ReviewerKind)
+    assert repaired.tasks_with_zero_assignments == 0
+
+
+def test_empty_assignment_plan_is_repaired_as_unclassified():
+    task = _task()
+    selection = TaskSelection(selected_task_ids=[task.id])
+    malformed = ReviewCoveragePlan(
+        tasks=(TaskReviewPlan(task_id=task.id, assignments=()),),
+        tasks_with_zero_assignments=1,
     )
 
-    assert coverage.react_assignment_count == 2
-    assert coverage.truncated_react_assignment_count == 0
-    assert {
-        plan.task_id
-        for plan in coverage.tasks
-        if any(assignment.tier is ReviewTier.REACT for assignment in plan.assignments)
-    } == {task.id for task in tasks}
+    repaired = ensure_review_coverage([task], malformed, selection)
+
+    assert set(_assignments(repaired, task.id)) == set(ReviewerKind)
+    assert repaired.tasks_with_zero_assignments == 0
+
+
+def test_coverage_queries_follow_selection_order():
+    first = _task("src/main/java/A.java#h0")
+    second = _task("src/main/java/B.java#h0")
+    selection = TaskSelection(selected_task_ids=[second.id, first.id])
+    plan = plan_review_coverage(
+        [first, second],
+        {
+            first.id: _prior(first.id, coverage=RiskCoverage.UNCLASSIFIED),
+            second.id: _prior(second.id, coverage=RiskCoverage.UNCLASSIFIED),
+        },
+        selection,
+        react_budget=0,
+        tools_available=False,
+    )
+    assert coverage_task_ids("behavior", plan, selection) == (second.id, first.id)
+    assert coverage_tiers("behavior", plan, selection) == {
+        second.id: "direct",
+        first.id: "direct",
+    }
+
+
+def test_force_react_uses_coverage_plan_not_removed_legacy_tier_logic():
+    task = _task()
+    plan = plan_review_coverage(
+        [task],
+        {task.id: _prior(task.id, coverage=RiskCoverage.UNCLASSIFIED)},
+        TaskSelection(selected_task_ids=[task.id]),
+        react_budget=3,
+        tools_available=True,
+        force_react=True,
+    )
+    assert all(
+        assignment.tier is ReviewTier.REACT
+        for assignment in _assignments(plan, task.id).values()
+    )
+    assert all(
+        AssignmentReason.EXECUTION_OVERRIDE in assignment.reasons
+        for assignment in _assignments(plan, task.id).values()
+    )
+    assert plan.execution_override_assignments == 3
+    assert plan.risk_upgraded_assignments == 0

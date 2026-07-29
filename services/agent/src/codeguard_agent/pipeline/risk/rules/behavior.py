@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from codeguard_agent.models.tasks import RiskSignal, RiskTag
+from codeguard_agent.pipeline.risk.signals import make_risk_signal
 from codeguard_agent.pipeline.risk.rules.features import DiffFeatures
 
 
@@ -38,9 +39,9 @@ def _detect(
     if added and deleted and added[2] == deleted[2] and added[1] != deleted[1]:
         score = changed_score if changed_score is not None else max(added_score, deleted_score)
         return [
-            RiskSignal(
+            make_risk_signal(
                 tag=tag,
-                score=score,
+                priority=score,
                 source=f"text:changed:{rule_id}",
                 reason=f"{reason}：命中 {added[2]}，需审查",
                 line=added[0],
@@ -50,9 +51,9 @@ def _detect(
     signals: list[RiskSignal] = []
     if added:
         signals.append(
-            RiskSignal(
+            make_risk_signal(
                 tag=tag,
-                score=added_score,
+                priority=added_score,
                 source=f"text:added:{rule_id}",
                 reason=f"{reason}：命中 {added[2]}，需审查",
                 line=added[0],
@@ -60,9 +61,9 @@ def _detect(
         )
     if deleted:
         signals.append(
-            RiskSignal(
+            make_risk_signal(
                 tag=tag,
-                score=deleted_score,
+                priority=deleted_score,
                 source=f"text:deleted:{rule_id}",
                 reason=f"{reason}：命中 {deleted[2]}，需审查",
                 line=None,
@@ -189,6 +190,6 @@ def detect_performance(features: DiffFeatures) -> list[RiskSignal]:
             match = access.search(text)
             if match:
                 token = match.group(0)
-                return [RiskSignal(tag=RiskTag.PERFORMANCE, score=2, source="text:added:performance", reason=f"循环后的查询、I/O 或重复计算变化：命中 {token}，需审查", line=line)]
+                return [make_risk_signal(tag=RiskTag.PERFORMANCE, priority=2, source="text:added:performance", reason=f"循环后的查询、I/O 或重复计算变化：命中 {token}，需审查", line=line)]
         seen_iteration = seen_iteration or bool(loop.search(text))
     return []

@@ -5,16 +5,17 @@ from __future__ import annotations
 from codeguard_agent.models.council import (
     CandidateIssue,
     CouncilTrace,
+    EvidenceFactType,
     EvidenceFinding,
     EvidenceNote,
     EvidenceRequest,
     Verdict,
 )
 from codeguard_agent.models.schemas import Severity
-from codeguard_agent.models.tasks import ReviewTask, RiskTag
+from codeguard_agent.models.tasks import ReviewTask
 from codeguard_agent.pipeline.council.metrics import compute_council_run_stats
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
-from codeguard_agent.pipeline.evidence.rules import strategies_for
+from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID
 
 
 def _dossier(candidate_id: str, *, file: str | None = None) -> CandidateDossier:
@@ -35,7 +36,7 @@ def _dossier(candidate_id: str, *, file: str | None = None) -> CandidateDossier:
         severity_proposal=Severity.WARNING,
         claim="敏感操作缺少授权保护",
     )
-    return CandidateDossier(candidate, task, None, None, (), ())
+    return CandidateDossier(candidate, task, None, (), ())
 
 
 def _with_finding(
@@ -45,15 +46,23 @@ def _with_finding(
     relation: str,
     strength: str = "contextual",
 ) -> CandidateDossier:
-    strategy = strategies_for(RiskTag.AUTHORIZATION, purpose)[0]
+    strategy = STRATEGIES_BY_ID[{
+        "support": "claim.changed_condition.support",
+        "counter": "claim.guard_presence.counter",
+        "severity": "claim.impact_factor.impact",
+    }[purpose]]
     calls = strategy.build_tool_calls(dossier)
     request = EvidenceRequest(
         candidate_id=dossier.candidate.id,
         strategy_id=strategy.id,
         purpose=purpose,
         target=dossier.task.file,
-        question=strategy.question_template,
+        question="test proposition",
         preferred_tools=list(dict.fromkeys(call.tool_name for call in calls)),
+        goal_id="goal-test",
+        concern_id="concern-test",
+        claim_ids=(dossier.candidate.id,),
+        fact_type=EvidenceFactType(strategy.id.split(".")[1]),
     )
     finding = EvidenceFinding(
         evidence_id=f"evidence-{dossier.candidate.id}",
@@ -71,7 +80,6 @@ def _with_finding(
     return CandidateDossier(
         dossier.candidate,
         dossier.task,
-        dossier.risk_profile,
         dossier.context_bundle,
         (request,),
         (note,),
@@ -150,14 +158,6 @@ def test_final_issue_strategy_and_fact_coverage_use_surviving_candidates():
     assert stats.final_issue_strategy_coverage == 2 / 3
     assert stats.final_issue_fact_covered_count == 1
     assert stats.final_issue_fact_coverage == 1 / 3
-
-
-def test_registry_coverage_is_computed_from_every_risk_tag():
-    stats = _stats([], final_ids=[])
-
-    assert stats.registry_risk_tag_total == len(RiskTag)
-    assert stats.registry_risk_tag_covered_count == len(RiskTag)
-    assert stats.registry_risk_tag_coverage == 1.0
 
 
 def test_actual_tool_calls_come_from_evidence_agent_trace_not_global_context():
@@ -251,7 +251,7 @@ def test_gate_and_severity_metrics_are_derived_from_verdicts_and_trace():
 
     assert stats.no_support_candidate_count == 1
     assert stats.no_support_retained_count == 0
-    assert stats.severity_defaulted_count == 1
+    assert stats.judge_synthesis_failed_count == 1
     assert stats.critical_candidate_count == 1
     assert stats.critical_policy_matched_count == 1
     assert stats.critical_missing_factor_count == 2

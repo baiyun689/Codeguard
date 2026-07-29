@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from codeguard_agent.models.tasks import RiskSignal, RiskTag, ReviewTask
+from codeguard_agent.models.tasks import RiskCoverage, RiskTag, ReviewTask
+from codeguard_agent.pipeline.risk.signals import make_risk_signal
 from codeguard_agent.pipeline.risk.rules import catalog
 from codeguard_agent.pipeline.risk.rules.features import DiffFeatures
 from codeguard_agent.pipeline.risk.rules.security import (
@@ -68,7 +69,7 @@ def test_security_detector_emits_canonical_signal(detector, tag, added, deleted,
     signal = detector(features(added, deleted=(deleted,)))[0]
 
     assert signal.tag is tag
-    assert signal.score in {1, 2, 3}
+    assert signal.review_priority in {1, 2, 3}
     assert signal.source == f"text:changed:{rule_id}"
     assert signal.line == 10
     assert signal.reason.endswith(f"命中 {token}，需审查")
@@ -77,7 +78,7 @@ def test_security_detector_emits_canonical_signal(detector, tag, added, deleted,
 def test_deleting_authorization_guard_is_high_score_and_deleted_line_is_unknown():
     signal = detect_authorization(features(deleted=("@PreAuthorize(\"hasRole('ADMIN')\")",)))[0]
 
-    assert signal.score == 3
+    assert signal.review_priority == 3
     assert signal.source == "text:deleted:authorization_guard"
     assert signal.reason.endswith("命中 @PreAuthorize，需审查")
     assert signal.line is None
@@ -86,7 +87,7 @@ def test_deleting_authorization_guard_is_high_score_and_deleted_line_is_unknown(
 def test_deleting_validation_is_high_score():
     signal = detect_input_validation(features(deleted=("@NotBlank String name",)))[0]
 
-    assert signal.score == 3
+    assert signal.review_priority == 3
     assert signal.source == "text:deleted:input_validation"
     assert signal.reason.endswith("命中 @NotBlank，需审查")
 
@@ -120,7 +121,7 @@ def test_unrelated_added_and_deleted_matches_keep_their_own_directions():
 def test_harmless_web_security_token_is_not_high_score():
     signals = detect_web_security_config(features("http.csrf().enable()"))
 
-    assert [(signal.source, signal.score) for signal in signals] == [("text:added:web_security_config", 1)]
+    assert [(signal.source, signal.review_priority) for signal in signals] == [("text:added:web_security_config", 1)]
 
 
 @pytest.mark.parametrize(
@@ -135,7 +136,7 @@ def test_web_security_weakening_additions_score_three(line, token):
     signal = detect_web_security_config(features(line))[0]
 
     assert signal.source == "text:added:web_security_weakening"
-    assert signal.score == 3
+    assert signal.review_priority == 3
     assert signal.reason.endswith(f"命中 {token}，需审查")
 
 
@@ -143,7 +144,7 @@ def test_injection_detects_concatenated_command_text():
     signal = detect_injection(features('command = "sh -c " + userCommand'))[0]
 
     assert signal.source == "text:added:injection_command"
-    assert signal.score == 3
+    assert signal.review_priority == 3
     assert signal.reason.endswith("命中 sh -c，需审查")
 
 
@@ -176,7 +177,7 @@ def test_behavior_and_maintainability_detectors_emit_canonical_added_signal(
     signal = detector(features(line))[0]
 
     assert signal.tag is tag
-    assert signal.score == score
+    assert signal.review_priority == score
     assert signal.source == f"text:added:{rule_id}"
     assert signal.line == 10
     assert signal.reason.endswith(f"命中 {token}，需审查")
@@ -197,7 +198,7 @@ def test_deleted_behavior_and_maintainability_protections_are_high_score(
     signal = detector(features(deleted=(line,)))[0]
 
     assert signal.tag is tag
-    assert signal.score == score
+    assert signal.review_priority == score
     assert signal.source == f"text:deleted:{rule_id}"
     assert signal.line is None
     assert signal.reason.endswith(f"命中 {token}，需审查")
@@ -315,134 +316,117 @@ def test_general_review_routes_to_all_reviewers():
     )
 
 
-def test_controller_path_adds_weak_weight_to_matching_risks():
-    profile = catalog.classify_task(
+def test_controller_path_strengthens_matching_hypotheses():
+    prior = catalog.classify_task(
         ReviewTask(
             id="controller",
             file="src/main/java/com/example/controller/UserController.java",
-            patch="@@ -1,1 +1,2 @@\n+@PreAuthorize(\"hasRole('ADMIN')\")\n+public void update(UserRequest request) {}",
+            patch=(
+                "@@ -1 +1,2 @@\n"
+                "+@PreAuthorize(\"hasRole('ADMIN')\")\n"
+                "+public void update(UserRequest request) {}"
+            ),
         )
     )
 
-    assert profile.tag_scores[RiskTag.AUTHORIZATION] == 2
-    assert profile.tag_scores[RiskTag.API_CONTRACT] == 3
-    assert any(signal.source == "path:controller" for signal in profile.signals)
+    by_tag = {item.tag: item for item in prior.hypotheses}
+    assert prior.coverage is RiskCoverage.CONFIDENT
+    assert by_tag[RiskTag.AUTHORIZATION].match_confidence > 0.45
+    assert "path:controller" in by_tag[RiskTag.AUTHORIZATION].source
+    assert RiskTag.API_CONTRACT in by_tag
 
 
-def test_config_path_adds_weak_weight_to_security_risks():
-    profile = catalog.classify_task(
+def test_config_path_strengthens_matching_security_prior():
+    prior = catalog.classify_task(
         ReviewTask(
             id="config",
             file="src/main/resources/application.yml",
-            patch="@@ -1,1 +1,1 @@\n+password: ${DB_PASSWORD}",
+            patch="@@ -1 +1 @@\n+password: ${DB_PASSWORD}",
         )
     )
+    hypothesis = next(
+        item for item in prior.hypotheses
+        if item.tag is RiskTag.CONFIG_SECURITY
+    )
+    assert hypothesis.review_priority == 3
+    assert "path:config" in hypothesis.source
 
-    assert profile.tag_scores[RiskTag.CONFIG_SECURITY] == 4
-    assert any(signal.source == "path:config" for signal in profile.signals)
 
-
-def test_repository_path_does_not_create_risk_without_matching_text_signal():
-    profile = catalog.classify_task(
+def test_path_does_not_create_hypothesis_without_text_signal():
+    prior = catalog.classify_task(
         ReviewTask(
             id="repository",
             file="src/main/java/com/example/repository/UserRepository.java",
-            patch="@@ -1,1 +1,1 @@\n+int value = 1;",
+            patch="@@ -1 +1 @@\n+int value = 1;",
         )
     )
-
-    assert profile.tag_scores == {RiskTag.GENERAL_REVIEW: 1}
-
-
-def test_path_signal_is_retained_when_concrete_signal_has_same_tag():
-    profile = catalog._profile(
-        "t",
-        [
-            RiskSignal(
-                tag=RiskTag.AUTHORIZATION,
-                score=1,
-                source="text:added:authorization_guard",
-                reason="text match",
-            ),
-            RiskSignal(
-                tag=RiskTag.AUTHORIZATION,
-                score=1,
-                source="path:controller",
-                reason="path match",
-            ),
-        ],
-    )
-
-    assert [signal.source for signal in profile.signals] == [
-        "text:added:authorization_guard",
-        "path:controller",
-    ]
-    assert profile.tag_scores == {RiskTag.AUTHORIZATION: 2}
+    assert prior.coverage is RiskCoverage.UNCLASSIFIED
+    assert prior.hypotheses == ()
 
 
-def test_classify_task_deduplicates_scores_and_caps_each_tag(monkeypatch):
-    first_signal = RiskSignal(
+def test_prior_aggregates_duplicate_rule_hits_without_exposing_signals(monkeypatch):
+    first = make_risk_signal(
         tag=RiskTag.AUTHORIZATION,
-        score=3,
+        priority=3,
         source="text:added:test",
         reason="r",
         line=7,
     )
-    second_signal = RiskSignal(
+    second = make_risk_signal(
         tag=RiskTag.AUTHORIZATION,
-        score=3,
+        priority=3,
         source="text:deleted:test",
         reason="r",
     )
     rule = catalog.RiskRuleSpec(
-        rule_id="test",
-        tag=RiskTag.AUTHORIZATION,
-        reviewers=frozenset({"ThreatModelAgent"}),
-        detect=lambda _features: [first_signal, first_signal, second_signal],
+        "test",
+        RiskTag.AUTHORIZATION,
+        frozenset({"ThreatModelAgent"}),
+        lambda _features: [first, first, second],
     )
     monkeypatch.setattr(catalog, "RULE_SPECS", (rule,))
 
-    profile = catalog.classify_task(ReviewTask(id="t", file="A.java", patch="+x"))
+    prior = catalog.classify_task(
+        ReviewTask(id="t", file="A.java", patch="+x")
+    )
+    assert len(prior.hypotheses) == 1
+    assert prior.hypotheses[0].review_priority == 3
+    assert prior.hypotheses[0].match_confidence == 0.9
+    assert prior.hypotheses[0].source == (
+        "text:added:test+text:deleted:test"
+    )
 
-    assert profile.tag_scores == {RiskTag.AUTHORIZATION: 5}
-    assert profile.signals == [first_signal, second_signal]
 
-
-def test_classify_task_falls_back_when_only_path_signal_exists(monkeypatch):
-    path_signal = RiskSignal(
+def test_classify_task_falls_back_when_detector_returns_path_only(monkeypatch):
+    path_signal = make_risk_signal(
         tag=RiskTag.API_CONTRACT,
-        score=2,
+        priority=2,
+        source_kind="path",
         source="path:controller",
         reason="path match",
     )
     rule = catalog.RiskRuleSpec(
-        rule_id="path_only",
-        tag=RiskTag.API_CONTRACT,
-        reviewers=frozenset({"BehaviorAgent"}),
-        detect=lambda _features: [path_signal],
+        "path_only",
+        RiskTag.API_CONTRACT,
+        frozenset({"BehaviorAgent"}),
+        lambda _features: [path_signal],
     )
     monkeypatch.setattr(catalog, "RULE_SPECS", (rule,))
 
-    profile = catalog.classify_task(ReviewTask(id="t", file="A.java", patch="+x"))
-
-    assert profile.tag_scores == {RiskTag.GENERAL_REVIEW: 1}
-    assert profile.signals == [
-        RiskSignal(
-            tag=RiskTag.GENERAL_REVIEW,
-            score=1,
-            source="fallback:unclassified",
-            reason="未命中已有风险规则，执行通用审查",
-        )
-    ]
+    prior = catalog.classify_task(
+        ReviewTask(id="t", file="A.java", patch="+x")
+    )
+    assert prior.coverage is RiskCoverage.UNCLASSIFIED
+    assert prior.hypotheses == ()
 
 
 def test_triage_tasks_records_rule_failure_and_continues(monkeypatch):
     def broken(_features):
         raise RuntimeError("broken detector")
 
-    good_signal = RiskSignal(
+    good_signal = make_risk_signal(
         tag=RiskTag.PERFORMANCE,
-        score=2,
+        priority=2,
         source="text:added:performance",
         reason="performance",
         line=1,
@@ -451,16 +435,24 @@ def test_triage_tasks_records_rule_failure_and_continues(monkeypatch):
         catalog,
         "RULE_SPECS",
         (
-            catalog.RiskRuleSpec("broken", RiskTag.API_CONTRACT, frozenset(), broken),
             catalog.RiskRuleSpec(
-                "good", RiskTag.PERFORMANCE, frozenset(), lambda _features: [good_signal]
+                "broken", RiskTag.API_CONTRACT, frozenset(), broken
+            ),
+            catalog.RiskRuleSpec(
+                "good",
+                RiskTag.PERFORMANCE,
+                frozenset(),
+                lambda _features: [good_signal],
             ),
         ),
     )
 
-    result = catalog.triage_tasks([ReviewTask(id="t", file="A.java", patch="+x")])
-
-    assert result.profiles["t"].signals == [good_signal]
+    result = catalog.triage_tasks(
+        [ReviewTask(id="t", file="A.java", patch="+x")]
+    )
+    assert result.priors["t"].hypotheses[0].tag is RiskTag.PERFORMANCE
     assert result.diagnostics == (
-        catalog.RuleDiagnostic(task_id="t", rule_id="broken", detail="broken detector"),
+        catalog.RuleDiagnostic(
+            task_id="t", rule_id="broken", detail="broken detector"
+        ),
     )

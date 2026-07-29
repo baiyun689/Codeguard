@@ -1,25 +1,19 @@
 """Concern → Evidence 集成测试：端到端验证新管线。"""
 from __future__ import annotations
 
-import pytest
 from codeguard_agent.models.council import (
-    CandidateClaim,
-    CandidateConcern,
+    CandidateIssue,
     EvidenceFactType,
     EvidencePolarity,
 )
 from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.evidence.planner import plan_claim_evidence
-from codeguard_agent.pipeline.council.concern import (
-    analyze_candidate_groups,
-    build_singleton_concerns,
-)
+from codeguard_agent.pipeline.council.concern import analyze_candidate_groups
 from codeguard_agent.pipeline.council.dedup import CandidateGroup
 from codeguard_agent.models.schemas import Severity
 
 
-def _make_candidate(cid: str, claim: str, ctype: str = "AUTHORIZATION") -> "CandidateIssue":
-    from codeguard_agent.models.council import CandidateIssue
+def _make_candidate(cid: str, claim: str, ctype: str = "AUTHORIZATION") -> CandidateIssue:
     return CandidateIssue(
         id=cid, task_id="t1", source_agent="threat_model",
         file="src/main/Foo.java", line=10, type=ctype,
@@ -64,7 +58,7 @@ class TestConcernEvidenceIntegration:
     def test_singleton_fallback_produces_valid_concern(self):
         """Singleton fallback 产生有效 concern 和 plan。"""
         c = _make_candidate("c1", "空指针风险")
-        analysis = build_singleton_concerns([c])
+        analysis = analyze_candidate_groups([], candidates=[c])
         assert len(analysis.concerns) == 1
         concern = analysis.concerns[0]
         plan = plan_claim_evidence(concern)

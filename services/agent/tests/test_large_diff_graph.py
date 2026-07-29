@@ -6,8 +6,8 @@ from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.models.tasks import (
     ReviewBudget,
     ReviewTask,
-    RiskProfile,
-    RiskTag,
+    RiskCoverage,
+    TaskRiskPrior,
     TaskSelection,
 )
 from codeguard_agent.pipeline import graph as G
@@ -40,15 +40,23 @@ def _large_diff(tasks: list[ReviewTask]) -> str:
     return _diff(tasks) + ("\ncontext" * 5001)
 
 
+def _priors(tasks: list[ReviewTask]) -> dict[str, TaskRiskPrior]:
+    return {
+        task.id: TaskRiskPrior(
+            task_id=task.id,
+            coverage=RiskCoverage.UNCLASSIFIED,
+        )
+        for task in tasks
+    }
+
+
 def test_task_rank_applies_large_diff_budget_and_emits_trace():
     tasks = _tasks()
-    profiles = {task.id: RiskProfile(task_id=task.id) for task in tasks}
-
     out = G._task_rank_node()(
         {
             "diff_text": _large_diff(tasks),
             "review_tasks": tasks,
-            "risk_profiles": profiles,
+            "risk_priors": _priors(tasks),
             "review_budget": ReviewBudget(),
         }
     )
@@ -72,7 +80,7 @@ def test_normal_diff_selects_more_than_ten_tasks_from_one_file():
         {
             "diff_text": "small diff",
             "review_tasks": tasks,
-            "risk_profiles": {task.id: RiskProfile(task_id=task.id) for task in tasks},
+            "risk_priors": _priors(tasks),
             "review_budget": ReviewBudget(),
         }
     )
@@ -137,7 +145,6 @@ def test_context_provider_large_diff_uses_selected_scope_and_skips_broad_scan():
         {
             "diff_text": _large_diff(tasks),
             "review_tasks": tasks,
-            "risk_profiles": {task.id: RiskProfile(task_id=task.id) for task in tasks},
             "task_selection": TaskSelection(selected_task_ids=[tasks[0].id]),
             "review_budget": ReviewBudget(),
         }
@@ -171,12 +178,7 @@ def test_large_diff_reviewer_includes_bounded_patch_only_once(monkeypatch):
         {
             "diff_text": _large_diff(tasks),
             "review_tasks": tasks,
-            "risk_profiles": {
-                task.id: RiskProfile(
-                    task_id=task.id,
-                    tag_scores={RiskTag.GENERAL_REVIEW: 1},
-                )
-            },
+            "risk_priors": _priors([task]),
             "task_selection": TaskSelection(selected_task_ids=[task.id]),
             "review_budget": ReviewBudget(),
         }

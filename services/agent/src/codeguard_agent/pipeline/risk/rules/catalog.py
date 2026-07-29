@@ -1,7 +1,7 @@
-"""风险规则注册表与确定性任务分派。
+"""风险规则注册表与确定性风险先验构建。
 
-汇总安全、行为、可维护性三条规则线的信号检测函数，对外暴露统一的 triage_tasks
-和按标签查发现者的查询接口。
+汇总安全、行为、可维护性三条规则线的信号检测函数，对外直接产出
+``TaskRiskPrior``，并提供按标签查发现者的查询接口。
 """
 
 from __future__ import annotations
@@ -9,7 +9,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from codeguard_agent.models.tasks import RiskProfile, RiskSignal, RiskTag, ReviewTask
+from codeguard_agent.models.tasks import (
+    RiskCoverage,
+    RiskHypothesis,
+    RiskSignal,
+    RiskTag,
+    ReviewTask,
+    TaskRiskPrior,
+)
 from codeguard_agent.pipeline.risk.rules.behavior import (
     detect_api_contract,
     detect_cache_consistency,
@@ -63,7 +70,7 @@ class RuleDiagnostic:
 
 @dataclass(frozen=True)
 class TriageResult:
-    profiles: dict[str, RiskProfile]
+    priors: dict[str, TaskRiskPrior]
     diagnostics: tuple[RuleDiagnostic, ...]
 
 
@@ -99,43 +106,89 @@ RULE_SPECS: tuple[RiskRuleSpec, ...] = (
     RiskRuleSpec("observability_testability", RiskTag.OBSERVABILITY_TESTABILITY, frozenset({_MAINTAINABILITY}), detect_observability_testability),
 )
 
-# Keep routing metadata beside the detector catalog. GENERAL_REVIEW is not a
-# detector rule, but its fallback path must still have an explicit destination.
 ALL_REVIEWERS = frozenset({_THREAT_MODEL, _BEHAVIOR, _MAINTAINABILITY})
 RISK_TAG_REVIEWERS: dict[RiskTag, frozenset[str]] = {
     spec.tag: spec.reviewers for spec in RULE_SPECS
 }
-RISK_TAG_REVIEWERS[RiskTag.GENERAL_REVIEW] = ALL_REVIEWERS
 
 
 def reviewers_for_tag(tag: RiskTag) -> frozenset[str]:
-    """Return the fixed reviewer set for a classified risk tag."""
-    return RISK_TAG_REVIEWERS[tag]
+    """Return the fixed reviewer set for a concrete risk hypothesis."""
+    return RISK_TAG_REVIEWERS.get(tag, ALL_REVIEWERS)
 
 
 def _is_concrete_signal(signal: RiskSignal) -> bool:
-    return signal.source.startswith(("text:added:", "text:deleted:", "text:changed:"))
+    return signal.source_kind != "path"
 
 
-def _profile(task_id: str, signals: list[RiskSignal]) -> RiskProfile:
+def _hypothesis(tag: RiskTag, signals: list[RiskSignal]) -> RiskHypothesis:
+    confidence_remaining = 1.0
+    for signal in signals:
+        confidence_remaining *= 1.0 - signal.match_confidence
+    confidence = 1.0 - confidence_remaining
+    source_kinds = {signal.source_kind for signal in signals}
+    if source_kinds == {"path"}:
+        confidence = min(confidence, 0.60)
+    strongest = max(
+        signals,
+        key=lambda signal: (
+            signal.match_confidence,
+            signal.review_priority,
+            signal.source,
+            signal.line or 0,
+        ),
+    )
+    return RiskHypothesis(
+        tag=tag,
+        match_confidence=min(confidence, 0.90),
+        review_priority=max(signal.review_priority for signal in signals),
+        source_kind=(
+            strongest.source_kind
+            if len(source_kinds) == 1
+            else "diff_text"
+        ),
+        source="+".join(sorted({signal.source for signal in signals})),
+        reason="; ".join(sorted({signal.reason for signal in signals})),
+        line=strongest.line,
+    )
+
+
+def _prior(task_id: str, signals: list[RiskSignal]) -> TaskRiskPrior:
     concrete_tags = {signal.tag for signal in signals if _is_concrete_signal(signal)}
     retained = [signal for signal in signals if signal.tag in concrete_tags]
     if not concrete_tags:
-        fallback = RiskSignal(
-            tag=RiskTag.GENERAL_REVIEW,
-            score=1,
-            source="fallback:unclassified",
-            reason="未命中已有风险规则，执行通用审查",
+        return TaskRiskPrior(
+            task_id=task_id,
+            coverage=RiskCoverage.UNCLASSIFIED,
         )
-        return RiskProfile(task_id=task_id, tag_scores={fallback.tag: fallback.score}, signals=[fallback])
 
-    tag_scores: dict[RiskTag, int] = {}
-    for signal in retained:
-        tag_scores[signal.tag] = min(5, tag_scores.get(signal.tag, 0) + signal.score)
-    return RiskProfile(task_id=task_id, tag_scores=tag_scores, signals=retained)
+    hypotheses = [
+        _hypothesis(tag, [signal for signal in retained if signal.tag is tag])
+        for tag in sorted(concrete_tags, key=lambda item: item.value)
+    ]
+    hypotheses.sort(
+        key=lambda item: (
+            -item.match_confidence,
+            -item.review_priority,
+            item.tag.value,
+        )
+    )
+    ambiguous = max(item.match_confidence for item in hypotheses) < 0.65
+    if len(hypotheses) >= 2:
+        first, second = hypotheses[:2]
+        if (
+            abs(first.match_confidence - second.match_confidence) < 0.10
+            and reviewers_for_tag(first.tag) != reviewers_for_tag(second.tag)
+        ):
+            ambiguous = True
+    return TaskRiskPrior(
+        task_id=task_id,
+        hypotheses=tuple(hypotheses),
+        coverage=RiskCoverage.AMBIGUOUS if ambiguous else RiskCoverage.CONFIDENT,
+    )
 
 
-def _classify(task: ReviewTask) -> tuple[RiskProfile, tuple[RuleDiagnostic, ...]]:
+def _classify(task: ReviewTask) -> tuple[TaskRiskPrior, tuple[RuleDiagnostic, ...]]:
     features = extract_features(task)
     signals: list[RiskSignal] = []
     diagnostics: list[RuleDiagnostic] = []
@@ -157,20 +210,20 @@ def _classify(task: ReviewTask) -> tuple[RiskProfile, tuple[RuleDiagnostic, ...]
         signal.tag for signal in signals if _is_concrete_signal(signal)
     }
     signals.extend(path_signals(features, concrete_tags))
-    return _profile(task.id, signals), tuple(diagnostics)
+    return _prior(task.id, signals), tuple(diagnostics)
 
 
-def classify_task(task: ReviewTask) -> RiskProfile:
+def classify_task(task: ReviewTask) -> TaskRiskPrior:
     """Classify one task, retaining no diagnostic state for direct callers."""
     return _classify(task)[0]
 
 
 def triage_tasks(tasks: list[ReviewTask]) -> TriageResult:
     """Classify tasks independently and retain rule failures as diagnostics."""
-    profiles: dict[str, RiskProfile] = {}
+    priors: dict[str, TaskRiskPrior] = {}
     diagnostics: list[RuleDiagnostic] = []
     for task in tasks:
-        profile, task_diagnostics = _classify(task)
-        profiles[task.id] = profile
+        prior, task_diagnostics = _classify(task)
+        priors[task.id] = prior
         diagnostics.extend(task_diagnostics)
-    return TriageResult(profiles=profiles, diagnostics=tuple(diagnostics))
+    return TriageResult(priors=priors, diagnostics=tuple(diagnostics))

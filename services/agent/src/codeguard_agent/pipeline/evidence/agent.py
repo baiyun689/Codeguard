@@ -14,13 +14,18 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel
 
 from codeguard_agent.llm.client import invoke_with_retry
-from codeguard_agent.models.council import EvidenceFinding, EvidenceNote, EvidenceRequest
+from codeguard_agent.models.council import (
+    EvidenceFactType,
+    EvidenceFinding,
+    EvidenceNote,
+    EvidenceRequest,
+)
 from codeguard_agent.pipeline.context import rules as context_rules
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.engines import GatheredContext
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID
-from codeguard_agent.pipeline.evidence.rules.types import (
+from codeguard_agent.pipeline.evidence.strategy_types import (
     EvidenceStrategy,
     ToolCallSpec,
     as_capability,
@@ -123,10 +128,6 @@ def _insufficient(request: EvidenceRequest, limitation: str, *, detail: str = ""
     )
 
 
-def _expected_tools(calls: list[ToolCallSpec]) -> list[str]:
-    return list(dict.fromkeys(call.tool_name for call in calls))
-
-
 def _strategy_for_request(
     request: EvidenceRequest,
     dossier: CandidateDossier,
@@ -139,11 +140,9 @@ def _strategy_for_request(
     registered = STRATEGIES_BY_ID.get(request.strategy_id)
     if registered is None:
         return None
-    # claim.* 策略：question_template 留空，运行时从 request.question 注入
     if not registered.question_template and request.question:
         return EvidenceStrategy(
             id=registered.id,
-            tags=registered.tags,
             purpose=registered.purpose,
             priority=registered.priority,
             question_template=request.question,
@@ -165,7 +164,7 @@ def request_strategy_mismatch(
     strategy = _strategy_for_request(request, dossier)
     if strategy is None:
         return "strategy_id"
-    if request.strategy_id.startswith("claim.") and (
+    if (
         not request.goal_id
         or not request.concern_id
         or not request.claim_ids
@@ -177,26 +176,12 @@ def request_strategy_mismatch(
     target = context_rules.normalize_path(request.target)
     if target != context_rules.normalize_path(dossier.task.file):
         return "target"
-    # question 校验：claim.* 策略的 question_template 由运行时注入，
-    # 只需保证非空；旧 tag 策略需精确匹配注册模板
     if not request.question.strip():
         return "question"
     if strategy.question_template and request.question != strategy.question_template:
         return "question"
-    # preferred_tools 校验：claim.* 策略的工具可用性依赖运行时上下文
-    # （如 symbol_id 是否存在），只需验证请求工具在策略能力范围内；
-    # 旧 tag 策略保持精确匹配
-    if request.strategy_id.startswith("claim."):
-        if not set(request.preferred_tools).issubset(set(strategy.allowed_tools)):
-            return "preferred_tools"
-    else:
-        calls = strategy.build_tool_calls(dossier)
-        accepted_preferred_tools = [
-            _expected_tools(calls),
-            list(strategy.allowed_tools),
-        ]
-        if request.preferred_tools not in accepted_preferred_tools:
-            return "preferred_tools"
+    if not set(request.preferred_tools).issubset(set(strategy.allowed_tools)):
+        return "preferred_tools"
     calls = strategy.build_tool_calls(dossier)
     if any(
         as_capability(call.capability) not in strategy.allowed_capabilities
@@ -641,9 +626,24 @@ def _direct_counter_finding(
     if request.purpose != "counter":
         return None
     annotations: tuple[str, ...]
-    if request.strategy_id.startswith("authorization."):
+    candidate_text = f"{dossier.candidate.type} {dossier.candidate.claim}".lower()
+    if (
+        request.fact_type
+        in (EvidenceFactType.GUARD_PRESENCE, EvidenceFactType.REACHABILITY)
+        and any(
+            marker in candidate_text
+            for marker in (
+                "authorization",
+                "authz",
+                "授权",
+                "鉴权",
+                "越权",
+                "权限",
+            )
+        )
+    ):
         annotations = ("PreAuthorize", "PostAuthorize", "Secured", "RolesAllowed")
-    elif request.strategy_id.startswith("transaction_atomicity."):
+    elif request.fact_type is EvidenceFactType.TRANSACTION_BOUNDARY:
         annotations = ("Transactional",)
     else:
         return None
@@ -664,16 +664,10 @@ def _analysis_user_prompt(
     request: EvidenceRequest,
     facts: list[_RawFact],
 ) -> str:
-    profile = dossier.risk_profile
-    risk = {
-        "tags": [tag.value for tag, score in (profile.tag_scores.items() if profile else ()) if score > 0],
-        "signals": [signal.model_dump(mode="json") for signal in (profile.signals if profile else ())],
-    }
     payload = {
         "candidate": {
             "type": dossier.candidate.type,
             "claim": dossier.candidate.claim,
-            "severity": dossier.candidate.severity_proposal.value,
         },
         "candidate_group": (
             {
@@ -708,7 +702,6 @@ def _analysis_user_prompt(
             "proposition": request.question,
         },
         "task_patch": dossier.task.patch,
-        "risk_profile": risk,
         "task_context": (
             dossier.context_bundle.model_dump(mode="json")
             if dossier.context_bundle is not None

@@ -8,10 +8,11 @@ from codeguard_agent.models.council import ContextFact
 from codeguard_agent.models.tasks import (
     ContextStatus,
     ReviewTask,
-    RiskProfile,
-    RiskSignal,
+    RiskCoverage,
+    RiskHypothesis,
     RiskTag,
     TaskContextBundle,
+    TaskRiskPrior,
 )
 from codeguard_agent.pipeline.risk.rules.catalog import RISK_TAG_REVIEWERS
 from codeguard_agent.pipeline.reviewers.reviewers import (
@@ -58,17 +59,19 @@ def test_reviewer_user_prompt_renders_current_context_as_typed_dynamic_data() ->
         patch="+UNIQUE_PATCH_MARKER",
         changed_lines=[11],
     )
-    profile = RiskProfile(
+    prior = TaskRiskPrior(
         task_id=task.id,
-        tag_scores={RiskTag.API_CONTRACT: 2},
-        signals=[
-            RiskSignal(
+        coverage=RiskCoverage.CONFIDENT,
+        hypotheses=(
+            RiskHypothesis(
                 tag=RiskTag.API_CONTRACT,
-                score=2,
-                source="diff",
+                match_confidence=0.8,
+                review_priority=2,
+                source_kind="diff_text",
+                source="text:changed:api",
                 reason="public signature changed",
-            )
-        ],
+            ),
+        ),
     )
     bundle = TaskContextBundle(
         task_id=task.id,
@@ -103,7 +106,7 @@ def test_reviewer_user_prompt_renders_current_context_as_typed_dynamic_data() ->
     rendered = build_reviewer_user_prompt(
         task=task,
         summary="SUMMARY_MARKER",
-        risk_profile=profile,
+        risk_prior=prior,
         context_bundle=bundle,
         task_knowledge="KNOWLEDGE_MARKER",
     )
@@ -111,7 +114,7 @@ def test_reviewer_user_prompt_renders_current_context_as_typed_dynamic_data() ->
     assert rendered.count("UNIQUE_PATCH_MARKER") == 1
     assert '<task_patch scope="current_hunk"' in rendered
     assert '<change_summary role="orientation_not_evidence">' in rendered
-    assert '<risk_profile role="routing_prior_not_evidence">' in rendered
+    assert '<risk_prior role="routing_prior_not_evidence"' in rendered
     assert '<prefetched_context bundle_truncated="true">' in rendered
     assert 'kind="ast_structure"' in rendered
     assert 'scope="current_file"' in rendered
@@ -299,10 +302,6 @@ def test_evidence_and_judge_prompts_describe_wrapper_contracts() -> None:
     assert "`candidate_id`" in judge
     assert "`claim_status`" in judge
     assert "`counter_effect`" in judge
-    assert "`severity_factors`" in judge
-    assert "`factor_id`" in judge
-    assert "`status`" in judge
-    assert "`evidence_ids`" in judge
     assert "`conflicts`" in judge
     for forbidden in (
         "needs_more_evidence",
@@ -312,7 +311,8 @@ def test_evidence_and_judge_prompts_describe_wrapper_contracts() -> None:
     ):
         assert forbidden not in judge
     assert "不得输出最终 severity" in judge
-    assert "任务 RiskTag 只能作为背景" in judge
+    assert "task_tags" not in judge
+    assert "primary/secondary tags 只选择 factor 与 predicate" in judge
     assert "不能证明 factor" in judge
 
 
@@ -334,10 +334,6 @@ def test_judge_prompt_names_every_synthesis_field() -> None:
         "candidate_id",
         "claim_status",
         "counter_effect",
-        "severity_factors",
-        "factor_id",
-        "status",
-        "evidence_ids",
         "conflicts",
         "reason",
     }
@@ -363,7 +359,7 @@ def test_effective_reviewer_prompts_explain_prefetched_context_and_hard_tool_gat
         "稳定 `symbol_id`",
         "confirmed/not_found/unknown",
         "不得根据惯用命名猜测",
-        "风险画像是审查先验",
+        "风险先验根据路径和 diff 变化直接生成",
         "knowledge bundle 是方法论",
         "truncated=true",
         "明确当前候选缺少的具体事实",

@@ -27,7 +27,6 @@ def _dossier(
     candidate_type: str = "",
     claim: str = "",
     suggestion: str = "",
-    task_tags: tuple[RiskTag, ...] = (),
 ) -> SimpleNamespace:
     candidate = CandidateIssue(
         id="candidate-1",
@@ -47,7 +46,6 @@ def _dossier(
             file="src/OrderService.java",
             patch="+ return order.getOwner().getName();",
         ),
-        risk_profile=SimpleNamespace(tag_scores={tag: 10 for tag in task_tags}),
     )
 
 
@@ -226,11 +224,10 @@ def test_repeated_strong_suggestion_contributes_at_most_one_point():
     assert result.tag == RiskTag.GENERAL_REVIEW
 
 
-def test_task_risk_tags_do_not_contribute_to_rule_score():
+def test_candidate_type_drives_rule_score():
     result = resolve_candidate_evidence_tag(
         _dossier(
             candidate_type="空指针",
-            task_tags=(RiskTag.TRANSACTION_ATOMICITY,),
         ),
         _ForbiddenLlm(),
         structured_method="function_calling",
@@ -248,7 +245,7 @@ def test_ambiguous_candidate_uses_constrained_llm_and_renders_context():
         }
     )
     result = resolve_candidate_evidence_tag(
-        _dossier(task_tags=(RiskTag.TRANSACTION_ATOMICITY,)),
+        _dossier(),
         llm,
         structured_method="json_schema",
     )
@@ -259,8 +256,7 @@ def test_ambiguous_candidate_uses_constrained_llm_and_renders_context():
     assert llm.messages is not None
     rendered = "\n".join(message for _role, message in llm.messages)
     assert "+ return order.getOwner().getName();" in rendered
-    assert "TRANSACTION_ATOMICITY" in rendered
-    assert "先验" in rendered
+    assert "任务 RiskTag" not in rendered
     assert "GENERAL_REVIEW" in rendered
     assert all(tag.value in rendered for tag in RiskTag)
 

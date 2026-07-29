@@ -267,7 +267,6 @@ class CouncilTraceStats(BaseModel):
     all_insufficient_retained_rate: float | None = Field(
         default=None, description="全 insufficient 候选保留率；无此类候选时为 None"
     )
-    severity_defaulted_count: int = 0
     critical_candidate_count: int = 0
     critical_policy_matched_count: int = 0
     critical_missing_factor_count: int = 0
@@ -284,13 +283,6 @@ class CouncilTraceStats(BaseModel):
     )
     final_issue_fact_coverage: float | None = Field(
         default=None, description="最终 Issue 的有效事实覆盖率；无最终 Issue 时为 None"
-    )
-    registry_risk_tag_covered_count: int = Field(
-        default=0, description="静态注册表同时具有 counter/support/severity 策略的 RiskTag 数"
-    )
-    registry_risk_tag_total: int = Field(default=0, description="当前 RiskTag 枚举值总数")
-    registry_risk_tag_coverage: float | None = Field(
-        default=None, description="静态注册表 RiskTag 三目的策略覆盖率"
     )
     actual_evidence_tool_calls: int = Field(
         default=0, description="EvidenceAgent 实际发起的新工具调用数；缓存复用不计"

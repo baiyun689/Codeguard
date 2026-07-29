@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 
-from codeguard_agent.models.tasks import ReviewTask, RiskProfile, TaskContextBundle
+from codeguard_agent.models.tasks import ReviewTask, TaskContextBundle, TaskRiskPrior
 
 logger = logging.getLogger("codeguard")
 
@@ -96,7 +96,7 @@ def build_reviewer_user_prompt(
     *,
     task: ReviewTask,
     summary: str = "",
-    risk_profile: RiskProfile | None = None,
+    risk_prior: TaskRiskPrior | None = None,
     context_bundle: TaskContextBundle | None = None,
     task_knowledge: str = "",
     task_scope: str = "current_hunk",
@@ -130,27 +130,22 @@ def build_reviewer_user_prompt(
         _text(task.patch),
         "  </task_patch>",
     ])
-    if risk_profile is not None:
-        tags = ",".join(
-            sorted(
-                tag.value
-                for tag, score in risk_profile.tag_scores.items()
-                if score > 0
-            )
-        )
+    if risk_prior is not None:
         parts.extend([
-            '  <risk_profile role="routing_prior_not_evidence">',
-            f"    <risk_tags>{_text(tags)}</risk_tags>",
+            (
+                '  <risk_prior role="routing_prior_not_evidence" '
+                f'coverage="{_attr(risk_prior.coverage.value)}">'
+            ),
         ])
-        for signal in risk_profile.signals:
-            if risk_profile.tag_scores.get(signal.tag, 0) <= 0:
-                continue
+        for hypothesis in risk_prior.hypotheses:
             parts.append(
-                f'    <risk_signal source="{_attr(signal.source)}" '
-                f'tag="{_attr(signal.tag.value)}">'
-                f"{_text(signal.reason)}</risk_signal>"
+                f'    <risk_hypothesis source="{_attr(hypothesis.source)}" '
+                f'tag="{_attr(hypothesis.tag.value)}" '
+                f'match_confidence="{hypothesis.match_confidence:.2f}" '
+                f'review_priority="{hypothesis.review_priority}">'
+                f"{_text(hypothesis.reason)}</risk_hypothesis>"
             )
-        parts.append("  </risk_profile>")
+        parts.append("  </risk_prior>")
     if context_bundle is not None:
         parts.append(
             "  <prefetched_context "
@@ -198,11 +193,10 @@ def build_reviewer_user_prompt(
         "      scope=\"current_file\" 时包含该文件在本次 PR 中的全部变更块，"
         "      但仍不包含文件未变更的部分。",
         "",
-        "  - <risk_profile role=\"routing_prior_not_evidence\">:",
-        "      <risk_tags> 是本 task 在分派阶段命中的风险标签，"
-        "      <risk_signal> 是触发该标签的**具体原因**（哪段代码、哪个模式触发了规则）。",
-        "      它告诉你「为什么把这个 task 交给了你」，是你排查的**优先线索**——重点审查信号指向的代码位置和问题类型。",
-        "      但它只是分派依据，**不等于漏洞已确认**：你仍须用当前 task patch 和工具事实独立验证。",
+        "  - <risk_prior role=\"routing_prior_not_evidence\">:",
+        "      每个 <risk_hypothesis> 是规则给出的有噪声审查先验，包含匹配可信度和审查优先级。",
+        "      它只能帮助安排检查顺序，不能限制审查范围，也不表示对应缺陷已经成立。",
+        "      你仍须用当前 task patch 和工具事实独立验证；未命中先验的真实问题也必须报告。",
         "",
         "  - <prefetched_context>: 工具预取的代码事实，帮你减少反复查工具。每个 <fact> 的属性含义:",
         "      kind:   事实类型——symbol_context(当前变更所属的稳定 symbol_id、声明、注解和局部控制流)",

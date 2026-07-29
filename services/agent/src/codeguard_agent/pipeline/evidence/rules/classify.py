@@ -99,10 +99,8 @@ def resolve_candidate_evidence_tag(
 ) -> CandidateTagResolution:
     """先规则解析；歧义时才用受限结构化 LLM 分类。
 
-    .. note::
-        这是旧单标签路径的兼容 Adapter。新代码应优先使用
-        :func:`pipeline.council.concern.analyze_candidate_groups`
-        进行多标签 concern 解析。
+    该标签只用于 Coordinator 的候选局部分块和 concern 标签初始解析，
+    不再驱动 Reviewer 路由或 Evidence 计划。
     """
     tag, exact_hit, reason = _score_candidate(dossier)
     if tag is not None:
@@ -116,16 +114,11 @@ def resolve_candidate_evidence_tag(
         return _general_resolution(reason)
 
     candidate = dossier.candidate
-    tag_scores = getattr(getattr(dossier, "risk_profile", None), "tag_scores", {})
-    task_tags = sorted(
-        item.value if isinstance(item, RiskTag) else str(item) for item in tag_scores
-    )
     user_prompt = _load_prompt("evidence-tag-classifier-user.txt").format(
         candidate_type=candidate.type,
         candidate_claim=candidate.claim,
         candidate_suggestion=candidate.suggestion,
         task_patch=dossier.task.patch,
-        task_tags=", ".join(task_tags) or "(无)",
         allowed_tags=", ".join(item.value for item in RiskTag),
     )
     messages = [
@@ -187,10 +180,7 @@ def resolve_candidate_tags(
     每个 dossier 独立调用 resolve_candidate_evidence_tag，
     失败/None 回退 GENERAL_REVIEW。
 
-    .. note::
-        这是旧单标签路径的兼容 Adapter。新代码应优先使用
-        :func:`pipeline.council.concern.analyze_candidate_groups`
-        进行多标签 concern 解析。
+    结果供 Coordinator 使用；ClaimEvidencePlanner 只读取 concern claims。
     """
     from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 

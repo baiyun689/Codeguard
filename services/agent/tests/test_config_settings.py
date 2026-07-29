@@ -39,7 +39,7 @@ def test_phase2_budget_defaults(monkeypatch):
 
     assert settings.max_review_tasks == 100
     assert settings.max_tasks_per_file == 10
-    assert settings.max_react_tasks == 20
+    assert settings.max_react_assignments == 20
     assert settings.graph_build_timeout_seconds == 120
 
 
@@ -53,7 +53,7 @@ def test_phase2_budget_env_override(monkeypatch):
 
     assert settings.max_review_tasks == 17
     assert settings.max_tasks_per_file == 3
-    assert settings.max_react_tasks == 30
+    assert settings.max_react_assignments == 30
     assert settings.graph_build_timeout_seconds == 240
 
 

@@ -40,25 +40,12 @@ class Verdict:
     resolved_severity: Severity | None = None
 
 
-# ── Evidence synthesis models (ADR-032 evidence-gated severity) ──
-
-
-class SeverityFactorAssessment(BaseModel):
-    """LLM evidence synthesizer 对单个 severity factor 的评估。"""
-
-    factor_id: NonBlankStr
-    status: Literal["proven", "disproven", "unknown"]
-    evidence_ids: list[str] = Field(default_factory=list)
-    reason: str = ""
-
-
 class CandidateEvidenceAssessment(BaseModel):
     """LLM evidence synthesizer 对单个候选的完整证据综合。"""
 
     candidate_id: NonBlankStr
     claim_status: Literal["supported", "refuted", "unresolved"]
     counter_effect: Literal["none", "partial", "complete", "unknown"]
-    severity_factors: list[SeverityFactorAssessment] = Field(default_factory=list)
     conflicts: list[str] = Field(default_factory=list)
     reason: str = ""
 
@@ -277,9 +264,6 @@ class CouncilRunStats(BaseModel):
         default=None,
         description="all_insufficient_retained_count/all_insufficient_candidate_count；分母为零时 None",
     )
-    severity_defaulted_count: int = Field(
-        default=0, description="使用 RiskTag 固定默认等级的候选数"
-    )
     critical_candidate_count: int = Field(
         default=0, description="最终解析为 CRITICAL 的候选数"
     )
@@ -307,14 +291,6 @@ class CouncilRunStats(BaseModel):
     final_issue_fact_coverage: float | None = Field(
         default=None,
         description="final_issue_fact_covered_count/final_issue_count；分母为零时 None",
-    )
-    registry_risk_tag_covered_count: int = Field(
-        default=0, description="同时具有 counter/support/severity 策略的 RiskTag 数"
-    )
-    registry_risk_tag_total: int = Field(default=0, description="当前 RiskTag 枚举值总数")
-    registry_risk_tag_coverage: float | None = Field(
-        default=None,
-        description="registry_risk_tag_covered_count/registry_risk_tag_total；分母为零时 None",
     )
     actual_evidence_tool_calls: int = Field(
         default=0, description="EvidenceAgent 实际新工具调用数；缓存复用不计"

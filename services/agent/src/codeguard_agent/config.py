@@ -65,7 +65,9 @@ class Settings:
     max_review_tasks: int = 100
     max_tasks_per_file: int = 10
     # 普通审查只限制昂贵 ReAct，不裁掉 task。
-    max_react_tasks: int = 20
+    max_react_assignments: int = 20
+    # 评测开关：忽略 risk eligibility，把覆盖计划内 assignment 升级为 ReAct。
+    force_react: bool = False
     # checkpoint 后端: "sqlite" | "memory" | 空=不启用(默认空)。
     checkpoint_backend: str = ""
     # SqliteSaver 数据库文件路径(仅 checkpoint_backend="sqlite" 时生效)
@@ -117,7 +119,10 @@ class Settings:
         ).strip().lower() not in ("0", "false", "no", "off")
         max_review_tasks = _positive_int_env("CODEGUARD_MAX_REVIEW_TASKS", 100)
         max_tasks_per_file = _positive_int_env("CODEGUARD_MAX_TASKS_PER_FILE", 10)
-        max_react_tasks = _positive_int_env("CODEGUARD_MAX_REACT_TASKS", 20)
+        max_react_assignments = _positive_int_env("CODEGUARD_MAX_REACT_TASKS", 20)
+        force_react = os.environ.get(
+            "CODEGUARD_FORCE_REACT", "false"
+        ).strip().lower() in ("1", "true", "yes", "on")
         graph_build_timeout_seconds = _positive_int_env(
             "CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS", 120
         )
@@ -146,7 +151,8 @@ class Settings:
             enable_summary=enable_summary,
             max_review_tasks=max_review_tasks,
             max_tasks_per_file=max_tasks_per_file,
-            max_react_tasks=max_react_tasks,
+            max_react_assignments=max_react_assignments,
+            force_react=force_react,
             checkpoint_backend=checkpoint_backend,
             checkpoint_db=checkpoint_db,
             react_recursion_limit=react_recursion_limit,

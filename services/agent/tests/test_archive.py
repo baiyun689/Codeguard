@@ -112,9 +112,6 @@ def test_archive_preserves_phase5_council_metrics():
         "final_issue_strategy_coverage": 1.0,
         "final_issue_fact_covered_count": 1,
         "final_issue_fact_coverage": 1.0,
-        "registry_risk_tag_covered_count": 24,
-        "registry_risk_tag_total": 24,
-        "registry_risk_tag_coverage": 1.0,
         "actual_evidence_tool_calls": 2,
         "average_evidence_tool_calls": 2.0,
     })

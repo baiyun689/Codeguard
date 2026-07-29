@@ -1,16 +1,9 @@
 
 """ReviewCouncil 编排图。
 
-默认拓扑:
-
-    START → diff_task_builder → risk_triage → task_rank → review_coverage → [summary]
-              → context_provider → discover_* → council_coordinator(fan-in)
-              → concern_analyzer → evidence_planner → evidence_agent → council_judge → END
-
-discovery_only 拓扑(跳过归并/举证/法官，直接输出发现者原始结果):
-
-    START → diff_task_builder → risk_triage → task_rank → review_coverage → [summary]
-              → context_provider → discover_* → discovery_collector → END
+默认先按 PR 体量路由：small 整体直审；medium 构建 file task；
+large 构建 hunk task。medium/large 随后共用风险先验、覆盖、发现、举证与裁决链。
+small 直审若调用失败或缺少结构化输出，会安全回退到 file task 完整管线。
 """
 
 from __future__ import annotations
@@ -37,11 +30,9 @@ from codeguard_agent.models.tasks import (
     ContextStatus,
     ReviewBudget,
     ReviewCoveragePlan,
-    ReviewMode,
     ReviewerKind,
     ReviewTask,
     RiskCoverage,
-    RiskProfile,
     RiskTag,
     TaskContextBundle,
     TaskRiskPrior,
@@ -66,7 +57,6 @@ from codeguard_agent.pipeline.knowledge.selector import select_knowledge
 from codeguard_agent.models.knowledge import KnowledgeBudget
 from codeguard_agent.pipeline.risk.large_diff import LargeDiffPlan, plan_large_diff
 from codeguard_agent.pipeline.risk.routing import (
-    build_risk_priors,
     coverage_task_ids,
     coverage_tiers,
     ensure_review_coverage,
@@ -80,7 +70,7 @@ from codeguard_agent.pipeline.engines import (
 )
 from codeguard_agent.pipeline.evidence.agent import collect_evidence
 from codeguard_agent.pipeline.council.metrics import compute_council_run_stats
-from codeguard_agent.pipeline.evidence.planner import assemble_dossiers, plan_evidence
+from codeguard_agent.pipeline.evidence.planner import assemble_dossiers
 from codeguard_agent.pipeline.evidence.rules.classify import (
     CandidateTagResolution,
     resolve_candidate_tags,
@@ -181,8 +171,8 @@ class ReviewState(TypedDict, total=False):
 
     review_budget: ReviewBudget
     review_mode: str  # "small" | "medium" | "large"
+    direct_review_status: str  # "completed" | "fallback"
     review_tasks: list[ReviewTask]
-    risk_profiles: dict[str, RiskProfile]
     risk_priors: dict[str, TaskRiskPrior]
     task_selection: TaskSelection
     review_coverage_plan: ReviewCoveragePlan
@@ -221,7 +211,7 @@ class ReviewerState(TypedDict, total=False):
     allow_direct_fallback: bool
     task_knowledge: str
     review_task: ReviewTask
-    risk_profile: RiskProfile
+    risk_prior: TaskRiskPrior
     task_context_bundle: TaskContextBundle
     tier: str
     task_scope: str  # "current_hunk" | "current_file"
@@ -325,14 +315,16 @@ def _direct_review_node(llm):
 
     def _node(state: ReviewState) -> dict:
         if llm is None:
+            result = mock_review_result()
             return {
-                "final_issues": [],
-                "summary": "",
+                "final_issues": result.issues,
+                "summary": result.summary,
+                "direct_review_status": "completed",
                 "council_trace": [
                     CouncilTrace(
                         node="direct_review",
-                        event="skipped",
-                        detail="no llm available",
+                        event="completed",
+                        detail=f"mode=small mock=true issues={len(result.issues)}",
                     )
                 ],
             }
@@ -352,21 +344,34 @@ def _direct_review_node(llm):
                 structured_method=state.get("structured_method", "function_calling"),
             )
         except Exception:
-            logger.warning("direct_review 失败，返回空结果", exc_info=True)
+            logger.warning("direct_review 失败，回退文件级完整管线", exc_info=True)
             return {
-                "final_issues": [],
-                "summary": "",
+                "direct_review_status": "fallback",
+                "review_mode": "medium",
                 "council_trace": [
                     CouncilTrace(
                         node="direct_review",
-                        event="failed",
-                        detail="direct review exception",
+                        event="fallback",
+                        detail="direct review exception; route=file_task_builder",
+                    )
+                ],
+            }
+        if "structured_output_missing" in outcome.execution_events:
+            return {
+                "direct_review_status": "fallback",
+                "review_mode": "medium",
+                "council_trace": [
+                    CouncilTrace(
+                        node="direct_review",
+                        event="fallback",
+                        detail="structured output missing; route=file_task_builder",
                     )
                 ],
             }
         return {
             "final_issues": outcome.result.issues,
             "summary": outcome.result.summary,
+            "direct_review_status": "completed",
             "council_trace": [
                 CouncilTrace(
                     node="direct_review",
@@ -382,20 +387,19 @@ def _direct_review_node(llm):
     return _node
 
 
-def _rebuild_file_tasks_node():
-    """中型 PR：用文件级 task 替换 hunk 级 task。"""
+def _file_task_builder_node():
+    """中型 PR：直接构建文件级 task。"""
 
     def _node(state: ReviewState) -> dict:
         diff_text = state.get("diff_text", "")
-        budget = state.get("review_budget") or ReviewBudget()
-        tasks = task_prep.build_file_tasks(diff_text, budget)
+        tasks = task_prep.build_file_tasks(diff_text)
         file_count = len({t.file for t in tasks})
         hunk_fallback_count = len([t for t in tasks if t.hunk_header])
         return {
             "review_tasks": tasks,
             "council_trace": [
                 CouncilTrace(
-                    node="rebuild_file_tasks",
+                    node="file_task_builder",
                     event="tasks_built",
                     detail=(
                         f"mode=medium tasks={len(tasks)} "
@@ -433,16 +437,16 @@ def _diff_task_builder_node():
 
 
 def _risk_triage_node():
-    """RiskTriage：为每个任务产出 RiskProfile 和规则失败 trace。"""
+    """RiskTriage：为每个任务直接产出 TaskRiskPrior 和规则失败 trace。"""
 
     def _node(state: ReviewState) -> dict:
         tasks = state.get("review_tasks") or []
         result = task_prep.triage_tasks(tasks)
         trace = [
-            CouncilTrace(
-                node="risk_triage",
-                event="profiled",
-                detail=f"profiles={len(result.profiles)}",
+                CouncilTrace(
+                    node="risk_triage",
+                    event="priors_built",
+                    detail=f"priors={len(result.priors)}",
             )
         ]
         trace.extend(
@@ -454,8 +458,7 @@ def _risk_triage_node():
             for diagnostic in result.diagnostics
         )
         return {
-            "risk_profiles": result.profiles,
-            "risk_priors": build_risk_priors(tasks, result.profiles),
+            "risk_priors": result.priors,
             "council_trace": trace,
         }
 
@@ -467,11 +470,10 @@ def _task_rank_node():
 
     def _node(state: ReviewState) -> dict:
         tasks = state.get("review_tasks") or []
-        profiles = state.get("risk_profiles") or {}
-        priors = state.get("risk_priors") or build_risk_priors(tasks, profiles)
+        priors = state.get("risk_priors") or {}
         scope = _scope_plan(state)
         budget = scope.effective_budget
-        selection = task_prep.rank_tasks(tasks, profiles, budget, priors)
+        selection = task_prep.rank_tasks(tasks, priors, budget)
         trace = [
             CouncilTrace(
                 node="task_rank",
@@ -510,17 +512,16 @@ def _review_coverage_node(tool_client=None):
         selection = state.get("task_selection")
         if selection is None:
             raise ValueError("task_selection is required before review coverage")
-        priors = state.get("risk_priors") or build_risk_priors(
-            tasks, state.get("risk_profiles") or {}
-        )
+        priors = state.get("risk_priors") or {}
         scope = _scope_plan(state)
         budget = scope.effective_budget
         plan = plan_review_coverage(
             tasks,
             priors,
             selection,
-            react_budget=budget.max_react_tasks,
+            react_budget=budget.max_react_assignments,
             tools_available=tool_client is not None,
+            force_react=budget.force_react,
         )
         assignment_count = sum(len(item.assignments) for item in plan.tasks)
         trace = [
@@ -537,6 +538,7 @@ def _review_coverage_node(tool_client=None):
                     f"react_tasks={plan.react_task_count} "
                     f"react_assignments={plan.react_assignment_count} "
                     f"risk_upgraded={plan.risk_upgraded_assignments} "
+                    f"execution_override={plan.execution_override_assignments} "
                     f"react_tasks_truncated={plan.truncated_react_task_count} "
                     f"react_assignments_truncated="
                     f"{plan.truncated_react_assignment_count} "
@@ -695,7 +697,7 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
             "user_prompt": build_reviewer_user_prompt(
                 task=review_task,
                 summary=state.get("diff_summary", ""),
-                risk_profile=state.get("risk_profile"),
+                risk_prior=state.get("risk_prior"),
                 context_bundle=state.get("task_context_bundle"),
                 task_knowledge=state.get("task_knowledge", ""),
                 task_scope=state.get("task_scope", "current_hunk"),
@@ -715,6 +717,7 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
             else _make_engine(state, tool_client=effective_tool_client)
         )
         review_traces: list[CouncilTrace] = []
+        degraded_to_direct = False
         if tier == "direct":
             task = state.get("review_task")
             task_id = task.id if task is not None else ""
@@ -750,19 +753,44 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                         "council_trace": review_traces,
                     }
                 outcome = _direct_fallback(state)
+                degraded_to_direct = True
             else:
-                logger.warning("[%s] 发现者失败,跳过: %s", reviewer.name, exc)
-                return {
-                    "outcome": ReviewOutcome(ReviewResult(summary="")),
-                    "council_trace": [
-                        CouncilTrace(node=reviewer.source_agent, event="discover_failed", detail=str(exc))
-                    ],
-                }
+                if (
+                    tier != "direct"
+                    and state.get("allow_direct_fallback", True)
+                ):
+                    logger.warning(
+                        "[%s] ReAct 发现者失败,降级直连: %s",
+                        reviewer.name,
+                        exc,
+                    )
+                    review_traces.append(
+                        CouncilTrace(
+                            node=reviewer.source_agent,
+                            event="react_degraded_error",
+                            detail=str(exc)[:200],
+                        )
+                    )
+                    outcome = _direct_fallback(state)
+                    degraded_to_direct = True
+                else:
+                    logger.warning("[%s] 发现者失败,跳过: %s", reviewer.name, exc)
+                    return {
+                        "outcome": ReviewOutcome(ReviewResult(summary="")),
+                        "council_trace": [
+                            CouncilTrace(
+                                node=reviewer.source_agent,
+                                event="discover_failed",
+                                detail=str(exc),
+                            )
+                        ],
+                    }
 
         # ReAct 跑完但未产出任何 issue → LLM 偶发空响应（DeepSeek 已知问题），
         # 降级为 DirectEngine 直连复审以保住该域覆盖率。
         if (
             tier != "direct"
+            and not degraded_to_direct
             and not outcome.result.issues
             and state.get("allow_direct_fallback", True)
         ):
@@ -829,7 +857,7 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
 
 
 def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_client=None):
-    """发现者节点:运行旧 reviewer 能力,再转换为 CandidateIssue。"""
+    """发现者节点：按覆盖计划运行 reviewer 并转换为 CandidateIssue。"""
     # task 级 fan-out 会在线程池中并发 invoke；任务子图不持久化，避免复用外层
     # SQLite saver 的线程绑定连接。外层 ReviewState 仍由 build_review_graph 的
     # checkpointer 持久化，足以恢复整次审查。
@@ -837,8 +865,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
 
     def _node(state: ReviewState) -> dict:
         tasks = state.get("review_tasks") or []
-        profiles = state.get("risk_profiles") or {}
-        priors = state.get("risk_priors") or build_risk_priors(tasks, profiles)
+        priors = state.get("risk_priors") or {}
         coverage = state.get("review_coverage_plan")
         selection = state.get("task_selection")
         if selection is None:
@@ -873,7 +900,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     CouncilTrace(
                         node=reviewer.source_agent,
                         event="no_tasks_routed",
-                        detail="selected tasks do not match reviewer risk tags",
+                        detail="selected tasks have no assignment for this reviewer",
                     )
                 ],
             }
@@ -900,7 +927,6 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     and scoped_patch == task.patch,
                 }
             )
-            profile = profiles.get(task_id)
             tier = tier_by_task.get(task_id, "direct")
             bundle = task_context_bundles.get(task_id)
             prior = priors.get(task_id)
@@ -936,7 +962,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     "react_recursion_limit": state.get("react_recursion_limit", 24),
                     "allow_direct_fallback": state.get("allow_direct_fallback", True),
                     "review_task": scoped_task,
-                    "risk_profile": profile,
+                    "risk_prior": prior,
                     "task_context_bundle": bundle,
                     "task_knowledge": task_knowledge,
                     "tier": tier,
@@ -944,13 +970,13 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     "review_tool_client": _task_tool_client(scoped_task),
                 },
             )
-            if profile is None:
+            if task_id not in priors:
                 traces = list(result.get("council_trace") or [])
                 traces.append(
                     CouncilTrace(
                         node=reviewer.source_agent,
-                        event="missing_risk_profile",
-                        detail=f"task={task_id} tier=direct",
+                        event="missing_risk_prior",
+                        detail=f"task={task_id} fallback=unclassified",
                     )
                 )
                 result["council_trace"] = traces
@@ -1104,7 +1130,6 @@ def _coordinator_node(effective_judge_llm):
     def _node(state: ReviewState) -> dict:
         raw = list(state.get("raw_candidate_issues") or [])
         tasks = state.get("review_tasks") or []
-        profiles = state.get("risk_profiles") or {}
         bundles = state.get("task_context_bundles") or {}
         structured_method = state.get("structured_method", "function_calling")
 
@@ -1129,7 +1154,6 @@ def _coordinator_node(effective_judge_llm):
         assembly = assemble_dossiers(
             raw,
             scoped_tasks,
-            profiles,
             bundles,
             (),
             (),
@@ -1269,64 +1293,36 @@ def _concern_analyzer_node(effective_judge_llm=None):
     def _node(state: ReviewState) -> dict:
         groups = state.get("candidate_groups") or []
         candidates = state.get("candidate_issues") or []
-        priors = state.get("risk_priors") or {}
         tag_resolutions = state.get("candidate_tag_resolutions") or {}
-
-        if not groups:
-            # 兼容旧路径：无 CandidateGroup 时用 singleton fallback
-            raw = candidates
-            if raw:
-                analysis = analyze_candidate_groups(
-                    (),
-                    candidates=raw,
-                    candidate_tag_resolutions=tag_resolutions,
-                    task_priors=priors,
-                    llm=effective_judge_llm,
-                    structured_method=state.get(
-                        "structured_method", "function_calling",
-                    ),
-                )
-                return {
-                    "concern_analysis": analysis,
-                    "council_trace": [
-                        CouncilTrace(
-                            node="concern_analyzer",
-                            event="singleton_fallback",
-                            detail=f"no groups, built {len(analysis.concerns)} singleton concerns",
-                        )
-                    ],
-                }
-            return {
-                "concern_analysis": ConcernAnalysis(),
-                "council_trace": [
-                    CouncilTrace(
-                        node="concern_analyzer",
-                        event="no_op",
-                        detail="no candidate groups or issues",
-                    )
-                ],
-            }
 
         analysis = analyze_candidate_groups(
             groups,
             candidates=candidates,
             candidate_tag_resolutions=tag_resolutions,
-            task_priors=priors,
             llm=effective_judge_llm,
             structured_method=state.get(
                 "structured_method", "function_calling",
             ),
         )
+        if not candidates:
+            event = "no_op"
+            detail = "no candidate issues"
+        elif not groups:
+            event = "singleton_concerns_built"
+            detail = f"no duplicate groups; built {len(analysis.concerns)} concerns"
+        else:
+            event = "concerns_built"
+            detail = (
+                f"concerns={len(analysis.concerns)} "
+                f"diagnostics={len(analysis.diagnostics)}"
+            )
         return {
             "concern_analysis": analysis,
             "council_trace": [
                 CouncilTrace(
                     node="concern_analyzer",
-                    event="concerns_built",
-                    detail=(
-                        f"concerns={len(analysis.concerns)} "
-                        f"diagnostics={len(analysis.diagnostics)}"
-                    ),
+                    event=event,
+                    detail=detail,
                 ),
             ],
         }
@@ -1338,7 +1334,6 @@ def _assemble_state_dossiers(state: ReviewState):
     return assemble_dossiers(
         state.get("candidate_issues") or [],
         state.get("review_tasks") or [],
-        state.get("risk_profiles") or {},
         state.get("task_context_bundles") or {},
         state.get("evidence_requests") or [],
         state.get("evidence_notes") or [],
@@ -1347,18 +1342,13 @@ def _assemble_state_dossiers(state: ReviewState):
 
 
 def _evidence_planner_node(effective_judge_llm):
-    """EvidencePlanner 是 graph 中 evidence_requests 的唯一写入者。
-
-    当 concern_analysis 可用时，对每个 concern 使用 plan_claim_evidence()；
-    否则走旧 plan_evidence() 兼容路径。
-    """
+    """按 concern claims 规划证据请求，是 graph 中的唯一写入者。"""
 
     def _node(state: ReviewState) -> dict:
         concern_analysis = state.get("concern_analysis")
         trace: list[CouncilTrace] = []
 
         if concern_analysis is not None and concern_analysis.concerns:
-            # 新路径：claim-driven planning
             all_requests: list = []
             for concern in concern_analysis.concerns:
                 concern_plan = plan_claim_evidence(concern)
@@ -1384,30 +1374,15 @@ def _evidence_planner_node(effective_judge_llm):
                     )
                 )
             return {"evidence_requests": all_requests, "council_trace": trace}
-
-        # 旧路径：tag-driven planning (兼容)
-        assembly = _assemble_state_dossiers(state)
-        legacy_plan = plan_evidence(
-            assembly.dossiers,
-            classifier_llm=effective_judge_llm,
-            structured_method=state.get("structured_method", "function_calling"),
-            candidate_tag_resolutions=state.get("candidate_tag_resolutions"),
-        )
-        trace = [
-            CouncilTrace(node="evidence_planner", event=event, detail=detail)
-            for event, detail in (*assembly.trace, *legacy_plan.trace)
-        ]
-        if not assembly.dossiers:
-            trace.append(
+        return {
+            "evidence_requests": [],
+            "council_trace": [
                 CouncilTrace(
                     node="evidence_planner",
                     event="no_op",
-                    detail="no valid candidate dossiers",
+                    detail="no structured concerns available",
                 )
-            )
-        return {
-            "evidence_requests": legacy_plan.requests,
-            "council_trace": trace,
+            ],
         }
 
     return _node
@@ -1513,21 +1488,21 @@ def build_review_graph(
       - large：hunk 级 task 拆分 + 预算控制（现状）
 
     默认拓扑:
-        START → diff_task_builder(hunk级) → classify_mode
+        START → classify_mode
           ├─ small  → direct_review → END
-          ├─ medium → rebuild_file_tasks → risk_triage → ... (完整管线)
-          └─ large  → risk_triage → task_rank → review_coverage → summary?
+          ├─ medium → file_task_builder → risk_triage → ... (完整管线)
+          └─ large  → diff_task_builder → risk_triage → task_rank → review_coverage → summary?
                        → context_provider → discover_*(×3)
                        → council_coordinator(fan-in)
                        → concern_analyzer → evidence_planner
                        → evidence_agent → council_judge → END
 
     discovery_only 拓扑:
-        START → diff_task_builder → classify_mode
+        START → classify_mode
           ├─ small  → direct_review → END
-          ├─ medium → rebuild_file_tasks → risk_triage → ... → discover_*(×3)
+          ├─ medium → file_task_builder → risk_triage → ... → discover_*(×3)
           │           → discovery_collector → END
-          └─ large  → risk_triage → ... → discover_*(×3)
+          └─ large  → diff_task_builder → risk_triage → ... → discover_*(×3)
                        → discovery_collector → END
     """
     from langgraph.graph import END, START, StateGraph
@@ -1550,7 +1525,7 @@ def build_review_graph(
 
     # ── 模式特定节点 ──
     g.add_node("direct_review", _direct_review_node(llm))
-    g.add_node("rebuild_file_tasks", _rebuild_file_tasks_node())
+    g.add_node("file_task_builder", _file_task_builder_node())
 
     if discovery_only:
         g.add_node("discovery_collector", _discovery_collector_node())
@@ -1579,16 +1554,23 @@ def build_review_graph(
         lambda state: state.get("review_mode", "large"),
         {
             "small": "direct_review",
-            "medium": "rebuild_file_tasks",
+            "medium": "file_task_builder",
             "large": "diff_task_builder",
         },
     )
 
     # ── small 路径 ──
-    g.add_edge("direct_review", END)
+    g.add_conditional_edges(
+        "direct_review",
+        lambda state: state.get("direct_review_status", "fallback"),
+        {
+            "completed": END,
+            "fallback": "file_task_builder",
+        },
+    )
 
     # ── medium 路径：文件级建 task ──
-    g.add_edge("rebuild_file_tasks", "risk_triage")
+    g.add_edge("file_task_builder", "risk_triage")
 
     # ── large 路径：hunk 级建 task ──
     g.add_edge("diff_task_builder", "risk_triage")

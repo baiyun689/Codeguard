@@ -12,11 +12,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from codeguard_agent.models.council import EvidenceFactType, EvidencePolarity
-from codeguard_agent.pipeline.evidence.rules.types import EvidenceCapability
+from codeguard_agent.pipeline.evidence.strategy_types import EvidenceCapability
 
 if TYPE_CHECKING:
     from codeguard_agent.pipeline.evidence.planner import CandidateDossier
-    from codeguard_agent.pipeline.evidence.rules.types import ToolCallSpec
+    from codeguard_agent.pipeline.evidence.strategy_types import ToolCallSpec
 
 
 # ── fact_type → 推荐的 capability 优先级列表 ──────────────────────────
@@ -120,7 +120,7 @@ def _claim_security(dossier: "CandidateDossier") -> "list[ToolCallSpec]":
 def _claim_upstream_security(dossier: "CandidateDossier") -> "list[ToolCallSpec]":
     """上游调用方 + 安全路径（不含文件内容）。保留供将来使用。"""
     from codeguard_agent.pipeline.evidence.rules.recipes import callers_upstream
-    from codeguard_agent.pipeline.evidence.rules.types import (
+    from codeguard_agent.pipeline.evidence.strategy_types import (
         EvidenceCapability,
         ToolCallSpec,
     )
@@ -186,9 +186,8 @@ def _build_claim_strategies() -> "tuple[object, ...]":
     """构建全部 claim.* 策略注册表：13 fact_types × 3 polarities = 39 条。
 
     question_template 留空——运行时由 goal.proposition 注入。
-    tags 为空 frozenset——claim 策略不绑定 RiskTag。
     """
-    from codeguard_agent.pipeline.evidence.rules.types import EvidenceStrategy
+    from codeguard_agent.pipeline.evidence.strategy_types import EvidenceStrategy
 
     strategies: list[EvidenceStrategy] = []
     for fact_type in EvidenceFactType:
@@ -197,14 +196,20 @@ def _build_claim_strategies() -> "tuple[object, ...]":
         for polarity in EvidencePolarity:
             purpose = _POLARITY_PURPOSE[polarity]
             strategy_id = f"claim.{fact_type.value}.{polarity.value}"
+            context_kinds = ["task_patch", "symbol_context"]
+            if EvidenceCapability.SECURITY_PATH in capabilities:
+                context_kinds.append("sensitive_api")
+            if EvidenceCapability.UPSTREAM_REACHABILITY in capabilities:
+                context_kinds.append("ast_structure")
+            if EvidenceCapability.STRUCTURAL_METRICS in capabilities:
+                context_kinds.append("get_code_metrics")
             strategies.append(
                 EvidenceStrategy(
                     id=strategy_id,
-                    tags=frozenset(),
                     purpose=purpose,
                     priority=0,
                     question_template="",  # 运行时注入
-                    context_kinds=("task_patch", "symbol_context"),
+                    context_kinds=tuple(context_kinds),
                     allowed_capabilities=capabilities,
                     build_tool_calls=recipe,
                 )

@@ -8,10 +8,10 @@ from dataclasses import replace
 from codeguard_agent.models.council import (
     CandidateEvidenceAssessment,
     CandidateIssue,
+    EvidenceFactType,
     EvidenceFinding,
     EvidenceNote,
     EvidenceRequest,
-    SeverityFactorAssessment,
 )
 from codeguard_agent.models.schemas import Issue, Severity
 from codeguard_agent.models.tasks import ReviewTask, RiskTag
@@ -22,7 +22,7 @@ from codeguard_agent.pipeline.council.judge import (
     _emit_supported_issues,
     judge_candidates as _judge_impl,
 )
-from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID, strategies_for
+from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -53,9 +53,13 @@ def _request(
     index: str = "0",
     strategy_id: str | None = None,
 ) -> EvidenceRequest:
-    sid = strategy_id or f"authorization.{purpose}"
+    sid = strategy_id or {
+        "support": "claim.changed_condition.support",
+        "counter": "claim.guard_presence.counter",
+        "severity": "claim.impact_factor.impact",
+    }[purpose]
     strategy = STRATEGIES_BY_ID.get(sid)
-    question = strategy.question_template if strategy else "test question"
+    question = (strategy.question_template if strategy else "") or "test question"
     return EvidenceRequest(
         candidate_id=candidate_id,
         strategy_id=sid,
@@ -63,6 +67,13 @@ def _request(
         target="src/Service.java",
         question=question,
         preferred_tools=list(strategy.allowed_tools) if strategy else [],
+        goal_id="goal-test" if strategy else None,
+        concern_id="concern-test" if strategy else None,
+        claim_ids=(candidate_id,) if strategy else (),
+        fact_type=(
+            EvidenceFactType(sid.split(".")[1])
+            if strategy else None
+        ),
     )
 
 
@@ -109,7 +120,6 @@ def _dossier(
     return CandidateDossier(
         candidate=candidate,
         task=task,
-        risk_profile=None,
         context_bundle=None,
         requests=tuple(requests),
         notes=tuple(notes),
@@ -122,14 +132,18 @@ def _supported_dossier(
     proposed: Severity = Severity.WARNING,
     factor_ids: tuple[str, ...] = (),
 ) -> CandidateDossier:
-    strategy = strategies_for(tag, "support")[0]
+    strategy = STRATEGIES_BY_ID["claim.changed_condition.support"]
     request = EvidenceRequest(
         candidate_id="candidate-1",
         strategy_id=strategy.id,
         purpose="support",
         target="src/Service.java",
-        question=strategy.question_template,
+        question="candidate root cause is present",
         preferred_tools=list(strategy.allowed_tools),
+        goal_id="goal-support",
+        concern_id="concern-test",
+        claim_ids=("candidate-1",),
+        fact_type=EvidenceFactType.CHANGED_CONDITION,
     )
     findings = [
         _finding("supports", "direct", evidence_id="claim-support"),
@@ -143,7 +157,7 @@ def _supported_dossier(
         candidate_id="candidate-1",
         findings=findings,
     )
-    base = _dossier(severity=proposed)
+    base = _dossier(severity=proposed, issue_type=tag.value)
     return replace(base, requests=(request,), notes=(note,))
 
 
@@ -155,23 +169,31 @@ def _dossier_with_observations(
 ) -> CandidateDossier:
     """Create a supported dossier with keyword-rich observation findings
     for ImpactAssessor deterministic factor detection."""
-    support_strategy = strategies_for(tag, "support")[0]
+    support_strategy = STRATEGIES_BY_ID["claim.changed_condition.support"]
     support_request = EvidenceRequest(
         candidate_id="candidate-1",
         strategy_id=support_strategy.id,
         purpose="support",
         target="src/Service.java",
-        question=support_strategy.question_template,
+        question="candidate root cause is present",
         preferred_tools=list(support_strategy.allowed_tools),
+        goal_id="goal-support",
+        concern_id="concern-test",
+        claim_ids=("candidate-1",),
+        fact_type=EvidenceFactType.CHANGED_CONDITION,
     )
-    severity_strategy = strategies_for(tag, "severity")[0]
+    severity_strategy = STRATEGIES_BY_ID["claim.impact_factor.impact"]
     severity_request = EvidenceRequest(
         candidate_id="candidate-1",
         strategy_id=severity_strategy.id,
         purpose="severity",
         target="src/Service.java",
-        question=severity_strategy.question_template,
+        question="candidate impact factors are reachable",
         preferred_tools=list(severity_strategy.allowed_tools),
+        goal_id="goal-impact",
+        concern_id="concern-test",
+        claim_ids=("candidate-1",),
+        fact_type=EvidenceFactType.IMPACT_FACTOR,
     )
     findings = [
         _finding("supports", "direct", evidence_id=f"obs-{i}", observation=obs)
@@ -192,7 +214,7 @@ def _dossier_with_observations(
         candidate_id="candidate-1",
         findings=findings,
     )
-    base = _dossier(severity=proposed)
+    base = _dossier(severity=proposed, issue_type=tag.value)
     return replace(
         base,
         requests=(support_request, severity_request),
@@ -244,7 +266,6 @@ def _supported_assessment(**updates):
         "candidate_id": "C001",
         "claim_status": "supported",
         "counter_effect": "none",
-        "severity_factors": [],
         "conflicts": [],
         "reason": "support evidence establishes the candidate",
     }
@@ -329,16 +350,15 @@ def test_unregistered_strategy_note_is_ignored_before_gate():
     assert batch.verdicts[0].reason_code == "evidence_insufficient"
 
 
-def test_synthesis_payload_includes_factor_descriptions():
+def test_synthesis_payload_leaves_factor_assessment_to_impact_assessor():
     dossier = _supported_dossier(tag=RiskTag.INJECTION)
     llm = _AssessmentLLM(_supported_assessment())
 
     _judge([dossier], llm=llm)
 
     payload = json.loads(llm.messages[1][1])
-    factors = {item["id"]: item["description"] for item in payload["allowed_factors"]}
-    assert factors["external_actor_controlled"] == "攻击者或未授权调用者能够控制输入或触发条件"
-    assert "allowed_factor_ids" not in payload
+    assert "allowed_factors" not in payload
+    assert "severity_factors" not in payload
 
 
 def test_synthesis_payload_excludes_cross_candidate_findings():
@@ -462,53 +482,6 @@ def test_one_missing_critical_factor_defaults_to_warning():
     dossier = _dossier_with_observations(warning_obs)
     llm = _AssessmentLLM(_supported_assessment())
     assert _judge([dossier], llm=llm).final_issues[0].severity is Severity.WARNING
-
-
-def test_unknown_factor_evidence_citation_is_traced_and_ignored():
-    """LLM 引用的 evidence_id 不存在于实际 findings 时应 trace。"""
-    warning_obs = ["变更代码可达且被外部调用"]  # RUNTIME_REACHABLE → WARNING
-    dossier = _dossier_with_observations(warning_obs, tag=RiskTag.INJECTION)
-    assessment = _supported_assessment(
-        severity_factors=[
-            SeverityFactorAssessment(
-                factor_id="runtime_reachable",
-                status="proven",
-                evidence_ids=["unknown-evidence"],
-            )
-        ]
-    )
-
-    batch = _judge([dossier], llm=_AssessmentLLM(assessment))
-
-    assert batch.final_issues[0].severity is Severity.WARNING
-    assert any(
-        event == "unknown_evidence_citation_ignored"
-        and "unknown-evidence" in detail
-        for event, detail in batch.trace
-    )
-
-
-def test_unknown_evidence_citation_is_traced_even_when_claim_is_refuted():
-    dossier = _supported_dossier(tag=RiskTag.INJECTION)
-    assessment = _supported_assessment(
-        claim_status="refuted",
-        severity_factors=[
-            SeverityFactorAssessment(
-                factor_id="runtime_reachable",
-                status="proven",
-                evidence_ids=["unknown-before-refutation"],
-            )
-        ],
-    )
-
-    batch = _judge([dossier], llm=_AssessmentLLM(assessment))
-
-    assert batch.verdicts[0].action == "drop"
-    assert any(
-        event == "unknown_evidence_citation_ignored"
-        and "unknown-before-refutation" in detail
-        for event, detail in batch.trace
-    )
 
 
 def test_general_review_never_critical():

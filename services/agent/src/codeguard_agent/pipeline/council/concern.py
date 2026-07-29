@@ -22,7 +22,7 @@ from codeguard_agent.models.council import (
     ConcernAnalysis,
     ConcernTagResolution,
 )
-from codeguard_agent.models.tasks import RiskTag, TaskRiskPrior
+from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.council.dedup import CandidateGroup
 
 # Rebuild models that reference RiskTag as a forward reference
@@ -266,7 +266,6 @@ def analyze_candidate_groups(
     *,
     candidates: Sequence[CandidateIssue] = (),
     candidate_tag_resolutions: Mapping[str, Any] | None = None,
-    task_priors: Mapping[str, TaskRiskPrior] | None = None,
     llm: Any = None,
     structured_method: str = "function_calling",
 ) -> ConcernAnalysis:
@@ -373,24 +372,4 @@ def analyze_candidate_groups(
         concerns=tuple(concerns),
         candidate_to_concern=candidate_to_concern,
         diagnostics=tuple(diagnostics),
-    )
-
-
-def build_singleton_concerns(
-    candidates: Sequence[CandidateIssue],
-    *,
-    candidate_tag_resolutions: Mapping[str, Any] | None = None,
-) -> ConcernAnalysis:
-    """为无 CandidateGroup 的候选构造 singleton concerns（兼容旧路径）。"""
-    concerns: list[CandidateConcern] = []
-    candidate_to_concern: dict[str, str] = {}
-    for c in candidates:
-        concern = _build_singleton_concern(
-            c, tag_resolutions=candidate_tag_resolutions,
-        )
-        concerns.append(concern)
-        candidate_to_concern[c.id] = concern.concern_id
-    return ConcernAnalysis(
-        concerns=tuple(concerns),
-        candidate_to_concern=candidate_to_concern,
     )

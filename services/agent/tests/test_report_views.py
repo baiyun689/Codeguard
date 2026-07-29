@@ -182,7 +182,6 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
                 "all_insufficient_candidate_count": 1,
                 "all_insufficient_retained_count": 1,
                 "all_insufficient_retained_rate": 1.0,
-                "severity_defaulted_count": 1,
                 "critical_candidate_count": 1,
                 "critical_policy_matched_count": 1,
                 "critical_missing_factor_count": 2,
@@ -192,9 +191,6 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
                 "final_issue_strategy_coverage": 0.5,
                 "final_issue_fact_covered_count": 1,
                 "final_issue_fact_coverage": 0.5,
-                "registry_risk_tag_covered_count": 24,
-                "registry_risk_tag_total": 24,
-                "registry_risk_tag_coverage": 1.0,
                 "actual_evidence_tool_calls": 1,
                 "average_evidence_tool_calls": 0.2,
                 "trace_events": 9,
@@ -221,8 +217,8 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
     assert "最终 Issue 策略覆盖率" in out
     assert "1/2 (0.500)" in out
     assert "最终 Issue 有效事实覆盖率" in out
-    assert "RiskTag 策略覆盖率" in out
-    assert "24/24 (1.000)" in out
+    assert "最终 Issue 有效事实覆盖率" in out
+    assert "RiskTag 策略覆盖率" not in out
     assert "平均实际证据工具调用" in out
     assert "1/5 (0.200)" in out
     assert "WARNING->CRITICAL=1" in out

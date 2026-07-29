@@ -11,13 +11,41 @@ import codeguard_agent.pipeline.orchestrator as orchestrator_module
 from codeguard_agent.models.council import ContextBundle, ContextFact
 from codeguard_agent.models.knowledge import KnowledgeBundle
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
-from codeguard_agent.models.tasks import ReviewBudget, RiskSignal, RiskTag
+from codeguard_agent.models.tasks import (
+    ReviewBudget,
+    RiskCoverage,
+    RiskHypothesis,
+    RiskTag,
+    TaskRiskPrior,
+)
 from codeguard_agent.pipeline import graph as G
 from codeguard_agent.pipeline.engines import GatheredContext, ReviewOutcome
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
 from codeguard_agent.pipeline.context.base import PipelineContext
 from codeguard_agent.pipeline.context.provider import ContextProviderStage
 from codeguard_agent.tools.tool_client import ToolResponse
+
+
+def _prior(task_id: str, tag: RiskTag | None = None, priority: int = 2) -> TaskRiskPrior:
+    hypotheses = ()
+    if tag is not None and tag is not RiskTag.GENERAL_REVIEW:
+        hypotheses = (
+            RiskHypothesis(
+                tag=tag,
+                match_confidence={1: 0.45, 2: 0.70, 3: 0.85}[priority],
+                review_priority=priority,
+                source_kind="diff_text",
+                source="text:added:test",
+                reason="test",
+            ),
+        )
+    return TaskRiskPrior(
+        task_id=task_id,
+        hypotheses=hypotheses,
+        coverage=(
+            RiskCoverage.CONFIDENT if hypotheses else RiskCoverage.UNCLASSIFIED
+        ),
+    )
 
 
 def test_dedup_gathered_reducer_dedups_by_tool_args_keep_order():
@@ -283,6 +311,43 @@ def test_review_tier_react_empty_result_still_retries_direct_fallback(monkeypatc
     assert calls["fallback"] == 1
 
 
+def test_review_tier_react_error_retries_direct_fallback(monkeypatch):
+    calls = {"fallback": 0}
+
+    class _FailingToolEngine:
+        def review(self, *args, **kwargs):
+            raise OSError("tool service unavailable")
+
+    class _FallbackDirectEngine:
+        def review(self, *args, **kwargs):
+            calls["fallback"] += 1
+            return ReviewOutcome(ReviewResult(summary="fallback", issues=[]))
+
+    monkeypatch.setattr(
+        G,
+        "_make_engine",
+        lambda state, tool_client=None: _FailingToolEngine(),
+    )
+    monkeypatch.setattr(G, "DirectEngine", _FallbackDirectEngine)
+    sub = G.build_reviewer_subgraph(
+        G.DEFAULT_REVIEWERS[0], llm=_FakeLLM(), tool_client=object()
+    )
+
+    output = sub.invoke({
+        "diff_text": "+x",
+        "review_task": G.ReviewTask(
+            id="A.java#h0", file="A.java", patch="+x", changed_lines=[1]
+        ),
+        "tier": "react",
+    })
+
+    assert calls["fallback"] == 1
+    assert any(
+        trace.event == "react_degraded_error"
+        for trace in output["council_trace"]
+    )
+
+
 def test_discoverer_prompts_do_not_reference_retired_routing():
     prompt_dir = Path(__file__).resolve().parents[1] / "src" / "codeguard_agent" / "prompts"
     for filename in (
@@ -460,6 +525,31 @@ class _ValueStub:
         return self.value
 
 
+class _ValueLLM:
+    def __init__(self, value):
+        self.value = value
+
+    def with_structured_output(self, *a, **k):
+        return _ValueStub(self.value)
+
+
+def test_small_direct_review_missing_structured_output_requests_pipeline_fallback():
+    output = G._direct_review_node(_FakeLLM())({"diff_text": _DIFF})
+
+    assert output["direct_review_status"] == "fallback"
+    assert "final_issues" not in output
+    assert output["council_trace"][0].event == "fallback"
+
+
+def test_small_direct_review_success_ends_without_risk_pipeline_state():
+    expected = ReviewResult(summary="clean", issues=[])
+    output = G._direct_review_node(_ValueLLM(expected))({"diff_text": _DIFF})
+
+    assert output["direct_review_status"] == "completed"
+    assert output["summary"] == "clean"
+    assert "risk_priors" not in output
+
+
 class _EvidenceBatchStub:
     def invoke(self, messages):
         payload = json.loads(messages[-1][1])
@@ -554,7 +644,7 @@ def test_graph_fanin_three_discoverers(monkeypatch):
         "behavior": 1,
         "maintainability": 1,
     }
-    assert meta["council"]["severity_defaulted_count"] == 0
+    assert meta["council"]["judge_synthesis_failed_count"] == 0
     assert meta["council"]["severity_transitions"] == {"WARNING->INFO": 3}
 
 
@@ -712,23 +802,20 @@ def test_task_prep_nodes_populate_state():
 
     tasks = task_prep.build_tasks(_DIFF)
     assert [t.id for t in tasks] == ["A.java#h0"]
-    profiles = task_prep.triage_tasks(tasks).profiles
-    sel = task_prep.rank_tasks(tasks, profiles, G.ReviewBudget())
+    priors = task_prep.triage_tasks(tasks).priors
+    sel = task_prep.rank_tasks(tasks, priors, G.ReviewBudget())
     assert sel.selected_task_ids == ["A.java#h0"]
 
 
 def test_review_coverage_node_assigns_selected_task_without_exclusive_risk_route():
     task = G.ReviewTask(id="Order.java#h0", file="Order.java", patch="+TokenBucket")
-    profile = G.RiskProfile(
-        task_id=task.id,
-        tag_scores={G.RiskTag.CONFIG_SECURITY: 2},
-    )
+    profile = _prior(task.id, RiskTag.CONFIG_SECURITY, 2)
     out = G._review_coverage_node()(
         {
             "review_tasks": [task],
-            "risk_profiles": {task.id: profile},
+            "risk_priors": {task.id: profile},
             "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
-            "review_budget": G.ReviewBudget(max_react_tasks=1),
+            "review_budget": G.ReviewBudget(max_react_assignments=1),
         }
     )
 
@@ -739,19 +826,19 @@ def test_review_coverage_node_assigns_selected_task_without_exclusive_risk_route
     assert all(assignment.tier.value == "direct" for assignment in assignments)
 
 
-def test_risk_triage_node_emits_profile_and_rule_failure_trace(monkeypatch):
+def test_risk_triage_node_emits_prior_and_rule_failure_trace(monkeypatch):
     from codeguard_agent.pipeline.risk import task_prep
     from codeguard_agent.pipeline.risk.rules.catalog import (
         RuleDiagnostic,
         TriageResult,
     )
 
-    profile = G.RiskProfile(task_id="A.java#h0")
+    profile = _prior("A.java#h0")
     monkeypatch.setattr(
         task_prep,
         "triage_tasks",
         lambda _tasks: TriageResult(
-            profiles={"A.java#h0": profile},
+            priors={"A.java#h0": profile},
             diagnostics=(
                 RuleDiagnostic(
                     task_id="A.java#h0", rule_id="broken", detail="detector error"
@@ -762,9 +849,9 @@ def test_risk_triage_node_emits_profile_and_rule_failure_trace(monkeypatch):
 
     out = G._risk_triage_node()({"review_tasks": [G.ReviewTask(id="A.java#h0", file="A.java", patch="+x")]})
 
-    assert out["risk_profiles"] == {"A.java#h0": profile}
+    assert out["risk_priors"] == {"A.java#h0": profile}
     assert [(trace.event, trace.detail) for trace in out["council_trace"]] == [
-        ("profiled", "profiles=1"),
+        ("priors_built", "priors=1"),
         ("rule_failed", "detector error"),
     ]
 
@@ -774,7 +861,7 @@ def test_review_state_has_task_chain_fields():
     for field in (
         "review_budget",
         "review_tasks",
-        "risk_profiles",
+        "risk_priors",
         "task_selection",
         "task_context_bundles",
     ):
@@ -836,11 +923,8 @@ def test_make_reviewer_node_rejects_task_mismatch_candidate(monkeypatch):
             "review_tasks": [
                 G.ReviewTask(id="A.java#h0", file="A.java", patch="", changed_lines=[1])
             ],
-            "risk_profiles": {
-                "A.java#h0": G.RiskProfile(
-                    task_id="A.java#h0",
-                    tag_scores={G.RiskTag.INJECTION: 2},
-                )
+            "risk_priors": {
+                "A.java#h0": _prior("A.java#h0", RiskTag.INJECTION, 2)
             },
             "task_selection": G.TaskSelection(selected_task_ids=["A.java#h0"]),
         })
@@ -870,17 +954,8 @@ def test_make_reviewer_node_only_invokes_routed_and_selected_tasks(monkeypatch):
         ],
         # 只选中 B.java#h0；A.java#h0 即使命中 ThreatModelAgent 的标签也不该被调用
         "task_selection": G.TaskSelection(selected_task_ids=["B.java#h0"]),
-        "risk_profiles": {
-            "B.java#h0": G.RiskProfile(
-                task_id="B.java#h0",
-                tag_scores={RiskTag.GENERAL_REVIEW: 1},
-                signals=[
-                    RiskSignal(
-                        tag=RiskTag.GENERAL_REVIEW, score=1,
-                        source="fallback:unclassified", reason="fallback",
-                    )
-                ],
-            )
+        "risk_priors": {
+            "B.java#h0": _prior("B.java#h0", RiskTag.GENERAL_REVIEW, 1)
         },
     })
     assert len(invoked_task_files) == 1
@@ -904,19 +979,8 @@ def test_make_reviewer_node_skips_reviewer_without_routed_tasks(monkeypatch):
         {
             "diff_text": "+query",
             "review_tasks": [task],
-            "risk_profiles": {
-                task.id: G.RiskProfile(
-                    task_id=task.id,
-                    tag_scores={RiskTag.SQL_DATA_ACCESS: 1},
-                    signals=[
-                        RiskSignal(
-                            tag=RiskTag.SQL_DATA_ACCESS,
-                            score=1,
-                            source="text:added:sql_data_access",
-                            reason="query",
-                        )
-                    ],
-                )
+            "risk_priors": {
+                task.id: _prior(task.id, RiskTag.SQL_DATA_ACCESS, 1)
             },
             "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
 
@@ -946,17 +1010,8 @@ def test_make_reviewer_node_rejects_candidate_with_mismatched_file(monkeypatch):
     out = node({
         "diff_text": "+sql",
         "review_tasks": [task],
-        "risk_profiles": {
-            task.id: G.RiskProfile(
-                task_id=task.id,
-                tag_scores={RiskTag.SQL_DATA_ACCESS: 1},
-                signals=[
-                    RiskSignal(
-                        tag=RiskTag.SQL_DATA_ACCESS, score=1,
-                        source="text:added:sql_data_access", reason="query",
-                    )
-                ],
-            )
+        "risk_priors": {
+            task.id: _prior(task.id, RiskTag.SQL_DATA_ACCESS, 1)
         },
         "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
     })
@@ -988,28 +1043,13 @@ def test_make_reviewer_node_invokes_tasks_concurrently_with_correct_tier(monkeyp
         G.ReviewTask(id="A.java#h0", file="A.java", patch="+strong", changed_lines=[1]),
         G.ReviewTask(id="B.java#h0", file="B.java", patch="+weak", changed_lines=[1]),
     ]
-    profiles = {
-        "A.java#h0": G.RiskProfile(
-            task_id="A.java#h0",
-            tag_scores={RiskTag.CONCURRENCY_CONSISTENCY: 3},
-            signals=[
-                RiskSignal(
-                    tag=RiskTag.CONCURRENCY_CONSISTENCY,
-                    score=3,
-                    source="text:added:lock",
-                    reason="strong concurrency signal",
-                )
-            ],
-        ),
-        "B.java#h0": G.RiskProfile(
-            task_id="B.java#h0",
-            tag_scores={RiskTag.SQL_DATA_ACCESS: 1},
-        ),
+    priors = {
+        "A.java#h0": _prior("A.java#h0", RiskTag.CONCURRENCY_CONSISTENCY, 3),
+        "B.java#h0": _prior("B.java#h0", RiskTag.SQL_DATA_ACCESS, 1),
     }
     selection = G.TaskSelection(
         selected_task_ids=["A.java#h0", "B.java#h0"]
     )
-    priors = G.build_risk_priors(tasks, profiles)
     coverage = G.plan_review_coverage(
         tasks,
         priors,
@@ -1020,7 +1060,6 @@ def test_make_reviewer_node_invokes_tasks_concurrently_with_correct_tier(monkeyp
     out = node({
         "diff_text": "+strong\n+weak",
         "review_tasks": tasks,
-        "risk_profiles": profiles,
         "risk_priors": priors,
         "review_coverage_plan": coverage,
         "task_selection": selection,
@@ -1055,11 +1094,8 @@ def test_make_reviewer_node_without_tools_forces_strong_task_to_direct(monkeypat
         {
             "diff_text": task.patch,
             "review_tasks": [task],
-            "risk_profiles": {
-                task.id: G.RiskProfile(
-                    task_id=task.id,
-                    tag_scores={RiskTag.CONCURRENCY_CONSISTENCY: 3},
-                )
+            "risk_priors": {
+                task.id: _prior(task.id, RiskTag.CONCURRENCY_CONSISTENCY, 3)
             },
             "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
         }
@@ -1099,11 +1135,8 @@ def test_make_reviewer_node_injects_selected_knowledge_bundle_into_user_prompt(m
     node({
         "diff_text": "+lock",
         "review_tasks": [task],
-        "risk_profiles": {
-            task.id: G.RiskProfile(
-                task_id=task.id,
-                tag_scores={RiskTag.CONCURRENCY_CONSISTENCY: 1},
-            )
+        "risk_priors": {
+            task.id: _prior(task.id, RiskTag.CONCURRENCY_CONSISTENCY, 1)
         },
         "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
     })
@@ -1114,7 +1147,7 @@ def test_make_reviewer_node_injects_selected_knowledge_bundle_into_user_prompt(m
         "user_prompt"
     ]
     assert captured["user_prompt"].count("+lock") == 1
-    assert '<risk_profile role="routing_prior_not_evidence">' in captured["user_prompt"]
+    assert '<risk_prior role="routing_prior_not_evidence"' in captured["user_prompt"]
 
 
 def test_make_reviewer_node_fanout_survives_real_memory_checkpointer(monkeypatch):
@@ -1151,13 +1184,9 @@ def test_make_reviewer_node_fanout_survives_real_memory_checkpointer(monkeypatch
     out = node({
         "diff_text": "+sql\n+auth",
         "review_tasks": tasks,
-        "risk_profiles": {
-            "A.java#h0": G.RiskProfile(
-                task_id="A.java#h0", tag_scores={RiskTag.SQL_DATA_ACCESS: 1},
-            ),
-            "B.java#h0": G.RiskProfile(
-                task_id="B.java#h0", tag_scores={RiskTag.CONCURRENCY_CONSISTENCY: 2},
-            ),
+        "risk_priors": {
+            "A.java#h0": _prior("A.java#h0", RiskTag.SQL_DATA_ACCESS, 1),
+            "B.java#h0": _prior("B.java#h0", RiskTag.CONCURRENCY_CONSISTENCY, 2),
         },
         "task_selection": G.TaskSelection(selected_task_ids=["A.java#h0", "B.java#h0"]),
     })
@@ -1189,11 +1218,8 @@ def test_context_provider_node_fills_symbol_context_per_task():
                 "@@ -12,2 +12,2 @@\n+order.save();\n"
             ),
             "review_tasks": [task],
-            "risk_profiles": {
-                task.id: G.RiskProfile(
-                    task_id=task.id,
-                    tag_scores={RiskTag.RESOURCE_LIFECYCLE: 2},
-                )
+            "risk_priors": {
+                task.id: _prior(task.id, RiskTag.RESOURCE_LIFECYCLE, 2)
             },
             "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
             "review_budget": G.ReviewBudget(),
@@ -1241,11 +1267,8 @@ def test_context_provider_node_records_skip_when_method_unresolved():
         {
             "diff_text": "diff --git a/B.java b/B.java\n--- a/B.java\n+++ b/B.java\n@@ -1 +1 @@\n+x\n",
             "review_tasks": [task],
-            "risk_profiles": {
-                task.id: G.RiskProfile(
-                    task_id=task.id,
-                    tag_scores={RiskTag.API_CONTRACT: 2},
-                )
+            "risk_priors": {
+                task.id: _prior(task.id, RiskTag.API_CONTRACT, 2)
             },
             "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
             "review_budget": G.ReviewBudget(),
@@ -1277,11 +1300,8 @@ def test_context_provider_node_general_review_gets_no_level1_call():
         {
             "diff_text": "diff --git a/C.java b/C.java\n--- a/C.java\n+++ b/C.java\n@@ -1 +1 @@\n+x\n",
             "review_tasks": [task],
-            "risk_profiles": {
-                task.id: G.RiskProfile(
-                    task_id=task.id,
-                    tag_scores={RiskTag.GENERAL_REVIEW: 1},
-                )
+            "risk_priors": {
+                task.id: _prior(task.id, RiskTag.GENERAL_REVIEW, 1)
             },
             "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
             "review_budget": G.ReviewBudget(),
@@ -1308,11 +1328,8 @@ def test_context_provider_node_does_not_store_failed_graph_response_as_fact():
         {
             "diff_text": "diff --git a/A.java b/A.java\n+++ b/A.java\n@@ -12 +12 @@\n+x\n",
             "review_tasks": [task],
-            "risk_profiles": {
-                task.id: G.RiskProfile(
-                    task_id=task.id,
-                    tag_scores={RiskTag.RESOURCE_LIFECYCLE: 2},
-                )
+            "risk_priors": {
+                task.id: _prior(task.id, RiskTag.RESOURCE_LIFECYCLE, 2)
             },
             "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
             "review_budget": G.ReviewBudget(),
@@ -1354,11 +1371,8 @@ def _two_behavior_task_state() -> dict:
     return {
         "diff_text": "+a\n+b",
         "review_tasks": tasks,
-        "risk_profiles": {
-            task.id: G.RiskProfile(
-                task_id=task.id,
-                tag_scores={RiskTag.NULL_STATE_SAFETY: 2},
-            )
+        "risk_priors": {
+            task.id: _prior(task.id, RiskTag.NULL_STATE_SAFETY, 2)
             for task in tasks
         },
         "task_selection": G.TaskSelection(
@@ -1416,7 +1430,7 @@ def test_make_reviewer_node_does_not_cache_across_reviews(monkeypatch):
     one_task = _two_behavior_task_state()
     one_task["review_tasks"] = one_task["review_tasks"][:1]
     first_id = one_task["review_tasks"][0].id
-    one_task["risk_profiles"] = {first_id: one_task["risk_profiles"][first_id]}
+    one_task["risk_priors"] = {first_id: one_task["risk_priors"][first_id]}
     one_task["task_selection"] = G.TaskSelection(selected_task_ids=[first_id])
     node(one_task)
     node(one_task)
@@ -1454,11 +1468,8 @@ def test_make_reviewer_node_blocks_current_file_read_for_complete_new_file(monke
     node(
         {
             "review_tasks": [task],
-            "risk_profiles": {
-                task.id: G.RiskProfile(
-                    task_id=task.id,
-                    tag_scores={RiskTag.NULL_STATE_SAFETY: 2},
-                )
+            "risk_priors": {
+                task.id: _prior(task.id, RiskTag.NULL_STATE_SAFETY, 2)
             },
             "task_selection": G.TaskSelection(selected_task_ids=[task.id]),
         }
@@ -1576,7 +1587,7 @@ def test_coordinator_batches_tag_resolution_and_emits_complete_trace(monkeypatch
         {
             "raw_candidate_issues": [first, second],
             "review_tasks": [task],
-            "risk_profiles": {},
+            "risk_priors": {},
             "task_context_bundles": {},
             "structured_method": "function_calling",
         }
@@ -1650,7 +1661,7 @@ def test_coordinator_scopes_large_diff_patch_before_classification_and_dedup(
             "diff_text": "\n".join("+ changed" for _ in range(5001)),
             "raw_candidate_issues": [candidate],
             "review_tasks": [task],
-            "risk_profiles": {},
+            "risk_priors": {},
             "task_context_bundles": {},
             "review_budget": G.ReviewBudget(),
         }

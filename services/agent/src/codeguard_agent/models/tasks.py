@@ -1,8 +1,7 @@
-"""风险路由任务链的内部状态模型（Phase 1）。
+"""风险先验、审查覆盖与 PR 体量路由的内部状态模型。
 
 这些模型只用于图 State、trace 和 eval 诊断，不进入 ReviewResult 产品输出。
-事实源单一所有者原则见 spec §3.3：TaskContextBundle 不复制 file/patch/RiskTag，
-RiskProfile 不保存 total_score（分数是 TaskRank 的派生计算）。
+RiskTriage 的唯一输出是 ``TaskRiskPrior``；后续节点不得重新解释规则分数。
 """
 
 from __future__ import annotations
@@ -70,16 +69,17 @@ class AssignmentReason(str, Enum):
     BASELINE = "baseline"
     RISK_ADDED = "risk_added"
     RISK_UPGRADED = "risk_upgraded"
+    EXECUTION_OVERRIDE = "execution_override"
     AMBIGUITY_FALLBACK = "ambiguity_fallback"
 
 
 class RiskHypothesis(BaseModel):
-    """从旧 RiskProfile 派生的、不可直接裁决问题成立的先验。"""
+    """不可直接裁决问题成立的风险先验。"""
 
     tag: RiskTag
     match_confidence: float = Field(ge=0.0, le=1.0)
     review_priority: int = Field(ge=1, le=3)
-    source_kind: Literal["diff_text", "path", "symbol", "ast", "fallback"]
+    source_kind: Literal["diff_text", "path", "symbol", "ast"]
     source: str
     reason: str
     line: int | None = None
@@ -114,6 +114,7 @@ class ReviewCoveragePlan(BaseModel):
     react_task_count: int = 0
     react_assignment_count: int = 0
     risk_upgraded_assignments: int = 0
+    execution_override_assignments: int = 0
     truncated_react_task_count: int = 0
     truncated_react_assignment_count: int = 0
     unclassified_tasks: int = 0
@@ -132,21 +133,19 @@ class ReviewTask(BaseModel):
 
 
 class RiskSignal(BaseModel):
-    """单条风险信号：说明某个 RiskTag 来自哪里、为什么。"""
+    """规则内部的原始风险信号。
+
+    信号显式区分匹配可信度与审查优先级，聚合后形成 ``RiskHypothesis``。
+    Graph State 不保存原始信号，避免规则输出成为第二套风险事实源。
+    """
 
     tag: RiskTag
-    score: int
+    match_confidence: float = Field(ge=0.0, le=1.0)
+    review_priority: int = Field(ge=1, le=3)
+    source_kind: Literal["diff_text", "path", "symbol", "ast"]
     source: str
     reason: str
     line: int | None = None
-
-
-class RiskProfile(BaseModel):
-    """一个任务的风险画像。不保存 total_score（派生计算）。"""
-
-    task_id: str
-    tag_scores: dict[RiskTag, int] = Field(default_factory=dict)
-    signals: list[RiskSignal] = Field(default_factory=list)
 
 
 class ReviewMode(str, Enum):
@@ -164,7 +163,7 @@ class ReviewBudget(BaseModel):
     max_tasks_to_review: StrictInt | None = Field(default=100, gt=0)
     max_tasks_per_file: StrictInt | None = Field(default=10, gt=0)
     max_context_chars_per_task: StrictInt | None = Field(default=4000, gt=0)
-    max_react_tasks: StrictInt = Field(default=20, gt=0)
+    max_react_assignments: StrictInt = Field(default=20, gt=0)
     max_final_issues: StrictInt | None = Field(default=None, gt=0)
 
     # ── PR 体量分类阈值（可配置，方便评测调参） ──
@@ -174,8 +173,8 @@ class ReviewBudget(BaseModel):
     small_max_diff_chars: StrictInt = Field(default=8000, ge=0)
     medium_max_files: StrictInt = Field(default=15, ge=0)
     medium_max_diff_chars: StrictInt = Field(default=60000, ge=0)
-    # 文件级审查时，单文件 diff 字符数超过此阈值则内部回退 hunk 级
-    medium_file_diff_chars_fallback: StrictInt = Field(default=12000, gt=0)
+    # 评测开关：让已分配且有工具的 reviewer 进入 ReAct，仍受预算约束。
+    force_react: bool = False
 
 
 class SkippedTask(BaseModel):
@@ -183,7 +182,7 @@ class SkippedTask(BaseModel):
 
     task_id: str
     reason: str
-    risk_score: int = 0
+    review_priority: int = 0
 
 
 class TaskSelection(BaseModel):

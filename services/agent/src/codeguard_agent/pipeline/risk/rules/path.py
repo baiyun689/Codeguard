@@ -6,6 +6,7 @@ from collections.abc import Iterable
 
 from codeguard_agent.models.tasks import RiskSignal, RiskTag
 from codeguard_agent.pipeline.risk.rules.features import DiffFeatures
+from codeguard_agent.pipeline.risk.signals import make_risk_signal
 
 
 # A path role is context, not a finding. Keep the mapping deliberately small
@@ -67,7 +68,7 @@ def _matches_role(path: str, markers: tuple[str, ...]) -> bool:
 def path_signals(
     features: DiffFeatures, concrete_tags: Iterable[RiskTag]
 ) -> list[RiskSignal]:
-    """Return score-1 path evidence only for already matched concrete tags."""
+    """Return weak path evidence only for already matched concrete tags."""
     concrete = set(concrete_tags)
     signals: list[RiskSignal] = []
     for role, markers, tags in _ROLE_TAGS:
@@ -76,9 +77,10 @@ def path_signals(
         for tag in tags:
             if tag in concrete:
                 signals.append(
-                    RiskSignal(
+                    make_risk_signal(
                         tag=tag,
-                        score=1,
+                        priority=1,
+                        source_kind="path",
                         source=f"path:{role}",
                         reason=f"文件路径角色 {role} 与该风险方向相关，作为弱证据加权",
                     )

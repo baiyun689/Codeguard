@@ -100,17 +100,18 @@ def plan_large_diff(
         active=True,
         total_lines=total_lines,
         total_tasks=len(tasks),
-        effective_budget=ReviewBudget(
-            max_tasks_to_review=_cap_configured_limit(
-                configured_budget.max_tasks_to_review, LARGE_MAX_TASKS
-            ),
-            max_tasks_per_file=_cap_configured_limit(
-                configured_budget.max_tasks_per_file, LARGE_MAX_TASKS_PER_FILE
-            ),
-            max_context_chars_per_task=_cap_configured_limit(
-                configured_budget.max_context_chars_per_task, LARGE_MAX_CONTEXT_CHARS
-            ),
-            max_react_tasks=configured_budget.max_react_tasks,
-            max_final_issues=configured_budget.max_final_issues,
+        effective_budget=configured_budget.model_copy(
+            update={
+                "max_tasks_to_review": _cap_configured_limit(
+                    configured_budget.max_tasks_to_review, LARGE_MAX_TASKS
+                ),
+                "max_tasks_per_file": _cap_configured_limit(
+                    configured_budget.max_tasks_per_file, LARGE_MAX_TASKS_PER_FILE
+                ),
+                "max_context_chars_per_task": _cap_configured_limit(
+                    configured_budget.max_context_chars_per_task,
+                    LARGE_MAX_CONTEXT_CHARS,
+                ),
+            },
         ),
     )

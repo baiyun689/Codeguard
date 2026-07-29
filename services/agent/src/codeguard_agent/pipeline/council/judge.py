@@ -28,13 +28,12 @@ from codeguard_agent.pipeline.evidence.agent import (
     request_strategy_mismatch,
 )
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
-from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID
+from codeguard_agent.pipeline.evidence.rules import resolve_candidate_evidence_tag
 from codeguard_agent.pipeline.council.impact import (
     assess_impact,
     assess_impact_fallback,
 )
 from codeguard_agent.pipeline.council.severity import (
-    FACTOR_INFO,
     resolve_severity as resolve_severity_new,
     resolve_severity_fallback,
     rubric_for,
@@ -144,23 +143,12 @@ def _primary_tag(
 ) -> RiskTag:
     if concern is not None and concern.tags.primary_tag is not None:
         return concern.tags.primary_tag
-    tags: set[RiskTag] = set()
-    for request in dossier.requests:
-        if request_strategy_mismatch(request, dossier) is not None:
-            continue
-        strategy = STRATEGIES_BY_ID.get(request.strategy_id)
-        if strategy is not None:
-            tags.update(strategy.tags)
-    if len(tags) == 1:
-        return next(iter(tags))
-    if not tags:
-        return RiskTag.GENERAL_REVIEW
-    logger.warning(
-        "Ambiguous primary tag for candidate %s: %s — using GENERAL_REVIEW",
-        dossier.candidate.id,
-        tags,
+    resolution = resolve_candidate_evidence_tag(
+        dossier,
+        None,
+        structured_method="function_calling",
     )
-    return RiskTag.GENERAL_REVIEW
+    return resolution.tag
 
 
 def _rubric_tags(
@@ -255,8 +243,6 @@ def _synthesis_payload(
     concern: CandidateConcern | None,
 ) -> str:
     primary = _primary_tag(dossier, concern)
-    concern_tags = _rubric_tags(dossier, concern)
-    rubric = rubric_for(tags=concern_tags)
     findings_by_request: dict[str, list[EvidenceFinding]] = {}
     for item in evidence:
         findings_by_request.setdefault(item.request.id, []).append(item.finding)
@@ -271,7 +257,6 @@ def _synthesis_payload(
             "question": request.question,
             "findings": [f.model_dump(mode="json") for f in request_findings],
         })
-    profile = dossier.risk_profile
     return _stable_json({
         "candidate_alias": "C001",
         "candidate": {
@@ -303,16 +288,7 @@ def _synthesis_payload(
         ),
         "task_patch": dossier.task.patch,
         "primary_tag": primary.value,
-        "task_tags": [
-            tag.value
-            for tag, score in (profile.tag_scores.items() if profile else ())
-            if score > 0
-        ],
         "requests": requests_payload,
-        "allowed_factors": [
-            {"id": factor.value, "description": FACTOR_INFO[factor]}
-            for factor in rubric.required_factors
-        ],
     })
 
 
@@ -353,18 +329,6 @@ def _synthesize(
     except Exception:
         logger.warning("CouncilJudge LLM synthesis failed", exc_info=True)
         return None
-
-
-# ── findings by ID for severity resolution ───────────────────────────────────
-
-
-def _findings_by_id(
-    evidence: list[BoundEvidence],
-) -> dict[str, list[EvidenceFinding]]:
-    result: dict[str, list[EvidenceFinding]] = {}
-    for item in evidence:
-        result.setdefault(item.finding.evidence_id, []).append(item.finding)
-    return result
 
 
 # ── main entry ───────────────────────────────────────────────────────────────
@@ -430,19 +394,6 @@ def _judge_one_candidate(
             "fallback_used": True,
         })
         return verdict, issue, dossier.candidate.id, traces
-
-    findings_map = _findings_by_id(findings)
-    unknown_evidence_ids = sorted({
-        evidence_id
-        for factor in assessment.severity_factors
-        for evidence_id in factor.evidence_ids
-        if evidence_id not in findings_map
-    })
-    if unknown_evidence_ids:
-        _add_trace("unknown_evidence_citation_ignored", {
-            "candidate_id": dossier.candidate.id,
-            "evidence_ids": unknown_evidence_ids,
-        })
 
     # Post-synthesis adjudication
     if assessment.claim_status == "refuted" or assessment.counter_effect == "complete":

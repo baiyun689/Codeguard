@@ -6,6 +6,7 @@ import re
 from collections import Counter
 
 from codeguard_agent.models.tasks import RiskSignal, RiskTag
+from codeguard_agent.pipeline.risk.signals import make_risk_signal
 from codeguard_agent.pipeline.risk.rules.features import DiffFeatures
 
 
@@ -27,13 +28,13 @@ def _detect(features: DiffFeatures, tag: RiskTag, rule: _Rule, reason: str, *, d
     added = _match(features.added_lines, pattern)
     deleted = _match(features.deleted_lines, pattern)
     if added and deleted and added[2] == deleted[2] and added[1] != deleted[1]:
-        return [RiskSignal(tag=tag, score=max(1, deleted_score), source=f"text:changed:{rule_id}", reason=f"{reason}：命中 {added[2]}，需审查", line=added[0])]
+        return [make_risk_signal(tag=tag, priority=max(1, deleted_score), source=f"text:changed:{rule_id}", reason=f"{reason}：命中 {added[2]}，需审查", line=added[0])]
 
     signals: list[RiskSignal] = []
     if added:
-        signals.append(RiskSignal(tag=tag, score=1, source=f"text:added:{rule_id}", reason=f"{reason}：命中 {added[2]}，需审查", line=added[0]))
+        signals.append(make_risk_signal(tag=tag, priority=1, source=f"text:added:{rule_id}", reason=f"{reason}：命中 {added[2]}，需审查", line=added[0]))
     if deleted:
-        signals.append(RiskSignal(tag=tag, score=deleted_score, source=f"text:deleted:{rule_id}", reason=f"{reason}：命中 {deleted[2]}，需审查", line=None))
+        signals.append(make_risk_signal(tag=tag, priority=deleted_score, source=f"text:deleted:{rule_id}", reason=f"{reason}：命中 {deleted[2]}，需审查", line=None))
     return signals
 
 
@@ -69,13 +70,13 @@ def detect_duplication_design(features: DiffFeatures) -> list[RiskSignal]:
     added = _repeated_statement(features.added_lines)
     deleted = _repeated_statement(features.deleted_lines)
     if added and deleted and added[2] == deleted[2] and added[1] != deleted[1]:
-        return [RiskSignal(tag=RiskTag.DUPLICATION_DESIGN, score=1, source="text:changed:duplication_design", reason=f"重复设计或调用块变化：命中 {added[3]}，需审查", line=added[0])]
+        return [make_risk_signal(tag=RiskTag.DUPLICATION_DESIGN, priority=1, source="text:changed:duplication_design", reason=f"重复设计或调用块变化：命中 {added[3]}，需审查", line=added[0])]
 
     signals: list[RiskSignal] = []
     if added:
-        signals.append(RiskSignal(tag=RiskTag.DUPLICATION_DESIGN, score=1, source="text:added:duplication_design", reason=f"重复设计或调用块变化：命中 {added[3]}，需审查", line=added[0]))
+        signals.append(make_risk_signal(tag=RiskTag.DUPLICATION_DESIGN, priority=1, source="text:added:duplication_design", reason=f"重复设计或调用块变化：命中 {added[3]}，需审查", line=added[0]))
     if deleted:
-        signals.append(RiskSignal(tag=RiskTag.DUPLICATION_DESIGN, score=1, source="text:deleted:duplication_design", reason=f"重复设计或调用块变化：命中 {deleted[3]}，需审查", line=None))
+        signals.append(make_risk_signal(tag=RiskTag.DUPLICATION_DESIGN, priority=1, source="text:deleted:duplication_design", reason=f"重复设计或调用块变化：命中 {deleted[3]}，需审查", line=None))
     return signals
 
 

@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import codeguard_agent.pipeline.graph as G
-from codeguard_agent.models.council import CandidateIssue, EvidenceRequest
-from codeguard_agent.models.schemas import Severity
-from codeguard_agent.models.tasks import ReviewTask, TaskSelection
+from codeguard_agent.models.council import EvidenceRequest
+from codeguard_agent.models.tasks import TaskSelection
 from codeguard_agent.pipeline.reviewers.reviewers import DEFAULT_REVIEWERS
 
 
@@ -19,28 +16,6 @@ def _request(index: int) -> EvidenceRequest:
         target=f"src/Service{index}.java",
         question="检查候选主张的反证",
     )
-
-
-def _candidate_task():
-    task = ReviewTask(
-        id="src/Service.java#h0",
-        file="src/Service.java",
-        hunk_header="@@ -10,1 +10,1 @@",
-        patch="+changed();",
-        changed_lines=[10],
-    )
-    candidate = CandidateIssue(
-        id="candidate-1",
-        task_id=task.id,
-        source_agent="threat_model",
-        file=task.file,
-        line=10,
-        type="general review",
-        severity_proposal=Severity.WARNING,
-        claim="candidate claim",
-        confidence=0.8,
-    )
-    return candidate, task
 
 
 def test_evidence_request_reducer_only_deduplicates_without_cap():
@@ -57,7 +32,7 @@ def test_reviewer_branch_never_writes_evidence_requests():
     out = node(
         {
             "review_tasks": [],
-            "risk_profiles": {},
+            "risk_priors": {},
             "task_selection": TaskSelection(selected_task_ids=[]),
         }
     )
@@ -66,29 +41,55 @@ def test_reviewer_branch_never_writes_evidence_requests():
 
 
 def test_planner_node_is_the_request_writer(monkeypatch):
-    candidate, task = _candidate_task()
     planned = _request(99)
     monkeypatch.setattr(
         G,
-        "plan_evidence",
-        lambda *args, **kwargs: SimpleNamespace(
-            requests=[planned],
-            trace=[("evidence_planned", "{}")],
-        ),
+        "plan_claim_evidence",
+        lambda _concern: type(
+            "Plan",
+            (),
+            {
+                "requests": (planned,),
+                "goals": (),
+                "uncovered_goals": (),
+            },
+        )(),
     )
+    concern = type("Concern", (), {"concern_id": "concern-1"})()
+    analysis = type(
+        "Analysis",
+        (),
+        {
+            "concerns": (concern,),
+        },
+    )()
 
     out = G._evidence_planner_node(None)(
         {
-            "candidate_issues": [candidate],
-            "review_tasks": [task],
-            "risk_profiles": {},
-            "task_context_bundles": {},
+            "concern_analysis": analysis,
             "evidence_requests": [],
-            "evidence_notes": [],
         }
     )
 
     assert out["evidence_requests"] == [planned]
+
+
+def test_planner_without_structured_concerns_does_not_restore_tag_fallback():
+    analysis = type(
+        "Analysis",
+        (),
+        {
+            "concerns": (),
+        },
+    )()
+    out = G._evidence_planner_node(None)(
+        {
+            "concern_analysis": analysis,
+            "evidence_requests": [],
+        }
+    )
+    assert out["evidence_requests"] == []
+    assert out["council_trace"][0].detail == "no structured concerns available"
 
 
 def test_graph_wires_one_pass_planner_before_agent():

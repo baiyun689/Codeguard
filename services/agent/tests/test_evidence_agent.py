@@ -10,12 +10,16 @@ import time
 from codeguard_agent.models.council import (
     CandidateIssue,
     ContextFact,
+    EvidenceFactType,
     EvidenceFinding,
     EvidenceNote,
     EvidenceRequest,
 )
 from codeguard_agent.models.schemas import Severity
-from codeguard_agent.models.tasks import ReviewTask, RiskProfile, RiskTag, TaskContextBundle
+from codeguard_agent.models.tasks import (
+    ReviewTask,
+    TaskContextBundle,
+)
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
 from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID
 from codeguard_agent.tools.tool_client import ToolResponse
@@ -67,17 +71,16 @@ def _dossier(
     return CandidateDossier(
         candidate=candidate,
         task=task,
-        risk_profile=RiskProfile(
-            task_id=task.id,
-            tag_scores={RiskTag.AUTHORIZATION: 3},
-        ),
         context_bundle=context,
         requests=(),
         notes=(),
     )
 
 
-def _request(dossier: CandidateDossier, strategy_id: str = "authorization.counter") -> EvidenceRequest:
+def _request(
+    dossier: CandidateDossier,
+    strategy_id: str = "claim.reachability.counter",
+) -> EvidenceRequest:
     strategy = STRATEGIES_BY_ID[strategy_id]
     calls = strategy.build_tool_calls(dossier)
     return EvidenceRequest(
@@ -85,8 +88,14 @@ def _request(dossier: CandidateDossier, strategy_id: str = "authorization.counte
         strategy_id=strategy.id,
         purpose=strategy.purpose,
         target=dossier.task.file,
-        question=strategy.question_template,
+        question=strategy.question_template or "test proposition",
         preferred_tools=list(dict.fromkeys(call.tool_name for call in calls)),
+        goal_id="goal-test",
+        concern_id="concern-test",
+        claim_ids=(dossier.candidate.id,),
+        fact_type=EvidenceFactType(
+            strategy_id.split(".")[1]
+        ),
     )
 
 
@@ -147,7 +156,7 @@ def _collect_with_llm(dossiers, requests, llm, *, client=None):
 def test_request_strategy_mismatch_does_not_call_tools_and_gets_one_note():
     dossier = _dossier()
     valid = _request(dossier)
-    invalid = valid.model_copy(update={"question": "invented question"})
+    invalid = valid.model_copy(update={"goal_id": None})
     client = _ToolClient()
 
     batch = _collect([dossier], [invalid], client=client)
@@ -288,8 +297,8 @@ def test_all_request_strategy_fields_are_validated_before_tools():
         request.model_copy(update={"strategy_id": "missing.strategy"}),
         request.model_copy(update={"purpose": "support"}),
         request.model_copy(update={"target": "src/Other.java"}),
-        request.model_copy(update={"question": "wrong"}),
-        request.model_copy(update={"preferred_tools": ["get_file_content"]}),
+        request.model_copy(update={"goal_id": None}),
+        request.model_copy(update={"preferred_tools": ["inspect_structure"]}),
     ]
     client = _ToolClient()
 
@@ -648,7 +657,7 @@ def test_analyst_none_and_exception_are_insufficient():
     assert all(f.relation == "insufficient" for f in error_batch.notes[0].findings)
 
 
-def test_analyst_prompt_contains_candidate_strategy_task_risk_context_and_fact():
+def test_analyst_prompt_excludes_risk_and_proposed_severity():
     task = _dossier().task
     context = TaskContextBundle(
         task_id=task.id,
@@ -675,11 +684,18 @@ def test_analyst_prompt_contains_candidate_strategy_task_risk_context_and_fact()
     rendered = "\n".join(content for call in llm.messages for _, content in call)
     assert dossier.candidate.claim in rendered
     assert dossier.candidate.type in rendered
-    assert dossier.candidate.severity_proposal.value in rendered
+    payloads = [
+        json.loads(content)
+        for call in llm.messages
+        for _role, content in call
+        if content.lstrip().startswith("{")
+    ]
+    assert payloads
+    assert "severity" not in payloads[-1]["candidate"]
+    assert "risk_prior" not in payloads[-1]
     assert "counter" in rendered
-    assert STRATEGIES_BY_ID["authorization.counter"].question_template in rendered
+    assert "test proposition" in rendered
     assert task.patch in rendered
-    assert "AUTHORIZATION" in rendered
     assert "ast_structure" in rendered
     assert "source" in rendered and "limitation" in rendered
 
@@ -818,7 +834,6 @@ def _judge_evidence_batch(dossier: CandidateDossier, request: EvidenceRequest, b
     judged = CandidateDossier(
         candidate=dossier.candidate,
         task=dossier.task,
-        risk_profile=dossier.risk_profile,
         context_bundle=dossier.context_bundle,
         requests=(request,),
         notes=tuple(batch.notes),
@@ -873,7 +888,6 @@ def test_prior_legal_direct_counter_finding_remains_direct_when_reused():
     dossier = CandidateDossier(
         candidate=dossier.candidate,
         task=dossier.task,
-        risk_profile=dossier.risk_profile,
         context_bundle=dossier.context_bundle,
         requests=(),
         notes=(prior,),
@@ -913,12 +927,11 @@ def test_severity_request_reuses_prior_observation_with_same_evidence_id():
     dossier = CandidateDossier(
         candidate=dossier.candidate,
         task=dossier.task,
-        risk_profile=dossier.risk_profile,
         context_bundle=dossier.context_bundle,
         requests=(),
         notes=(prior,),
     )
-    request = _request(dossier, "authorization.severity")
+    request = _request(dossier, "claim.impact_factor.impact")
 
     batch = _collect([dossier], [request], client=None)
 
@@ -946,7 +959,6 @@ def test_counter_request_reuses_prior_tool_finding_without_repeating_call():
     dossier = CandidateDossier(
         candidate=dossier.candidate,
         task=dossier.task,
-        risk_profile=dossier.risk_profile,
         context_bundle=dossier.context_bundle,
         requests=(),
         notes=(prior,),
@@ -1020,7 +1032,7 @@ def test_current_method_transaction_annotation_is_direct_counter_evidence():
         "class Service {\n\n\n\n\n\n\n\n@Transactional\npublic void update() { save(); }\n}",
         "@Transactional public void update()",
     )
-    request = _request(dossier, "transaction_atomicity.counter")
+    request = _request(dossier, "claim.transaction_boundary.counter")
 
     batch = _collect([dossier], [request], client=client)
 
@@ -1150,7 +1162,6 @@ def test_request_target_cannot_use_candidate_basename_to_bypass_task_path():
     dossier = CandidateDossier(
         candidate=dossier.candidate.model_copy(update={"file": "Service.java"}),
         task=dossier.task,
-        risk_profile=dossier.risk_profile,
         context_bundle=dossier.context_bundle,
         requests=(),
         notes=(),
@@ -1189,7 +1200,6 @@ def test_prior_empty_tool_finding_prevents_cross_round_repeat_call():
     dossier = CandidateDossier(
         candidate=dossier.candidate,
         task=dossier.task,
-        risk_profile=dossier.risk_profile,
         context_bundle=dossier.context_bundle,
         requests=(),
         notes=(prior,),

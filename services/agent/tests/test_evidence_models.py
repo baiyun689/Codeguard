@@ -9,7 +9,6 @@ from codeguard_agent.models import council
 from codeguard_agent.models.council import (
     CandidateEvidenceAssessment,
     EvidenceRequest,
-    SeverityFactorAssessment,
     Verdict,
 )
 
@@ -76,7 +75,7 @@ def test_evidence_request_id_is_stable_for_identical_semantics():
 def test_evidence_request_requires_all_strategy_fields(missing):
     values = {
         "candidate_id": "candidate-1",
-        "strategy_id": "authorization.counter",
+        "strategy_id": "claim.changed_condition.counter",
         "purpose": "counter",
         "target": "src/Service.java",
         "question": "当前作用域是否已有鉴权保护？",
@@ -99,7 +98,7 @@ def test_evidence_request_requires_all_strategy_fields(missing):
 def test_evidence_request_rejects_blank_strategy_fields(field, value):
     values = {
         "candidate_id": "candidate-1",
-        "strategy_id": "authorization.counter",
+        "strategy_id": "claim.changed_condition.counter",
         "purpose": "counter",
         "target": "src/Service.java",
         "question": "当前作用域是否已有鉴权保护？",
@@ -165,33 +164,23 @@ def test_verdict_action_is_keep_or_drop():
 # ── Evidence synthesis models (Task 1) ──
 
 
-def test_candidate_evidence_assessment_accepts_only_bounded_factor_states():
+def test_candidate_evidence_assessment_only_synthesizes_claim_status():
     assessment = CandidateEvidenceAssessment(
         candidate_id="C001",
         claim_status="supported",
         counter_effect="partial",
-        severity_factors=[
-            SeverityFactorAssessment(
-                factor_id="untrusted_input",
-                status="proven",
-                evidence_ids=["E1"],
-                reason="request parameter reaches the query builder",
-            )
-        ],
         conflicts=[],
         reason="candidate remains supported after partial mitigation",
     )
-    assert assessment.severity_factors[0].status == "proven"
-
-
-def test_synthesis_model_rejects_unknown_status():
-    with pytest.raises(ValidationError):
-        SeverityFactorAssessment(
-            factor_id="untrusted_input",
-            status="likely",
-            evidence_ids=["E1"],
-            reason="invalid unbounded state",
-        )
+    assert set(CandidateEvidenceAssessment.model_fields) == {
+        "candidate_id",
+        "claim_status",
+        "counter_effect",
+        "conflicts",
+        "reason",
+    }
+    assert assessment.claim_status == "supported"
+    assert assessment.counter_effect == "partial"
 
 
 def test_candidate_evidence_assessment_requires_candidate_id():
@@ -200,12 +189,4 @@ def test_candidate_evidence_assessment_requires_candidate_id():
             candidate_id="  ",
             claim_status="supported",
             counter_effect="none",
-        )
-
-
-def test_severity_factor_assessment_requires_factor_id():
-    with pytest.raises(ValidationError):
-        SeverityFactorAssessment(
-            factor_id="",
-            status="proven",
         )

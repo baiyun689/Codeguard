@@ -26,7 +26,7 @@ def _dossier(candidate_type: str = "authorization", candidate_id: str = "candida
         file="src/Service.java",
         patch="+ authorize(request);",
     )
-    return SimpleNamespace(candidate=candidate, task=task, risk_profile=None)
+    return SimpleNamespace(candidate=candidate, task=task)
 
 
 def test_batch_candidate_tag_resolution_keeps_input_mapping_and_falls_back(monkeypatch):

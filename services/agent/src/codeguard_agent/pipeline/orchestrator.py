@@ -203,7 +203,7 @@ def _inject_degradation(report: Any, final_state: dict) -> None:
             for t in council_trace
         ) or (
             final_state.get("council_stats")
-            and getattr(final_state["council_stats"], "severity_defaulted_count", 0) or 0
+            and getattr(final_state["council_stats"], "judge_synthesis_failed_count", 0) or 0
         ),
         evidence_plan_skipped=sum(
             t.event == "evidence_plan_skipped" for t in council_trace
