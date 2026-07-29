@@ -291,21 +291,22 @@ def _summary_node(llm, tool_client):
 
 
 def _classify_mode_node():
-    """根据 PR 体量决定审查模式（纯确定性，不调 LLM）。"""
+    """根据 PR 体量决定审查模式（纯确定性，不调 LLM，不建 task）。
+
+    只做轻量 diff 统计（文件数/hunk 数/字符数），不构建 ReviewTask 对象。
+    """
 
     def _node(state: ReviewState) -> dict:
-        tasks = state.get("review_tasks") or []
+        diff_text = state.get("diff_text", "")
         budget = state.get("review_budget") or ReviewBudget()
-        mode = task_prep.classify_pr_mode(
-            state.get("diff_text", ""), tasks, budget,
-        )
+        mode = task_prep.classify_diff(diff_text, budget)
         return {
             "review_mode": mode.value,
             "council_trace": [
                 CouncilTrace(
                     node="classify_mode",
                     event="mode_selected",
-                    detail=f"mode={mode.value} tasks={len(tasks)}",
+                    detail=f"mode={mode.value}",
                 )
             ],
         }
@@ -1547,9 +1548,8 @@ def build_review_graph(
             _council_judge_node(llm, judge_llm=effective_judge_llm),
         )
 
-    # ── 边：START → diff_task_builder → classify_mode ──
-    g.add_edge(START, "diff_task_builder")
-    g.add_edge("diff_task_builder", "classify_mode")
+    # ── 边：START → classify_mode（不预建 task）──
+    g.add_edge(START, "classify_mode")
 
     # ── 条件路由：按 PR 体量分流 ──
     g.add_conditional_edges(
@@ -1558,15 +1558,18 @@ def build_review_graph(
         {
             "small": "direct_review",
             "medium": "rebuild_file_tasks",
-            "large": "risk_triage",
+            "large": "diff_task_builder",
         },
     )
 
     # ── small 路径 ──
     g.add_edge("direct_review", END)
 
-    # ── medium 路径 ──
+    # ── medium 路径：文件级建 task ──
     g.add_edge("rebuild_file_tasks", "risk_triage")
+
+    # ── large 路径：hunk 级建 task ──
+    g.add_edge("diff_task_builder", "risk_triage")
 
     # ── medium + large 共用管线 ──
     g.add_edge("risk_triage", "task_rank")

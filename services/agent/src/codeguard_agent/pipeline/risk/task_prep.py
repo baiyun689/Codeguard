@@ -82,7 +82,7 @@ def _is_build_artifact(file_path: str) -> bool:
     return False
 
 # @@ -oldStart[,oldLen] +newStart[,newLen] @@ [section heading]
-_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 
 
 def _norm(path: str) -> str:
@@ -410,22 +410,25 @@ def rank_tasks(
     )
 
 
-def classify_pr_mode(
-    diff_text: str, tasks: list[ReviewTask], budget: ReviewBudget,
-) -> ReviewMode:
-    """根据 PR 体量决定审查模式。
+def classify_diff(diff_text: str, budget: ReviewBudget) -> ReviewMode:
+    """根据 diff 文本体量决定审查模式（不构建 ReviewTask，轻量统计）。
 
-    纯确定性函数：依赖 diff 字符数、task 统计量和 budget 可配置阈值。
-    不调 LLM，不读仓库文件。
+    纯确定性函数：只扫描 diff 文本的文件数/hunk 数/字符数。
+    不调 LLM，不读仓库文件，不建 task 对象。
 
     判定逻辑（字符数主导——核心问题是 diff 能否装进上下文窗口）：
     - small：文件数、hunk 数、diff 字符数均不超过对应阈值
     - medium：不超过中型阈值，否则
     - large：超出中型阈值
     """
-    file_count = len({t.file for t in tasks})
-    hunk_count = len([t for t in tasks if t.hunk_header])
+    import re
+    from codeguard_agent.git.diff_collector import split_diff_by_file
+
     diff_chars = len(diff_text)
+    # 轻量统计：只计数，不拆分 hunk
+    file_sections = split_diff_by_file(diff_text)
+    file_count = len(file_sections)
+    hunk_count = len(_HUNK_HEADER.findall(diff_text))
 
     if (
         file_count <= budget.small_max_files
@@ -441,3 +444,11 @@ def classify_pr_mode(
         return ReviewMode.MEDIUM
 
     return ReviewMode.LARGE
+
+
+# 保留旧签名兼容（已测代码过渡期使用）
+def classify_pr_mode(
+    diff_text: str, tasks: list[ReviewTask], budget: ReviewBudget,
+) -> ReviewMode:
+    """Deprecated: 请使用 classify_diff(diff_text, budget)。"""
+    return classify_diff(diff_text, budget)
