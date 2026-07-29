@@ -149,14 +149,32 @@ class RiskProfile(BaseModel):
     signals: list[RiskSignal] = Field(default_factory=list)
 
 
+class ReviewMode(str, Enum):
+    """PR 体量自适应审查模式。"""
+
+    SMALL = "small"      # 直接审查整个 diff，不拆分、不走管线
+    MEDIUM = "medium"    # 按文件拆分，走完整管线
+    LARGE = "large"      # 按 hunk 拆分 + 预算控制（现状）
+
+
 class ReviewBudget(BaseModel):
     """覆盖与执行预算。普通模式解除 task 上限，大 diff 才消费配置的覆盖上限。"""
 
+    # ── 任务数量预算 ──
     max_tasks_to_review: StrictInt | None = Field(default=100, gt=0)
     max_tasks_per_file: StrictInt | None = Field(default=10, gt=0)
     max_context_chars_per_task: StrictInt | None = Field(default=4000, gt=0)
     max_react_tasks: StrictInt = Field(default=20, gt=0)
     max_final_issues: StrictInt | None = Field(default=None, gt=0)
+
+    # ── PR 体量分类阈值（可配置，方便评测调参） ──
+    small_max_files: StrictInt = Field(default=3, gt=0)
+    small_max_changed_lines: StrictInt = Field(default=200, gt=0)
+    small_max_hunks: StrictInt = Field(default=5, gt=0)
+    medium_max_files: StrictInt = Field(default=15, gt=0)
+    medium_max_changed_lines: StrictInt = Field(default=2000, gt=0)
+    # 文件级审查时，单文件变更行数超过此阈值则内部回退 hunk 级
+    medium_file_changed_lines_fallback: StrictInt = Field(default=500, gt=0)
 
 
 class SkippedTask(BaseModel):

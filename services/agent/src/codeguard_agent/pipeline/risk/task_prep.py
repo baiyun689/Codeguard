@@ -15,6 +15,7 @@ import re
 from codeguard_agent.git.diff_collector import split_diff_by_file
 from codeguard_agent.models.tasks import (
     ReviewBudget,
+    ReviewMode,
     ReviewTask,
     RiskProfile,
     RiskTag,
@@ -348,3 +349,34 @@ def rank_tasks(
             for task, reason in skipped
         ],
     )
+
+
+def classify_pr_mode(tasks: list[ReviewTask], budget: ReviewBudget) -> ReviewMode:
+    """根据 PR 体量决定审查模式。
+
+    纯确定性函数：仅依赖 task 统计量和 budget 中的可配置阈值。
+    不调 LLM，不读仓库文件。
+
+    判定逻辑：
+    - small：文件数、变更行、hunk 数均不超过对应阈值
+    - medium：不超过中型阈值，否则
+    - large：超出中型阈值
+    """
+    file_count = len({t.file for t in tasks})
+    total_changed = sum(len(t.changed_lines) for t in tasks)
+    hunk_count = len([t for t in tasks if t.hunk_header])
+
+    if (
+        file_count <= budget.small_max_files
+        and total_changed <= budget.small_max_changed_lines
+        and hunk_count <= budget.small_max_hunks
+    ):
+        return ReviewMode.SMALL
+
+    if (
+        file_count <= budget.medium_max_files
+        and total_changed <= budget.medium_max_changed_lines
+    ):
+        return ReviewMode.MEDIUM
+
+    return ReviewMode.LARGE

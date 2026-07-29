@@ -36,6 +36,7 @@ from codeguard_agent.models.tasks import (
     ContextStatus,
     ReviewBudget,
     ReviewCoveragePlan,
+    ReviewMode,
     ReviewerKind,
     ReviewTask,
     RiskCoverage,
@@ -178,6 +179,7 @@ class ReviewState(TypedDict, total=False):
     diff_summary: str
 
     review_budget: ReviewBudget
+    review_mode: str  # "small" | "medium" | "large"
     review_tasks: list[ReviewTask]
     risk_profiles: dict[str, RiskProfile]
     risk_priors: dict[str, TaskRiskPrior]
