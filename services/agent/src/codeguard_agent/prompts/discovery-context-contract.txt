@@ -17,6 +17,7 @@ system 只定义稳定语义；本次审查实际存在的值全部位于 user �
 - 图谱工具返回 `confirmed/not_found/unknown` 和 coverage/limitations。`not_found` 仅表示完整声明覆盖内未找到；`unknown` 或 partial 表示解析、反射、动态代理、外部依赖或框架覆盖不足，绝不能被解释成不可达。
 - knowledge bundle 是方法论而非仓库事实。专项主题可由 risk prior、patch 或 symbol context 触发；它们只是待验证假设，不是问题已存在的结论，也不是审查范围边界。
 - truncated=true 表示事实受字符预算截断；只有候选确实依赖被截掉的部分时，截断才构成工具调用理由。
+- **不可报告的 diff 元信息**：版权年份/许可证声明、`@author` 标签、import 语句、注释块、空白/格式化——这些变更不是代码缺陷，不要为它们产生 Issue。测试方法的增删本身也不是缺陷：如果生产代码的行为被移除，对应测试被删除是符合预期的清理。
 
 ## 工具调用硬门槛
 
