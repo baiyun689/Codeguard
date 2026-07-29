@@ -300,13 +300,18 @@ def _classify_mode_node():
         diff_text = state.get("diff_text", "")
         budget = state.get("review_budget") or ReviewBudget()
         mode = task_prep.classify_diff(diff_text, budget)
+        diff_chars = len(diff_text)
         return {
             "review_mode": mode.value,
             "council_trace": [
                 CouncilTrace(
                     node="classify_mode",
                     event="mode_selected",
-                    detail=f"mode={mode.value}",
+                    detail=(
+                        f"mode={mode.value} diff_chars={diff_chars} "
+                        f"small_max={budget.small_max_diff_chars} "
+                        f"medium_max={budget.medium_max_diff_chars}"
+                    ),
                 )
             ],
         }
@@ -366,7 +371,10 @@ def _direct_review_node(llm):
                 CouncilTrace(
                     node="direct_review",
                     event="completed",
-                    detail=f"issues={len(outcome.result.issues)}",
+                    detail=(
+                        f"mode=small issues={len(outcome.result.issues)} "
+                        f"diff_chars={len(state['diff_text'])}"
+                    ),
                 )
             ],
         }
@@ -381,13 +389,19 @@ def _rebuild_file_tasks_node():
         diff_text = state.get("diff_text", "")
         budget = state.get("review_budget") or ReviewBudget()
         tasks = task_prep.build_file_tasks(diff_text, budget)
+        file_count = len({t.file for t in tasks})
+        hunk_fallback_count = len([t for t in tasks if t.hunk_header])
         return {
             "review_tasks": tasks,
             "council_trace": [
                 CouncilTrace(
                     node="rebuild_file_tasks",
-                    event="tasks_rebuilt",
-                    detail=f"file_tasks={len(tasks)}",
+                    event="tasks_built",
+                    detail=(
+                        f"mode=medium tasks={len(tasks)} "
+                        f"files={file_count} "
+                        f"hunk_fallback={hunk_fallback_count}"
+                    ),
                 )
             ],
         }
@@ -396,18 +410,21 @@ def _rebuild_file_tasks_node():
 
 
 def _diff_task_builder_node():
-    """DiffTaskBuilder：解析 diff → ReviewTask。不判断风险、不读仓库、不调 LLM。"""
+    """DiffTaskBuilder：解析 diff → ReviewTask（large 模式的 hunk 级拆分）。"""
 
     def _node(state: ReviewState) -> dict:
         tasks = task_prep.build_tasks(state.get("diff_text", ""))
+        file_count = len({t.file for t in tasks})
         return {
             "review_tasks": tasks,
             "council_trace": [
                 CouncilTrace(
                     node="diff_task_builder",
                     event="tasks_built",
-                    detail=f"tasks={len(tasks)}",
-
+                    detail=(
+                        f"mode=large tasks={len(tasks)} "
+                        f"files={file_count}"
+                    ),
                 )
             ],
         }
