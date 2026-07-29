@@ -995,11 +995,15 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
 
         candidates = []
         rejected_mismatched: list[str] = []
+        rejected_noise = 0
         accepted_count = 0
         for task_id, issue in kept_pairs:
             task = task_by_id[task_id]
             if not task_prep.file_matches_task(issue.file, task):
                 rejected_mismatched.append(f"{issue.file}:{issue.line} -> {task_id}")
+                continue
+            if task_prep.is_noise_issue(issue.file, issue.type, issue.message):
+                rejected_noise += 1
                 continue
 
             accepted_count += 1
@@ -1016,7 +1020,8 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 event="candidates_created",
                 detail=(
                     f"count={len(candidates)} truncated={truncated_candidates} "
-                    f"rejected_task_mismatch={len(rejected_mismatched)}"
+                    f"rejected_task_mismatch={len(rejected_mismatched)} "
+                    f"rejected_noise={rejected_noise}"
                 ),
             )
         )
