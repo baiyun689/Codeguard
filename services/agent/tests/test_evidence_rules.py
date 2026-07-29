@@ -174,10 +174,15 @@ def test_every_strategy_has_valid_declarations_and_recipe_tools():
     dossier = _dossier()
 
     for strategy in STRATEGIES_BY_ID.values():
-        assert strategy.question_template.strip()
+        # claim.* 策略的 question_template 在注册表中为空，运行时由 goal.proposition 注入
+        if not strategy.id.startswith("claim."):
+            assert strategy.question_template.strip()
+            assert len(strategy.tags) == 1
+        else:
+            # claim 策略不绑定 RiskTag，tags 为空 frozenset
+            assert len(strategy.tags) == 0
         assert set(strategy.context_kinds) <= VALID_CONTEXT_KINDS
         assert set(strategy.allowed_tools) <= VALID_TOOLS
-        assert len(strategy.tags) == 1
         calls = strategy.build_tool_calls(dossier)
         assert {call.tool_name for call in calls} <= {
             CAPABILITY_TO_TOOL[capability]
@@ -190,6 +195,10 @@ def test_non_upstream_strategy_allowlist_exactly_matches_recipe_tools():
 
     for strategy in STRATEGIES_BY_ID.values():
         if strategy.id.endswith(".counter_upstream"):
+            continue
+        # claim.* 策略的工具可用性依赖运行时上下文（如 symbol_id），
+        # 静态 dossier 无法保证全部 capability 都有对应的工具调用
+        if strategy.id.startswith("claim."):
             continue
         calls = strategy.build_tool_calls(dossier)
         actual_tools = tuple(dict.fromkeys(call.tool_name for call in calls))

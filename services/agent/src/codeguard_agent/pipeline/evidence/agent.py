@@ -20,13 +20,6 @@ from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.engines import GatheredContext
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID
-from codeguard_agent.pipeline.evidence.capability import capabilities_for_fact_type
-from codeguard_agent.pipeline.evidence.rules.recipes import (
-    callers_upstream,
-    file_metrics,
-    file_only,
-    file_sensitive,
-)
 from codeguard_agent.pipeline.evidence.rules.types import (
     EvidenceStrategy,
     ToolCallSpec,
@@ -134,59 +127,31 @@ def _expected_tools(calls: list[ToolCallSpec]) -> list[str]:
     return list(dict.fromkeys(call.tool_name for call in calls))
 
 
-def _claim_tool_calls(
-    request: EvidenceRequest,
-    dossier: CandidateDossier,
-) -> list[ToolCallSpec]:
-    desired = set(request.preferred_tools)
-    available = [
-        *file_only(dossier),
-        *callers_upstream(dossier),
-        *file_sensitive(dossier),
-        *file_metrics(dossier),
-    ]
-    calls: list[ToolCallSpec] = []
-    seen: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
-    for call in available:
-        key = (call.tool_name, call.arguments)
-        if call.tool_name not in desired or key in seen:
-            continue
-        seen.add(key)
-        calls.append(call)
-    return calls
-
-
 def _strategy_for_request(
     request: EvidenceRequest,
     dossier: CandidateDossier,
 ) -> EvidenceStrategy | None:
+    """从注册表解析策略。
+
+    claim.* 策略的 question_template 在注册表中为空字符串——运行时由
+    goal.proposition 注入，确保每个 request 携带其 concern 专属的命题文本。
+    """
     registered = STRATEGIES_BY_ID.get(request.strategy_id)
-    if registered is not None:
-        return registered
-    if not request.strategy_id.startswith("claim.") or request.fact_type is None:
+    if registered is None:
         return None
-    capabilities = capabilities_for_fact_type(request.fact_type)
-    context_kinds = tuple(dict.fromkeys(
-        ["task_patch", "symbol_context"]
-        + [
-            fact.kind
-            for fact in (
-                dossier.context_bundle.facts
-                if dossier.context_bundle is not None
-                else ()
-            )
-        ]
-    ))
-    return EvidenceStrategy(
-        id=request.strategy_id,
-        tags=frozenset(),
-        purpose=request.purpose,
-        priority=0,
-        question_template=request.question,
-        context_kinds=context_kinds,
-        allowed_capabilities=capabilities,
-        build_tool_calls=lambda bound: _claim_tool_calls(request, bound),
-    )
+    # claim.* 策略：question_template 留空，运行时从 request.question 注入
+    if not registered.question_template and request.question:
+        return EvidenceStrategy(
+            id=registered.id,
+            tags=registered.tags,
+            purpose=registered.purpose,
+            priority=registered.priority,
+            question_template=request.question,
+            context_kinds=registered.context_kinds,
+            allowed_capabilities=registered.allowed_capabilities,
+            build_tool_calls=registered.build_tool_calls,
+        )
+    return registered
 
 
 def request_strategy_mismatch(
@@ -212,15 +177,27 @@ def request_strategy_mismatch(
     target = context_rules.normalize_path(request.target)
     if target != context_rules.normalize_path(dossier.task.file):
         return "target"
-    if not request.question.strip() or request.question != strategy.question_template:
+    # question 校验：claim.* 策略的 question_template 由运行时注入，
+    # 只需保证非空；旧 tag 策略需精确匹配注册模板
+    if not request.question.strip():
         return "question"
+    if strategy.question_template and request.question != strategy.question_template:
+        return "question"
+    # preferred_tools 校验：claim.* 策略的工具可用性依赖运行时上下文
+    # （如 symbol_id 是否存在），只需验证请求工具在策略能力范围内；
+    # 旧 tag 策略保持精确匹配
+    if request.strategy_id.startswith("claim."):
+        if not set(request.preferred_tools).issubset(set(strategy.allowed_tools)):
+            return "preferred_tools"
+    else:
+        calls = strategy.build_tool_calls(dossier)
+        accepted_preferred_tools = [
+            _expected_tools(calls),
+            list(strategy.allowed_tools),
+        ]
+        if request.preferred_tools not in accepted_preferred_tools:
+            return "preferred_tools"
     calls = strategy.build_tool_calls(dossier)
-    accepted_preferred_tools = [
-        _expected_tools(calls),
-        list(strategy.allowed_tools),
-    ]
-    if request.preferred_tools not in accepted_preferred_tools:
-        return "preferred_tools"
     if any(
         as_capability(call.capability) not in strategy.allowed_capabilities
         for call in calls

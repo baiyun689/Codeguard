@@ -46,6 +46,22 @@ _ALL_STRATEGIES = [
 STRATEGIES_BY_TAG, STRATEGIES_BY_ID = _build_registry(_ALL_STRATEGIES)
 
 
+# ── claim.* 策略延迟注册（避免 capability → rules.types ← rules.__init__ 循环导入）──
+
+def _register_claim_strategies() -> None:
+    from codeguard_agent.pipeline.evidence.capability import CLAIM_STRATEGIES
+
+    _, claim_by_id = _build_registry(list(CLAIM_STRATEGIES))
+    duplicates = set(STRATEGIES_BY_ID) & set(claim_by_id)
+    if duplicates:
+        raise ValueError(f"claim strategy id conflict: {duplicates}")
+    STRATEGIES_BY_ID.update(claim_by_id)
+    # claim 策略 tags 为空 frozenset，不更新 STRATEGIES_BY_TAG
+
+
+_register_claim_strategies()
+
+
 def strategies_for(
     tag: RiskTag, purpose: EvidencePurpose | None = None
 ) -> tuple[EvidenceStrategy, ...]:
