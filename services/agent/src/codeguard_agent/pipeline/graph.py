@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import operator
+from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
 from codeguard_agent.llm.client import mock_review_result
@@ -284,6 +285,108 @@ def _summary_node(llm, tool_client):
         ctx.diff_text = _selected_diff(state, scope)
         SummaryStage().execute(ctx)
         return {"diff_summary": ctx.diff_summary}
+
+    return _node
+
+
+def _classify_mode_node():
+    """根据 PR 体量决定审查模式（纯确定性，不调 LLM）。"""
+
+    def _node(state: ReviewState) -> dict:
+        tasks = state.get("review_tasks") or []
+        budget = state.get("review_budget") or ReviewBudget()
+        mode = task_prep.classify_pr_mode(tasks, budget)
+        return {
+            "review_mode": mode.value,
+            "council_trace": [
+                CouncilTrace(
+                    node="classify_mode",
+                    event="mode_selected",
+                    detail=f"mode={mode.value} tasks={len(tasks)}",
+                )
+            ],
+        }
+
+    return _node
+
+
+def _direct_review_node(llm):
+    """小型 PR：单次 LLM 直接审查完整 diff，不走管线。"""
+    _prompt_dir = Path(__file__).resolve().parents[1] / "prompts"
+
+    def _node(state: ReviewState) -> dict:
+        if llm is None:
+            return {
+                "final_issues": [],
+                "summary": "",
+                "council_trace": [
+                    CouncilTrace(
+                        node="direct_review",
+                        event="skipped",
+                        detail="no llm available",
+                    )
+                ],
+            }
+        system = (_prompt_dir / "eval-direct-reviewer.txt").read_text(encoding="utf-8")
+        user = (
+            "请审查以下 unified diff，报告所有由变更引入或暴露的、"
+            "具有具体运行时影响的问题。\n\n"
+            f"```diff\n{state['diff_text']}\n```"
+        )
+        try:
+            outcome = DirectEngine().review(
+                llm,
+                system_prompt=system,
+                user_prompt=user,
+                reviewer_name="direct_review",
+                max_retries=state.get("max_retries", 3),
+                structured_method=state.get("structured_method", "function_calling"),
+            )
+        except Exception:
+            logger.warning("direct_review 失败，返回空结果", exc_info=True)
+            return {
+                "final_issues": [],
+                "summary": "",
+                "council_trace": [
+                    CouncilTrace(
+                        node="direct_review",
+                        event="failed",
+                        detail="direct review exception",
+                    )
+                ],
+            }
+        return {
+            "final_issues": outcome.result.issues,
+            "summary": outcome.result.summary,
+            "council_trace": [
+                CouncilTrace(
+                    node="direct_review",
+                    event="completed",
+                    detail=f"issues={len(outcome.result.issues)}",
+                )
+            ],
+        }
+
+    return _node
+
+
+def _rebuild_file_tasks_node():
+    """中型 PR：用文件级 task 替换 hunk 级 task。"""
+
+    def _node(state: ReviewState) -> dict:
+        diff_text = state.get("diff_text", "")
+        budget = state.get("review_budget") or ReviewBudget()
+        tasks = task_prep.build_file_tasks(diff_text, budget)
+        return {
+            "review_tasks": tasks,
+            "council_trace": [
+                CouncilTrace(
+                    node="rebuild_file_tasks",
+                    event="tasks_rebuilt",
+                    detail=f"file_tasks={len(tasks)}",
+                )
+            ],
+        }
 
     return _node
 
@@ -1373,30 +1476,50 @@ def build_review_graph(
 ):
     """编译审查状态图。
 
+    按 PR 体量自动路由：
+      - small：直接审查完整 diff，不走管线
+      - medium：文件级 task 拆分 + 完整管线
+      - large：hunk 级 task 拆分 + 预算控制（现状）
+
     默认拓扑:
-        diff_task_builder → risk_triage → task_rank → review_coverage → summary? → context_provider
-          → discover_*(×3) → council_coordinator(fan-in)
-          → concern_analyzer → evidence_planner → evidence_agent → council_judge → END
+        START → diff_task_builder(hunk级) → classify_mode
+          ├─ small  → direct_review → END
+          ├─ medium → rebuild_file_tasks → risk_triage → ... (完整管线)
+          └─ large  → risk_triage → task_rank → review_coverage → summary?
+                       → context_provider → discover_*(×3)
+                       → council_coordinator(fan-in)
+                       → concern_analyzer → evidence_planner
+                       → evidence_agent → council_judge → END
 
     discovery_only 拓扑:
-        diff_task_builder → risk_triage → task_rank → review_coverage → summary? → context_provider
-          → discover_*(×3) → discovery_collector → END
-        (跳过归并/举证/法官，直接输出三路发现者原始候选)
+        START → diff_task_builder → classify_mode
+          ├─ small  → direct_review → END
+          ├─ medium → rebuild_file_tasks → risk_triage → ... → discover_*(×3)
+          │           → discovery_collector → END
+          └─ large  → risk_triage → ... → discover_*(×3)
+                       → discovery_collector → END
     """
     from langgraph.graph import END, START, StateGraph
 
     g = StateGraph(ReviewState)
     effective_judge_llm = fp_verify_llm or llm
-    g.add_node("context_provider", _context_provider_node(tool_client))
+
+    # ── 全模式共用节点 ──
     g.add_node("diff_task_builder", _diff_task_builder_node())
+    g.add_node("classify_mode", _classify_mode_node())
     g.add_node("risk_triage", _risk_triage_node())
     g.add_node("task_rank", _task_rank_node())
     g.add_node("review_coverage", _review_coverage_node(tool_client))
+    g.add_node("context_provider", _context_provider_node(tool_client))
     for reviewer in DEFAULT_REVIEWERS:
         g.add_node(
             _discover_node_name(reviewer),
             make_reviewer_node(reviewer, checkpointer=checkpointer, llm=llm, tool_client=tool_client),
         )
+
+    # ── 模式特定节点 ──
+    g.add_node("direct_review", _direct_review_node(llm))
+    g.add_node("rebuild_file_tasks", _rebuild_file_tasks_node())
 
     if discovery_only:
         g.add_node("discovery_collector", _discovery_collector_node())
@@ -1416,8 +1539,28 @@ def build_review_graph(
             _council_judge_node(llm, judge_llm=effective_judge_llm),
         )
 
+    # ── 边：START → diff_task_builder → classify_mode ──
     g.add_edge(START, "diff_task_builder")
-    g.add_edge("diff_task_builder", "risk_triage")
+    g.add_edge("diff_task_builder", "classify_mode")
+
+    # ── 条件路由：按 PR 体量分流 ──
+    g.add_conditional_edges(
+        "classify_mode",
+        lambda state: state.get("review_mode", "large"),
+        {
+            "small": "direct_review",
+            "medium": "rebuild_file_tasks",
+            "large": "risk_triage",
+        },
+    )
+
+    # ── small 路径 ──
+    g.add_edge("direct_review", END)
+
+    # ── medium 路径 ──
+    g.add_edge("rebuild_file_tasks", "risk_triage")
+
+    # ── medium + large 共用管线 ──
     g.add_edge("risk_triage", "task_rank")
     g.add_edge("task_rank", "review_coverage")
     if enable_summary:

@@ -253,6 +253,65 @@ def build_tasks(diff_text: str) -> list[ReviewTask]:
     return tasks
 
 
+def build_file_tasks(diff_text: str, budget: ReviewBudget) -> list[ReviewTask]:
+    """解析 unified diff → 每文件一个 ReviewTask。
+
+    - 有内容变更的文件：合并该文件所有 hunk 为一个 task，patch 为完整文件级 diff section
+    - 单文件变更行数超过 medium_file_changed_lines_fallback 时，
+      该文件内部回退 hunk 级拆分（避免上下文窗口溢出）
+    - 删除文件 / 纯重命名：文件级 fallback task
+    """
+    tasks: list[ReviewTask] = []
+    seen_files: set[str] = set()
+    skipped_artifacts = 0
+    fallback_lines = budget.medium_file_changed_lines_fallback
+    for file, section in split_diff_by_file(diff_text).items():
+        if _is_build_artifact(file):
+            skipped_artifacts += 1
+            continue
+        seen_files.add(file)
+        hunks = _split_hunks(section)
+        if not hunks:
+            tasks.append(
+                ReviewTask(id=f"{file}#file", file=file, patch=section, changed_lines=[])
+            )
+            continue
+        # 收集所有 hunk 的变更行
+        all_changed: list[int] = []
+        for _header, body, new_start in hunks:
+            all_changed.extend(_changed_lines(body, new_start))
+        # 单文件超过阈值 → 该文件内部回退 hunk 级
+        if len(all_changed) > fallback_lines:
+            for i, (header, body, new_start) in enumerate(hunks):
+                tasks.append(
+                    ReviewTask(
+                        id=f"{file}#h{i}",
+                        file=file,
+                        hunk_header=header,
+                        patch=body,
+                        changed_lines=_changed_lines(body, new_start),
+                    )
+                )
+            continue
+        tasks.append(
+            ReviewTask(
+                id=f"{file}#file",
+                file=file,
+                patch=section,
+                changed_lines=all_changed,
+            )
+        )
+    for path, section in _fallback_targets(diff_text).items():
+        if path in seen_files or _is_build_artifact(path):
+            continue
+        tasks.append(
+            ReviewTask(id=f"{path}#file", file=path, patch=section, changed_lines=[])
+        )
+    if skipped_artifacts:
+        logger.info("build_file_tasks: 跳过 %d 个构建产物文件", skipped_artifacts)
+    return tasks
+
+
 def triage_tasks(tasks: list[ReviewTask]) -> TriageResult:
     """按注册表聚合风险信号并保留规则失败诊断。"""
     return _triage_tasks(tasks)

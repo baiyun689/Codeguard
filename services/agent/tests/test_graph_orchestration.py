@@ -11,7 +11,7 @@ import codeguard_agent.pipeline.orchestrator as orchestrator_module
 from codeguard_agent.models.council import ContextBundle, ContextFact
 from codeguard_agent.models.knowledge import KnowledgeBundle
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
-from codeguard_agent.models.tasks import RiskSignal, RiskTag
+from codeguard_agent.models.tasks import ReviewBudget, RiskSignal, RiskTag
 from codeguard_agent.pipeline import graph as G
 from codeguard_agent.pipeline.engines import GatheredContext, ReviewOutcome
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
@@ -421,9 +421,23 @@ _MOCK_DIFF = (
     "+int injected = 1;\n"
 )
 
+# 16 个文件的 diff —— 超过 medium_max_files=15，触发 large 模式，
+# 确保管线测试走完整 pipeline 路径而非 direct_review 短路。
+_LARGE_DIFF = "".join(
+    f"diff --git a/F{i:02d}.java b/F{i:02d}.java\n"
+    f"--- a/F{i:02d}.java\n"
+    f"+++ b/F{i:02d}.java\n"
+    f"@@ -1 +1,2 @@\n"
+    f"+int x{i}=1;\n"
+    for i in range(16)
+)
+
 
 def test_adr032_mock_end_to_end():
-    result = PipelineOrchestrator(enable_summary=False).run(None, _MOCK_DIFF)
+    result = PipelineOrchestrator(
+        enable_summary=False,
+        review_budget=ReviewBudget(small_max_files=0),
+    ).run(None, _MOCK_DIFF)
     assert isinstance(result, ReviewResult)
     assert len(result.issues) == 1
 
@@ -513,7 +527,10 @@ class _FakeEngine:
 
 def test_graph_fanin_three_discoverers(monkeypatch):
     monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _FakeEngine())
-    orch = PipelineOrchestrator(enable_summary=False)
+    orch = PipelineOrchestrator(
+        enable_summary=False,
+        review_budget=ReviewBudget(small_max_files=0),
+    )
     trace: list = []
     meta: dict = {}
     result = orch.run(
@@ -573,7 +590,11 @@ def test_checkpointer_factory_empty_returns_none():
 
 
 def test_orchestrator_with_memory_checkpointer_produces_same_result():
-    orch = PipelineOrchestrator(enable_summary=False, checkpoint_backend="memory")
+    orch = PipelineOrchestrator(
+        enable_summary=False,
+        checkpoint_backend="memory",
+        review_budget=ReviewBudget(small_max_files=0),
+    )
     result = orch.run(None, _MOCK_DIFF, thread_id="adr032-same-result")
     assert len(result.issues) >= 1
 
@@ -582,6 +603,7 @@ def test_hitl_is_ignored_in_adr032_default_path():
     orch = PipelineOrchestrator(
         enable_summary=False,
         checkpoint_backend="memory",
+        review_budget=ReviewBudget(small_max_files=0),
     )
     result = orch.run(None, _MOCK_DIFF, thread_id="hitl-ignored")
     assert len(result.issues) >= 1
@@ -781,7 +803,10 @@ def test_coordinator_edges_through_planner_to_evidence_agent():
 
 def test_evidence_agent_runs_once_before_judge(monkeypatch):
     monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _FakeEngine())
-    orch = PipelineOrchestrator(enable_summary=False)
+    orch = PipelineOrchestrator(
+        enable_summary=False,
+        review_budget=ReviewBudget(small_max_files=0),
+    )
     meta: dict = {}
     orch.run(_FakeLLM(), _DIFF, metadata_sink=meta)
 
