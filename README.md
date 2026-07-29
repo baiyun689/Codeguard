@@ -120,6 +120,28 @@ docker compose up -d
 docker compose up -d --build
 ```
 
+启动简历演示用的完整可观测性栈：
+
+```bash
+docker compose --profile observability up -d --build
+```
+
+启动后访问 `http://localhost:3000`。Grafana 会自动加载 Prometheus 数据源和
+**Codeguard · Review & LLM Operations** 看板；匿名用户可只读查看，管理员默认账号为
+`admin / codeguard`，公开部署前应通过 `GRAFANA_ADMIN_USER` 和
+`GRAFANA_ADMIN_PASSWORD` 修改，并设置 `GRAFANA_ANONYMOUS_ENABLED=false`。
+Prometheus 位于 `http://localhost:9093`。
+
+看板覆盖三类信号：
+
+- 审查管线：活动任务、成功率、吞吐和 P95 耗时；
+- AST / Evidence 工具：按工具与结果统计调用速率；
+- LLM 韧性：按 Provider 展示调用量、P95 耗时、重试、fallback 和熔断器状态。
+
+`ops/prometheus/alerts.yml` 预置服务不可用、审查失败率、慢审查、工具错误率、
+LLM 失败率和熔断器开路告警规则。Prometheus 默认保留 15 天数据；Grafana 与
+Prometheus 数据均使用命名卷持久化。
+
 容器内用于接收 GitHub Webhook 的 CI 服务固定监听 `8080`；Tool Server 与 LLM Proxy
 分别监听内部端口 `9090` 和 `9091`。如需修改对外发布的 Webhook 宿主机端口，只设置
 `CODEGUARD_HOST_PORT`：
@@ -276,7 +298,7 @@ Java Gateway 三个服务各监听独立端口：
 | `GET /health` | 兼容健康检查端点，报告进程存活状态 |
 | `GET /health/live` | 存活探针 |
 | `GET /health/ready` | CI 服务：检查 H2、调度器和 Python 初始化状态；不可用时返回 `503` |
-| `GET /metrics` | Prometheus 文本格式指标（CI 服务和 Tool Server 均提供） |
+| `GET /metrics` | Prometheus 文本格式指标（CI、Tool Server 和 LLM Proxy 均提供） |
 
 Compose 将 H2 数据库持久化到 `gateway-data`，将按 SHA 隔离的临时审查工作区保存到 `job-workspaces`。使用 `docker compose down` 停止服务；只有在明确需要删除持久化任务状态和工作区时才添加 `--volumes`。
 

@@ -1,5 +1,6 @@
 package com.codeguard.proxy;
 
+import com.codeguard.common.GatewayMetrics;
 import com.codeguard.common.OperationalController;
 import com.codeguard.proxy.adapter.ClaudeAdapter;
 import com.codeguard.proxy.adapter.DeepSeekAdapter;
@@ -38,7 +39,8 @@ public final class ProxyServer {
         this.port = Integer.parseInt(System.getenv().getOrDefault("CODEGUARD_LLM_PROXY_PORT", "9091"));
 
         // Build adapters
-        ResilienceService resilience = new ResilienceService(config.resilience());
+        GatewayMetrics metrics = new GatewayMetrics();
+        ResilienceService resilience = new ResilienceService(config.resilience(), metrics);
         Map<String, LlmAdapter> adapters = new LinkedHashMap<>();
 
         for (var entry : config.providers().entrySet()) {
@@ -79,7 +81,7 @@ public final class ProxyServer {
 
         // Routes
         app.post("/v1/chat/completions", new ChatCompletionsHandler(router, resilience));
-        new OperationalController(this::ready).register(app);
+        new OperationalController(this::ready, metrics).register(app);
 
         // Exception handler for unexpected errors
         app.exception(Exception.class, (e, ctx) -> {

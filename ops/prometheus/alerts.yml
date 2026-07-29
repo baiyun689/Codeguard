@@ -1,0 +1,74 @@
+groups:
+  - name: codeguard-availability
+    rules:
+      - alert: CodeguardTargetDown
+        expr: up{job=~"codeguard-.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Codeguard component is unavailable"
+          description: "{{ $labels.job }} has not been scraped for more than two minutes."
+
+      - alert: CodeguardLlmCircuitOpen
+        expr: codeguard_llm_circuit_open == 1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM provider circuit breaker is open"
+          description: "Provider {{ $labels.provider }} has been unavailable for at least one minute."
+
+  - name: codeguard-quality-of-service
+    rules:
+      - alert: CodeguardHighReviewFailureRatio
+        expr: |
+          sum(rate(codeguard_review_jobs_total{outcome="failed"}[10m]))
+          /
+          clamp_min(sum(rate(codeguard_review_jobs_total[10m])), 0.001)
+          > 0.25
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Review failure ratio is above 25%"
+          description: "The rolling ten-minute review failure ratio is {{ $value | humanizePercentage }}."
+
+      - alert: CodeguardSlowReviewP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(codeguard_review_duration_seconds_bucket[15m]))
+          ) > 300
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Review P95 latency exceeds five minutes"
+          description: "The rolling fifteen-minute P95 latency is {{ $value | humanizeDuration }}."
+
+      - alert: CodeguardHighToolErrorRatio
+        expr: |
+          sum(rate(codeguard_tool_calls_total{status="error"}[10m]))
+          /
+          clamp_min(sum(rate(codeguard_tool_calls_total[10m])), 0.001)
+          > 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Static-analysis tool error ratio is above 15%"
+          description: "Tool calls are failing at {{ $value | humanizePercentage }}."
+
+      - alert: CodeguardHighLlmFailureRatio
+        expr: |
+          sum by (provider) (rate(codeguard_llm_calls_total{outcome="error"}[10m]))
+          /
+          clamp_min(sum by (provider) (rate(codeguard_llm_calls_total[10m])), 0.001)
+          > 0.25
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM provider failure ratio is above 25%"
+          description: "Provider {{ $labels.provider }} calls are failing at {{ $value | humanizePercentage }}."

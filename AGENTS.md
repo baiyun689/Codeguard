@@ -20,6 +20,8 @@ git diff → DiffTaskBuilder → RiskTriage → TaskRank → ReviewCoverage → 
 
 Java Gateway 的单实例 CI 执行底座一次执行返回结构化 outcome，调度器负责
 H2 状态、非阻塞重试、恢复、反馈与停机；workspace 按完整 SHA 隔离，并提供 readiness 与 Prometheus。
+Compose 的 `observability` profile 提供 Prometheus、预置告警规则和自动配置的 Grafana
+看板，覆盖审查吞吐/耗时、AST 工具调用及 LLM provider 重试、fallback 和熔断状态。
 
 ReviewCouncil 发现者由 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent` 方法论分工;最终 category 仍兼容 `security` / `logic` / `quality`。三类发现者各自声明工具 allowlist，并通过 `CandidateIssue` / `CandidateConcern` / `EvidenceGoal` / `EvidenceRequest` / `EvidenceNote(findings)` / `Verdict` / `CouncilTrace` 结构化黑板通信。三路发现者只通过 ID reducer 汇集 raw candidates；CouncilCoordinator 在 fan-in 后复用候选 RiskTag 解析、按完整路径和局部位置构块，并以最多 8 个并行结构化 LLM 调用进行保守归并。非法、低置信或失败结果一律保留候选。ConcernAnalyzer 为已分组和未分组成员建立无损 concern/claim 映射；ClaimEvidencePlanner 按 root cause、trigger、impact 等事实类型规划并保留成员对齐字段。旧 Supervisor 图迁移到 `services/agent/legacy/supervisor_graph/`,仅作历史参考,不作为默认路径、feature flag 或 eval profile 回退。
 

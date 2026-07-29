@@ -1,0 +1,183 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Codeguard review pipeline, static-analysis tools and LLM resilience overview.",
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "codeguard-prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {"color": "red", "text": "DOWN"},
+                "1": {"color": "green", "text": "UP"}
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red"}, {"color": "green", "value": 1}]}
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "up{job=\"codeguard-ci\"}", "legendFormat": "CI", "refId": "A"}],
+      "title": "CI Webhook",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "codeguard-prometheus"},
+      "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"color": "red", "text": "DOWN"}, "1": {"color": "green", "text": "UP"}}, "type": "value"}], "thresholds": {"mode": "absolute", "steps": [{"color": "red"}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "up{job=\"codeguard-tools\"}", "legendFormat": "Tools", "refId": "A"}],
+      "title": "AST Tool Server",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "codeguard-prometheus"},
+      "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"color": "red", "text": "DOWN"}, "1": {"color": "green", "text": "UP"}}, "type": "value"}], "thresholds": {"mode": "absolute", "steps": [{"color": "red"}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "up{job=\"codeguard-llm-proxy\"}", "legendFormat": "LLM Proxy", "refId": "A"}],
+      "title": "LLM Proxy",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "codeguard-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+      "id": 4,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(codeguard_review_active)", "legendFormat": "active", "refId": "A"}],
+      "title": "Active Reviews",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "codeguard-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "red"}, {"color": "yellow", "value": 0.8}, {"color": "green", "value": 0.95}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "id": 5,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(increase(codeguard_review_jobs_total{outcome=\"success\"}[24h])) / clamp_min(sum(increase(codeguard_review_jobs_total[24h])), 1)", "legendFormat": "success", "refId": "A"}],
+      "title": "24h Review Success",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "codeguard-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+      "id": 6,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(codeguard_review_duration_seconds_bucket[15m])))", "legendFormat": "P95", "refId": "A"}],
+      "title": "Review Latency P95",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "codeguard-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "id": 7,
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (outcome) (rate(codeguard_review_jobs_total[$__rate_interval]))", "legendFormat": "{{outcome}}", "refId": "A"}],
+      "title": "Review Throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "codeguard-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "id": 8,
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (tool, status) (rate(codeguard_tool_calls_total[$__rate_interval]))", "legendFormat": "{{tool}} / {{status}}", "refId": "A"}],
+      "title": "AST & Evidence Tool Calls",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "codeguard-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "id": 9,
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "sum by (provider, outcome) (rate(codeguard_llm_calls_total[$__rate_interval]))", "legendFormat": "{{provider}} / {{outcome}}", "refId": "A"}],
+      "title": "LLM Provider Calls",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "codeguard-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "id": 10,
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, provider) (rate(codeguard_llm_duration_seconds_bucket[$__rate_interval])))", "legendFormat": "{{provider}} P95", "refId": "A"}],
+      "title": "LLM Provider Latency P95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "codeguard-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 12, "x": 0, "y": 20},
+      "id": 11,
+      "options": {"legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "sum by (provider, reason) (rate(codeguard_llm_fallbacks_total[$__rate_interval]))", "legendFormat": "fallback {{provider}} / {{reason}}", "refId": "A"},
+        {"expr": "sum by (provider) (rate(codeguard_llm_retries_total[$__rate_interval]))", "legendFormat": "retry {{provider}}", "refId": "B"}
+      ],
+      "title": "LLM Retries & Fallbacks",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "codeguard-prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{"options": {"0": {"color": "green", "text": "CLOSED"}, "1": {"color": "red", "text": "OPEN"}}, "type": "value"}],
+          "min": 0,
+          "max": 1,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green"}, {"color": "red", "value": 1}]}
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 7, "w": 12, "x": 12, "y": 20},
+      "id": 12,
+      "options": {"displayMode": "gradient", "minVizHeight": 10, "minVizWidth": 0, "namePlacement": "auto", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showUnfilled": true, "valueMode": "color"},
+      "targets": [{"expr": "codeguard_llm_circuit_open", "legendFormat": "{{provider}}", "refId": "A"}],
+      "title": "LLM Circuit Breakers",
+      "type": "bargauge"
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 39,
+  "tags": ["codeguard", "review", "llm", "observability"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Codeguard · Review & LLM Operations",
+  "uid": "codeguard-overview",
+  "version": 1,
+  "weekStart": ""
+}

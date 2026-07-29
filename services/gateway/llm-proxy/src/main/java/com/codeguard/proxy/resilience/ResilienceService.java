@@ -1,5 +1,6 @@
 package com.codeguard.proxy.resilience;
 
+import com.codeguard.common.GatewayMetrics;
 import com.codeguard.proxy.config.ProxyConfig;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
@@ -27,12 +28,19 @@ public final class ResilienceService {
     private static final Logger log = LoggerFactory.getLogger(ResilienceService.class);
 
     private final RateLimiter rateLimiter;
-    private final Retry retry;
+    private final RetryConfig retryConfig;
+    private final Map<String, Retry> retries = new ConcurrentHashMap<>();
     private final Map<String, CircuitBreaker> circuitBreakers = new ConcurrentHashMap<>();
     private final ProxyConfig.ResilienceConfig config;
+    private final GatewayMetrics metrics;
 
     public ResilienceService(ProxyConfig.ResilienceConfig config) {
+        this(config, new GatewayMetrics());
+    }
+
+    public ResilienceService(ProxyConfig.ResilienceConfig config, GatewayMetrics metrics) {
         this.config = config;
+        this.metrics = metrics;
 
         RateLimiterConfig rlConf = RateLimiterConfig.custom()
             .limitForPeriod(config.rateLimit().permitsPerSecond())
@@ -41,7 +49,7 @@ public final class ResilienceService {
             .build();
         this.rateLimiter = RateLimiter.of("llm-global", rlConf);
 
-        RetryConfig retryConf = RetryConfig.custom()
+        this.retryConfig = RetryConfig.custom()
             .maxAttempts(config.retry().maxAttempts())
             .intervalBiFunction((attempt, error) -> {
                 // 指数退避 + 随机抖动: 500ms → 1s → 2s, ±50% jitter
@@ -55,7 +63,6 @@ public final class ResilienceService {
                     || e instanceof RuntimeException)
                 && !(e instanceof AdapterException))  // AdapterException 由 handler fallback 循环处理
             .build();
-        this.retry = Retry.of("llm-global", retryConf);
     }
 
     /**
@@ -77,6 +84,9 @@ public final class ResilienceService {
                         && adapterError.httpStatus() != 429)
                 .build();
             CircuitBreaker breaker = CircuitBreaker.of("llm-" + name, cb);
+            metrics.gaugeCircuitOpen(name, breaker, value ->
+                value.getState() == CircuitBreaker.State.OPEN
+                    || value.getState() == CircuitBreaker.State.FORCED_OPEN ? 1.0 : 0.0);
             breaker.getEventPublisher().onStateTransition(event ->
                 log.warn("LLM circuit breaker [{}]: {} → {}",
                     name,
@@ -93,7 +103,31 @@ public final class ResilienceService {
         CircuitBreaker cb = circuitBreakerFor(providerName);
         Supplier<T> decorated = RateLimiter.decorateSupplier(rateLimiter, supplier);
         decorated = CircuitBreaker.decorateSupplier(cb, decorated);
-        decorated = Retry.decorateSupplier(retry, decorated);
-        return decorated.get();
+        decorated = Retry.decorateSupplier(retryFor(providerName), decorated);
+        long startedAt = System.nanoTime();
+        try {
+            T result = decorated.get();
+            metrics.llmCall(providerName, "success", elapsedSeconds(startedAt));
+            return result;
+        } catch (RuntimeException | Error error) {
+            metrics.llmCall(providerName, "error", elapsedSeconds(startedAt));
+            throw error;
+        }
+    }
+
+    public void recordFallback(String providerName, String reason) {
+        metrics.llmFallback(providerName, reason);
+    }
+
+    private Retry retryFor(String providerName) {
+        return retries.computeIfAbsent(providerName, name -> {
+            Retry providerRetry = Retry.of("llm-" + name, retryConfig);
+            providerRetry.getEventPublisher().onRetry(event -> metrics.llmRetry(name));
+            return providerRetry;
+        });
+    }
+
+    private static double elapsedSeconds(long startedAt) {
+        return (System.nanoTime() - startedAt) / 1_000_000_000.0;
     }
 }

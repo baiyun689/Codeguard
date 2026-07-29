@@ -75,14 +75,19 @@ public final class ChatCompletionsHandler implements Handler {
 
         // 4. Try chain with fallback
         Exception lastError = null;
-        for (RouteTarget target : chain) {
+        for (int targetIndex = 0; targetIndex < chain.size(); targetIndex++) {
+            RouteTarget target = chain.get(targetIndex);
             LlmAdapter adapter = target.adapter();
             OpenAiChatRequest providerRequest = request.withModel(target.model());
             CircuitBreaker cb = adapter.getCircuitBreaker();
+            boolean canFallback = targetIndex + 1 < chain.size();
 
             // Skip if circuit breaker is open
             if (cb.getState() == CircuitBreaker.State.OPEN) {
                 log.info("熔断器 [{}] 开路, 跳过", adapter.providerName());
+                if (canFallback) {
+                    resilience.recordFallback(adapter.providerName(), "circuit_open");
+                }
                 continue;
             }
 
@@ -122,10 +127,16 @@ public final class ChatCompletionsHandler implements Handler {
                     return;
                 }
                 lastError = e;
+                if (canFallback) {
+                    resilience.recordFallback(adapter.providerName(), "provider_error");
+                }
                 log.warn("Provider [{}] 失败 (status={}), 尝试 fallback: {}",
                     adapter.providerName(), e.httpStatus(), e.getMessage());
             } catch (Exception e) {
                 lastError = e;
+                if (canFallback) {
+                    resilience.recordFallback(adapter.providerName(), "provider_error");
+                }
                 log.warn("Provider [{}] 异常, 尝试 fallback: {}", adapter.providerName(), e.getMessage());
             }
         }
