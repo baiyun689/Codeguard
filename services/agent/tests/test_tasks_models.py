@@ -7,7 +7,10 @@ from pydantic import ValidationError
 
 from codeguard_agent.models.council import ContextFact
 from codeguard_agent.models.tasks import (
+    DiffMetrics,
     ReviewBudget,
+    ReviewMode,
+    ReviewRoute,
     ReviewTask,
     RiskCoverage,
     RiskSignal,
@@ -82,6 +85,27 @@ def test_review_budget_has_phase_2_defaults():
     assert budget.max_tasks_per_file == 10
     assert budget.max_react_assignments == 20
     assert budget.max_final_issues is None
+
+
+def test_review_route_is_typed_and_trace_serializable():
+    route = ReviewRoute(
+        initial_mode=ReviewMode.SMALL,
+        effective_mode=ReviewMode.MEDIUM,
+        selected_node="file_task_builder",
+        fallback=True,
+        fallback_reason="direct_review_exception",
+        fallback_exception_type="TimeoutError",
+        metrics=DiffMetrics(file_count=2, hunk_count=3, diff_chars=1200),
+    )
+
+    assert route.model_dump(mode="json")["initial_mode"] == "small"
+    assert route.metrics.file_count == 2
+    with pytest.raises(ValidationError):
+        ReviewRoute(
+            initial_mode=ReviewMode.SMALL,
+            effective_mode=ReviewMode.MEDIUM,
+            selected_node="unknown",
+        )
 
 
 def test_review_budget_defaults_context_chars_per_task_to_4000():

@@ -55,6 +55,10 @@ body{display:flex;flex-direction:column;overflow:hidden}
   border-radius:10px;background:linear-gradient(145deg,#151e34,#10172a);
   cursor:pointer}.main-stage.selected,.step.selected{outline:2px solid var(--blue);
   outline-offset:2px}.main-stage.missing{border-style:dashed;border-color:var(--red)}
+.main-stage.skipped{border-style:dashed;opacity:.58;background:#101624}
+.route-summary{margin:-4px 0 14px;padding:9px 11px;border:1px solid var(--line);
+  border-radius:8px;background:#10182b;color:var(--dim);font-size:11px}
+.route-summary b{color:var(--cyan)}
 .arrow{width:44px;display:grid;place-items:center;color:var(--dim);font-size:20px}
 .seq{color:var(--dim);font:11px Consolas,monospace}
 .title{font-weight:800;font-size:15px;margin:4px 0 2px}
@@ -313,12 +317,31 @@ function renderOutline(){
   return html
 }
 function renderMainFlow(){
-  var stages=VIEW.main_stages||[];
+  var stages=VIEW.main_stages||[],routing=VIEW.routing||{},metrics=routing.metrics||{},
+    thresholds=routing.thresholds||{};
+  var routeSummary=routing.initial_mode?
+    '<div class="route-summary">初始模式 <b>'+esc(routing.initial_mode)+'</b>'+
+    ' · 生效模式 <b>'+esc(routing.effective_mode||routing.initial_mode)+'</b>'+
+    ' · 分支 <b>'+esc(routing.selected_node||"unknown")+'</b>'+
+    ' · '+Number(metrics.file_count||0)+' 文件 / '+Number(metrics.hunk_count||0)+
+    ' hunks / '+Number(metrics.diff_chars||0)+' 字符'+
+    (Object.keys(thresholds).length?
+      ' · S≤'+Number(thresholds.small_max_files||0)+'文件/'+
+      Number(thresholds.small_max_hunks||0)+'hunks/'+
+      Number(thresholds.small_max_diff_chars||0)+'字符'+
+      ' · M≤'+Number(thresholds.medium_max_files||0)+'文件/'+
+      Number(thresholds.medium_max_diff_chars||0)+'字符':"")+
+    (routing.fallback?' · <b>已降级</b> '+esc(routing.fallback_reason||"")+
+      (routing.fallback_exception_type?
+        ' ('+esc(routing.fallback_exception_type)+')':""):"")+
+    '</div>':"";
   return'<section class="story-section" id="main-flow"><div class="section-title">'+
-    'LangGraph 主执行流</div><div class="main-flow">'+stages.map(function(stage,index){
+    'LangGraph 主执行流</div>'+routeSummary+'<div class="main-flow">'+
+    stages.map(function(stage,index){
       var selected=stage.step_id&&stage.step_id===selectedStepId?" selected":"";
       var missing=stage.status==="missing"?" missing":"";
-      return'<div class="main-stage'+selected+missing+'"'+
+      var skipped=stage.status==="skipped"?" skipped":"";
+      return'<div class="main-stage'+selected+missing+skipped+'"'+
         (stage.step_id?' data-step-id="'+esc(stage.step_id)+'"':"")+'>'+
         '<span class="seq">#'+String(index+1).padStart(2,"0")+'</span>'+
         '<div class="title">'+esc(stage.title)+'</div><div class="code">'+

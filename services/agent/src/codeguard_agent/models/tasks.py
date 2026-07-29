@@ -156,6 +156,42 @@ class ReviewMode(str, Enum):
     LARGE = "large"      # 按 hunk 拆分 + 预算控制（现状）
 
 
+class DiffMetrics(BaseModel):
+    """PR 规模路由消费并写入 Trace 的稳定统计。"""
+
+    file_count: StrictInt = Field(default=0, ge=0)
+    hunk_count: StrictInt = Field(default=0, ge=0)
+    diff_chars: StrictInt = Field(default=0, ge=0)
+
+
+class ReviewRouteThresholds(BaseModel):
+    """做出规模判定时实际使用的阈值快照。"""
+
+    small_max_files: StrictInt = Field(default=3, ge=0)
+    small_max_hunks: StrictInt = Field(default=5, ge=0)
+    small_max_diff_chars: StrictInt = Field(default=8000, ge=0)
+    medium_max_files: StrictInt = Field(default=15, ge=0)
+    medium_max_diff_chars: StrictInt = Field(default=60000, ge=0)
+
+
+class ReviewRoute(BaseModel):
+    """一次审查最终可解释、可序列化的规模路由决策。"""
+
+    initial_mode: ReviewMode
+    effective_mode: ReviewMode
+    selected_node: Literal[
+        "direct_review",
+        "file_task_builder",
+        "diff_task_builder",
+    ]
+    fallback: bool = False
+    fallback_reason: str = ""
+    fallback_exception_type: str = ""
+    outcome: Literal["pending", "completed"] = "pending"
+    metrics: DiffMetrics = Field(default_factory=DiffMetrics)
+    thresholds: ReviewRouteThresholds = Field(default_factory=ReviewRouteThresholds)
+
+
 class ReviewBudget(BaseModel):
     """覆盖与执行预算。普通模式解除 task 上限，大 diff 才消费配置的覆盖上限。"""
 

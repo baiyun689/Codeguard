@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from codeguard_agent.models.tasks import ReviewBudget, ReviewMode
-from codeguard_agent.pipeline.risk.task_prep import classify_diff
+from codeguard_agent.pipeline.risk.task_prep import classify_diff, diff_metrics
 
 
 _SMALL_CHARS = 1000
@@ -45,6 +45,14 @@ def _budget(**overrides) -> ReviewBudget:
 
 
 class TestSmallPR:
+    def test_metrics_match_the_values_used_for_routing(self):
+        diff = _diff_text(files=2, hunks_per_file=2, chars=_SMALL_CHARS)
+        assert diff_metrics(diff).model_dump() == {
+            "file_count": 2,
+            "hunk_count": 2,
+            "diff_chars": len(diff),
+        }
+
     def test_single_file_small_diff(self):
         diff = _diff_text(files=1, hunks_per_file=1, chars=_SMALL_CHARS)
         assert classify_diff(diff, _budget()) == ReviewMode.SMALL

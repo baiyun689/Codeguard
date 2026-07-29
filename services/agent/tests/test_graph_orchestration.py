@@ -533,19 +533,53 @@ class _ValueLLM:
         return _ValueStub(self.value)
 
 
+def test_classify_mode_emits_structured_trace_route():
+    output = G._classify_mode_node()({
+        "diff_text": _DIFF,
+        "review_budget": ReviewBudget(),
+    })
+
+    assert output["review_mode"] == "small"
+    assert output["review_route"].initial_mode.value == "small"
+    assert output["review_route"].selected_node == "direct_review"
+    assert output["review_route"].metrics.file_count == 1
+    assert output["review_route"].thresholds.small_max_files == 3
+    assert output["council_trace"][0].event == "mode_selected"
+
+
 def test_small_direct_review_missing_structured_output_requests_pipeline_fallback():
-    output = G._direct_review_node(_FakeLLM())({"diff_text": _DIFF})
+    output = G._direct_review_node(_FakeLLM())({
+        "diff_text": _DIFF,
+        "review_route": {
+            "initial_mode": "small",
+            "effective_mode": "small",
+            "selected_node": "direct_review",
+            "fallback": False,
+        },
+    })
 
     assert output["direct_review_status"] == "fallback"
+    assert output["review_route"].effective_mode.value == "medium"
+    assert output["review_route"].selected_node == "file_task_builder"
+    assert output["review_route"].fallback_reason == "structured_output_missing"
     assert "final_issues" not in output
     assert output["council_trace"][0].event == "fallback"
 
 
 def test_small_direct_review_success_ends_without_risk_pipeline_state():
     expected = ReviewResult(summary="clean", issues=[])
-    output = G._direct_review_node(_ValueLLM(expected))({"diff_text": _DIFF})
+    output = G._direct_review_node(_ValueLLM(expected))({
+        "diff_text": _DIFF,
+        "review_route": {
+            "initial_mode": "small",
+            "effective_mode": "small",
+            "selected_node": "direct_review",
+            "fallback": False,
+        },
+    })
 
     assert output["direct_review_status"] == "completed"
+    assert output["review_route"].outcome == "completed"
     assert output["summary"] == "clean"
     assert "risk_priors" not in output
 

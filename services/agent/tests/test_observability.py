@@ -329,10 +329,24 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
             )
         )
 
-    node("summary", {"diff_summary": "summary"})
+    node(
+        "classify_mode",
+        {
+            "review_mode": "large",
+            "review_route": {
+                "initial_mode": "large",
+                "effective_mode": "large",
+                "selected_node": "diff_task_builder",
+                "fallback": False,
+                "metrics": {"file_count": 16, "hunk_count": 20, "diff_chars": 70000},
+            },
+        },
+    )
     node("diff_task_builder", {"review_tasks": [{"id": "task-1"}]})
     node("risk_triage", {"risk_priors": {"task-1": {}}})
     node("task_rank", {"task_selection": {"selected_task_ids": ["task-1"]}})
+    node("review_coverage", {"review_coverage_plan": {"assignments": []}})
+    node("summary", {"diff_summary": "summary"})
     node("context_provider", {"task_context_bundles": {"task-1": {}}})
     for reviewer in (
         "discover_threat_model",
@@ -354,15 +368,24 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
     )
 
     assert [stage["code_name"] for stage in view["main_stages"]] == [
+        "classify_mode",
         "diff_task_builder",
         "risk_triage",
         "task_rank",
+        "review_coverage",
         "summary",
         "context_provider",
         "review_council",
         "coordination_loop",
         "council_judge",
     ]
+    assert view["routing"] == {
+        "initial_mode": "large",
+        "effective_mode": "large",
+        "selected_node": "diff_task_builder",
+        "fallback": False,
+        "metrics": {"file_count": 16, "hunk_count": 20, "diff_chars": 70000},
+    }
     assert all(section["step_ids"] for section in view["reviewer_sections"])
     assert all(
         section["tool_call_count"] == 0
@@ -381,6 +404,256 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
     assert {"review_tasks", "risk_priors", "task_selection", "evidence_requests"} <= set(
         view["state_writes"]
     )
+
+
+def test_trace_view_marks_small_pipeline_stages_as_intentionally_skipped():
+    events = [
+        _flow_event(1, "node_start", "classify_mode", "classify_mode", "classify"),
+        _flow_event(
+            2,
+            "node_end",
+            "classify_mode",
+            "classify_mode",
+            "classify",
+            detail={
+                "output": {
+                    "review_mode": "small",
+                    "review_route": {
+                        "initial_mode": "small",
+                        "effective_mode": "small",
+                        "selected_node": "direct_review",
+                        "fallback": False,
+                        "metrics": {
+                            "file_count": 1,
+                            "hunk_count": 1,
+                            "diff_chars": 1200,
+                        },
+                    },
+                }
+            },
+        ),
+        _flow_event(3, "node_start", "direct_review", "direct_review", "direct"),
+        _flow_event(
+            4,
+            "node_end",
+            "direct_review",
+            "direct_review",
+            "direct",
+            detail={
+                "output": {
+                    "direct_review_status": "completed",
+                    "final_issues": [],
+                }
+            },
+        ),
+    ]
+
+    view = build_trace_view(
+        TraceReport(
+            run_id="small-route",
+            timestamp="2026-07-29T00:00:00",
+            events=events,
+        )
+    )
+
+    assert [stage["code_name"] for stage in view["main_stages"][:2]] == [
+        "classify_mode",
+        "direct_review",
+    ]
+    skipped = view["main_stages"][2:]
+    assert skipped
+    assert all(stage["status"] == "skipped" for stage in skipped)
+    assert all("small 模式按设计跳过" in stage["summary"] for stage in skipped)
+    assert view["routing"]["selected_node"] == "direct_review"
+    assert view["integrity"]["status"] == "complete"
+
+
+def test_trace_view_does_not_treat_unstarted_small_direct_as_success():
+    report = TraceReport(
+        run_id="small-before-direct",
+        timestamp="2026-07-29T00:00:00",
+        events=[
+            _flow_event(
+                1,
+                "node_start",
+                "classify_mode",
+                "classify_mode",
+                "classify",
+            ),
+            _flow_event(
+                2,
+                "node_end",
+                "classify_mode",
+                "classify_mode",
+                "classify",
+                detail={"output": {"review_mode": "small"}},
+            ),
+        ],
+    )
+
+    view = build_trace_view(report)
+
+    direct = next(
+        stage
+        for stage in view["main_stages"]
+        if stage["code_name"] == "direct_review"
+    )
+    assert direct["status"] == "missing"
+    assert all(
+        stage["status"] != "skipped"
+        for stage in view["main_stages"]
+        if stage["code_name"] != "classify_mode"
+    )
+
+
+def test_trace_view_infers_medium_file_route_from_pre_structured_trace():
+    events = [
+        _flow_event(1, "node_start", "classify_mode", "classify_mode", "classify"),
+        _flow_event(
+            2,
+            "node_end",
+            "classify_mode",
+            "classify_mode",
+            "classify",
+            detail={"output": {"review_mode": "medium"}},
+        ),
+        _flow_event(3, "node_start", "file_task_builder", "file_task_builder", "file"),
+        _flow_event(
+            4,
+            "node_end",
+            "file_task_builder",
+            "file_task_builder",
+            "file",
+            detail={"output": {"review_tasks": []}},
+        ),
+    ]
+    view = build_trace_view(
+        TraceReport(
+            run_id="legacy-medium-route",
+            timestamp="2026-07-29T00:00:00",
+            events=events,
+        )
+    )
+
+    assert view["routing"]["initial_mode"] == "medium"
+    assert view["routing"]["selected_node"] == "file_task_builder"
+    assert [stage["code_name"] for stage in view["main_stages"][:2]] == [
+        "classify_mode",
+        "file_task_builder",
+    ]
+
+
+def test_trace_view_shows_small_direct_fallback_to_file_pipeline():
+    def pair(sequence: int, name: str, output: dict) -> list[TraceEvent]:
+        return [
+            _flow_event(sequence, "node_start", name, name, f"{name}-run"),
+            _flow_event(
+                sequence + 1,
+                "node_end",
+                name,
+                name,
+                f"{name}-run",
+                detail={"output": output},
+            ),
+        ]
+
+    events = [
+        *pair(
+            1,
+            "classify_mode",
+            {
+                "review_mode": "small",
+                "review_route": {
+                    "initial_mode": "small",
+                    "effective_mode": "small",
+                    "selected_node": "direct_review",
+                    "fallback": False,
+                    "metrics": {"file_count": 2, "hunk_count": 2, "diff_chars": 3000},
+                },
+            },
+        ),
+        *pair(
+            3,
+            "direct_review",
+            {
+                "direct_review_status": "fallback",
+                "review_mode": "medium",
+                "review_route": {
+                    "initial_mode": "small",
+                    "effective_mode": "medium",
+                    "selected_node": "file_task_builder",
+                    "fallback": True,
+                    "fallback_reason": "structured_output_missing",
+                    "metrics": {"file_count": 2, "hunk_count": 2, "diff_chars": 3000},
+                },
+            },
+        ),
+        *pair(5, "file_task_builder", {"review_tasks": [{"id": "file-task"}]}),
+        *pair(7, "risk_triage", {"risk_priors": {}}),
+        *pair(9, "task_rank", {"task_selection": {}}),
+        *pair(11, "review_coverage", {"review_coverage_plan": {}}),
+        *pair(13, "context_provider", {"task_context_bundles": {}}),
+    ]
+    view = build_trace_view(
+        TraceReport(
+            run_id="fallback-route",
+            timestamp="2026-07-29T00:00:00",
+            events=events,
+        )
+    )
+
+    assert [stage["code_name"] for stage in view["main_stages"][:6]] == [
+        "classify_mode",
+        "direct_review",
+        "file_task_builder",
+        "risk_triage",
+        "task_rank",
+        "review_coverage",
+    ]
+    assert view["routing"]["initial_mode"] == "small"
+    assert view["routing"]["effective_mode"] == "medium"
+    assert view["routing"]["fallback"] is True
+    assert view["routing"]["fallback_reason"] == "structured_output_missing"
+
+
+def test_trace_view_shows_discovery_only_terminal_and_skips_judge():
+    events = [
+        _flow_event(
+            1,
+            "node_start",
+            "discovery_collector",
+            "discovery_collector",
+            "collector",
+        ),
+        _flow_event(
+            2,
+            "node_end",
+            "discovery_collector",
+            "discovery_collector",
+            "collector",
+            detail={"output": {"final_issues": []}},
+        ),
+    ]
+    view = build_trace_view(
+        TraceReport(
+            run_id="discovery-only",
+            timestamp="2026-07-29T00:00:00",
+            events=events,
+        )
+    )
+
+    assert any(
+        stage["code_name"] == "discovery_collector"
+        and stage["status"] == "complete"
+        for stage in view["main_stages"]
+    )
+    judge = next(
+        stage
+        for stage in view["main_stages"]
+        if stage["code_name"] == "council_judge"
+    )
+    assert judge["status"] == "skipped"
+    assert "discovery_only" in judge["summary"]
 
 
 def test_trace_view_indexes_state_writes_from_hidden_discover_nodes():
@@ -907,9 +1180,12 @@ class TestTraceReport:
 class TestPhaseMapping:
     def test_all_nodes_have_phase(self):
         expected = {
-            "summary", "diff_task_builder", "risk_triage", "task_rank", "context_provider",
+            "summary", "classify_mode", "direct_review", "file_task_builder",
+            "diff_task_builder", "risk_triage", "task_rank", "review_coverage",
+            "context_provider",
             "discover_threat_model", "discover_behavior", "discover_maintainability",
-            "council_coordinator", "evidence_planner", "evidence_agent", "council_judge",
+            "discovery_collector", "council_coordinator", "concern_analyzer",
+            "evidence_planner", "evidence_agent", "council_judge",
             "prepare", "review", "collect",
         }
         assert set(_NODE_PHASE_MAP.keys()) == expected

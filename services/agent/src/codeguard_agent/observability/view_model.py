@@ -27,23 +27,30 @@ REVIEWERS: dict[str, tuple[str, str, str]] = {
 }
 
 _NODE_TITLES: dict[str, str] = {
+    "classify_mode": "PR 规模判定",
+    "direct_review": "整 PR 直接审查",
+    "file_task_builder": "文件级任务构建",
     "summary": "变更摘要",
-    "diff_task_builder": "审查任务构建",
+    "diff_task_builder": "Hunk 级任务构建",
     "risk_triage": "风险分诊",
     "task_rank": "任务选择",
+    "review_coverage": "审查覆盖规划",
     "context_provider": "上下文构建",
     "discover_threat_model": "安全候选发现",
     "discover_behavior": "行为候选发现",
     "discover_maintainability": "可维护性候选发现",
     "prepare": "准备审查",
     "collect": "汇总候选问题",
+    "discovery_collector": "发现结果汇总",
     "council_coordinator": "委员会协调",
+    "concern_analyzer": "候选主张分析",
     "evidence_planner": "证据规划",
     "evidence_agent": "证据补充",
     "council_judge": "委员会裁决",
 }
 _COORDINATION_NODES = {
     "council_coordinator",
+    "concern_analyzer",
     "evidence_planner",
     "evidence_agent",
     "challenge_agent",
@@ -58,10 +65,11 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
         for event in report.events
     }
     node_steps = _pair_events(report.events, "node_start", "node_end")
+    routing = _routing_view(report.events)
     llm_steps = _pair_events(report.events, "llm_start", "llm_end")
     tool_steps = _tool_event_steps(report.events)
     application_tool_steps = _application_tool_steps(report.events, tool_steps)
-    main_placeholders = _missing_main_steps(node_steps)
+    main_placeholders = _missing_main_steps(node_steps, routing)
     node_steps_with_placeholders = node_steps + main_placeholders
     visible_node_steps = [
         step
@@ -73,8 +81,30 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
         visible_node_steps,
         events_by_sequence,
     )
-    review_council_step = _review_council_step(node_steps)
-    coordination_loop_step = _coordination_loop_step(node_steps, report.events)
+    small_complete = (
+        routing.get("initial_mode") == "small"
+        and not routing.get("fallback", False)
+        and routing.get("outcome") == "completed"
+    )
+    discovery_only = any(
+        step["code_name"] == "discovery_collector"
+        for step in node_steps
+    )
+    review_council_step = _review_council_step(
+        node_steps,
+        skip_reason="small 模式按设计跳过" if small_complete else "",
+    )
+    coordination_loop_step = _coordination_loop_step(
+        node_steps,
+        report.events,
+        skip_reason=(
+            "small 模式按设计跳过"
+            if small_complete
+            else "discovery_only 模式按设计跳过"
+            if discovery_only
+            else ""
+        ),
+    )
     steps = _index_steps(
         visible_node_steps
         + state_node_steps
@@ -90,7 +120,9 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
             node_steps_with_placeholders,
             review_council_step,
             coordination_loop_step,
+            routing,
         ),
+        "routing": routing,
         "reviewer_sections": _reviewer_sections(steps),
         "coordination_steps": _coordination_steps(steps),
         "steps": steps,
@@ -110,6 +142,46 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
             ],
         },
     }
+
+
+def _routing_view(events: Iterable[TraceEvent]) -> dict[str, Any]:
+    """从结构化 State patch 恢复最终生效的 PR 规模路由。"""
+    route: dict[str, Any] = {}
+    for event in sorted(events, key=lambda item: item.sequence):
+        if event.event_type != "node_end":
+            continue
+        output = event.detail.get("output")
+        if not isinstance(output, dict):
+            continue
+        candidate = output.get("review_route")
+        if isinstance(candidate, dict):
+            route.update(candidate)
+        if event.node_name == "classify_mode":
+            mode = output.get("review_mode")
+            if mode in {"small", "medium", "large"}:
+                route.setdefault("initial_mode", mode)
+                route.setdefault("effective_mode", mode)
+                route.setdefault(
+                    "selected_node",
+                    {
+                        "small": "direct_review",
+                        "medium": "file_task_builder",
+                        "large": "diff_task_builder",
+                    }[mode],
+                )
+                route.setdefault("fallback", False)
+        if event.node_name != "direct_review":
+            continue
+        status = output.get("direct_review_status")
+        if status == "completed":
+            route.setdefault("outcome", "completed")
+        elif status == "fallback":
+            route.update({
+                "effective_mode": "medium",
+                "selected_node": "file_task_builder",
+                "fallback": True,
+            })
+    return route
 
 
 def _pair_events(
@@ -157,6 +229,9 @@ def _step_from_pair(
     code_name = event.node_name
     metrics = _evidence_batch_metrics(end) if code_name == "evidence_agent" else {}
     summary = end.summary if end is not None else event.summary
+    node_summary = _node_state_summary(code_name, end)
+    if node_summary:
+        summary = node_summary
     if metrics:
         summary = (
             f"{metrics.get('request_count', 0)} 个请求 · "
@@ -184,6 +259,44 @@ def _step_from_pair(
         "summary": summary,
         "metrics": metrics,
     }
+
+
+def _node_state_summary(code_name: str, event: TraceEvent | None) -> str:
+    if event is None:
+        return ""
+    output = event.detail.get("output")
+    if not isinstance(output, dict):
+        return ""
+    if code_name == "classify_mode":
+        route = output.get("review_route")
+        if isinstance(route, dict):
+            metrics = route.get("metrics")
+            metrics = metrics if isinstance(metrics, dict) else {}
+            return (
+                f"{route.get('initial_mode', 'unknown')} 模式 · "
+                f"{metrics.get('file_count', 0)} 文件 · "
+                f"{metrics.get('hunk_count', 0)} hunks · "
+                f"{metrics.get('diff_chars', 0)} 字符"
+            )
+    if code_name == "direct_review":
+        route = output.get("review_route")
+        if isinstance(route, dict) and route.get("fallback"):
+            return (
+                "Direct 失败，降级到文件级完整管线 · "
+                f"{route.get('fallback_reason', 'unknown')}"
+            )
+        if output.get("direct_review_status") == "completed":
+            return f"整 PR 审查完成 · {len(output.get('final_issues') or [])} 个问题"
+    traces = output.get("council_trace")
+    if isinstance(traces, list):
+        for trace in reversed(traces):
+            if (
+                isinstance(trace, dict)
+                and trace.get("node") == code_name
+                and str(trace.get("detail") or "").strip()
+            ):
+                return str(trace["detail"])
+    return ""
 
 
 def _evidence_batch_metrics(event: TraceEvent | None) -> dict[str, Any]:
@@ -529,7 +642,19 @@ def _reviewer_root_for_event(event: TraceEvent) -> str:
 
 def _is_visible_node_step(step: dict[str, Any]) -> bool:
     code_name = step["code_name"]
-    if code_name in {"summary", "context_provider", "council_judge"}:
+    if code_name in {
+        "classify_mode",
+        "direct_review",
+        "file_task_builder",
+        "diff_task_builder",
+        "risk_triage",
+        "task_rank",
+        "review_coverage",
+        "summary",
+        "context_provider",
+        "discovery_collector",
+        "council_judge",
+    }:
         return True
     if code_name in {"review", "model", "tools"}:
         return False
@@ -578,19 +703,48 @@ def _main_stages(
     node_steps: list[dict[str, Any]],
     review_council_step: dict[str, Any],
     coordination_loop_step: dict[str, Any],
+    routing: dict[str, Any],
 ) -> list[dict[str, Any]]:
     by_name: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for step in node_steps:
         by_name[step["code_name"]].append(step)
 
     stages: list[dict[str, Any]] = []
-    for code_name, title in (
-        ("diff_task_builder", "审查任务构建"),
-        ("risk_triage", "风险分诊"),
-        ("task_rank", "任务选择"),
-    ):
-        if code_name in by_name:
-            stages.append(_main_stage(code_name, title, by_name[code_name]))
+    if "classify_mode" in by_name:
+        stages.append(_main_stage(
+            "classify_mode",
+            _NODE_TITLES["classify_mode"],
+            by_name["classify_mode"],
+        ))
+        if "direct_review" in by_name:
+            stages.append(_main_stage(
+                "direct_review",
+                _NODE_TITLES["direct_review"],
+                by_name["direct_review"],
+            ))
+        builder = str(routing.get("selected_node") or "")
+        if builder not in {"file_task_builder", "diff_task_builder"}:
+            if "file_task_builder" in by_name:
+                builder = "file_task_builder"
+            elif "diff_task_builder" in by_name:
+                builder = "diff_task_builder"
+        if builder in {"file_task_builder", "diff_task_builder"} and builder in by_name:
+            stages.append(_main_stage(builder, _NODE_TITLES[builder], by_name[builder]))
+        for code_name in ("risk_triage", "task_rank", "review_coverage"):
+            if code_name in by_name:
+                stages.append(_main_stage(
+                    code_name,
+                    _NODE_TITLES[code_name],
+                    by_name[code_name],
+                ))
+    else:
+        for code_name, title in (
+            ("diff_task_builder", "审查任务构建"),
+            ("risk_triage", "风险分诊"),
+            ("task_rank", "任务选择"),
+        ):
+            if code_name in by_name:
+                stages.append(_main_stage(code_name, title, by_name[code_name]))
     stages.append(_main_stage("summary", "变更摘要", by_name.get("summary")))
     stages.append(_main_stage(
         "context_provider",
@@ -607,6 +761,12 @@ def _main_stages(
         "sequence": review_council_step["sequence"],
         "summary": review_council_step["summary"],
     })
+    if "discovery_collector" in by_name:
+        stages.append(_main_stage(
+            "discovery_collector",
+            _NODE_TITLES["discovery_collector"],
+            by_name["discovery_collector"],
+        ))
     stages.append({
         "id": "main:coordination_loop",
         "title": "协调与证据",
@@ -626,6 +786,8 @@ def _main_stages(
 
 def _review_council_step(
     node_steps: list[dict[str, Any]],
+    *,
+    skip_reason: str = "",
 ) -> dict[str, Any]:
     discoverers = [
         step
@@ -647,14 +809,26 @@ def _review_council_step(
         "start_sequence": None,
         "end_sequence": None,
         "duration_ms": 0.0,
-        "status": "complete" if discoverers else "missing",
-        "summary": f"{len(discoverers)} 名审查员并行执行",
+        "status": (
+            "complete"
+            if discoverers
+            else "skipped"
+            if skip_reason
+            else "missing"
+        ),
+        "summary": (
+            f"{len(discoverers)} 名审查员并行执行"
+            if discoverers
+            else skip_reason or "未采集到审查员执行"
+        ),
     }
 
 
 def _coordination_loop_step(
     node_steps: list[dict[str, Any]],
     events: Iterable[TraceEvent],
+    *,
+    skip_reason: str = "",
 ) -> dict[str, Any]:
     coordination = [
         step
@@ -708,22 +882,60 @@ def _coordination_loop_step(
         "start_sequence": None,
         "end_sequence": None,
         "duration_ms": sum(step["duration_ms"] for step in coordination),
-        "status": "complete" if coordination else "missing",
-        "summary": "，".join(summary_parts),
+        "status": (
+            "complete"
+            if coordination
+            else "skipped"
+            if skip_reason
+            else "missing"
+        ),
+        "summary": "，".join(summary_parts) if coordination else skip_reason,
     }
 
 
 def _missing_main_steps(
     node_steps: list[dict[str, Any]],
+    routing: dict[str, Any],
 ) -> list[dict[str, Any]]:
     present = {step["code_name"] for step in node_steps}
     placeholders: list[dict[str, Any]] = []
-    for index, code_name in enumerate(
-        ("summary", "context_provider", "council_judge"),
-        start=1,
+    small_complete = (
+        routing.get("initial_mode") == "small"
+        and not routing.get("fallback", False)
+        and routing.get("outcome") == "completed"
+    )
+    discovery_only = "discovery_collector" in present
+    expected: tuple[str, ...] = (
+        (
+            "risk_triage",
+            "task_rank",
+            "review_coverage",
+            "summary",
+            "context_provider",
+            "council_judge",
+        )
+        if small_complete
+        else ("summary", "context_provider", "council_judge")
+    )
+    if (
+        routing.get("initial_mode") == "small"
+        and "direct_review" not in present
     ):
+        expected = ("direct_review", *expected)
+    for index, code_name in enumerate(expected, start=1):
         if code_name in present:
             continue
+        configured_skip = (
+            code_name == "summary"
+            and "context_provider" in present
+            and "summary" not in present
+        )
+        discovery_skip = discovery_only and code_name == "council_judge"
+        status = (
+            "skipped"
+            if small_complete or configured_skip or discovery_skip
+            else "missing"
+        )
         placeholders.append({
             "id": f"placeholder:{code_name}",
             "sequence": 1_000_000 + index,
@@ -736,8 +948,16 @@ def _missing_main_steps(
             "start_sequence": None,
             "end_sequence": None,
             "duration_ms": 0.0,
-            "status": "missing",
-            "summary": "当前 Trace 未采集到该节点",
+            "status": status,
+            "summary": (
+                "small 模式按设计跳过"
+                if small_complete
+                else "Summary 未启用，按配置跳过"
+                if configured_skip
+                else "discovery_only 模式按设计跳过"
+                if discovery_skip
+                else "当前 Trace 未采集到该节点"
+            ),
         })
     return placeholders
 

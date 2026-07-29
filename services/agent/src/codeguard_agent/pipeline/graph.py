@@ -12,7 +12,7 @@ import json
 import logging
 import operator
 from pathlib import Path
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from codeguard_agent.llm.client import mock_review_result
 from codeguard_agent.models.council import (
@@ -30,6 +30,9 @@ from codeguard_agent.models.tasks import (
     ContextStatus,
     ReviewBudget,
     ReviewCoveragePlan,
+    ReviewMode,
+    ReviewRoute,
+    ReviewRouteThresholds,
     ReviewerKind,
     ReviewTask,
     RiskCoverage,
@@ -171,6 +174,7 @@ class ReviewState(TypedDict, total=False):
 
     review_budget: ReviewBudget
     review_mode: str  # "small" | "medium" | "large"
+    review_route: ReviewRoute
     direct_review_status: str  # "completed" | "fallback"
     review_tasks: list[ReviewTask]
     risk_priors: dict[str, TaskRiskPrior]
@@ -290,15 +294,42 @@ def _classify_mode_node():
         diff_text = state.get("diff_text", "")
         budget = state.get("review_budget") or ReviewBudget()
         mode = task_prep.classify_diff(diff_text, budget)
-        diff_chars = len(diff_text)
+        metrics = task_prep.diff_metrics(diff_text)
+        selected_node: Literal[
+            "direct_review",
+            "file_task_builder",
+            "diff_task_builder",
+        ]
+        if mode is ReviewMode.SMALL:
+            selected_node = "direct_review"
+        elif mode is ReviewMode.MEDIUM:
+            selected_node = "file_task_builder"
+        else:
+            selected_node = "diff_task_builder"
+        review_route = ReviewRoute(
+            initial_mode=mode,
+            effective_mode=mode,
+            selected_node=selected_node,
+            metrics=metrics,
+            thresholds=ReviewRouteThresholds(
+                small_max_files=budget.small_max_files,
+                small_max_hunks=budget.small_max_hunks,
+                small_max_diff_chars=budget.small_max_diff_chars,
+                medium_max_files=budget.medium_max_files,
+                medium_max_diff_chars=budget.medium_max_diff_chars,
+            ),
+        )
         return {
             "review_mode": mode.value,
+            "review_route": review_route,
             "council_trace": [
                 CouncilTrace(
                     node="classify_mode",
                     event="mode_selected",
                     detail=(
-                        f"mode={mode.value} diff_chars={diff_chars} "
+                        f"mode={mode.value} files={metrics.file_count} "
+                        f"hunks={metrics.hunk_count} "
+                        f"diff_chars={metrics.diff_chars} "
                         f"small_max={budget.small_max_diff_chars} "
                         f"medium_max={budget.medium_max_diff_chars}"
                     ),
@@ -314,12 +345,20 @@ def _direct_review_node(llm):
     _prompt_dir = Path(__file__).resolve().parents[1] / "prompts"
 
     def _node(state: ReviewState) -> dict:
+        route_value = state.get("review_route")
+        route = (
+            route_value
+            if isinstance(route_value, ReviewRoute)
+            else ReviewRoute.model_validate(route_value)
+        )
         if llm is None:
             result = mock_review_result()
+            route = route.model_copy(update={"outcome": "completed"})
             return {
                 "final_issues": result.issues,
                 "summary": result.summary,
                 "direct_review_status": "completed",
+                "review_route": route,
                 "council_trace": [
                     CouncilTrace(
                         node="direct_review",
@@ -343,11 +382,19 @@ def _direct_review_node(llm):
                 max_retries=state.get("max_retries", 3),
                 structured_method=state.get("structured_method", "function_calling"),
             )
-        except Exception:
+        except Exception as exc:
             logger.warning("direct_review 失败，回退文件级完整管线", exc_info=True)
+            route = route.model_copy(update={
+                "effective_mode": ReviewMode.MEDIUM,
+                "selected_node": "file_task_builder",
+                "fallback": True,
+                "fallback_reason": "direct_review_exception",
+                "fallback_exception_type": type(exc).__name__,
+            })
             return {
                 "direct_review_status": "fallback",
                 "review_mode": "medium",
+                "review_route": route,
                 "council_trace": [
                     CouncilTrace(
                         node="direct_review",
@@ -357,9 +404,16 @@ def _direct_review_node(llm):
                 ],
             }
         if "structured_output_missing" in outcome.execution_events:
+            route = route.model_copy(update={
+                "effective_mode": ReviewMode.MEDIUM,
+                "selected_node": "file_task_builder",
+                "fallback": True,
+                "fallback_reason": "structured_output_missing",
+            })
             return {
                 "direct_review_status": "fallback",
                 "review_mode": "medium",
+                "review_route": route,
                 "council_trace": [
                     CouncilTrace(
                         node="direct_review",
@@ -368,10 +422,12 @@ def _direct_review_node(llm):
                     )
                 ],
             }
+        route = route.model_copy(update={"outcome": "completed"})
         return {
             "final_issues": outcome.result.issues,
             "summary": outcome.result.summary,
             "direct_review_status": "completed",
+            "review_route": route,
             "council_trace": [
                 CouncilTrace(
                     node="direct_review",

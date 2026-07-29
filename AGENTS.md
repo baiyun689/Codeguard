@@ -64,7 +64,7 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 默认节点:
 
 - **SummaryStage(可选)**:在 TaskRank 后对选中任务范围产出变更摘要,作为 ContextBundle 和 ReviewCouncil 的共享背景。由 `CODEGUARD_ENABLE_SUMMARY` 控制(默认开)。
-- **PR 规模路由**:`PRModeClassifier` 在 task 构建前只按 diff 体量选择执行形态：小型 PR 整体直审且正常成功时不运行 Risk/证据链；中型 PR 按文件建 task；大型 PR 按 hunk 建 task。Risk 不参与规模判定。小型直审异常或缺少结构化输出时安全回退到文件级完整管线，不能把调用失败伪装成“零问题”。
+- **PR 规模路由**:`PRModeClassifier` 在 task 构建前只按 diff 体量选择执行形态：小型 PR 整体直审且正常成功时不运行 Risk/证据链；中型 PR 按文件建 task；大型 PR 按 hunk 建 task。Risk 不参与规模判定。小型直审异常或缺少结构化输出时安全回退到文件级完整管线，不能把调用失败伪装成“零问题”。`review_route` 以结构化 State patch 记录初始/生效模式、规模指标、实际分支和降级原因；HTML Trace 将未进入的阶段显示为按设计跳过。
 - **ContextProvider**:在 ReviewCouncil 前构造轻量 `ContextBundle`,只产出事实、来源与截断标记,不判断"是不是问题"。
 - **大 diff 降级**:仅在超过 5000 行时，Python 确定性收紧为最多 20 个任务、每文件 3 个、每任务上下文 2000 字符；普通 diff 全选 task，并只让风险排序前 `CODEGUARD_MAX_REACT_TASKS`（默认 20）个合格 task 使用 ReAct，其余 Direct。Summary/AST/发现者在大 diff 时只看选中范围，结果摘要披露部分覆盖。Java 不重复判断。
 - **ReviewCouncilSubgraph**:三个 task-scoped 发现者 fan-out 产出 raw `CandidateIssue`;system prompt 定义稳定的上下文语义与工具门槛，user prompt 动态携带本 task 的 patch、风险画像、预取事实、缺失/失败状态和 BASE+专项 knowledge bundle。`CouncilCoordinator` 在显式 fan-in 后批量解析 RiskTag、构建局部候选块并保守归并。

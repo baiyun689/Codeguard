@@ -14,6 +14,7 @@ import re
 
 from codeguard_agent.git.diff_collector import split_diff_by_file
 from codeguard_agent.models.tasks import (
+    DiffMetrics,
     ReviewBudget,
     ReviewMode,
     ReviewTask,
@@ -396,6 +397,21 @@ def rank_tasks(
     )
 
 
+def diff_metrics(diff_text: str) -> DiffMetrics:
+    """返回 PR 规模路由使用的稳定、轻量统计。"""
+    file_count = sum(
+        line.startswith("diff --git ")
+        for line in diff_text.splitlines()
+    )
+    if file_count == 0:
+        file_count = len(split_diff_by_file(diff_text))
+    return DiffMetrics(
+        file_count=file_count,
+        hunk_count=len(_HUNK_HEADER.findall(diff_text)),
+        diff_chars=len(diff_text),
+    )
+
+
 def classify_diff(diff_text: str, budget: ReviewBudget) -> ReviewMode:
     """根据 diff 文本体量决定审查模式（不构建 ReviewTask，轻量统计）。
 
@@ -407,16 +423,10 @@ def classify_diff(diff_text: str, budget: ReviewBudget) -> ReviewMode:
     - medium：不超过中型阈值，否则
     - large：超出中型阈值
     """
-    diff_chars = len(diff_text)
-    # 每个 git diff section 对应一个 changed file，包含删除、纯重命名和
-    # binary diff；缺少标准 section header 时才回退到 +++ 文件头解析。
-    file_count = sum(
-        line.startswith("diff --git ")
-        for line in diff_text.splitlines()
-    )
-    if file_count == 0:
-        file_count = len(split_diff_by_file(diff_text))
-    hunk_count = len(_HUNK_HEADER.findall(diff_text))
+    metrics = diff_metrics(diff_text)
+    diff_chars = metrics.diff_chars
+    file_count = metrics.file_count
+    hunk_count = metrics.hunk_count
 
     if (
         file_count <= budget.small_max_files
