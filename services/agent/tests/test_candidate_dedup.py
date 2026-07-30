@@ -593,7 +593,8 @@ def test_accepted_semantic_group_preserves_every_original_candidate():
     assert result.accepted_groups[0].member_ids == ("a", "b")
 
 
-def test_semantic_group_with_different_severity_is_rejected():
+def test_semantic_group_with_different_severity_is_accepted():
+    """不同 reviewer 对同一 bug 可能给不同严重级别，不应阻断归并。"""
     candidates = [
         _candidate("runtime", severity=Severity.WARNING),
         _candidate("dead-code", severity=Severity.INFO),
@@ -616,11 +617,12 @@ def test_semantic_group_with_different_severity_is_rejected():
         structured_method="function_calling",
     )
 
-    assert result.accepted_groups == ()
-    assert result.rejected_groups[0].reason == "different_severity"
+    assert len(result.accepted_groups) == 1
+    assert set(result.accepted_groups[0].member_ids) == {"runtime", "dead-code"}
 
 
-def test_semantic_group_with_different_risk_tag_is_rejected():
+def test_semantic_group_with_different_risk_tag_is_accepted():
+    """不同 reviewer 对同一 bug 可能被分配不同 RiskTag，不应阻断归并。"""
     candidates = [_candidate("a"), _candidate("b")]
     resolutions = _resolutions(candidates)
     resolutions["b"] = CandidateTagResolution(
@@ -640,11 +642,11 @@ def test_semantic_group_with_different_risk_tag_is_rejected():
         structured_method="function_calling",
     )
 
-    assert result.accepted_groups == ()
-    assert result.rejected_groups[0].reason == "different_risk_tag"
+    assert len(result.accepted_groups) == 1
+    assert set(result.accepted_groups[0].member_ids) == {"a", "b"}
 
 
-def test_strictly_equivalent_trace_shape_produces_five_logical_groups():
+def test_strictly_equivalent_trace_shape_produces_four_logical_groups():
     candidates = [
         *[
             _candidate(
@@ -718,19 +720,16 @@ def test_strictly_equivalent_trace_shape_produces_five_logical_groups():
     )
 
     assert result.raw_candidate_count == 9
-    assert result.logical_candidate_count == 5
+    assert result.logical_candidate_count == 4
     assert [group.member_ids for group in result.accepted_groups] == [
         ("input-0", "input-1", "input-2"),
         ("api-0", "api-1", "api-2"),
+        ("runtime-propagation", "dead-catch"),
     ]
-    assert result.rejected_groups[0].member_ids == (
-        "runtime-propagation",
-        "dead-catch",
-    )
-    assert result.rejected_groups[0].reason == "different_severity"
 
 
-def test_latest_trace_metadata_cannot_produce_five_groups_under_hard_guards():
+def test_latest_trace_metadata_all_groups_accepted_when_tags_differ():
+    """RiskTag/severity 差异不再阻断归并——LLM 确认等价即可合并。"""
     candidates = [
         _candidate("input-threat", severity=Severity.WARNING),
         _candidate("input-behavior", severity=Severity.WARNING),
@@ -788,13 +787,9 @@ def test_latest_trace_metadata_cannot_produce_five_groups_under_hard_guards():
     )
 
     assert result.raw_candidate_count == 9
-    assert result.logical_candidate_count == 9
-    assert result.accepted_groups == ()
-    assert [group.reason for group in result.rejected_groups] == [
-        "different_risk_tag",
-        "different_severity",
-        "different_severity",
-    ]
+    assert result.logical_candidate_count == 4
+    assert len(result.accepted_groups) == 3
+    assert result.rejected_groups == ()
 
 
 @pytest.mark.parametrize("response", [None, RuntimeError("boom")])

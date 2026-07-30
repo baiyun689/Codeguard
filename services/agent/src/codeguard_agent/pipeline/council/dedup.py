@@ -267,14 +267,12 @@ def _group_rejection_reason(
         return "different_file"
     if len({member.task_id for member in members}) != 1:
         return "different_task"
-    if len({member.severity_proposal for member in members}) != 1:
-        return "different_severity"
+    # 不同 reviewer 可能对同一 bug 给出不同严重级别/RiskTag——
+    # LLM 已通过 same_root_cause + same_fix_location 确认等价，
+    # 此处不再以 severity/risk_tag 差异阻断归并。
     if tag_resolutions is not None:
-        resolutions = [tag_resolutions.get(member.id) for member in members]
-        if any(resolution is None for resolution in resolutions):
+        if any(tag_resolutions.get(member.id) is None for member in members):
             return "missing_tag_resolution"
-        if len({resolution.tag for resolution in resolutions if resolution is not None}) != 1:
-            return "different_risk_tag"
     if any(
         not _adjacent(left, right)
         for index, left in enumerate(members)
