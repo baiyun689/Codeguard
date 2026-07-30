@@ -268,9 +268,20 @@ def _goals_to_requests(
         )
         primary_file = concern.files[0] if concern.files else ""
         if claim is not None and claim.fix_location:
-            location = claim.fix_location
-            head, separator, tail = location.rpartition(":")
-            primary_file = head if separator and tail.isdigit() else location
+            primary_file = next(
+                (
+                    file
+                    for file in concern.files
+                    if file
+                    and (
+                        claim.fix_location == file
+                        or claim.fix_location.startswith(
+                            (f"{file}:", f"{file}，", f"{file},")
+                        )
+                    )
+                ),
+                primary_file,
+            )
         purpose_value = _polarity_to_purpose.get(goal.polarity.value, "support")
         request = EvidenceRequest(
             candidate_id=anchor_id,

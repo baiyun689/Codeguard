@@ -1,7 +1,6 @@
 """ClaimEvidencePlanner 单元测试。"""
 from __future__ import annotations
 
-import pytest
 from codeguard_agent.models.council import (
     CandidateClaim,
     CandidateConcern,
@@ -90,6 +89,34 @@ class TestClaimEvidencePlanner:
             assert request.goal_id is not None
             assert request.concern_id == concern.concern_id
             assert request.fact_type is not None
+
+    def test_request_target_uses_concern_file_when_fix_location_is_natural_language(self):
+        """LLM 生成的自然语言修复位置不能污染严格校验的 request target。"""
+        concern = _make_concern()
+        claim = concern.claims[0].model_copy(
+            update={"fix_location": "src/main/Foo.java，第10行之前。"}
+        )
+        concern = concern.model_copy(update={"claims": (claim,)})
+
+        plan = plan_claim_evidence(concern)
+
+        assert {request.target for request in plan.requests} == {"src/main/Foo.java"}
+
+    def test_request_target_does_not_match_a_file_path_substring(self):
+        """多文件 concern 中路径互为子串时仍选择完整匹配的文件。"""
+        concern = _make_concern(
+            files=("src/main/Foo.java", "test/src/main/Foo.java"),
+        )
+        claim = concern.claims[0].model_copy(
+            update={"fix_location": "test/src/main/Foo.java，第10行。"}
+        )
+        concern = concern.model_copy(update={"claims": (claim,)})
+
+        plan = plan_claim_evidence(concern)
+
+        assert {request.target for request in plan.requests} == {
+            "test/src/main/Foo.java"
+        }
 
     def test_no_claims_produces_empty_plan(self):
         """无 claims → 空 plan + diagnostics。"""
