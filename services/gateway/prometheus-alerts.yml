@@ -1,0 +1,77 @@
+# Codeguard SLO 告警规则
+# 用法：Prometheus 配置 rule_files 指向此文件
+#   rule_files:
+#     - "/etc/prometheus/codeguard-alerts.yml"
+
+groups:
+  - name: codeguard_llm_slo
+    rules:
+      # ---- 熔断器 ----
+      - alert: CircuitBreakerOpen
+        expr: codeguard_llm_circuit_open == 1
+        for: 30s
+        labels:
+          severity: critical
+          component: llm-proxy
+        annotations:
+          summary: "LLM provider {{ $labels.provider }} 熔断开路"
+          description: "熔断器已开路超过 30s，该 provider 的请求被降级到备选"
+
+      # ---- 延迟 SLO ----
+      - alert: HighLatencyP99
+        expr: histogram_quantile(0.99, rate(codeguard_llm_duration_seconds_bucket[5m])) > 5
+        for: 2m
+        labels:
+          severity: warning
+          component: llm-proxy
+        annotations:
+          summary: "LLM 调用 P99 延迟 > 5s"
+          description: "P99 延迟 {{ $value }}s，超过 5s 阈值"
+
+      # ---- 降级率 ----
+      - alert: HighFallbackRate
+        expr: |
+          rate(codeguard_llm_fallbacks_total[5m])
+          / rate(codeguard_llm_calls_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          component: llm-proxy
+        annotations:
+          summary: "LLM 降级率 > 10%"
+          description: "{{ $labels.provider }} 降级率 {{ $value | humanizePercentage }}，可能 provider 不稳定"
+
+      # ---- 审查失败率 ----
+      - alert: HighReviewFailRate
+        expr: |
+          rate(codeguard_review_jobs_total{outcome="failed"}[10m])
+          / rate(codeguard_review_jobs_total[10m]) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          component: ci-webhook
+        annotations:
+          summary: "审查失败率 > 20%"
+          description: "审查失败率 {{ $value | humanizePercentage }}，检查 Python Agent / GitHub API 状态"
+
+      # ---- 审查 Pipeline 停滞 ----
+      - alert: NoRecentReviews
+        expr: rate(codeguard_review_jobs_total[30m]) == 0
+        for: 0m
+        labels:
+          severity: critical
+          component: ci-webhook
+        annotations:
+          summary: "30 分钟内无审查产出"
+          description: "审查 Pipeline 可能停滞，检查 Gateway / Webhook / GitHub 连接"
+
+      # ---- 进程超时 ----
+      - alert: FrequentProcessTimeouts
+        expr: rate(codeguard_process_timeouts_total[10m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: ci-webhook
+        annotations:
+          summary: "子进程超时频率升高"
+          description: "审查子进程超时 rate = {{ $value }}，可能 repo 过大或超时配置偏低"

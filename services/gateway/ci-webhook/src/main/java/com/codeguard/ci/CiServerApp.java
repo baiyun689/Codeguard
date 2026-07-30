@@ -7,6 +7,7 @@ import com.codeguard.ci.guard.ReviewGuard;
 import com.codeguard.ci.job.JobRepository;
 import com.codeguard.ci.job.JobScheduler;
 import com.codeguard.ci.webhook.GitHubWebhookController;
+import com.codeguard.common.AlertEvaluator;
 import com.codeguard.common.GatewayMetrics;
 import com.codeguard.common.OperationalController;
 import com.codeguard.toolserver.GatewaySettings;
@@ -23,6 +24,7 @@ public final class CiServerApp {
     private final Javalin app;
     private final GatewaySettings settings;
     private final GatewayMetrics metrics;
+    private final AlertEvaluator alertEvaluator;
     private JobRepository jobRepository;
     private JobScheduler scheduler;
     private boolean enabled;
@@ -35,6 +37,7 @@ public final class CiServerApp {
     CiServerApp(GatewaySettings settings) {
         this.settings = settings;
         this.metrics = new GatewayMetrics();
+        this.alertEvaluator = new AlertEvaluator(metrics);
         this.app = Javalin.create(cfg -> {
             cfg.showJavalinBanner = false;
             cfg.http.maxRequestSize = 10_000_000L;
@@ -47,7 +50,7 @@ public final class CiServerApp {
             log.info("未配置 CODEGUARD_WEBHOOK_SECRET, CI Webhook 未启用");
             enabled = false;
         }
-        new OperationalController(this::ready, metrics).register(app);
+        new OperationalController(this::ready, metrics, alertEvaluator).register(app);
     }
 
     private void configure() {
@@ -88,13 +91,15 @@ public final class CiServerApp {
     }
 
     public void start() {
+        alertEvaluator.start();
         int port = Integer.parseInt(System.getenv().getOrDefault("CODEGUARD_CI_PORT", "8080"));
         app.start(port);
-        log.info("CI Webhook 服务已启动, 端口 {} (enabled={})", port, enabled);
+        log.info("CI Webhook 服务已启动, 端口 {} (enabled={}, SLO 巡检已开启)", port, enabled);
     }
 
     public void stop() {
         app.stop();
+        alertEvaluator.close();
         if (scheduler != null) scheduler.close();
         if (jobRepository != null) jobRepository.close();
         log.info("CI Webhook 服务已停止");

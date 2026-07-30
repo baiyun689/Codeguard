@@ -1,5 +1,6 @@
 package com.codeguard.proxy;
 
+import com.codeguard.common.AlertEvaluator;
 import com.codeguard.common.GatewayMetrics;
 import com.codeguard.common.OperationalController;
 import com.codeguard.proxy.adapter.ClaudeAdapter;
@@ -30,6 +31,7 @@ public final class ProxyServer {
     private final Javalin app;
     private final int port;
     private final boolean ready;
+    private final AlertEvaluator alertEvaluator;
 
     public ProxyServer() {
         this(ProxyConfig.load());
@@ -40,6 +42,7 @@ public final class ProxyServer {
 
         // Build adapters
         GatewayMetrics metrics = new GatewayMetrics();
+        this.alertEvaluator = new AlertEvaluator(metrics);
         ResilienceService resilience = new ResilienceService(config.resilience(), metrics);
         Map<String, LlmAdapter> adapters = new LinkedHashMap<>();
 
@@ -81,7 +84,7 @@ public final class ProxyServer {
 
         // Routes
         app.post("/v1/chat/completions", new ChatCompletionsHandler(router, resilience));
-        new OperationalController(this::ready, metrics).register(app);
+        new OperationalController(this::ready, metrics, alertEvaluator).register(app);
 
         // Exception handler for unexpected errors
         app.exception(Exception.class, (e, ctx) -> {
@@ -96,12 +99,14 @@ public final class ProxyServer {
     }
 
     public void start() {
+        alertEvaluator.start();
         app.start(port);
-        log.info("LLM Proxy 已启动, 端口 {} (OpenAI 兼容端点: /v1/chat/completions)", port);
+        log.info("LLM Proxy 已启动, 端口 {} (OpenAI 兼容端点: /v1/chat/completions, SLO 巡检已开启)", port);
     }
 
     public void stop() {
         app.stop();
+        alertEvaluator.close();
         log.info("LLM Proxy 已停止");
     }
 
