@@ -33,6 +33,28 @@ from codeguard_agent.pipeline.evidence.strategy_types import (
 
 logger = logging.getLogger("codeguard")
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
+_PRODUCTION_GRAPH_FACT_TYPES = frozenset(
+    {
+        EvidenceFactType.CALL_PATH,
+        EvidenceFactType.DATA_FLOW,
+        EvidenceFactType.STATE_TRANSITION,
+        EvidenceFactType.TRANSACTION_BOUNDARY,
+        EvidenceFactType.ORDERING,
+        EvidenceFactType.GUARD_PRESENCE,
+        EvidenceFactType.REACHABILITY,
+        EvidenceFactType.SIDE_EFFECT,
+        EvidenceFactType.OBSERVABLE_CONSEQUENCE,
+        EvidenceFactType.IMPACT_FACTOR,
+    }
+)
+_TEST_PATH_MARKERS = (
+    "/src/test/",
+    "/src/it/",
+    "/test/",
+    "/tests/",
+    "/integration-test/",
+    "/integrationtest/",
+)
 
 
 @dataclass
@@ -437,6 +459,35 @@ def _call_tool(tool_client: Any, call: ToolCallSpec) -> tuple[str, str, float]:
                 return text, "graph_subject_mismatch", duration_ms
             status = payload.get("status")
             coverage = payload.get("coverage")
+            source_scope = str(payload.get("source_scope", "")).upper()
+            relationships = payload.get("relationships")
+            test_relationships = payload.get("test_relationships")
+            if source_scope:
+                if source_scope not in {"MAIN", "TEST", "GENERATED"}:
+                    return text, "invalid_graph_source_scope", duration_ms
+                if isinstance(relationships, list) and any(
+                    str(item.get("source_set", "")).upper() not in {"", source_scope}
+                    for item in relationships
+                    if isinstance(item, dict)
+                ):
+                    return text, "graph_source_scope_mismatch", duration_ms
+                if isinstance(test_relationships, list) and any(
+                    str(item.get("source_set", "")).upper() not in {"", "TEST"}
+                    for item in test_relationships
+                    if isinstance(item, dict)
+                ):
+                    return text, "graph_source_scope_mismatch", duration_ms
+                if (
+                    call.tool_name
+                    in {"inspect_change_impact", "inspect_security_path"}
+                    and source_scope in {"MAIN", "GENERATED"}
+                    and status == "confirmed"
+                    and isinstance(relationships, list)
+                    and not relationships
+                    and isinstance(test_relationships, list)
+                    and bool(test_relationships)
+                ):
+                    return text, "graph_test_only_confirmation", duration_ms
             if status == "unknown" or coverage == "partial":
                 return text, "graph_unknown", duration_ms
             if status not in {"confirmed", "not_found"}:
@@ -738,10 +789,55 @@ def _analysis_user_prompt(
     return _stable_json(payload)
 
 
+def _is_test_path(file: str) -> bool:
+    normalized = "/" + context_rules.normalize_path(file).lower().lstrip("/")
+    return any(marker in normalized for marker in _TEST_PATH_MARKERS)
+
+
+def _production_source_limitation(
+    request: EvidenceRequest,
+    fact: _RawFact,
+    candidate_file: str,
+) -> str:
+    """TEST-only graph relations cannot establish production semantics."""
+    if _is_test_path(candidate_file):
+        return ""
+    if request.fact_type not in _PRODUCTION_GRAPH_FACT_TYPES:
+        return ""
+    if not fact.source.startswith(
+        (
+            "tool:inspect_",
+            "tool:find_callers",
+            "tool:find_sensitive_apis",
+        )
+    ):
+        return ""
+    try:
+        payload = json.loads(fact.raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    source_scope = str(payload.get("source_scope", "MAIN")).upper()
+    production_relationships = payload.get("relationships")
+    test_relationships = payload.get("test_relationships")
+    if (
+        source_scope in {"MAIN", "GENERATED"}
+        and isinstance(production_relationships, list)
+        and not production_relationships
+        and isinstance(test_relationships, list)
+        and bool(test_relationships)
+    ):
+        return "test_only_relationships_do_not_prove_production_semantics"
+    return ""
+
+
 def _finding_from_analysis(
     request: EvidenceRequest,
     fact: _RawFact,
     result: _EvidenceAnalysis,
+    *,
+    candidate_file: str = "",
 ) -> EvidenceFinding:
     if result.relation in {"supports", "contradicts"} and not result.observation.strip():
         return EvidenceFinding(
@@ -760,6 +856,20 @@ def _finding_from_analysis(
             relation="insufficient",
             strength="contextual",
             limitation=result.limitation.strip() or "analyst_insufficient",
+        )
+    source_limitation = _production_source_limitation(
+        request,
+        fact,
+        candidate_file,
+    )
+    if result.relation in {"supports", "contradicts"} and source_limitation:
+        return EvidenceFinding(
+            evidence_id=fact.evidence_id,
+            source=fact.source,
+            observation=result.observation,
+            relation="insufficient",
+            strength="contextual",
+            limitation=source_limitation,
         )
     strength = result.strength
     if (
@@ -817,7 +927,11 @@ def _analyze_request(
     if analyst_llm is None:
         resolved.update(
             {
-                fact.evidence_id: _mock_finding_from_fact(request, fact)
+                fact.evidence_id: _mock_finding_from_fact(
+                    request,
+                    fact,
+                    candidate_file=dossier.task.file,
+                )
                 for fact in analyzable
             }
         )
@@ -881,7 +995,10 @@ def _analyze_request(
                 continue
             seen_ids.add(result.evidence_id)
             resolved[result.evidence_id] = _finding_from_analysis(
-                request, matched_fact, result
+                request,
+                matched_fact,
+                result,
+                candidate_file=dossier.task.file,
             )
         for fact in analyzable:
             if fact.evidence_id in resolved:
@@ -928,9 +1045,15 @@ def _finding_from_fact(fact: _RawFact) -> EvidenceFinding:
 def _mock_finding_from_fact(
     request: EvidenceRequest,
     fact: _RawFact,
+    *,
+    candidate_file: str = "",
 ) -> EvidenceFinding:
     """Return deterministic fake evidence for the explicit mock provider path."""
-    if request.purpose == "support" and fact.raw.strip():
+    if (
+        request.purpose == "support"
+        and fact.raw.strip()
+        and not _production_source_limitation(request, fact, candidate_file)
+    ):
         return EvidenceFinding(
             evidence_id=fact.evidence_id,
             source=fact.source,

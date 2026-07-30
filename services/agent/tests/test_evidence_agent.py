@@ -7,6 +7,8 @@ import json
 import threading
 import time
 
+import pytest
+
 from codeguard_agent.models.council import (
     CandidateIssue,
     ContextFact,
@@ -1008,6 +1010,138 @@ class _OtherFileSensitiveTools(_ToolClient):
                 }
             ),
         )
+
+
+class _SourceScopedGraphTools(_ToolClient):
+    def __init__(self, source_scope: str) -> None:
+        super().__init__()
+        self.source_scope = source_scope
+
+    def inspect_security_path(self, symbol_id: str) -> ToolResponse:
+        self.calls.append(("inspect_security_path", symbol_id))
+        test_edge = {
+            "sourceId": "java:demo.ServiceTest#verifies()",
+            "targetId": symbol_id,
+            "file": "src/test/java/demo/ServiceTest.java",
+            "source_set": "TEST",
+        }
+        return ToolResponse(
+            success=True,
+            result=json.dumps(
+                {
+                    "status": (
+                        "confirmed" if self.source_scope == "TEST" else "not_found"
+                    ),
+                    "coverage": "complete",
+                    "source_scope": self.source_scope,
+                    "production_coverage": "complete",
+                    "test_coverage": "complete",
+                    "subject_symbol_id": symbol_id,
+                    "symbols": [],
+                    "test_symbols": [],
+                    "relationships": (
+                        [test_edge] if self.source_scope == "TEST" else []
+                    ),
+                    "test_relationships": [test_edge],
+                    "limitations": [],
+                }
+            ),
+        )
+
+
+def test_test_only_graph_relationship_cannot_support_production_semantics():
+    dossier = _dossier()
+    llm = _StructuredLLM(
+        {
+            "relation": "supports",
+            "strength": "direct",
+            "observation": "测试调用了当前方法",
+            "limitation": "",
+        }
+    )
+
+    batch = _collect_with_llm(
+        [dossier],
+        [_request(dossier)],
+        llm,
+        client=_SourceScopedGraphTools("MAIN"),
+    )
+
+    finding = next(
+        item
+        for item in batch.notes[0].findings
+        if item.source == "tool:inspect_security_path"
+    )
+    assert finding.relation == "insufficient"
+    assert (
+        finding.limitation
+        == "test_only_relationships_do_not_prove_production_semantics"
+    )
+
+
+def test_test_candidate_can_consume_test_scoped_graph_relationship():
+    task = ReviewTask(
+        id="src/test/java/demo/ServiceTest.java#h0",
+        file="src/test/java/demo/ServiceTest.java",
+        patch="+void verifies() { helper(); }",
+        changed_lines=[10],
+    )
+    dossier = _dossier(task=task)
+    llm = _StructuredLLM(
+        {
+            "relation": "supports",
+            "strength": "direct",
+            "observation": "测试调用关系直接存在",
+            "limitation": "",
+        }
+    )
+
+    batch = _collect_with_llm(
+        [dossier],
+        [_request(dossier)],
+        llm,
+        client=_SourceScopedGraphTools("TEST"),
+    )
+
+    finding = next(
+        item
+        for item in batch.notes[0].findings
+        if item.source == "tool:inspect_security_path"
+    )
+    assert finding.relation == "supports"
+
+
+@pytest.mark.parametrize("source_scope", ["MAIN", "GENERATED"])
+def test_test_only_graph_relationship_cannot_contradict_production_semantics(
+    source_scope: str,
+):
+    dossier = _dossier()
+    llm = _StructuredLLM(
+        {
+            "relation": "contradicts",
+            "strength": "direct",
+            "observation": "测试路径没有触发生产行为",
+            "limitation": "",
+        }
+    )
+
+    batch = _collect_with_llm(
+        [dossier],
+        [_request(dossier)],
+        llm,
+        client=_SourceScopedGraphTools(source_scope),
+    )
+
+    finding = next(
+        item
+        for item in batch.notes[0].findings
+        if item.source == "tool:inspect_security_path"
+    )
+    assert finding.relation == "insufficient"
+    assert (
+        finding.limitation
+        == "test_only_relationships_do_not_prove_production_semantics"
+    )
 
 
 def test_global_sensitive_api_output_never_uses_other_file_as_evidence():

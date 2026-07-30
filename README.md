@@ -51,7 +51,7 @@ Python Agent 负责审查推理与编排。Java Gateway 拆为三个独立服务
 
 发现阶段的 system prompt 只定义稳定的上下文语义和工具调用门槛；每个 task 的实际 patch、风险画像、预取事实、缺失状态及标签知识通过 user 消息动态注入。上下文已经回答候选所需事实时，发现者必须略过工具。单个发现者的并发 task 共享一次审查内的工具结果，但不会与另外两个发现者或下一次审查共享。
 
-配置工具服务后，每次审查会按精确 revision 异步构建完整、只读的 Java `ProjectSnapshot`，缓存全部源码、JavaParser AST、符号索引和 Spring 感知语义图。ContextProvider 只注入变更所属的稳定 `symbol_id`；三路审查员分别通过 `inspect_security_path`、`inspect_change_impact`、`inspect_structure` 查询有限局部子图，EvidenceResearcher 复用同一快照。图谱明确区分 `confirmed/not_found/unknown`，静态分析未知不会被解释为不可达。
+配置工具服务后，每次审查会按精确 revision 异步构建完整、只读的 Java `ProjectSnapshot`，缓存全部源码、JavaParser AST、符号索引和 Spring 感知语义图。ContextProvider 只注入变更所属的稳定 `symbol_id`；三路审查员分别通过 `inspect_security_path`、`inspect_change_impact`、`inspect_structure` 查询有限局部子图，EvidenceResearcher 复用同一快照。图谱明确区分 `confirmed/not_found/unknown`，并将 `MAIN/TEST/GENERATED` 来源贯穿节点、关系、coverage 和工具结果：生产状态只由非测试事实确定，测试关系作为独立上下文返回，不能单独证明生产可达或提高严重度。静态分析未知不会被解释为不可达。
 
 EvidenceStrategist 每批最多 6 个候选动态提出少量可判真问题，不再机械生成固定 support/counter/impact 三件套。EvidenceResearcher 先执行快速路径，只对仍缺关键事实且工具能力可用的最多 5 个候选追加一轮受限 ReAct；相同 Gateway 调用跨轮次复用，工具不可用时明确降级而不让整条管线归零。输出仍按稳定 `evidence_id` 对齐。开启本地 HTML Trace 后，主流程会展示 PR 规模统计、small/medium/large 路由、实际 task builder 和 Direct 降级路径；按模式未执行的阶段标记为“按设计跳过”。审查员和 EvidenceResearcher 的每次工具输入、输出、耗时、复用及失败也会作为独立工具步骤展示。
 

@@ -15,6 +15,7 @@ system 只定义稳定语义；本次审查实际存在的值全部位于 user �
 - 风险先验根据路径和 diff 变化直接生成，只用于增加审查覆盖和知识主题权重，不表示缺陷已经存在，也不能排除基础审查员。
 - symbol context 是完整项目快照把当前变更行解析到的稳定 `symbol_id`、声明、注解和局部控制流。角色工具只能使用这里实际给出的 ID，不得根据惯用命名猜测 Controller、Service、文件路径或符号。
 - 图谱工具返回 `confirmed/not_found/unknown` 和 coverage/limitations。`not_found` 仅表示完整声明覆盖内未找到；`unknown` 或 partial 表示解析、反射、动态代理、外部依赖或框架覆盖不足，绝不能被解释成不可达。
+- 图谱事实按 `source_set=MAIN|TEST|GENERATED` 分类。`relationships` 与顶层 `status/coverage` 表达当前 `source_scope` 的主语义；生产任务通常为 MAIN，测试任务为 TEST。`test_relationships` 只表示测试覆盖、使用示例或回归意图，不能单独证明生产可达性、生产影响范围、安全路径，也不能据此提高严重程度。GENERATED 属于非测试运行时代码，但应在结论中保留其生成来源限制。
 - knowledge bundle 是方法论而非仓库事实。专项主题可由 risk prior、patch 或 symbol context 触发；它们只是待验证假设，不是问题已存在的结论，也不是审查范围边界。
 - truncated=true 表示事实受字符预算截断；只有候选确实依赖被截掉的部分时，截断才构成工具调用理由。
 - **不可报告**：版权年份/许可证声明、`@author` 标签、import 语句、注释块、空白/格式化、测试方法的增删——这些变更不是代码缺陷，不要为它们产生 Issue。

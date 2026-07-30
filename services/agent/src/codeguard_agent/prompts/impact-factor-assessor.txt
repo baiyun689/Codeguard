@@ -9,6 +9,7 @@
 - 不能从 RiskTag、proposed severity、类名、方法名或 Knowledge 示例推断 factor。
 - “数据库写入”不自动等于“持久状态损坏”；“消息发布”不自动等于“广泛影响”；必须有 finding 证明具体后果。
 - 否定句和限制条件必须按原意处理，不能因出现关键词而判定 proven。
+- TEST 来源、测试调用和测试入口不能单独证明生产可达性、生产影响范围或任何会提高严重程度的 factor；只有测试事实时应判定 `unknown`。测试候选自身的测试行为除外，但仍不得外推为生产入口。
 - 不创建新的 factor，不补充代码事实，不输出 CRITICAL/WARNING/INFO。
 
 只返回结构化 `assessments` 数组。

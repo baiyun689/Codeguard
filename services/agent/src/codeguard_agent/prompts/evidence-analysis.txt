@@ -18,6 +18,12 @@ severity finding 只能描述可达性、前置条件、影响和范围，不得
 
 只评价 `fact_type` 指定的事实维度。支持 root cause 的事实不能自动证明 trigger 或 impact；共享根因也不能自动证明某成员独有的下游后果。
 
+图谱事实的来源边界必须严格保留：
+- `source_set=MAIN|GENERATED` 可用于生产语义；GENERATED 必须保留生成代码的适用限制。
+- `source_set=TEST`、`test_symbols`、`test_relationships` 只能说明测试覆盖、调用示例、预期行为或回归保护。
+- 对生产候选，只有 TEST 关系时不得支持生产可达性、生产调用路径、生产影响或 severity finding，必须返回 `insufficient`；测试调用也不能单独反驳生产路径存在。
+- 当前候选本身位于测试文件时，可以在 `source_scope=TEST` 下评价测试代码的真实行为，但不得把测试入口外推为生产入口。
+
 - `strength=direct` 仅用于事实直接证明关系；其余使用 `contextual`。
 - `supports`/`contradicts` 必须在 `observation` 中引用具体事实，观察应原子化并引用提供的具体事实。
 - `insufficient` 必须给出非空 `limitation`，并使用 `strength=contextual`。
