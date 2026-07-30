@@ -8,7 +8,7 @@ import com.codeguard.proxy.resilience.ResilienceService;
 import com.codeguard.proxy.router.ProviderRouter;
 import com.codeguard.proxy.router.ProviderRouter.RouteTarget;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.javalin.http.Context;
 import io.javalin.http.Handler;
 import org.slf4j.Logger;
@@ -79,17 +79,7 @@ public final class ChatCompletionsHandler implements Handler {
             RouteTarget target = chain.get(targetIndex);
             LlmAdapter adapter = target.adapter();
             OpenAiChatRequest providerRequest = request.withModel(target.model());
-            CircuitBreaker cb = adapter.getCircuitBreaker();
             boolean canFallback = targetIndex + 1 < chain.size();
-
-            // Skip if circuit breaker is open
-            if (cb.getState() == CircuitBreaker.State.OPEN) {
-                log.info("熔断器 [{}] 开路, 跳过", adapter.providerName());
-                if (canFallback) {
-                    resilience.recordFallback(adapter.providerName(), "circuit_open");
-                }
-                continue;
-            }
 
             try {
                 OpenAiChatResponse response = resilience.executeLlmCall(() -> {
@@ -118,6 +108,12 @@ public final class ChatCompletionsHandler implements Handler {
                 ctx.status(200).json(response);
                 return;
 
+            } catch (CallNotPermittedException e) {
+                // 熔断器开路 → 跳过当前 provider，降级到下一个
+                log.info("熔断器 [{}] 开路, 跳过", adapter.providerName());
+                if (canFallback) {
+                    resilience.recordFallback(adapter.providerName(), "circuit_open");
+                }
             } catch (AdapterException e) {
                 // Non-retryable client errors (4xx except 429)
                 if (e.httpStatus() != 429 && e.httpStatus() >= 400 && e.httpStatus() < 500) {

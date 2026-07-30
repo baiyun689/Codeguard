@@ -22,12 +22,18 @@ public final class DeepSeekAdapter implements LlmAdapter {
     private static final Logger log = LoggerFactory.getLogger(DeepSeekAdapter.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    private final String providerName;
     private final String baseUrl;
     private final String apiKey;
     private final CircuitBreaker circuitBreaker;
     private final HttpClient httpClient;
 
     public DeepSeekAdapter(String baseUrl, String apiKey, CircuitBreaker circuitBreaker) {
+        this("deepseek", baseUrl, apiKey, circuitBreaker);
+    }
+
+    public DeepSeekAdapter(String providerName, String baseUrl, String apiKey, CircuitBreaker circuitBreaker) {
+        this.providerName = providerName;
         this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
         this.apiKey = apiKey;
         this.circuitBreaker = circuitBreaker;
@@ -36,7 +42,7 @@ public final class DeepSeekAdapter implements LlmAdapter {
             .build();
     }
 
-    @Override public String providerName() { return "deepseek"; }
+    @Override public String providerName() { return providerName; }
     @Override public CircuitBreaker getCircuitBreaker() { return circuitBreaker; }
 
     @Override

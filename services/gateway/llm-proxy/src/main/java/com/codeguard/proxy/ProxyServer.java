@@ -58,7 +58,7 @@ public final class ProxyServer {
                 default -> {
                     // Unknown provider type → try as OpenAI-compatible (like DeepSeek)
                     log.info("未知 provider 类型 '{}', 尝试 OpenAI 兼容模式", name);
-                    yield new DeepSeekAdapter(pc.url(), pc.key(), cb);
+                    yield new DeepSeekAdapter(name, pc.url(), pc.key(), cb);
                 }
             };
             adapters.put(name, adapter);

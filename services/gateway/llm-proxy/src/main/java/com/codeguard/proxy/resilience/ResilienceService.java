@@ -2,6 +2,7 @@ package com.codeguard.proxy.resilience;
 
 import com.codeguard.common.GatewayMetrics;
 import com.codeguard.proxy.config.ProxyConfig;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.github.resilience4j.ratelimiter.RateLimiter;
@@ -61,7 +62,8 @@ public final class ResilienceService {
                 (e instanceof IOException
                     || e instanceof TimeoutException
                     || e instanceof RuntimeException)
-                && !(e instanceof AdapterException))  // AdapterException 由 handler fallback 循环处理
+                && !(e instanceof AdapterException)
+                && !(e instanceof CallNotPermittedException))  // CB 开路不重试，由 handler 降级处理
             .build();
     }
 
