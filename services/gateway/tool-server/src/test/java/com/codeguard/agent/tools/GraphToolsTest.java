@@ -13,6 +13,8 @@ import java.nio.file.Path;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -62,6 +64,67 @@ class GraphToolsTest {
 
         assertFalse(missing.isSuccess());
         assertTrue(missing.getError().contains("unconfirmed_path"), missing.getError());
+    }
+
+    @Test
+    void testOnlyCallerIsSeparatedFromProductionImpact(@TempDir Path repo) throws Exception {
+        Path mainRoot = repo.resolve("src/main/java/demo");
+        Path testRoot = repo.resolve("src/test/java/demo");
+        Files.createDirectories(mainRoot);
+        Files.createDirectories(testRoot);
+        Files.writeString(mainRoot.resolve("Service.java"), """
+                package demo;
+                class Service { void run() {} }
+                """);
+        Files.writeString(testRoot.resolve("ServiceTest.java"), """
+                package demo;
+                class ServiceTest { void verifies(Service service) { service.run(); } }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "test-caller"));
+        AgentContext context =
+                new AgentContext(repo, Set.of("src/main/java/demo/Service.java"));
+
+        ToolResult impact = new InspectChangeImpactTool(snapshot)
+                .execute("java:demo.Service#run()", context);
+        JsonNode payload = GraphToolSupport.JSON.readTree(impact.getResult());
+
+        assertTrue(impact.isSuccess(), impact.getError());
+        assertTrue(payload.path("relationships").isEmpty(), impact.getResult());
+        assertFalse(payload.path("test_relationships").isEmpty(), impact.getResult());
+        assertTrue(payload.path("test_relationships").toString()
+                .contains("ServiceTest.java"), impact.getResult());
+        assertTrue(payload.path("test_relationships").get(0)
+                .path("source_set").asText().equals("TEST"), impact.getResult());
+        assertTrue(payload.path("status").asText().equals("not_found"), impact.getResult());
+        assertTrue(payload.path("source_scope").asText().equals("MAIN"), impact.getResult());
+    }
+
+    @Test
+    void testSubjectUsesTestRelationshipsAsPrimaryEvidence(@TempDir Path repo)
+            throws Exception {
+        Path testRoot = repo.resolve("src/test/java/demo");
+        Files.createDirectories(testRoot);
+        Files.writeString(testRoot.resolve("ServiceTest.java"), """
+                package demo;
+                class ServiceTest {
+                    void helper() {}
+                    void verifies() { helper(); }
+                }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "test-subject"));
+        AgentContext context =
+                new AgentContext(repo, Set.of("src/test/java/demo/ServiceTest.java"));
+
+        ToolResult impact = new InspectChangeImpactTool(snapshot)
+                .execute("java:demo.ServiceTest#helper()", context);
+        JsonNode payload = GraphToolSupport.JSON.readTree(impact.getResult());
+
+        assertTrue(payload.path("status").asText().equals("confirmed"), impact.getResult());
+        assertTrue(payload.path("source_scope").asText().equals("TEST"), impact.getResult());
+        assertFalse(payload.path("relationships").isEmpty(), impact.getResult());
+        assertFalse(payload.path("test_relationships").isEmpty(), impact.getResult());
     }
 
     @Test

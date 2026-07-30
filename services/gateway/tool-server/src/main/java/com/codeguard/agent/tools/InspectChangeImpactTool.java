@@ -7,6 +7,7 @@ import com.codeguard.agent.graph.GraphEdge;
 import com.codeguard.agent.graph.GraphEdgeKind;
 import com.codeguard.agent.graph.GraphNode;
 import com.codeguard.agent.graph.ProjectSnapshot;
+import com.codeguard.agent.graph.SourceSet;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -40,6 +41,7 @@ public final class InspectChangeImpactTool implements AgentTool {
         }
         try {
             ProjectSnapshot value = GraphToolSupport.await(snapshot);
+            SourceSet sourceScope = GraphToolSupport.sourceScope(value, symbol);
             List<GraphEdge> relationships = new ArrayList<>();
             Set<String> frontier = new LinkedHashSet<>(Set.of(symbol));
             Set<String> visited = new LinkedHashSet<>();
@@ -52,7 +54,9 @@ public final class InspectChangeImpactTool implements AgentTool {
                     List<GraphEdge> callers =
                             value.graph().incoming(current, GraphEdgeKind.CALLS);
                     relationships.addAll(callers);
-                    callers.forEach(edge -> next.add(edge.sourceId()));
+                    callers.stream()
+                            .filter(edge -> GraphToolSupport.inScope(edge, sourceScope))
+                            .forEach(edge -> next.add(edge.sourceId()));
                     relationships.addAll(value.graph().incoming(
                             current, GraphEdgeKind.EXPOSES_ROUTE));
                     relationships.addAll(value.graph().incoming(

@@ -143,7 +143,7 @@ final class ProjectSnapshotBuilder {
             String fileId = "file:" + file;
             nodes.add(new GraphNode(fileId, GraphNodeKind.FILE, file, 1,
                     Math.max(1, unit.getEnd().map(position -> position.line).orElse(1)),
-                    file, "", List.of()));
+                    file, "", SourceSet.fromPath(file), List.of()));
             for (TypeDeclaration<?> type : unit.findAll(TypeDeclaration.class)) {
                 String typeId = "java:" + qualifiedTypeName(type, unit, file);
                 symbolIds.put(type, typeId);
@@ -421,7 +421,9 @@ final class ProjectSnapshotBuilder {
     ) {
         int start = source.getBegin().map(position -> position.line).orElse(1);
         int end = source.getEnd().map(position -> position.line).orElse(start);
-        return new GraphNode(id, kind, file, start, end, signature, owner, annotations);
+        return new GraphNode(
+                id, kind, file, start, end, signature, owner,
+                SourceSet.fromPath(file), annotations);
     }
 
     private static GraphEdge edge(
@@ -435,7 +437,7 @@ final class ProjectSnapshotBuilder {
     ) {
         return new GraphEdge(source, target, kind, file,
                 location.getBegin().map(position -> position.line).orElse(1),
-                status, extractor);
+                SourceSet.fromPath(file), status, extractor);
     }
 
     private static String qualifiedTypeName(

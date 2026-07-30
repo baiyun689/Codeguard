@@ -66,6 +66,22 @@ class GetFileContentToolTest {
     }
 
     @Test
+    void readsTestSourceWithoutTreatingItAsProductionEvidence(
+            @TempDir Path repo
+    ) throws IOException {
+        Path file = repo.resolve("src/test/java/demo/ServiceTest.java");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "class ServiceTest {}");
+
+        ToolResult result = toolFor(repo, Set.of()).execute(
+                "src/test/java/demo/ServiceTest.java",
+                ctx(repo, Set.of()));
+
+        assertTrue(result.isSuccess());
+        assertTrue(result.getResult().contains("class ServiceTest {}"));
+    }
+
+    @Test
     void rejectsNonSourceFile(@TempDir Path repo) throws IOException {
         // 非源码类型(.env / .conf 等配置/密钥文件)即便在仓库内也拒读,守住放宽后的边界。
         // 注意:.properties 已在 b589f95 被加入源码白名单,改用 .env 验证。

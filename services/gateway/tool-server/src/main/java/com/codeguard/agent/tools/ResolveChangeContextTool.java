@@ -5,11 +5,14 @@ import com.codeguard.agent.core.AgentTool;
 import com.codeguard.agent.core.ToolResult;
 import com.codeguard.agent.graph.GraphNode;
 import com.codeguard.agent.graph.ProjectSnapshot;
+import com.codeguard.agent.graph.SourceSet;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.util.EnumSet;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
@@ -37,11 +40,40 @@ public final class ResolveChangeContextTool implements AgentTool {
             ProjectSnapshot value = GraphToolSupport.await(snapshot);
             JsonNode request = GraphToolSupport.JSON.readTree(input);
             ObjectNode result = GraphToolSupport.JSON.createObjectNode();
+            EnumSet<SourceSet> requestedSourceSets = EnumSet.noneOf(SourceSet.class);
+            for (JsonNode change : request.path("changes")) {
+                requestedSourceSets.add(
+                        SourceSet.fromPath(change.path("file").asText("")));
+            }
+            if (requestedSourceSets.isEmpty()) {
+                requestedSourceSets.add(SourceSet.MAIN);
+            }
+            SourceSet sourceScope = requestedSourceSets.size() == 1
+                    ? requestedSourceSets.iterator().next()
+                    : SourceSet.MAIN;
+            boolean completeCoverage = requestedSourceSets.stream()
+                    .allMatch(sourceSet ->
+                            "complete".equals(value.coverageStatus(sourceSet)));
+            List<String> relevantDiagnostics = requestedSourceSets.stream()
+                    .flatMap(sourceSet -> value.diagnosticsFor(sourceSet).stream())
+                    .distinct()
+                    .toList();
             // 这里回答的是“变更行能否定位到项目符号”，不能因为项目中任意外部
             // 调用未解析就把所有已定位符号降为 unknown。查询级工具仍会按具体
             // 关系返回 unknown/partial；解析诊断则代表快照本身不完整。
-            result.put("status", value.diagnostics().isEmpty() ? "confirmed" : "partial");
-            result.put("coverage", value.coverageStatus());
+            result.put(
+                    "status",
+                    relevantDiagnostics.isEmpty() ? "confirmed" : "partial");
+            result.put("coverage", completeCoverage ? "complete" : "partial");
+            result.put("source_scope", sourceScope.name());
+            result.set(
+                    "source_scopes",
+                    GraphToolSupport.JSON.valueToTree(requestedSourceSets));
+            result.put("production_coverage",
+                    value.productionComplete() ? "complete" : "partial");
+            result.put("main_coverage", value.coverageStatus(SourceSet.MAIN));
+            result.put("test_coverage", value.coverageStatus(SourceSet.TEST));
+            result.put("generated_coverage", value.coverageStatus(SourceSet.GENERATED));
             ArrayNode contexts = result.putArray("contexts");
             for (JsonNode change : request.path("changes")) {
                 String file = change.path("file").asText("").replace('\\', '/');
@@ -61,13 +93,16 @@ public final class ResolveChangeContextTool implements AgentTool {
                     item.put("end_line", symbol.endLine());
                     item.put("signature", symbol.signature());
                     item.put("owner_type", symbol.ownerId());
+                    item.put("source_set", symbol.sourceSet().name());
                     item.set("annotations", GraphToolSupport.JSON.valueToTree(symbol.annotations()));
                     item.set("control_flow", GraphToolSupport.JSON.valueToTree(
                             controlFlow(value, symbol)));
                     item.put("resolution", "resolved");
                 }
             }
-            result.set("limitations", GraphToolSupport.JSON.valueToTree(value.diagnostics()));
+            result.set(
+                    "limitations",
+                    GraphToolSupport.JSON.valueToTree(relevantDiagnostics));
             return ToolResult.ok(GraphToolSupport.JSON.writeValueAsString(result));
         } catch (Exception exception) {
             return ToolResult.error("graph_unavailable: " + exception.getMessage());

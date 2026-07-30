@@ -7,6 +7,7 @@ import com.codeguard.agent.graph.GraphEdge;
 import com.codeguard.agent.graph.GraphEdgeKind;
 import com.codeguard.agent.graph.GraphNode;
 import com.codeguard.agent.graph.ProjectSnapshot;
+import com.codeguard.agent.graph.SourceSet;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -97,8 +98,17 @@ public final class GraphCompatibilityTool implements AgentTool {
         List<GraphNode> nodes = context.getAllowedFiles().stream()
                 .flatMap(file -> snapshot.graph().symbolsInFile(file).stream())
                 .toList();
+        boolean onlyTests = !context.getAllowedFiles().isEmpty()
+                && context.getAllowedFiles().stream()
+                .allMatch(file -> SourceSet.fromPath(file).isTest());
         return GraphToolSupport.facts(
-                snapshot, "changed_files", nodes, List.of(), List.of(), true);
+                snapshot,
+                "changed_files",
+                nodes,
+                List.of(),
+                List.of(),
+                true,
+                onlyTests ? SourceSet.TEST : SourceSet.MAIN);
     }
 
     private static boolean isSensitive(String symbol) {
