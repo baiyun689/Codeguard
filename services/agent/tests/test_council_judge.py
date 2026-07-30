@@ -285,6 +285,21 @@ def test_direct_counter_drops_before_llm_call():
     assert batch.verdicts[0].reason_code == "direct_counter_evidence"
 
 
+def test_counter_finding_that_supports_candidate_does_not_drop():
+    dossier = _dossier(
+        request_findings=[
+            ("support", _finding("supports", "direct", evidence_id="support")),
+            ("counter", _finding("supports", "direct", evidence_id="no-guard")),
+        ]
+    )
+    batch = _judge(
+        [dossier],
+        llm=_AssessmentLLM(_supported_assessment()),
+    )
+
+    assert batch.verdicts[0].action == "keep"
+
+
 # ── gate: all insufficient → drop ────────────────────────────────────────────
 
 

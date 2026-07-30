@@ -17,9 +17,12 @@ from codeguard_agent.models.council import (
     CandidateInvestigationPlan,
     EvidenceDossierStatus,
     EvidenceDossierSummary,
+    EvidenceFactType,
     EvidenceNote,
     EvidenceRequest,
+    InvestigationQuestion,
 )
+from codeguard_agent.pipeline.council.impact import is_impact_relevant_request
 from codeguard_agent.pipeline.evidence.agent import EvidenceBatch, collect_evidence
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 from codeguard_agent.pipeline.evidence.strategist import (
@@ -382,6 +385,132 @@ def _plan_followups(
     return accepted
 
 
+def _has_impact_evidence(
+    candidate_id: str,
+    requests: Sequence[EvidenceRequest],
+    notes: Sequence[EvidenceNote],
+) -> bool:
+    relevant_request_ids = {
+        request.id
+        for request in requests
+        if (
+            request.candidate_id == candidate_id
+            and is_impact_relevant_request(request)
+        )
+    }
+    return any(
+        note.request_id in relevant_request_ids
+        and note.candidate_id == candidate_id
+        and any(
+            finding.relation == "supports" and finding.observation.strip()
+            for finding in note.findings
+        )
+        for note in notes
+    )
+
+
+def _severity_followup_plans(
+    plans: Sequence[CandidateInvestigationPlan],
+    concerns: Sequence[CandidateConcern],
+    summaries: Sequence[EvidenceDossierSummary],
+    requests: Sequence[EvidenceRequest],
+    notes: Sequence[EvidenceNote],
+) -> list[CandidateInvestigationPlan]:
+    """Add one bounded impact question after the candidate mechanism is supported."""
+    concern_by_candidate = {
+        candidate_id: concern
+        for concern in concerns
+        for candidate_id in concern.member_candidate_ids
+    }
+    summary_by_candidate = {
+        summary.candidate_id: summary for summary in summaries
+    }
+    candidates_with_severity_request = {
+        request.candidate_id
+        for request in requests
+        if request.purpose == "severity"
+    }
+    followups: list[CandidateInvestigationPlan] = []
+    for plan in plans:
+        summary = summary_by_candidate.get(plan.candidate_id)
+        concern = concern_by_candidate.get(plan.candidate_id)
+        if (
+            summary is None
+            or summary.status != EvidenceDossierStatus.SUPPORTED
+            or concern is None
+            or plan.candidate_id in candidates_with_severity_request
+            or _has_impact_evidence(
+                plan.candidate_id,
+                requests,
+                notes,
+            )
+        ):
+            continue
+        claim = next(
+            (
+                item
+                for item in concern.claims
+                if item.candidate_id == plan.candidate_id
+            ),
+            None,
+        )
+        consequence = (
+            claim.observable_consequence.strip()
+            if claim is not None
+            else ""
+        ) or plan.hypothesis
+        followups.append(
+            CandidateInvestigationPlan(
+                candidate_id=plan.candidate_id,
+                hypothesis=plan.hypothesis,
+                questions=(
+                    InvestigationQuestion(
+                        purpose="severity",
+                        question=(
+                            "在实际可触发的运行路径上，该机制是否会造成以下后果，"
+                            f"其触发者、外部副作用和影响范围是什么：{consequence}"
+                        ),
+                        why_it_matters=(
+                            "候选机制已有支持证据，但仍缺少可用于确定严重程度的"
+                            "运行时影响事实"
+                        ),
+                        expected_fact=EvidenceFactType.OBSERVABLE_CONSEQUENCE,
+                    ),
+                ),
+                source="fallback",
+            )
+        )
+    return followups
+
+
+def _rewrite_cross_round_trace(
+    trace: Sequence[tuple[str, str]],
+    cached_client: Any,
+) -> list[tuple[str, str]]:
+    rewritten: list[tuple[str, str]] = []
+    for event, detail in trace:
+        rewritten_event = event
+        if (
+            event == "evidence_tool_called"
+            and isinstance(cached_client, _CachingToolClient)
+        ):
+            try:
+                payload = json.loads(detail)
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            arguments = payload.get("arguments")
+            if (
+                isinstance(arguments, dict)
+                and cached_client.was_cache_hit(
+                    str(payload.get("tool", "")),
+                    arguments,
+                )
+            ):
+                rewritten_event = "evidence_tool_reused_cross_round"
+        rewritten.append((rewritten_event, detail))
+    return rewritten
+
+
 def research_evidence(
     plans: Sequence[CandidateInvestigationPlan],
     concerns: Sequence[CandidateConcern],
@@ -458,40 +587,70 @@ def research_evidence(
             structured_method=structured_method,
             enabled_tools=enabled_tools,
         )
-        followup_trace: list[tuple[str, str]] = []
-        for event, detail in followup.trace:
-            rewritten_event = event
-            if (
-                event == "evidence_tool_called"
-                and isinstance(cached_client, _CachingToolClient)
-            ):
-                try:
-                    payload = json.loads(detail)
-                except (TypeError, json.JSONDecodeError):
-                    payload = {}
-                arguments = payload.get("arguments")
-                if (
-                    isinstance(arguments, dict)
-                    and cached_client.was_cache_hit(
-                        str(payload.get("tool", "")),
-                        arguments,
-                    )
-                ):
-                    rewritten_event = "evidence_tool_reused_cross_round"
-            followup_trace.append((rewritten_event, detail))
         all_requests.extend(followup_requests)
         all_notes.extend(followup.notes)
-        all_trace.extend(followup_trace)
+        all_trace.extend(
+            _rewrite_cross_round_trace(followup.trace, cached_client)
+        )
         all_context.extend(followup.gathered_context)
 
     reacted_ids = {plan.candidate_id for plan in followup_plans}
-    summaries = [
+    post_react_summaries = [
         _summarize_candidate(
             plan,
             all_requests,
             all_notes,
             all_trace,
             rounds=2 if plan.candidate_id in reacted_ids else 1,
+            react_used=plan.candidate_id in reacted_ids,
+            extra_limitations=(
+                ("no_tool_client",) if tool_client is None else ()
+            ),
+        )
+        for plan in plans
+    ]
+    severity_plans = _severity_followup_plans(
+        plans,
+        concerns,
+        post_react_summaries,
+        all_requests,
+        all_notes,
+    )
+    severity_requests = investigation_plans_to_requests(
+        severity_plans,
+        concerns,
+    )
+    if severity_requests:
+        severity_followup = collect_fn(
+            dossiers,
+            severity_requests,
+            tool_client=cached_client,
+            analyst_llm=analyst_llm,
+            structured_method=structured_method,
+            enabled_tools=enabled_tools,
+        )
+        all_requests.extend(severity_requests)
+        all_notes.extend(severity_followup.notes)
+        all_trace.extend(
+            _rewrite_cross_round_trace(
+                severity_followup.trace,
+                cached_client,
+            )
+        )
+        all_context.extend(severity_followup.gathered_context)
+
+    severity_ids = {plan.candidate_id for plan in severity_plans}
+    summaries = [
+        _summarize_candidate(
+            plan,
+            all_requests,
+            all_notes,
+            all_trace,
+            rounds=(
+                1
+                + int(plan.candidate_id in reacted_ids)
+                + int(plan.candidate_id in severity_ids)
+            ),
             react_used=plan.candidate_id in reacted_ids,
             extra_limitations=(
                 ("no_tool_client",) if tool_client is None else ()
@@ -507,6 +666,7 @@ def research_evidence(
                     "candidates": len(plans),
                     "requests": len(all_requests),
                     "react_candidates": len(reacted_ids),
+                    "severity_followup_candidates": len(severity_ids),
                 },
                 ensure_ascii=False,
                 sort_keys=True,

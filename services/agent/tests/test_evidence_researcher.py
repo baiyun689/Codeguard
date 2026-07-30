@@ -254,9 +254,116 @@ def test_react_allows_more_specific_same_fact_question_and_marks_cross_round_cac
         collect_fn=collector,
     )
 
-    assert call_count == 2
+    assert call_count == 3
     assert client.calls == 1
+    assert sum(request.purpose == "severity" for request in batch.requests) == 1
     assert any(
         event == "evidence_tool_reused_cross_round"
         for event, _detail in batch.trace
     )
+
+
+def test_supported_candidate_gets_exactly_one_severity_followup_when_impact_missing():
+    concern = _concern("candidate-1")
+    plan = _plan("candidate-1")
+    requests = investigation_plans_to_requests([plan], [concern])
+    calls = []
+
+    def collector(_dossiers, current_requests, **_kwargs):
+        current_requests = list(current_requests)
+        calls.append(current_requests)
+        return EvidenceBatch(
+            notes=[
+                EvidenceNote(
+                    request_id=request.id,
+                    candidate_id=request.candidate_id,
+                    findings=[
+                        EvidenceFinding(
+                            evidence_id=f"fact-{len(calls)}-{request.id}",
+                            source="task_patch",
+                            observation=(
+                                "变更机制成立"
+                                if request.purpose == "support"
+                                else "运行时路径可达并执行非预期命令"
+                            ),
+                            relation="supports",
+                            strength="direct",
+                        )
+                    ],
+                )
+                for request in current_requests
+            ]
+        )
+
+    batch = research_evidence(
+        [plan],
+        [concern],
+        dossiers=[],
+        initial_requests=requests,
+        tool_client=None,
+        analyst_llm=None,
+        structured_method="function_calling",
+        enabled_tools=None,
+        collect_fn=collector,
+    )
+
+    assert len(calls) == 2
+    assert len(calls[1]) == 1
+    assert calls[1][0].purpose == "severity"
+    assert calls[1][0].fact_type == "observable_consequence"
+    assert sum(request.purpose == "severity" for request in batch.requests) == 1
+
+
+def test_impact_relevant_support_avoids_severity_followup():
+    concern = _concern("candidate-1")
+    plan = CandidateInvestigationPlan(
+        candidate_id="candidate-1",
+        hypothesis="外部输入到达危险调用",
+        questions=(
+            InvestigationQuestion(
+                purpose="support",
+                question="运行时是否可达并执行非预期命令？",
+                why_it_matters="同时验证机制和运行时后果",
+                expected_fact="observable_consequence",
+            ),
+        ),
+    )
+    requests = investigation_plans_to_requests([plan], [concern])
+    calls = []
+
+    def collector(_dossiers, current_requests, **_kwargs):
+        current_requests = list(current_requests)
+        calls.append(current_requests)
+        return EvidenceBatch(
+            notes=[
+                EvidenceNote(
+                    request_id=request.id,
+                    candidate_id=request.candidate_id,
+                    findings=[
+                        EvidenceFinding(
+                            evidence_id=f"fact-{request.id}",
+                            source="task_patch",
+                            observation="运行时路径可达并执行非预期命令",
+                            relation="supports",
+                            strength="direct",
+                        )
+                    ],
+                )
+                for request in current_requests
+            ]
+        )
+
+    batch = research_evidence(
+        [plan],
+        [concern],
+        dossiers=[],
+        initial_requests=requests,
+        tool_client=None,
+        analyst_llm=None,
+        structured_method="function_calling",
+        enabled_tools=None,
+        collect_fn=collector,
+    )
+
+    assert len(calls) == 1
+    assert all(request.purpose != "severity" for request in batch.requests)

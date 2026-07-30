@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from codeguard_agent.models.council import (
+    EvidenceFactType,
     EvidenceFinding,
+    EvidenceRequest,
     FactorStatus,
     ImpactAssessment,
     ImpactClass,
@@ -25,6 +27,26 @@ from codeguard_agent.pipeline.council.severity import FACTOR_INFO
 
 logger = logging.getLogger("codeguard")
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
+
+_IMPACT_RELEVANT_SUPPORT_FACT_TYPES = frozenset(
+    {
+        EvidenceFactType.CALL_PATH,
+        EvidenceFactType.DATA_FLOW,
+        EvidenceFactType.REACHABILITY,
+        EvidenceFactType.SIDE_EFFECT,
+        EvidenceFactType.OBSERVABLE_CONSEQUENCE,
+        EvidenceFactType.IMPACT_FACTOR,
+    }
+)
+
+
+def is_impact_relevant_request(request: EvidenceRequest) -> bool:
+    """Whether a request's findings may prove runtime impact factors."""
+    return request.purpose == "severity" or (
+        request.purpose == "support"
+        and request.fact_type in _IMPACT_RELEVANT_SUPPORT_FACT_TYPES
+    )
+
 
 # factor → 从 finding 文本中确定性检测的关键词
 _FACTOR_KEYWORDS: dict[ImpactFactor, tuple[str, ...]] = {

@@ -92,6 +92,7 @@ from codeguard_agent.pipeline.evidence.researcher import research_evidence
 from codeguard_agent.pipeline.council.impact import (
     assess_impact,
     assess_impact_fallback,
+    is_impact_relevant_request,
 )
 from codeguard_agent.pipeline.council.severity import rubric_for
 from codeguard_agent.pipeline.context.base import PipelineContext
@@ -1521,7 +1522,7 @@ def _evidence_researcher_node(tool_client=None, judge_llm=None):
 
 
 def _impact_assessor_node(judge_llm=None):
-    """从 severity findings 单独归纳影响因子，不参与候选真伪裁决。"""
+    """从已对齐的影响相关 findings 归纳因子，不参与候选真伪裁决。"""
 
     def _node(state: ReviewState) -> dict:
         concern_analysis = state.get("concern_analysis")
@@ -1551,7 +1552,7 @@ def _impact_assessor_node(judge_llm=None):
                 for note in state.get("evidence_notes") or []
                 if (
                     (request := request_by_id.get(note.request_id)) is not None
-                    and request.purpose == "severity"
+                    and is_impact_relevant_request(request)
                     and request.concern_id == concern.concern_id
                 )
                 for finding in note.findings

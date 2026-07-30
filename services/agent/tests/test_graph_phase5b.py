@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import codeguard_agent.pipeline.graph as G
-from codeguard_agent.models.council import EvidenceRequest
+from codeguard_agent.models.council import (
+    EvidenceFinding,
+    EvidenceNote,
+    EvidenceRequest,
+)
 from codeguard_agent.models.tasks import TaskSelection
 from codeguard_agent.pipeline.reviewers.reviewers import DEFAULT_REVIEWERS
 
@@ -185,3 +189,84 @@ def test_impact_assessor_is_bounded_parallel_and_falls_back_per_concern(monkeypa
     assert captured["max_workers"] == 6
     assert out["impact_assessments"]["concern-1"].concern_id == "concern-1"
     assert out["council_trace"][0].event == "impact_assessment_degraded"
+
+
+def test_impact_assessor_reuses_impact_relevant_support_findings(monkeypatch):
+    concern = type(
+        "Concern",
+        (),
+        {
+            "concern_id": "concern-1",
+            "tags": type(
+                "Tags",
+                (),
+                {"primary_tag": None, "secondary_tags": ()},
+            )(),
+        },
+    )()
+    impact_request = EvidenceRequest(
+        candidate_id="candidate-1",
+        strategy_id="claim.observable_consequence.support",
+        purpose="support",
+        target="src/Service.java",
+        question="该错误会产生什么运行时后果？",
+        concern_id="concern-1",
+        fact_type="observable_consequence",
+    )
+    root_cause_request = EvidenceRequest(
+        candidate_id="candidate-1",
+        strategy_id="claim.changed_condition.support",
+        purpose="support",
+        target="src/Service.java",
+        question="变更是否存在？",
+        concern_id="concern-1",
+        fact_type="changed_condition",
+    )
+    notes = [
+        EvidenceNote(
+            request_id=impact_request.id,
+            candidate_id="candidate-1",
+            findings=[
+                EvidenceFinding(
+                    evidence_id="impact-fact",
+                    source="task_patch",
+                    observation="运行时调用路径可达并执行外部命令",
+                    relation="supports",
+                    strength="direct",
+                )
+            ],
+        ),
+        EvidenceNote(
+            request_id=root_cause_request.id,
+            candidate_id="candidate-1",
+            findings=[
+                EvidenceFinding(
+                    evidence_id="root-cause-fact",
+                    source="task_patch",
+                    observation="代码条件发生变化",
+                    relation="supports",
+                    strength="direct",
+                )
+            ],
+        ),
+    ]
+    captured = {}
+    original = G.assess_impact
+
+    def capture(concern_id, findings, rubric, *, llm=None):
+        captured["evidence_ids"] = [finding.evidence_id for finding in findings]
+        return original(concern_id, findings, rubric, llm=llm)
+
+    monkeypatch.setattr(G, "assess_impact", capture)
+
+    G._impact_assessor_node(None)(
+        {
+            "concern_analysis": type(
+                "Analysis", (), {"concerns": (concern,)}
+            )(),
+            "evidence_requests": [impact_request, root_cause_request],
+            "evidence_notes": notes,
+        }
+    )
+
+    assert captured["evidence_ids"] == ["impact-fact"]

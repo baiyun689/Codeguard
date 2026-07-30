@@ -295,7 +295,9 @@ def test_evidence_and_judge_prompts_describe_wrapper_contracts() -> None:
         f"`{field}`" in analysis
         for field in ("relation", "strength", "observation", "limitation")
     )
-    assert "relation 始终相对于 evidence goal" in analysis
+    assert "relation 始终相对于当前候选主张" in analysis
+    assert "evidence_goal.proposition" in analysis
+    assert "不是 relation 的参照系" in analysis
     assert "不得建议 CRITICAL、WARNING 或 INFO" in analysis
 
     judge = _prompt("council-judge.txt")
