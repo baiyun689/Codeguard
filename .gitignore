@@ -38,6 +38,23 @@ services/agent/evals/runs/
 .eval-cache/
 .eval-work/
 services/agent/evals/results/
+services/agent/evals/demo-runs/
+
+# 本地评测数据集、人工记录与一次性报告脚本
+services/agent/evals/dataset/independent-hunk/
+services/agent/evals/dataset/long-diff/
+services/agent/evals/dataset/long-diff-combo/
+services/agent/evals/dataset/repo/demo-*/
+services/agent/evals/dataset/repo/vul4j-21-security-feature/
+services/agent/evals/dataset/repo/representative-multi-v1/*_REPORT.md
+services/agent/evals/dataset/repo/representative-multi-v1/cases/*/manual-review/
+services/agent/evals/dataset/repo/representative-multi-v1/gen_report*.py
+services/agent/evals/dataset/repo/representative-multi-v1/run_*compare.py
+services/agent/evals/dataset/repo/representative-multi-v1/run_eval_*.py
+
+# 本地提示词备份与 Gateway 韧性实验产物
+services/agent/src/codeguard_agent/prompts/.backup-*/
+services/gateway/llm-proxy/chaos/
 
 # 审查过程 trace(每次跑生成的 HTML 追踪文件,本地累积,不入库)
 services/agent/trace/
