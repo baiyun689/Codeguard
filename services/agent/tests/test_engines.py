@@ -290,6 +290,43 @@ class _RecursingEngine(ToolAgentEngine):
         raise GraphRecursionError("Recursion limit of 12 reached without hitting a stop condition")
 
 
+class _SuccessfulAgentEngine(ToolAgentEngine):
+    """返回一次成功工具探索，用于验证正常路径的两阶段结构化收束。"""
+
+    def _run_agent(self, llm, system_prompt, user_prompt):  # noqa: ARG002
+        return {
+            "messages": [
+                _AIMsg([
+                    {
+                        "id": "tool-1",
+                        "name": "get_file_content",
+                        "args": {"file_path": "src/A.java"},
+                    }
+                ]),
+                _ToolMsg("tool-1", "class A {}"),
+            ]
+        }
+
+
+def test_react_success_uses_direct_structured_synthesis_with_gathered_context():
+    engine = _SuccessfulAgentEngine(
+        tool_client=type("Client", (), {"trace_records": []})(),
+    )
+
+    outcome = engine.review(
+        _FakeLLM(ReviewResult(summary="基于工具事实收束")),
+        system_prompt="s",
+        user_prompt="u",
+        reviewer_name="logic",
+        max_retries=1,
+        structured_method="function_calling",
+    )
+
+    assert outcome.result.summary == "基于工具事实收束"
+    assert outcome.execution_events == ["react_two_phase_synthesis"]
+    assert [fact.content for fact in outcome.gathered_context] == ["class A {}"]
+
+
 def test_撞递归上限降级为无工具直连_不静默丢弃该域产出():
     # ReAct 撞上限时,该域不应被静默丢弃;而是降级走无工具直连复审,至少产出一份结论。
     eng = _RecursingEngine(tool_client=object())

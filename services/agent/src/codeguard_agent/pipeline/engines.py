@@ -201,13 +201,28 @@ class ToolAgentEngine(ReviewEngine):
                 _gathered_context_from_records(tool_records)
             )
             return fallback
-        result = self._extract_result(raw, reviewer_name)
+        # 两阶段收束:ReAct 探索工具收集上下文 → DirectEngine 结构化合成。
+        # create_agent 不再传 response_format(deepseek 不兼容 LangChain 隐式 Respond 工具),
+        # 改为主动用 DirectEngine.with_structured_output 做最终收口。
         tool_records = list(getattr(self._tool_client, "trace_records", ()))
-        gathered = _extract_gathered_context(
-            raw,
-            tool_records=tool_records,
+        gathered = _extract_gathered_context(raw, tool_records=tool_records)
+        synthesis_prompt = (
+            _bounded_synthesis_prompt(user_prompt, gathered)
+            if gathered
+            else user_prompt
         )
-        return ReviewOutcome(result, gathered, tool_records)
+        synthesis = DirectEngine().review(
+            llm,
+            system_prompt=system_prompt,
+            user_prompt=synthesis_prompt,
+            reviewer_name=reviewer_name,
+            max_retries=max_retries,
+            structured_method=structured_method,
+        )
+        synthesis.tool_trace_records.extend(tool_records)
+        synthesis.gathered_context.extend(gathered)
+        synthesis.execution_events.append("react_two_phase_synthesis")
+        return synthesis
 
     def _run_agent(self, llm: Any, system_prompt: str, user_prompt: str) -> Any:
         """构建 ReAct agent 并执行,返回原始状态。
@@ -247,7 +262,6 @@ class ToolAgentEngine(ReviewEngine):
             llm,
             tools,
             system_prompt=system_prompt,
-            response_format=ReviewResult,
         )
         return agent.invoke(
             {"messages": [("human", user_prompt)]},
@@ -412,8 +426,8 @@ def _bounded_synthesis_prompt(
     facts = "\n\n".join(blocks)
     return (
         f"{user_prompt}\n\n"
-        "工具探索已达到本次有界预算。请停止调用工具，仅依据原始变更与以下已取得的"
-        "项目事实完成结构化审查；未被事实覆盖的关系必须按未知处理，不得猜测。\n\n"
+        "以下是工具探索阶段收集到的项目上下文事实。请仅依据原始变更与以下事实完成结构化审查；"
+        "未被事实覆盖的关系必须按未知处理，不得猜测。\n\n"
         f"{facts}"
     )
 
