@@ -143,14 +143,19 @@ LLM 失败率和熔断器开路告警规则。Prometheus 默认保留 15 天数�
 Prometheus 数据均使用命名卷持久化。
 
 容器内用于接收 GitHub Webhook 的 CI 服务固定监听 `8080`；Tool Server 与 LLM Proxy
-分别监听内部端口 `9090` 和 `9091`。如需修改对外发布的 Webhook 宿主机端口，只设置
-`CODEGUARD_HOST_PORT`：
+分别监听内部端口 `9090` 和 `9091`。Webhook 通过 `CODEGUARD_HOST_PORT` 发布；
+Tool Server 仅绑定宿主机回环地址，通过 `CODEGUARD_TOOL_HOST_PORT` 提供给本机
+Python Agent：
 
 ```dotenv
 CODEGUARD_HOST_PORT=8080
+CODEGUARD_TOOL_HOST_PORT=9092
 ```
 
-Gateway 的映射端口提供明文 HTTP，不直接提供 TLS。生产环境必须由反向代理终止 HTTPS，并将 `/webhooks/github` 转发到该宿主机端口；公开 Webhook 地址应为 `https://your-host.example/webhooks/github`。不要将 GitHub Webhook 直接指向映射端口。
+Tool Server 不应暴露到公网。Gateway 的 Webhook 映射端口提供明文 HTTP，不直接提供
+TLS。生产环境必须由反向代理终止 HTTPS，并将 `/webhooks/github` 转发到该宿主机端口；
+公开 Webhook 地址应为 `https://your-host.example/webhooks/github`。不要将 GitHub
+Webhook 直接指向映射端口。
 
 ## 配置 GitHub App
 
@@ -257,6 +262,7 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 |---|---|---|
 | `CODEGUARD_IMAGE_TAG` | `latest` | `ghcr.io/baiyun689/codeguard` 下的镜像标签 |
 | `CODEGUARD_HOST_PORT` | `9090` | 映射到容器 CI Webhook 端口 `8080` 的宿主机端口 |
+| `CODEGUARD_TOOL_HOST_PORT` | `9092` | 仅绑定 `127.0.0.1`、映射到容器 Tool Server 端口 `9090` 的宿主机端口 |
 | `CODEGUARD_WEBHOOK_SECRET` | 必填 | 校验 GitHub Webhook 签名的 Secret |
 | `CODEGUARD_GITHUB_APP_ID` | 必填 | 用于 installation 认证的 GitHub App ID |
 | `CODEGUARD_GITHUB_PRIVATE_KEY_FILE` | `./secrets/github-app.pem` | Compose 挂载的 App 私钥宿主机路径 |

@@ -229,6 +229,7 @@ python -m evals.interview_eval run --workspace ../../.eval-work/interview-v1 --c
 | `CODEGUARD_API_KEY` | 空(Compose 必填) | openai/claude 必填 |
 | `CODEGUARD_IMAGE_TAG` | `latest` | Compose 部署使用的 `ghcr.io/baiyun689/codeguard` 镜像标签 |
 | `CODEGUARD_HOST_PORT` | `9090` | Compose 发布到宿主机的 Webhook 端口；映射到容器内 CI 服务 8080 |
+| `CODEGUARD_TOOL_HOST_PORT` | `9092` | Compose 仅绑定 `127.0.0.1` 的 Tool Server 宿主机端口；映射到容器内 9090 |
 | `CODEGUARD_WEBHOOK_SECRET` | 空(Compose 必填) | GitHub App webhook HMAC 验签密钥 |
 | `CODEGUARD_GITHUB_APP_ID` | 空(Compose 必填) | 用于 installation 认证和结果回写的 GitHub App ID |
 | `CODEGUARD_GITHUB_PRIVATE_KEY_FILE` | `./secrets/github-app.pem` | GitHub App 私钥的宿主机路径；Compose 以只读 secret 挂载 |

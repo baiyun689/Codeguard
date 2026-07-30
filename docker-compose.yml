@@ -44,6 +44,7 @@ services:
       - github_app_private_key
     ports:
       - "${CODEGUARD_HOST_PORT:-9090}:8080"
+      - "127.0.0.1:${CODEGUARD_TOOL_HOST_PORT:-9092}:9090"
     volumes:
       - gateway-data:/app/data
       - job-workspaces:/tmp/codeguard-jobs
