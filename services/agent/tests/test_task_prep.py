@@ -13,6 +13,7 @@ from codeguard_agent.pipeline.risk.task_prep import (
     _is_production_path,
     build_tasks,
     file_matches_task,
+    is_noise_issue,
     rank_tasks,
     triage_tasks,
 )
@@ -210,3 +211,19 @@ def test_file_matches_task_exact_basename_and_mismatch():
     assert file_matches_task("src/main/java/A.java", task)
     assert file_matches_task("A.java", task)
     assert not file_matches_task("B.java", task)
+
+
+def test_noise_filter_keeps_actionable_test_file_findings():
+    assert not is_noise_issue(
+        "src/test/java/AuthServiceTest.java",
+        "test coverage",
+        "删除的边界用例会失去认证回归保护",
+    )
+
+
+def test_noise_filter_still_drops_comment_only_findings():
+    assert is_noise_issue(
+        "src/main/java/AuthService.java",
+        "comment only",
+        "只修改了注释",
+    )

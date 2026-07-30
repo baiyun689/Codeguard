@@ -446,9 +446,6 @@ def classify_diff(diff_text: str, budget: ReviewBudget) -> ReviewMode:
 
 # ── 噪声过滤：diff 元信息不构成审查问题 ──────────────────────────────
 
-# 测试文件路径标记
-_TEST_PATH_MARKERS = ("/test/", "/tests/", "Test.java", "Tests.java")
-
 # 噪声类型关键词（匹配 issue.type 或 issue.message）
 _NOISE_TYPE_KEYWORDS = (
     "copyright",
@@ -465,20 +462,6 @@ _NOISE_TYPE_KEYWORDS = (
     "comment",
 )
 
-# 测试覆盖噪声关键词
-_TEST_DELETION_KEYWORDS = (
-    "测试覆盖",
-    "test coverage",
-    "test_coverage",
-    "测试方法",
-    "test method",
-    "回归保护",
-    "regression protection",
-    "测试删除",
-    "test delet",
-    "OBSERVABILITY_TESTABILITY",
-)
-
 
 def is_noise_issue(
     file: str,
@@ -487,20 +470,12 @@ def is_noise_issue(
 ) -> bool:
     """判定一个 issue 是否属于 diff 元信息噪声，不应进入后续管线。
 
-    三类噪声：
-    1. 测试文件中关于测试方法增删的报告
-    2. 版权/@author/import/注释/空白变更
-    3. 纯测试覆盖观察（不含生产代码缺陷）
+    只过滤：版权/@author/import/注释/空白变更。
+    不拦截任何与测试文件相关的问题——diff 包含测试文件时，审查员对
+    测试代码的发现是正当审查产出。
     """
     type_lower = issue_type.lower()
     msg_lower = message.lower()
-    combined = f"{type_lower} {msg_lower}"
-
-    # 测试文件 + 测试覆盖类报告 → 噪声
-    in_test_file = any(marker in file for marker in _TEST_PATH_MARKERS)
-    if in_test_file:
-        if any(kw in combined for kw in _TEST_DELETION_KEYWORDS):
-            return True
 
     # 版权/@author/import/注释/空白 → 噪声
     if any(kw in type_lower for kw in _NOISE_TYPE_KEYWORDS):
