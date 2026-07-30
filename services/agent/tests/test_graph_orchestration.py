@@ -691,7 +691,9 @@ def test_build_graph_default_nodes_are_adr032():
     assert "discover_maintainability" in names
     assert "council_coordinator" in names
     assert "council_judge" in names
-    assert "evidence_agent" in names
+    assert "evidence_strategist" in names
+    assert "evidence_researcher" in names
+    assert "impact_assessor" in names
     # 旧节点已删除
     assert "challenge_agent" not in names
     assert "self_checker" not in names
@@ -906,18 +908,18 @@ def test_review_state_excludes_council_route():
     assert "council_route" not in G.ReviewState.__annotations__
 
 
-def test_coordinator_edges_through_planner_to_evidence_agent():
+def test_coordinator_edges_through_agentic_evidence_chain():
     graph = G.build_review_graph(enable_summary=False, llm=None)
     edges = graph.get_graph().edges
     pairs = {(e.source, e.target) for e in edges}
-    # coordinator → concern_analyzer → planner → evidence_agent 是无条件边
+    # coordinator → concern → strategist → researcher → impact → judge
     assert ("council_coordinator", "concern_analyzer") in pairs
-    assert ("concern_analyzer", "evidence_planner") in pairs
-    assert ("evidence_planner", "evidence_agent") in pairs
-    # evidence_agent → council_judge 是无条件边
-    assert ("evidence_agent", "council_judge") in pairs
+    assert ("concern_analyzer", "evidence_strategist") in pairs
+    assert ("evidence_strategist", "evidence_researcher") in pairs
+    assert ("evidence_researcher", "impact_assessor") in pairs
+    assert ("impact_assessor", "council_judge") in pairs
     # 旧的 evidence → coordinator 回环已移除
-    assert ("evidence_agent", "council_coordinator") not in pairs
+    assert ("evidence_researcher", "council_coordinator") not in pairs
     # concern_analyzer 在非 discovery_only 图中存在
     assert "concern_analyzer" in set(graph.get_graph().nodes)
 
@@ -932,6 +934,9 @@ def test_evidence_agent_runs_once_before_judge(monkeypatch):
     orch.run(_FakeLLM(), _DIFF, metadata_sink=meta)
 
     assert meta["council"]["verdict_count"] >= 1
+    assert meta["council"]["investigation_plan_count"] >= 1
+    assert "evidence_dossier_status_counts" in meta["council"]
+    assert "evidence_react_candidate_count" in meta["council"]
     assert "evidence_rounds" not in meta["council"]
 
 

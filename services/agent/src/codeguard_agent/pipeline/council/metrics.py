@@ -7,8 +7,10 @@ from collections.abc import Mapping, Sequence
 
 from codeguard_agent.models.council import (
     CandidateIssue,
+    CandidateInvestigationPlan,
     CouncilRunStats,
     CouncilTrace,
+    EvidenceDossierSummary,
     EvidenceFinding,
     Verdict,
 )
@@ -42,6 +44,8 @@ def compute_council_run_stats(
     evidence_request_count: int,
     truncated_candidates: int,
     council_trace: Sequence[CouncilTrace],
+    investigation_plans: Sequence[CandidateInvestigationPlan] = (),
+    evidence_dossier_summaries: Sequence[EvidenceDossierSummary] = (),
     candidate_dedup_stats: Mapping[str, int] | CandidateDedupStats | None = None,
 ) -> CouncilRunStats:
     """从稳定候选映射和结构化证据计算审查过程指标。"""
@@ -80,10 +84,15 @@ def compute_council_run_stats(
         for dossier in final_dossiers
     )
     actual_tool_calls = sum(
-        trace.node == "evidence_agent" and trace.event == "evidence_tool_called"
+        trace.node in {"evidence_agent", "evidence_researcher"}
+        and trace.event == "evidence_tool_called"
         for trace in council_trace
     )
     candidate_count = len(candidates)
+    dossier_status_counts: dict[str, int] = {}
+    for summary in evidence_dossier_summaries:
+        key = summary.status.value
+        dossier_status_counts[key] = dossier_status_counts.get(key, 0) + 1
     by_agent: dict[str, int] = {}
     for candidate in candidates:
         by_agent[candidate.source_agent] = by_agent.get(candidate.source_agent, 0) + 1
@@ -183,6 +192,25 @@ def compute_council_run_stats(
         candidate_count=candidate_count,
         candidate_count_by_agent=by_agent,
         evidence_request_count=evidence_request_count,
+        investigation_plan_count=len(investigation_plans),
+        investigation_fallback_plan_count=sum(
+            plan.source == "fallback" for plan in investigation_plans
+        ),
+        investigation_not_actionable_count=sum(
+            not plan.actionable for plan in investigation_plans
+        ),
+        evidence_dossier_status_counts=dossier_status_counts,
+        evidence_unanswered_question_count=sum(
+            len(summary.unanswered_question_ids)
+            for summary in evidence_dossier_summaries
+        ),
+        evidence_react_candidate_count=sum(
+            summary.react_used for summary in evidence_dossier_summaries
+        ),
+        evidence_max_research_rounds=max(
+            (summary.rounds for summary in evidence_dossier_summaries),
+            default=0,
+        ),
         truncated_candidates=truncated_candidates,
         raw_candidate_count=raw_candidate_count,
         logical_candidate_count=logical_candidate_count,

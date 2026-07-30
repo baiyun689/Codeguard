@@ -11,7 +11,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.council import (
@@ -89,6 +89,24 @@ class _EvidenceAnalysis(BaseModel):
 
 class _EvidenceAnalysisBatch(BaseModel):
     findings: list[_EvidenceAnalysis]
+
+    @field_validator("findings", mode="before")
+    @classmethod
+    def parse_stringified_findings(cls, value: object) -> object:
+        if isinstance(value, str):
+            for candidate in (
+                value,
+                value[value.find("[") : value.rfind("]") + 1],
+            ):
+                try:
+                    parsed = json.loads(candidate)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if isinstance(parsed, dict):
+                    parsed = parsed.get("findings", parsed)
+                if isinstance(parsed, list):
+                    return parsed
+        return value
 
 
 @dataclass(frozen=True)
@@ -725,6 +743,15 @@ def _finding_from_analysis(
     fact: _RawFact,
     result: _EvidenceAnalysis,
 ) -> EvidenceFinding:
+    if result.relation in {"supports", "contradicts"} and not result.observation.strip():
+        return EvidenceFinding(
+            evidence_id=fact.evidence_id,
+            source=fact.source,
+            observation="",
+            relation="insufficient",
+            strength="contextual",
+            limitation=result.limitation.strip() or "analyst_missing_observation",
+        )
     if result.relation == "insufficient":
         return EvidenceFinding(
             evidence_id=fact.evidence_id,

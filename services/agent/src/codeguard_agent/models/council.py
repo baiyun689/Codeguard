@@ -5,12 +5,19 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
 from typing import Annotated, Literal, TYPE_CHECKING
 
-from pydantic import BaseModel, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from codeguard_agent.models.schemas import Issue, Severity
 
@@ -233,6 +240,19 @@ class CouncilRunStats(BaseModel):
     candidate_dedup_llm_calls: int = Field(default=0, description="归并 LLM 调用次数")
     candidate_dedup_block_failure_count: int = Field(default=0, description="归并失败块数")
     evidence_request_count: int = Field(default=0, description="累计证据请求总数")
+    investigation_plan_count: int = Field(default=0, description="动态调查计划数")
+    investigation_fallback_plan_count: int = Field(
+        default=0,
+        description="Strategist 失败或遗漏后使用小型回退计划的候选数",
+    )
+    investigation_not_actionable_count: int = Field(
+        default=0,
+        description="Strategist 判定无需事实调查的候选数",
+    )
+    evidence_dossier_status_counts: dict[str, int] = Field(default_factory=dict)
+    evidence_unanswered_question_count: int = 0
+    evidence_react_candidate_count: int = 0
+    evidence_max_research_rounds: int = 0
     truncated_candidates: int = Field(default=0, description="发现阶段因候选上限被截断的数量")
     verdict_count: int = Field(default=0, description="Judge 产生的候选裁决总数")
     removed_by_judge: int = Field(default=0, description="Judge 裁决为 drop 的候选数")
@@ -463,6 +483,80 @@ class ConcernEvidencePlan(BaseModel):
     requests: tuple[EvidenceRequest, ...] = ()
     uncovered_goals: tuple[str, ...] = ()
     diagnostics: tuple[str, ...] = ()
+
+
+# ── Agentic evidence investigation ──
+
+
+class InvestigationQuestion(BaseModel):
+    """Strategist 为单个候选提出的一项可执行调查问题。"""
+
+    question_id: str = ""
+    purpose: EvidencePurpose
+    question: NonBlankStr
+    why_it_matters: NonBlankStr
+    expected_fact: EvidenceFactType
+    required: bool = True
+
+    @model_validator(mode="after")
+    def assign_question_id(self) -> "InvestigationQuestion":
+        if not self.question_id:
+            payload = "\0".join(
+                [self.purpose, self.question, self.expected_fact.value]
+            )
+            self.question_id = (
+                f"question-{sha256(payload.encode('utf-8')).hexdigest()[:12]}"
+            )
+        return self
+
+
+class CandidateInvestigationPlan(BaseModel):
+    """一个候选的动态调查计划；不包含工具或固定查询模板。"""
+
+    candidate_id: NonBlankStr
+    hypothesis: NonBlankStr
+    actionable: bool = True
+    skip_reason: str = ""
+    questions: tuple[InvestigationQuestion, ...] = ()
+    source: Literal["llm", "fallback"] = "llm"
+
+    @field_validator("questions", mode="before")
+    @classmethod
+    def parse_stringified_questions(cls, value: object) -> object:
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return value
+        return value
+
+    @model_validator(mode="after")
+    def validate_actionability(self) -> "CandidateInvestigationPlan":
+        if self.actionable and not self.questions:
+            raise ValueError("actionable investigation plan requires questions")
+        if not self.actionable and not self.skip_reason.strip():
+            raise ValueError("non-actionable investigation plan requires skip_reason")
+        return self
+
+
+class EvidenceDossierStatus(str, Enum):
+    SUPPORTED = "supported"
+    REFUTED = "refuted"
+    INSUFFICIENT = "insufficient"
+    CONFLICTED = "conflicted"
+    NOT_ACTIONABLE = "not_actionable"
+
+
+class EvidenceDossierSummary(BaseModel):
+    """Researcher 的候选级调查摘要，供 trace/eval 诊断。"""
+
+    candidate_id: NonBlankStr
+    status: EvidenceDossierStatus
+    unanswered_question_ids: tuple[str, ...] = ()
+    limitations: tuple[str, ...] = ()
+    rounds: int = Field(default=1, ge=0, le=3)
+    tool_call_count: int = Field(default=0, ge=0)
+    react_used: bool = False
 
 
 # ── Phase 4: Evidence-factor Severity ──

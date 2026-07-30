@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.council import (
@@ -49,6 +49,24 @@ class _ParsedClaim(BaseModel):
 
 class _ParsedClaimBatch(BaseModel):
     claims: list[_ParsedClaim] = Field(default_factory=list)
+
+    @field_validator("claims", mode="before")
+    @classmethod
+    def parse_stringified_claims(cls, value: object) -> object:
+        if isinstance(value, str):
+            for candidate in (
+                value,
+                value[value.find("[") : value.rfind("]") + 1],
+            ):
+                try:
+                    parsed = json.loads(candidate)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if isinstance(parsed, dict):
+                    parsed = parsed.get("claims", parsed)
+                if isinstance(parsed, list):
+                    return parsed
+        return value
 
 
 def _extract_claim_from_candidate(candidate: CandidateIssue) -> CandidateClaim:

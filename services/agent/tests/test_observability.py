@@ -1186,6 +1186,7 @@ class TestPhaseMapping:
             "discover_threat_model", "discover_behavior", "discover_maintainability",
             "discovery_collector", "council_coordinator", "concern_analyzer",
             "evidence_planner", "evidence_agent", "council_judge",
+            "evidence_strategist", "evidence_researcher", "impact_assessor",
             "prepare", "review", "collect",
         }
         assert set(_NODE_PHASE_MAP.keys()) == expected
@@ -1197,6 +1198,9 @@ class TestPhaseMapping:
         assert _phase_for("discover_threat_model") == "reviewer_subgraph"
         assert _phase_for("council_judge") == "judge"
         assert _phase_for("evidence_agent") == "evidence"
+        assert _phase_for("evidence_strategist") == "evidence"
+        assert _phase_for("evidence_researcher") == "evidence"
+        assert _phase_for("impact_assessor") == "judge"
         assert _phase_for("summary") == "outer_graph"
 
 

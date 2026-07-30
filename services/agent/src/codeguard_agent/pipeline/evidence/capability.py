@@ -9,14 +9,22 @@ RiskTag 用于排序 capability 而非唯一 lookup key。
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from codeguard_agent.models.council import EvidenceFactType, EvidencePolarity
+from codeguard_agent.models.council import (
+    EvidenceFactType,
+    EvidencePolarity,
+    EvidencePurpose,
+)
 from codeguard_agent.pipeline.evidence.strategy_types import EvidenceCapability
 
 if TYPE_CHECKING:
     from codeguard_agent.pipeline.evidence.planner import CandidateDossier
-    from codeguard_agent.pipeline.evidence.strategy_types import ToolCallSpec
+    from codeguard_agent.pipeline.evidence.strategy_types import (
+        EvidenceStrategy,
+        ToolCallSpec,
+    )
 
 
 # ── fact_type → 推荐的 capability 优先级列表 ──────────────────────────
@@ -158,7 +166,10 @@ def _claim_file_and_metrics(dossier: "CandidateDossier") -> "list[ToolCallSpec]"
 
 # ── fact_type → 工具配方映射 ──────────────────────────────────────
 
-_FACT_TYPE_RECIPE: dict[EvidenceFactType, object] = {
+_FACT_TYPE_RECIPE: dict[
+    EvidenceFactType,
+    Callable[["CandidateDossier"], "list[ToolCallSpec]"],
+] = {
     EvidenceFactType.CHANGED_CONDITION: _claim_file_only,
     EvidenceFactType.VALUE_IDENTITY: _claim_file_and_upstream,
     EvidenceFactType.CALL_PATH: _claim_upstream_only,
@@ -175,14 +186,14 @@ _FACT_TYPE_RECIPE: dict[EvidenceFactType, object] = {
 }
 
 # polarity → purpose 映射（IMPACT → "severity" 兼容 EvidenceRequest）
-_POLARITY_PURPOSE: dict[EvidencePolarity, str] = {
+_POLARITY_PURPOSE: dict[EvidencePolarity, EvidencePurpose] = {
     EvidencePolarity.SUPPORT: "support",
     EvidencePolarity.COUNTER: "counter",
     EvidencePolarity.IMPACT: "severity",
 }
 
 
-def _build_claim_strategies() -> "tuple[object, ...]":
+def _build_claim_strategies() -> "tuple[EvidenceStrategy, ...]":
     """构建全部 claim.* 策略注册表：13 fact_types × 3 polarities = 39 条。
 
     question_template 留空——运行时由 goal.proposition 注入。
@@ -217,4 +228,4 @@ def _build_claim_strategies() -> "tuple[object, ...]":
     return tuple(strategies)
 
 
-CLAIM_STRATEGIES: "tuple[object, ...]" = _build_claim_strategies()
+CLAIM_STRATEGIES: "tuple[EvidenceStrategy, ...]" = _build_claim_strategies()

@@ -18,8 +18,8 @@ git diff → PRModeClassifier
          └─ MEDIUM/LARGE
               → FileTaskBuilder/HunkTaskBuilder → RiskTriage → TaskRank → ReviewCoverage
               → [Summary] → ContextProvider → task-scoped Discover × 3
-              → CouncilCoordinator → ConcernAnalyzer → ClaimEvidencePlanner
-              → EvidenceAgent → ImpactAssessor → CouncilJudge → ReviewResult
+              → CouncilCoordinator → ConcernAnalyzer → EvidenceStrategist
+              → EvidenceResearcher → ImpactAssessor → CouncilJudge → ReviewResult
 ```
 
 Java Gateway 的单实例 CI 执行底座一次执行返回结构化 outcome，调度器负责
@@ -27,7 +27,7 @@ H2 状态、非阻塞重试、恢复、反馈与停机；workspace 按完整 SHA
 Compose 的 `observability` profile 提供 Prometheus、预置告警规则和自动配置的 Grafana
 看板，覆盖审查吞吐/耗时、AST 工具调用及 LLM provider 重试、fallback 和熔断状态。
 
-ReviewCouncil 发现者由 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent` 方法论分工;最终 category 仍兼容 `security` / `logic` / `quality`。三类发现者各自声明工具 allowlist，并通过 `CandidateIssue` / `CandidateConcern` / `EvidenceGoal` / `EvidenceRequest` / `EvidenceNote(findings)` / `Verdict` / `CouncilTrace` 结构化黑板通信。三路发现者只通过 ID reducer 汇集 raw candidates；CouncilCoordinator 在 fan-in 后复用候选 RiskTag 解析、按完整路径和局部位置构块，并以最多 8 个并行结构化 LLM 调用进行保守归并。非法、低置信或失败结果一律保留候选。ConcernAnalyzer 为已分组和未分组成员建立无损 concern/claim 映射；ClaimEvidencePlanner 按 root cause、trigger、impact 等事实类型规划并保留成员对齐字段。旧 Supervisor 图迁移到 `services/agent/legacy/supervisor_graph/`,仅作历史参考,不作为默认路径、feature flag 或 eval profile 回退。
+ReviewCouncil 发现者由 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent` 方法论分工;最终 category 仍兼容 `security` / `logic` / `quality`。三类发现者各自声明工具 allowlist，并通过 `CandidateIssue` / `CandidateConcern` / `CandidateInvestigationPlan` / `EvidenceRequest` / `EvidenceNote(findings)` / `EvidenceDossierSummary` / `Verdict` / `CouncilTrace` 结构化黑板通信。三路发现者只通过 ID reducer 汇集 raw candidates；CouncilCoordinator 在 fan-in 后复用候选 RiskTag 解析、按完整路径和局部位置构块，并以最多 8 个并行结构化 LLM 调用进行保守归并。非法、低置信或失败结果一律保留候选。ConcernAnalyzer 为已分组和未分组成员建立无损 concern/claim 映射；EvidenceStrategist 每批最多 6 个候选动态提出 1–3 个可判真问题，不调用工具；EvidenceResearcher 执行快速取证，只对仍为 insufficient/conflicted 且有可用缺失能力的最多 5 个候选追加一轮受限 ReAct。旧 Supervisor 图迁移到 `services/agent/legacy/supervisor_graph/`,仅作历史参考,不作为默认路径、feature flag 或 eval profile 回退。
 
 风险路由包含 24 个具体 `RiskTag` + `GENERAL_REVIEW`，风险规则只消费
 path/diff-text 变化方向；普通 diff 默认全选 task，100/10 配置只作为超大 diff 的更严格上限。
@@ -58,7 +58,7 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 默认(无工具):git diff → 任务/风险/覆盖计划/上下文 → 三路直连发现者 → Planner → Agent(insufficient 安全回退) → Judge → 打印
 默认(有工具):配置 CODEGUARD_TOOL_SERVER_URL 后,Tool Server 按 revision 构建完整 Java ProjectSnapshot；
               ContextProvider 注入 symbol_context，三路发现者分别使用 inspect_security_path /
-              inspect_change_impact / inspect_structure，EvidenceAgent 按语义证据能力复用同一图谱事实
+              inspect_change_impact / inspect_structure，EvidenceResearcher 按语义证据能力复用同一图谱事实
 ```
 
 默认节点:
@@ -69,8 +69,8 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 - **大 diff 降级**:仅在超过 5000 行时，Python 确定性收紧为最多 20 个任务、每文件 3 个、每任务上下文 2000 字符；普通 diff 全选 task，并只让风险排序前 `CODEGUARD_MAX_REACT_TASKS`（默认 20）个合格 task 使用 ReAct，其余 Direct。Summary/AST/发现者在大 diff 时只看选中范围，结果摘要披露部分覆盖。Java 不重复判断。
 - **ReviewCouncilSubgraph**:三个 task-scoped 发现者 fan-out 产出 raw `CandidateIssue`;system prompt 定义稳定的上下文语义与工具门槛，user prompt 动态携带本 task 的 patch、风险画像、预取事实、缺失/失败状态和 BASE+专项 knowledge bundle。`CouncilCoordinator` 在显式 fan-in 后批量解析 RiskTag、构建局部候选块并保守归并。
 - **发现者工具协调**:`pipeline/discovery_tools.py` 在单次 review 的单个 reviewer node 内按规范化工具参数执行 single-flight/cache；不同 task 首次复用完整结果，同一 ReAct 对话重复调用只返回短标记，最终 gathered context 也按相同 canonical key 去重，三个发现者之间及跨 review 不共享。只有未被大 diff 策略截断的完整新增文件 patch 才可代替 `get_file_content`。
-- **ConcernAnalyzer / ClaimEvidencePlanner**:把所有候选（包括未分组成员）映射为 concern，结构化保留 root cause、trigger、observable consequence、fix location/action 和候选来源。随后按 claim/fact type 规划 support、counter、impact 请求；goal/concern/claim/fact 对齐字段贯穿请求与 finding，动态策略仍转换为 Gateway 真实工具名。
-- **EvidenceAgent**:校验请求的 strategy/purpose/target/question/tools/profile allowlist，优先复用 task/context facts（完整新增文件的 task patch 直接满足当前文件内容请求），只为缺失事实调用 Gateway；跨请求先按工具名与规范化参数去重并并发执行唯一工具调用，再以一个 `EvidenceRequest` 一次结构化 LLM 调用批量判断其全部局部事实，按 `evidence_id` 严格对齐并恢复原顺序；未知/重复/遗漏 ID、失败/空/截断/None 均安全降级为 insufficient。Trace 独立记录发现者和 Evidence 的每次工具输入、输出、耗时、复用与失败，不依赖上下文去重结果。
+- **ConcernAnalyzer / EvidenceStrategist**:把所有候选（包括未分组成员）映射为 concern，结构化保留 root cause、trigger、observable consequence、fix location/action 和候选来源。Strategist 读取候选、patch 和预取上下文，以批量结构化 LLM 调用生成候选特定的 support/counter/severity 调查问题；非可操作建议可以直接标为 not_actionable。输出不指定工具，失败时每个候选只回退到核心支持与最强反证两问。
+- **EvidenceResearcher**:把动态问题映射为 fact type/capability 后，校验 strategy/purpose/target/question/tools/profile allowlist，优先复用 task/context facts，只为缺失事实调用 Gateway；跨请求按工具名与规范化参数去重，并在快速路径与 ReAct 轮次间缓存相同调用。快速路径后仅选择 insufficient/conflicted、存在 required 未答问题且工具能力可用的候选，最多 5 个候选追加一轮、每个最多 2 个新问题；工具不可用时保留 patch-only 事实并明确降级，不执行空转 ReAct。`EvidenceDossierSummary` 记录状态、未答问题、限制、轮次和工具调用。
 - **ImpactAssessor / CouncilJudge**:Judge 先对已正确绑定的 support/counter finding 执行确定性证据门槛；ImpactAssessor 只从当前 concern 的 impact findings 归纳可引用因子，SeverityResolver 依据多标签 rubric 和固定 CRITICAL predicate 确定级别。RiskTag 只选择相关因子/predicate，不提供默认级别；缺失或失败安全降级且绝不产生 CRITICAL。Judge 不补证、不按标签直定级，也不接受 LLM 直接选择危险等级。
 
 审查员的"执行方式"抽成可插拔引擎(`pipeline/engines.py`):`DirectEngine`(无工具基准)/ `ToolAgentEngine`(ReAct,基于 langchain v1 `create_agent`)。`ReviewerStage` 按 `tool_client` 是否存在分流。
@@ -152,7 +152,7 @@ Codeguard/
    - `ContextProvider` 构造只读 `ContextBundle`。
    - `ReviewCouncil` 并行运行 task-scoped 发现者 Agent；没有匹配任务的 reviewer 记录 `no_tasks_routed`。
    - `CouncilCoordinator` 完成三路 fan-in、候选 RiskTag 批量解析和保守归并；`ConcernAnalyzer` 随后为全部成员建立无损 claim/concern 映射。
-   - `ClaimEvidencePlanner → EvidenceAgent → ImpactAssessor → CouncilJudge` 完成 claim-driven 规划、受约束取证、证据门槛、影响因子归纳和确定性定级。
+   - `EvidenceStrategist → EvidenceResearcher → ImpactAssessor → CouncilJudge` 完成动态问题规划、快速路径与选择性受限 ReAct、证据门槛、影响因子归纳和确定性定级。
    - `CouncilRunStats` 从稳定 survivor candidate 映射与结构化 request/finding/verdict/trace 派生，进入 eval/report/archive，不进入产品输出。
 7. **`cli.py:_print_result`** 打印;**退出码**:发现任一 `CRITICAL` 返回 1,否则 0(方便接 CI 门禁)。
 

@@ -21,8 +21,11 @@ from codeguard_agent.models.council import (
     ContextFact,
     CouncilRunStats,
     CouncilTrace,
+    CandidateInvestigationPlan,
+    EvidenceDossierSummary,
     EvidenceNote,
     EvidenceRequest,
+    ImpactAssessment,
     MAX_CANDIDATES_PER_AGENT,
 )
 from codeguard_agent.models.schemas import ReviewResult
@@ -71,7 +74,6 @@ from codeguard_agent.pipeline.engines import (
     ReviewOutcome,
     ToolAgentEngine,
 )
-from codeguard_agent.pipeline.evidence.agent import collect_evidence
 from codeguard_agent.pipeline.council.metrics import compute_council_run_stats
 from codeguard_agent.pipeline.evidence.planner import assemble_dossiers
 from codeguard_agent.pipeline.evidence.rules.classify import (
@@ -82,7 +84,16 @@ from codeguard_agent.models.council import ConcernAnalysis
 from codeguard_agent.pipeline.council.concern import (
     analyze_candidate_groups,
 )
-from codeguard_agent.pipeline.evidence.planner import plan_claim_evidence
+from codeguard_agent.pipeline.evidence.strategist import (
+    build_investigation_plans,
+    investigation_plans_to_requests,
+)
+from codeguard_agent.pipeline.evidence.researcher import research_evidence
+from codeguard_agent.pipeline.council.impact import (
+    assess_impact,
+    assess_impact_fallback,
+)
+from codeguard_agent.pipeline.council.severity import rubric_for
 from codeguard_agent.pipeline.context.base import PipelineContext
 from codeguard_agent.pipeline.context.provider import ContextProviderStage
 from codeguard_agent.pipeline.reviewers.reviewers import (
@@ -189,8 +200,11 @@ class ReviewState(TypedDict, total=False):
     candidate_tag_resolutions: dict[str, CandidateTagResolution]
     candidate_dedup_stats: CandidateDedupStats
     concern_analysis: ConcernAnalysis
+    investigation_plans: list[CandidateInvestigationPlan]
+    evidence_dossier_summaries: list[EvidenceDossierSummary]
     evidence_requests: Annotated[list[EvidenceRequest], dedup_evidence_request_reducer]
     evidence_notes: Annotated[list[EvidenceNote], operator.add]
+    impact_assessments: dict[str, ImpactAssessment]
     council_trace: Annotated[list[CouncilTrace], operator.add]
     truncated_candidates: Annotated[int, operator.add]
 
@@ -1397,44 +1411,58 @@ def _assemble_state_dossiers(state: ReviewState):
     )
 
 
-def _evidence_planner_node(effective_judge_llm):
-    """按 concern claims 规划证据请求，是 graph 中的唯一写入者。"""
+def _evidence_strategist_node(effective_judge_llm):
+    """批量提出候选特定的调查问题，并投影到稳定 request 契约。"""
 
     def _node(state: ReviewState) -> dict:
         concern_analysis = state.get("concern_analysis")
-        trace: list[CouncilTrace] = []
-
-        if concern_analysis is not None and concern_analysis.concerns:
-            all_requests: list = []
-            for concern in concern_analysis.concerns:
-                concern_plan = plan_claim_evidence(concern)
-                all_requests.extend(concern_plan.requests)
-                trace.append(
+        concerns = (
+            list(concern_analysis.concerns)
+            if concern_analysis is not None
+            else []
+        )
+        if concerns:
+            assembly = _assemble_state_dossiers(state)
+            batch = build_investigation_plans(
+                concerns,
+                llm=effective_judge_llm,
+                structured_method=state.get(
+                    "structured_method", "function_calling",
+                ),
+                dossiers=assembly.dossiers,
+            )
+            requests = investigation_plans_to_requests(batch.plans, concerns)
+            detail = json.dumps(
+                {
+                    "candidates": len(batch.plans),
+                    "requests": len(requests),
+                    "llm_calls": batch.llm_call_count,
+                    "fallback_candidates": len(batch.fallback_candidate_ids),
+                    "not_actionable": sum(
+                        not plan.actionable for plan in batch.plans
+                    ),
+                    "diagnostics": list(batch.diagnostics),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            return {
+                "investigation_plans": list(batch.plans),
+                "evidence_requests": requests,
+                "council_trace": [
                     CouncilTrace(
-                        node="evidence_planner",
-                        event="concern_planned",
-                        detail=(
-                            f"concern={concern.concern_id} "
-                            f"goals={len(concern_plan.goals)} "
-                            f"requests={len(concern_plan.requests)} "
-                            f"uncovered={len(concern_plan.uncovered_goals)}"
-                        ),
+                        node="evidence_strategist",
+                        event="investigations_planned",
+                        detail=detail,
                     )
-                )
-            if not all_requests:
-                trace.append(
-                    CouncilTrace(
-                        node="evidence_planner",
-                        event="no_op",
-                        detail="no evidence requests from concerns",
-                    )
-                )
-            return {"evidence_requests": all_requests, "council_trace": trace}
+                ],
+            }
         return {
+            "investigation_plans": [],
             "evidence_requests": [],
             "council_trace": [
                 CouncilTrace(
-                    node="evidence_planner",
+                    node="evidence_strategist",
                     event="no_op",
                     detail="no structured concerns available",
                 )
@@ -1444,17 +1472,23 @@ def _evidence_planner_node(effective_judge_llm):
     return _node
 
 
-def _evidence_agent_node(tool_client=None, judge_llm=None):
-    """执行尚无 note 的 request。"""
+def _evidence_researcher_node(tool_client=None, judge_llm=None):
+    """执行快速路径，并只对有可补事实的疑难候选追加一轮调查。"""
 
     def _node(state: ReviewState) -> dict:
         requests = state.get("evidence_requests") or []
-        completed = {note.request_id for note in state.get("evidence_notes") or []}
-        pending = [request for request in requests if request.id not in completed]
         assembly = _assemble_state_dossiers(state)
-        batch = collect_evidence(
-            assembly.dossiers,
-            pending,
+        concern_analysis = state.get("concern_analysis")
+        concerns = (
+            list(concern_analysis.concerns)
+            if concern_analysis is not None
+            else []
+        )
+        batch = research_evidence(
+            state.get("investigation_plans") or [],
+            concerns,
+            dossiers=assembly.dossiers,
+            initial_requests=requests,
             tool_client=tool_client,
             analyst_llm=judge_llm,
             structured_method=state.get("structured_method", "function_calling"),
@@ -1464,20 +1498,124 @@ def _evidence_agent_node(tool_client=None, judge_llm=None):
             ),
         )
         trace = [
-            CouncilTrace(node="evidence_agent", event=event, detail=detail)
+            CouncilTrace(node="evidence_researcher", event=event, detail=detail)
             for event, detail in batch.trace
         ]
-        if not pending:
+        if not requests:
             trace.append(
                 CouncilTrace(
-                    node="evidence_agent",
+                    node="evidence_researcher",
                     event="no_op",
-                    detail="no pending evidence requests",
+                    detail="no investigation requests",
                 )
             )
         return {
+            "evidence_requests": batch.requests,
             "evidence_notes": batch.notes,
             "gathered_context": batch.gathered_context,
+            "evidence_dossier_summaries": batch.dossier_summaries,
+            "council_trace": trace,
+        }
+
+    return _node
+
+
+def _impact_assessor_node(judge_llm=None):
+    """从 severity findings 单独归纳影响因子，不参与候选真伪裁决。"""
+
+    def _node(state: ReviewState) -> dict:
+        concern_analysis = state.get("concern_analysis")
+        concerns = (
+            concern_analysis.concerns
+            if concern_analysis is not None
+            else ()
+        )
+        request_by_id = {
+            request.id: request
+            for request in state.get("evidence_requests") or []
+        }
+        assessments: dict[str, ImpactAssessment] = {}
+        trace: list[CouncilTrace] = []
+
+        def _assess_one(concern):
+            tags = tuple(
+                tag
+                for tag in (
+                    concern.tags.primary_tag,
+                    *concern.tags.secondary_tags,
+                )
+                if tag is not None and tag is not RiskTag.GENERAL_REVIEW
+            )
+            findings = [
+                finding
+                for note in state.get("evidence_notes") or []
+                if (
+                    (request := request_by_id.get(note.request_id)) is not None
+                    and request.purpose == "severity"
+                    and request.concern_id == concern.concern_id
+                )
+                for finding in note.findings
+            ]
+            try:
+                assessment = assess_impact(
+                    concern.concern_id,
+                    findings,
+                    rubric_for(tags=tags),
+                    llm=judge_llm,
+                )
+                degraded = False
+            except Exception:
+                logger.warning(
+                    "ImpactAssessor failed for %s; using fallback",
+                    concern.concern_id,
+                    exc_info=True,
+                )
+                assessment = assess_impact_fallback(concern.concern_id)
+                degraded = True
+            return concern, findings, assessment, degraded
+
+        outcomes = run_bounded_parallel(
+            list(concerns),
+            _assess_one,
+            max_workers=6,
+        )
+        for concern, outcome in zip(concerns, outcomes, strict=True):
+            if outcome is None:
+                findings = []
+                assessment = assess_impact_fallback(concern.concern_id)
+                degraded = True
+            else:
+                _matched_concern, findings, assessment, degraded = outcome
+            assessments[concern.concern_id] = assessment
+            trace.append(
+                CouncilTrace(
+                    node="impact_assessor",
+                    event=(
+                        "impact_assessment_degraded"
+                        if degraded
+                        else "impact_assessed"
+                    ),
+                    detail=json.dumps(
+                        {
+                            "concern_id": concern.concern_id,
+                            "findings": len(findings),
+                            "impact_class": assessment.impact_class.value,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                )
+            )
+        if not concerns:
+            trace.append(
+                CouncilTrace(
+                    node="impact_assessor",
+                    event="no_op",
+                    detail="no structured concerns available",
+                )
+            )
+        return {
+            "impact_assessments": assessments,
             "council_trace": trace,
         }
 
@@ -1496,6 +1634,7 @@ def _council_judge_node(llm, judge_llm=None):
             max_retries=state.get("max_retries", 2),
             candidate_groups=state.get("candidate_groups") or [],
             concern_analysis=state.get("concern_analysis"),
+            impact_assessments=state.get("impact_assessments"),
         )
         judge_trace = [
             CouncilTrace(node="council_judge", event=event, detail=detail)
@@ -1509,6 +1648,10 @@ def _council_judge_node(llm, judge_llm=None):
             evidence_request_count=len(state.get("evidence_requests") or []),
             truncated_candidates=state.get("truncated_candidates", 0),
             council_trace=[*(state.get("council_trace") or []), *judge_trace],
+            investigation_plans=state.get("investigation_plans") or [],
+            evidence_dossier_summaries=(
+                state.get("evidence_dossier_summaries") or []
+            ),
             candidate_dedup_stats=state.get("candidate_dedup_stats"),
         )
         summaries = list(state.get("review_summaries") or [])
@@ -1550,8 +1693,9 @@ def build_review_graph(
           └─ large  → diff_task_builder → risk_triage → task_rank → review_coverage → summary?
                        → context_provider → discover_*(×3)
                        → council_coordinator(fan-in)
-                       → concern_analyzer → evidence_planner
-                       → evidence_agent → council_judge → END
+                       → concern_analyzer → evidence_strategist
+                       → evidence_researcher → impact_assessor
+                       → council_judge → END
 
     discovery_only 拓扑:
         START → classify_mode
@@ -1591,10 +1735,20 @@ def build_review_graph(
             "concern_analyzer",
             _concern_analyzer_node(effective_judge_llm),
         )
-        g.add_node("evidence_planner", _evidence_planner_node(effective_judge_llm))
         g.add_node(
-            "evidence_agent",
-            _evidence_agent_node(tool_client, judge_llm=effective_judge_llm),
+            "evidence_strategist",
+            _evidence_strategist_node(effective_judge_llm),
+        )
+        g.add_node(
+            "evidence_researcher",
+            _evidence_researcher_node(
+                tool_client,
+                judge_llm=effective_judge_llm,
+            ),
+        )
+        g.add_node(
+            "impact_assessor",
+            _impact_assessor_node(effective_judge_llm),
         )
         g.add_node(
             "council_judge",
@@ -1653,9 +1807,10 @@ def build_review_graph(
         g.add_edge("discovery_collector", END)
     else:
         g.add_edge("council_coordinator", "concern_analyzer")
-        g.add_edge("concern_analyzer", "evidence_planner")
-        g.add_edge("evidence_planner", "evidence_agent")
-        g.add_edge("evidence_agent", "council_judge")
+        g.add_edge("concern_analyzer", "evidence_strategist")
+        g.add_edge("evidence_strategist", "evidence_researcher")
+        g.add_edge("evidence_researcher", "impact_assessor")
+        g.add_edge("impact_assessor", "council_judge")
         g.add_edge("council_judge", END)
 
     return g.compile(checkpointer=checkpointer)

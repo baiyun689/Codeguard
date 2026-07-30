@@ -15,6 +15,7 @@ from codeguard_agent.models.council import (
     CandidateEvidenceAssessment,
     ConcernAnalysis,
     EvidenceFinding,
+    ImpactAssessment,
     EvidenceRequest,
     Verdict,
 )
@@ -341,6 +342,7 @@ def _judge_one_candidate(
     structured_method: str,
     max_retries: int,
     concern: CandidateConcern | None = None,
+    impact_assessment: ImpactAssessment | None = None,
 ) -> tuple[Verdict, Issue | None, str, list[tuple[str, str]]]:
     """对单个候选执行证据门控 → LLM 综合 → 裁决，返回 (verdict, issue, candidate_id, traces)。"""
     traces: list[tuple[str, str]] = []
@@ -433,7 +435,7 @@ def _judge_one_candidate(
                 or item.finding.concern_id in (None, concern.concern_id)
             )
         ]
-        impact = assess_impact(
+        impact = impact_assessment or assess_impact(
             concern_id=(
                 concern.concern_id if concern is not None
                 else dossier.candidate.id
@@ -487,6 +489,7 @@ def judge_candidates(
     max_retries: int,
     candidate_groups: Sequence[CandidateGroup] = (),
     concern_analysis: ConcernAnalysis | None = None,
+    impact_assessments: dict[str, ImpactAssessment] | None = None,
 ) -> JudgeBatch:
     batch = JudgeBatch()
     concern_by_candidate = {
@@ -496,6 +499,7 @@ def judge_candidates(
         )
         for candidate_id in concern.member_candidate_ids
     }
+    impact_assessments = impact_assessments or {}
 
     # Binding failures → drop（确定性，无需并行）
     for failure in assembly.failures:
@@ -523,6 +527,11 @@ def judge_candidates(
             structured_method=structured_method,
             max_retries=max_retries,
             concern=concern_by_candidate.get(dossier.candidate.id),
+            impact_assessment=impact_assessments.get(
+                concern_by_candidate[dossier.candidate.id].concern_id
+            )
+            if dossier.candidate.id in concern_by_candidate
+            else impact_assessments.get(dossier.candidate.id),
         )
 
     results = run_bounded_parallel(assembly.dossiers, _invoke, max_workers=6)

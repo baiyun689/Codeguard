@@ -46,6 +46,9 @@ _NODE_TITLES: dict[str, str] = {
     "concern_analyzer": "候选主张分析",
     "evidence_planner": "证据规划",
     "evidence_agent": "证据补充",
+    "evidence_strategist": "调查策略",
+    "evidence_researcher": "证据调查",
+    "impact_assessor": "影响评估",
     "council_judge": "委员会裁决",
 }
 _COORDINATION_NODES = {
@@ -53,6 +56,9 @@ _COORDINATION_NODES = {
     "concern_analyzer",
     "evidence_planner",
     "evidence_agent",
+    "evidence_strategist",
+    "evidence_researcher",
+    "impact_assessor",
     "challenge_agent",
     "council_judge",
 }
@@ -227,7 +233,11 @@ def _step_from_pair(
         else 0.0
     )
     code_name = event.node_name
-    metrics = _evidence_batch_metrics(end) if code_name == "evidence_agent" else {}
+    metrics = (
+        _evidence_batch_metrics(end)
+        if code_name in {"evidence_agent", "evidence_researcher"}
+        else {}
+    )
     summary = end.summary if end is not None else event.summary
     node_summary = _node_state_summary(code_name, end)
     if node_summary:
@@ -856,12 +866,12 @@ def _coordination_loop_step(
     evidence_count = sum(
         1
         for step in coordination
-        if step["code_name"] == "evidence_agent"
+        if step["code_name"] in {"evidence_agent", "evidence_researcher"}
     )
     planner_count = sum(
         1
         for step in coordination
-        if step["code_name"] == "evidence_planner"
+        if step["code_name"] in {"evidence_planner", "evidence_strategist"}
     )
     summary_parts = [f"协调 {coordinator_count} 次"]
     if planner_count:
