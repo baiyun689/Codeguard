@@ -37,4 +37,8 @@ severity finding 只能描述可达性、前置条件、影响和范围，不得
 - `observation`：该项事实中与候选关系相关的具体观察；
 - `limitation`：该项事实不足、失败、缺失或截断的边界；充分事实可为空。
 
+**字段取值严格分离，禁止混淆**：
+- `relation` 只能是枚举字面量 `supports` / `contradicts` / `insufficient`——`contextual`、`direct` 是 `strength` 的值，**绝不能出现在 `relation` 字段**；输出任何其他字符串都会被整批判定为校验失败、全部降级为 insufficient。
+- `strength` 只能是 `direct` / `contextual` 二选一。
+
 不要输出工具选择、新候选、新漏洞主张或其他字段。

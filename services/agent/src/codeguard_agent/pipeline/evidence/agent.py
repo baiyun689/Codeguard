@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, field_validator
@@ -728,6 +728,33 @@ def _direct_counter_finding(
     )
 
 
+def _invoke_evidence_analysis(structured: Any, messages: list[tuple[str, str]]) -> Any:
+    """证据分析结构化调用:validation error 与 None(模型未按 schema 输出)都重试。
+
+    invoke_with_retry 只重试抛异常的路径;模型没发起工具调用时返回 None 不抛异常,
+    直接降级会系统性丢失证据判定(deepseek 对批量 findings schema 偶发 None/枚举外值,
+    重试有概率拿到合规输出)。
+    """
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            raw = structured.invoke(messages)
+        except Exception as exc:  # noqa: BLE001 与 invoke_with_retry 相同的重试语义
+            last_error = exc
+            if attempt < 2:
+                logger.warning(
+                    "证据分析调用失败(第 %d 次),%ds 后重试: %s", attempt + 1, 2**attempt, exc
+                )
+                sleep(2**attempt)
+                continue
+            raise
+        if raw is not None:
+            return raw
+        logger.warning("证据分析结构化输出为 None(第 %d 次),1s 后重试", attempt + 1)
+        sleep(1)
+    raise ValueError("structured evidence analysis returned None") from last_error
+
+
 def _analysis_user_prompt(
     dossier: CandidateDossier,
     request: EvidenceRequest,
@@ -945,7 +972,7 @@ def _analyze_request(
             _EvidenceAnalysisBatch,
             method=structured_method,
         )
-        raw_result = invoke_with_retry(
+        raw_result = _invoke_evidence_analysis(
             structured,
             [
                 (
@@ -954,10 +981,7 @@ def _analyze_request(
                 ),
                 ("user", _analysis_user_prompt(dossier, request, analyzable)),
             ],
-            max_retries=1,
         )
-        if raw_result is None:
-            raise ValueError("structured evidence analysis returned None")
         batch_result = (
             raw_result
             if isinstance(raw_result, _EvidenceAnalysisBatch)
