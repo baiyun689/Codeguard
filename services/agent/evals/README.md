@@ -3,9 +3,9 @@
 > 用「带标注的数据集 + 统计指标」量化审查质量,而不是用 `assert` 死磕不确定的 LLM 输出。
 > 跑出的指标用于在统一数据集上对照各 profile 的审查质量。
 
-正式的 60 例真实仓库评测、四档消融、同源 Judge 暂定评分和双人人工盲审流程见
-[`INTERVIEW_EVAL.md`](INTERVIEW_EVAL.md)。`runner` 仍是单 profile 的底层执行器，
-`interview_eval` 是可以直接准备数据、依次运行四档并生成最终结果的一站式入口。
+正式的 60 例真实仓库素材库与 selected-20-v2 真实评测(每 case 植入 5-6 个 L3 深层 bug,2 轮 × 多 profile
+对照,人工按 planted bugs 计指标)见 `reports/selected-20-v2-real/`。`runner` 是统一跑批入口,
+`profiles.yaml` 声明被测编排(直接 diff / ReviewCouncil 全编排等)。
 
 ## 为什么需要它
 
@@ -76,7 +76,10 @@ Phase 2 最小样本包括：删除 `@PreAuthorize`、新增 repository update�
 
 `evals/dataset` 中的旧合成案例继续用于廉价工程回归，其中没有 `repo_path` 的案例不能量化项目图工具增益。严格工具 profile 遇到这类案例会直接失败，不会静默降级。
 
-`evals/suites/interview-v1.yaml` 定义 60 个 repo-backed 真实案例。`interview_suite` 按精确 SHA 缓存上游 Git 对象，生成漏洞/修复版本快照并验证 HEAD、diff 与标答文件；只有清单中人工给出并通过 hunk/HEAD 校验的行号才进入定位准确率，自动准备不会用首个变更行伪造根因位置。缓存和 prepared workspace 都不进入 Git。
+`dataset/interview-v1/` 是从 interview-v1 冻结快照迁入的 **60 例真实仓库素材库**(gitbug + vul4j,每例
+`repo/ + changes.diff + case.yaml`,对应项目代码的漏洞版本快照)。它是本地素材库,不参与 `load_cases`
+(见 `dataset.py:_LOCAL_ONLY_DIRS`),选材/造 diff 时参考。`dataset/selected-20-v2/` 是已跑评测集
+(`manifest.yaml + cases/<case_id>/`,含 planted-bugs.diff 与 checkpoint 数据)。
 
 ## 指标含义
 
@@ -160,11 +163,11 @@ distractors:               # 诱饵:报了就是"中诱饵"误报
 内联合成用例磁盘上没有真实文件,工具读不到 —— 量化不了"读 diff 之外上下文"的增益。
 **repo-backed 用例**为此而生:每条用例自带一个可解析的最小工程,工具能真读到文件。
 
-目录约定(放在 `dataset/repo/<case_id>/`):
+目录约定(素材库 `dataset/interview-v1/<case_id>/` 与评测集 `dataset/selected-20-v2/cases/<case_id>/`):
 
 ```
-dataset/repo/<case_id>/
-├── repo/          # 变更后的最小可解析工程(工具据此读文件;关键上下文应放在被改文件之外)
+<case_id>/
+├── repo/          # 变更后的完整工程快照(工具据此读文件;关键上下文应放在被改文件之外)
 │   └── src/main/java/...
 ├── changes.diff   # 被审查的 unified diff(diff 来源,优先于 case.yaml 内联)
 └── case.yaml      # 标答 + 能力标签等元数据(无需写 diff,由 changes.diff 提供)
@@ -206,9 +209,6 @@ expected:
 | `metrics.py` | 聚合 precision/recall/F1/误报率/方差 |
 | `report.py` | 渲染 Markdown 报告 |
 | `runner.py` | CLI 跑批入口 |
-| `interview_suite.py` | 按精确 revision 准备/校验 60 例真实仓库快照 |
-| `interview_eval.py` | 四档统一运行、横向报告与人工终评入口 |
-| `adjudication.py` | 未匹配发现池化、双人盲审、冲突仲裁与离线重评分 |
 
 ## 路线图衔接
 

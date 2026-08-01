@@ -35,28 +35,15 @@ openspec/
 
 # 评测运行归档(每次跑生成的趋势数据,本地累积,不入库)
 services/agent/evals/runs/
+services/agent/evals/logs/
 .eval-cache/
 .eval-work/
 services/agent/evals/results/
 services/agent/evals/demo-runs/
 
 # 本地评测数据集、人工记录与一次性报告脚本
-services/agent/evals/dataset/independent-hunk/
-services/agent/evals/dataset/long-diff/
-services/agent/evals/dataset/long-diff-combo/
-services/agent/evals/dataset/selected-20-v1/
+services/agent/evals/dataset/interview-v1/
 services/agent/evals/dataset/selected-20-v2/
-services/agent/evals/dataset/repo/demo-*/
-services/agent/evals/dataset/repo/vul4j-21-security-feature/
-services/agent/evals/dataset/repo/representative-multi-v1/*_REPORT.md
-services/agent/evals/dataset/repo/representative-multi-v1/cases/*/manual-review/
-services/agent/evals/dataset/repo/representative-multi-v1/experiments/
-services/agent/evals/dataset/repo/representative-multi-v1/build_deep6_case.py
-services/agent/evals/dataset/repo/representative-multi-v1/run_one_round.py
-services/agent/evals/dataset/repo/representative-multi-v1/gen_report*.py
-services/agent/evals/dataset/repo/representative-multi-v1/run_*compare.py
-services/agent/evals/dataset/repo/representative-multi-v1/run_eval_*.py
-services/agent/evals/raw_dump.py
 eval-cases/
 eval-results/
 

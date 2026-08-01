@@ -1,7 +1,0 @@
-target/
-playground/
-.project
-.classpath
-.settings/
-.idea/
-*.iml

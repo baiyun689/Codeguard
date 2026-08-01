@@ -142,15 +142,42 @@ def run_once(
     return [outcomes_by_id[case.id] for case in cases]
 
 
-def _strict_tool_failures(trace: list, metadata: dict) -> list[str]:
-    """返回会使严格代码图谱 profile 失真的降级事实。"""
+# 沙箱护栏拒绝类失败:agent 传参误用(如把目录当文件读、读白名单外路径),
+# 工具服务本身正常。这类失败不构成"工具侧不可用",严格评测不中断,记警告。
+_AGENT_MISUSE_MARKERS = (
+    "文件类型不可读", "仅限源码文件", "不在白名单", "不允许访问",
+    "文件不存在", "not allowed", "not in whitelist", "sandbox",
+)
+
+# 基础设施降级类失败:图谱/上下文/超时/网络,评测失真,严格评测必须中断。
+_INFRA_FAILURE_MARKERS = (
+    "graph_unavailable", "graph_coverage_", "Timeout", "timed out",
+    "ConnectionError", "invalid_graph_response", "unavailable",
+)
+
+
+def _strict_tool_failures(trace: list, metadata: dict) -> tuple[list[str], list[str]]:
+    """返回会使严格代码图谱 profile 失真的降级事实。
+
+    - failures:基础设施级降级(图谱/上下文/超时/网络/节点失败),评测失真,必须中断;
+    - warnings:agent 误用类失败(沙箱护栏正常拒绝),工具侧正常,不中断,只记录。
+    """
     failures: list[str] = []
+    warnings: list[str] = []
     for name, detail in (metadata.get("context_diagnostics") or {}).items():
-        if detail:
+        if detail and any(marker in str(detail) for marker in _INFRA_FAILURE_MARKERS):
             failures.append(f"{name}:{detail}")
+        elif detail:
+            warnings.append(f"{name}:{detail}")
     for item in trace:
-        if getattr(item, "status", "") == "failed":
-            failures.append(f"tool_failed:{getattr(item, 'tool', 'unknown')}")
+        if getattr(item, "status", "") != "failed":
+            continue
+        content = str(getattr(item, "content", "") or "")
+        tool = getattr(item, "tool", "unknown")
+        if any(marker in content for marker in _AGENT_MISUSE_MARKERS):
+            warnings.append(f"tool_rejected:{tool}")
+        else:
+            failures.append(f"tool_failed:{tool}")
     council = metadata.get("council") or {}
     for key in (
         "react_degraded_recursion_count",
@@ -161,7 +188,7 @@ def _strict_tool_failures(trace: list, metadata: dict) -> list[str]:
         count = int(council.get(key, 0))
         if count:
             failures.append(f"{key}={count}")
-    return failures
+    return failures, warnings
 
 
 def _checkpoint_identity(
@@ -477,11 +504,16 @@ def main(argv: list[str] | None = None) -> int:
                     else None
                 ),
                 allow_direct_fallback=not profile.strict_tools,
+                trace_enabled=settings.trace_enabled,
+                trace_dir=settings.trace_dir,
+                trace_max_llm_content=settings.trace_max_llm_content,
                 trace_sink=trace,
                 metadata_sink=metadata,
             )
             if profile.strict_tools:
-                failures = _strict_tool_failures(trace, metadata)
+                failures, warnings = _strict_tool_failures(trace, metadata)
+                if warnings:
+                    logger.warning("[%s] 工具误用警告(不中断): %s", case.id, "; ".join(warnings))
                 if failures:
                     raise RuntimeError(
                         f"[{case.id}] 严格工具 profile 检测到降级:"

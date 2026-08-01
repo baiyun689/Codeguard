@@ -34,10 +34,7 @@ _DIFF_FILE = "changes.diff"
 # 留在 evals/dataset/ 下仅供本地复跑,load_cases 不把它们当正式用例——
 # 否则快照里的 application.yaml/repo_meta.yaml 会被误当成合成用例解析。
 _LOCAL_ONLY_DIRS = frozenset({
-    "independent-hunk",
-    "long-diff",
-    "long-diff-combo",
-    "selected-20-v1",
+    "interview-v1",
     "selected-20-v2",
 })
 
