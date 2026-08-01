@@ -30,13 +30,32 @@ _REPO_SUBDIR = "repo"
 _CASE_FILE = "case.yaml"
 _DIFF_FILE = "changes.diff"
 
+# 本地评测数据集(与 .gitignore 的"本地评测数据集"条目一致,不入库):
+# 留在 evals/dataset/ 下仅供本地复跑,load_cases 不把它们当正式用例——
+# 否则快照里的 application.yaml/repo_meta.yaml 会被误当成合成用例解析。
+_LOCAL_ONLY_DIRS = frozenset({
+    "independent-hunk",
+    "long-diff",
+    "long-diff-combo",
+    "selected-20-v1",
+    "selected-20-v2",
+})
+
+
+def _is_local_only(path: Path, root: Path) -> bool:
+    """路径是否落在本地数据集目录内(不入库、不参与 load_cases)。"""
+    rel = path.relative_to(root)
+    return rel.parts and rel.parts[0] in _LOCAL_ONLY_DIRS
+
 
 def _load_synthetic_cases(root: Path) -> list[EvalCase]:
     """加载内联合成用例:扫 *.yaml,但跳过 repo-backed 区域(dataset/repo/**)。"""
     cases: list[EvalCase] = []
     repo_root = root / _REPO_SUBDIR
     for path in sorted(root.rglob("*.yaml")):
-        # 跳过 repo-backed 区域里的任何 yaml(case.yaml、工程里的 application.yaml 等)。
+        # 跳过本地数据集与 repo-backed 区域里的任何 yaml(case.yaml、工程里的 application.yaml 等)。
+        if _is_local_only(path, root):
+            continue
         if repo_root in path.parents or path == repo_root:
             continue
         if path.name == _CASE_FILE:
@@ -51,6 +70,8 @@ def _load_external_diff_cases(root: Path) -> list[EvalCase]:
     repo_root = root / _REPO_SUBDIR
     cases: list[EvalCase] = []
     for case_file in sorted(root.rglob(_CASE_FILE)):
+        if _is_local_only(case_file, root):
+            continue
         if repo_root in case_file.parents:
             continue
         case_dir = case_file.parent
