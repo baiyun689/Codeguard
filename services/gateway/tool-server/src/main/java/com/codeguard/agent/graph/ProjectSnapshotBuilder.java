@@ -21,7 +21,10 @@ import com.github.javaparser.ast.expr.NormalAnnotationExpr;
 import com.github.javaparser.ast.expr.SingleMemberAnnotationExpr;
 import com.github.javaparser.ast.nodeTypes.NodeWithAnnotations;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
+import com.github.javaparser.resolution.TypeSolver;
 import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
+import com.github.javaparser.resolution.declarations.ResolvedReferenceTypeDeclaration;
+import com.github.javaparser.resolution.model.SymbolReference;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
@@ -58,21 +61,48 @@ final class ProjectSnapshotBuilder {
         Path root = key.repoRoot();
         List<String> diagnostics = new ArrayList<>();
         List<Path> javaFiles = scanJavaFiles(root, diagnostics);
-        CombinedTypeSolver solvers = new CombinedTypeSolver(new ReflectionTypeSolver(false));
-        discoverSourceRoots(root, javaFiles).forEach(path -> solvers.add(new JavaParserTypeSolver(path)));
-        JavaParser parser = new JavaParser(new ParserConfiguration()
+
+        // 第一遍:无符号解析 parse,收集项目内全部类型的 FQCN 集合(快速失败层用)。
+        // 与第二遍重复 parse 的代价(~1s)远小于让第三方类型走失败路径的代价——
+        // JavaParserTypeSolver 解析未命中时会 parseDirectory 递归重扫整个 source root(见 ProjectAwareTypeSolver)。
+        Map<String, String> sources = new LinkedHashMap<>();
+        Set<String> projectTypes = new LinkedHashSet<>();
+        JavaParser plainParser = new JavaParser(new ParserConfiguration()
                 .setLanguageLevel(ParserConfiguration.LanguageLevel.BLEEDING_EDGE)
                 .setStoreTokens(true)
-                .setAttributeComments(true)
-                .setSymbolResolver(new JavaSymbolSolver(solvers)));
-
-        Map<String, String> sources = new LinkedHashMap<>();
-        Map<String, CompilationUnit> units = new LinkedHashMap<>();
+                .setAttributeComments(true));
         for (Path file : javaFiles) {
             String relative = normalize(root.relativize(file));
             try {
                 String source = Files.readString(file);
                 sources.put(relative, source);
+                ParseResult<CompilationUnit> parsed = plainParser.parse(source);
+                if (parsed.isSuccessful() && parsed.getResult().isPresent()) {
+                    collectTypeNames(parsed.getResult().orElseThrow(), projectTypes);
+                }
+            } catch (Exception exception) {
+                diagnostics.add(relative + ": " + exception.getMessage());
+            }
+        }
+
+        // 第二遍:带 resolver parse。第三方类型(非 JDK、非项目内)由 ProjectAwareTypeSolver
+        // 直接快速失败,不进入 solver 链——否则每次失败都会触发 parseDirectory 全目录重扫。
+        CombinedTypeSolver delegate = new CombinedTypeSolver(new ReflectionTypeSolver(false));
+        discoverSourceRoots(root, javaFiles).forEach(path -> delegate.add(new JavaParserTypeSolver(path)));
+        JavaParser parser = new JavaParser(new ParserConfiguration()
+                .setLanguageLevel(ParserConfiguration.LanguageLevel.BLEEDING_EDGE)
+                .setStoreTokens(true)
+                .setAttributeComments(true)
+                .setSymbolResolver(new JavaSymbolSolver(new ProjectAwareTypeSolver(projectTypes, delegate))));
+
+        Map<String, CompilationUnit> units = new LinkedHashMap<>();
+        for (Path file : javaFiles) {
+            String relative = normalize(root.relativize(file));
+            String source = sources.get(relative);
+            if (source == null) {
+                continue;  // 第一遍已记录解析/读取失败
+            }
+            try {
                 ParseResult<CompilationUnit> parsed = parser.parse(source);
                 if (parsed.isSuccessful() && parsed.getResult().isPresent()) {
                     units.put(relative, parsed.getResult().orElseThrow());
@@ -495,5 +525,72 @@ final class ProjectSnapshotBuilder {
 
     private static String normalize(Path path) {
         return path.toString().replace('\\', '/');
+    }
+
+    /** 收集某文件定义的全部类型 FQCN(含嵌套类型,用 $ 连接),供快速失败层匹配。 */
+    private static void collectTypeNames(CompilationUnit unit, Set<String> projectTypes) {
+        String prefix = unit.getPackageDeclaration()
+                .map(declaration -> declaration.getNameAsString() + ".")
+                .orElse("");
+        for (TypeDeclaration<?> type : unit.findAll(TypeDeclaration.class)) {
+            projectTypes.add(prefix + nestedTypeName(type));
+        }
+    }
+
+    private static String nestedTypeName(TypeDeclaration<?> type) {
+        StringBuilder name = new StringBuilder(type.getNameAsString());
+        Node current = type.getParentNode().orElse(null);
+        while (current instanceof TypeDeclaration<?> declaration) {
+            name.insert(0, declaration.getNameAsString() + "$");
+            current = declaration.getParentNode().orElse(null);
+        }
+        return name.toString();
+    }
+
+    /**
+     * 项目感知 TypeSolver:第三方类型(非 JDK、非项目内)直接快速失败。
+     * <p>
+     * 背景:JavaParserTypeSolver 在类型解析未命中时会 {@code parseDirectory} 递归重扫
+     * 整个 source root 并重新 parse 全部文件;大 repo(main+test 数百文件)里测试代码对
+     * JUnit 等第三方依赖的解析**全部走这条失败路径**,每次失败都是 O(文件数) 级重复解析,
+     * 加上无失败缓存,堆被反复解析产物塞满触发 GC 风暴——这是大 repo 快照构建分钟级
+     * 超时的病态根源(基准实测:333 文件全量解析 >19 分钟,分层后 4.6 秒)。
+     * <p>
+     * 本项目 Repo Map 只需要"是否指向项目内部类/内部定义在哪个文件";
+     * 对第三方方法做完整符号解析没有价值,直接短路。
+     */
+    private static final class ProjectAwareTypeSolver implements TypeSolver {
+        private final Set<String> projectTypes;
+        private final TypeSolver delegate;
+        private TypeSolver parent;
+
+        ProjectAwareTypeSolver(Set<String> projectTypes, TypeSolver delegate) {
+            this.projectTypes = projectTypes;
+            this.delegate = delegate;
+        }
+
+        @Override
+        public TypeSolver getParent() {
+            return parent;
+        }
+
+        @Override
+        public void setParent(TypeSolver parent) {
+            this.parent = parent;
+        }
+
+        @Override
+        public SymbolReference<ResolvedReferenceTypeDeclaration> tryToSolveType(String name) {
+            if (isJdkType(name) || projectTypes.contains(name)) {
+                return delegate.tryToSolveType(name);
+            }
+            return SymbolReference.unsolved(ResolvedReferenceTypeDeclaration.class);
+        }
+
+        private static boolean isJdkType(String name) {
+            return name.startsWith("java.") || name.startsWith("javax.")
+                    || name.startsWith("jdk.") || name.startsWith("sun.")
+                    || name.startsWith("com.sun.");
+        }
     }
 }
