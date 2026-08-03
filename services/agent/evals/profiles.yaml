@@ -6,21 +6,21 @@
 # 不指定 --profile 时,用 --tools 合成 ad-hoc profile(管线 + 工具开/关)。
 
 profiles:
-  # 面试版消融 1:同一模型单次只看 diff，不经过 Council/图谱/证据链。
+  # 消融 1:同一模型单次只看 diff，不经过 Council/图谱/证据链。
   eval-direct-diff:
     mode: pipeline
     execution: direct
     orchestration: direct-diff
     tools: []
 
-  # 面试版消融 2:三路 Council，只看 diff/预取上下文，不开放项目工具。
+  # 消融 2:三路 Council，只看 diff/预取上下文，不开放项目工具。
   eval-council-diff:
     mode: pipeline
     execution: pipeline
     orchestration: adr-032
     tools: []
 
-  # 面试版消融 3:发现者使用项目图谱，EvidenceAgent 不发起补证工具调用。
+  # 消融 3:发现者使用项目图谱，EvidenceAgent 不发起补证工具调用。
   eval-council-codegraph:
     mode: pipeline
     execution: pipeline
@@ -29,7 +29,7 @@ profiles:
     evidence_tools: []
     strict_tools: true
 
-  # 面试版完整档:发现与举证共享项目语义图。
+  # 完整档:发现与举证共享项目语义图。
   eval-codeguard-full:
     mode: pipeline
     execution: pipeline

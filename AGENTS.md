@@ -174,8 +174,8 @@ conda run -n codeguard python -m pytest tests/ -q          # 全部单测(工程
 conda run -n codeguard python -m pytest tests/test_xxx.py::test_name   # 跑单个测试
 conda run -n codeguard ruff check src/                     # lint
 conda run -n codeguard mypy src/                           # 类型检查
-conda run -n codeguard python -m evals.runner --profile eval-codeguard-full --judge --runs 3  # 单 profile
-conda run -n codeguard python -m evals.interview_eval run --workspace <dir> --cache <dir> --runs 3 --judge  # 面试版四档
+conda run -n codeguard python -m evals.runner --profile eval-codeguard-full --judge --runs 3  # 单 profile(完整档)
+# 消融对照:分别用 eval-direct-diff / eval-council-diff / eval-council-codegraph 换掉上面 profile 名
 
 # —— Java Gateway(services/gateway 工具服务)——
 mvn package                # 跑单测 + 出 fat jar
@@ -184,7 +184,7 @@ java -jar ci-webhook/target/codeguard-gateway.jar  # 同 JVM 启动 CI(8080)/工
 
 # —— 真实 ReAct 审查(工具开档:先起 Java 工具服务,再设 URL)——
 $env:CODEGUARD_TOOL_SERVER_URL="http://localhost:9090"
-conda run -n codeguard python -m codeguard_agent review --repo <repo> --mode pipeline
+conda run -n codeguard python -m codeguard_agent review --repo <repo> --trace
 ```
 
 ### 命令行审查
@@ -211,14 +211,14 @@ cd services/agent && conda run -n codeguard python -m pytest tests/ -q
 
 ### 评测框架(审查质量,量化"效果")★
 
-`evals/` 用"精确版本的真实仓库数据 + 自动暂定评分 + 双人人工盲审"量化审查质量。冻结的 `interview-v1` 含 60 例(Vul4J 25、GitBug-Java 35)，四档只改变编排/图谱/举证能力。详见 `evals/INTERVIEW_EVAL.md`。
+`evals/` 用"带标注的真实仓库数据集 + 统计指标"量化审查质量。`selected-20-v2` 评测集(20 个真实 Java 仓库、115 个植入缺陷,含 Vul4J 真实 CVE)按 profile 对照:直接只看 diff / ReviewCouncil / Council+代码图谱 / 完整举证四档,只改变编排/图谱/举证能力,数据集与指标零改动。报告与 profile 定义见 `evals/README.md` 与 `evals/profiles.yaml`。
 
 ```bash
 cd services/agent && pip install -e . pyyaml
-python -m evals.interview_eval run --workspace ../../.eval-work/interview-v1 --cache ../../.eval-cache/interview-v1 --runs 3 --judge
+python -m evals.runner --profile eval-codeguard-full --runs 1   # 完整档单次
 ```
 
-产出四档原始归档、`provisional-report.md` 和来源盲化任务池。当前 DeepSeek 同源 Judge 只形成 `automatic-provisional`；两位 reviewer 一致裁决（分歧由第三人仲裁）后，离线生成 `human-adjudicated-final`。额外合理发现会成为所有 profile 的共享补充标答。核心指标包括 Precision/Recall/F1、case-cluster bootstrap 95% CI、稳定/最差轮 Recall、检出集合 Jaccard、clean 误报和 P95 时延。
+核心指标包括 Precision/Recall/F1、稳定/最差轮 Recall、检出集合 Jaccard、clean 误报与报告膨胀比。命中匹配走确定性口径(`evals/recall_analyzer.py`:file+行号±10 硬命中 / 描述 token 重叠≥2 软命中)。
 
 ### 环境变量(完整列表见 `.env.example`)
 

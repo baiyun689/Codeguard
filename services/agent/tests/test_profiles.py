@@ -146,7 +146,7 @@ def test_case_repo_root_合成用例可由显式base启用():
     assert case_repo_root(None, ".") == os.path.abspath(".")
 
 
-def test_interview_profiles_separate_direct_discovery_and_evidence_capabilities():
+def test_eval_profiles_separate_direct_discovery_and_evidence_capabilities():
     direct = resolve_profile("eval-direct-diff")
     graph = resolve_profile("eval-council-codegraph")
     full = resolve_profile("eval-codeguard-full")

@@ -54,7 +54,7 @@ Python Agent 负责审查推理与编排。Java Gateway 拆为三个独立服务
 
 配置工具服务后，每次审查会按精确 revision 异步构建完整、只读的 Java `ProjectSnapshot`，缓存全部源码、JavaParser AST、符号索引和 Spring 感知语义图。ContextProvider 只注入变更所属的稳定 `symbol_id`；三路审查员分别通过 `inspect_security_path`、`inspect_change_impact`、`inspect_structure` 查询有限局部子图，EvidenceResearcher 复用同一快照。图谱明确区分 `confirmed/not_found/unknown`，并将 `MAIN/TEST/GENERATED` 来源贯穿节点、关系、coverage 和工具结果：生产状态只由非测试事实确定，测试关系作为独立上下文返回，不能单独证明生产可达或提高严重度。静态分析未知不会被解释为不可达。
 
-EvidenceStrategist 每批最多 6 个候选动态提出少量可判真问题，不再机械生成固定 support/counter/impact 三件套。EvidenceResearcher 先执行快速路径，只对仍缺关键事实且工具能力可用的最多 5 个候选追加一轮受限 ReAct；相同 Gateway 调用跨轮次复用，工具不可用时明确降级而不让整条管线归零。输出仍按稳定 `evidence_id` 对齐。开启本地 HTML Trace 后，主流程会展示 PR 规模统计、small/medium/large 路由、实际 task builder 和 Direct 降级路径；按模式未执行的阶段标记为“按设计跳过”。审查员和 EvidenceResearcher 的每次工具输入、输出、耗时、复用及失败也会作为独立工具步骤展示。
+EvidenceStrategist 每批最多 6 个候选动态提出少量可判真问题，不再机械生成固定 support/counter/impact 三件套。EvidenceResearcher 先执行快速路径，只对仍缺关键事实且工具能力可用的最多 5 个候选追加一轮受限 ReAct；相同 Gateway 调用跨轮次复用，工具不可用时明确降级而不让整条管线归零。输出仍按稳定 `evidence_id` 对齐。开启本地 HTML Trace 后，主流程会呈现 PR 规模统计、small/medium/large 路由、实际 task builder 和 Direct 降级路径；按模式未执行的阶段标记为“按设计跳过”。审查员和 EvidenceResearcher 的每次工具输入、输出、耗时、复用及失败也会作为独立工具步骤记录。
 
 三路发现者只按 ID 汇集原始候选。CouncilCoordinator 在 fan-in 后批量解析候选 RiskTag，按完整 Git 路径和局部位置构建连通候选块，并以最多 8 个并行结构化 LLM 调用执行保守归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会删除重复候选；非法、低置信或失败结果一律完整保留。EvidencePlanner 直接复用归并阶段已解析的 RiskTag。
 
@@ -121,7 +121,7 @@ docker compose up -d
 docker compose up -d --build
 ```
 
-启动简历演示用的完整可观测性栈：
+启动完整可观测性栈：
 
 ```bash
 docker compose --profile observability up -d --build
@@ -137,7 +137,7 @@ Prometheus 位于 `http://localhost:9093`。
 
 - 审查管线：活动任务、成功率、吞吐和 P95 耗时；
 - AST / Evidence 工具：按工具与结果统计调用速率；
-- LLM 韧性：按 Provider 展示调用量、P95 耗时、重试、fallback 和熔断器状态。
+- LLM 韧性：按 Provider 呈现调用量、P95 耗时、重试、fallback 和熔断器状态。
 
 `ops/prometheus/alerts.yml` 预置服务不可用、审查失败率、慢审查、工具错误率、
 LLM 失败率和熔断器开路告警规则。Prometheus 默认保留 15 天数据；Grafana 与

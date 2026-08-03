@@ -344,7 +344,7 @@ python -m evals.runner --runs 3 --judge  # 额外开 LLM-as-judge
 
 ### 6.2 无工具对照基准
 
-原 `--mode single` 的无 Agent 基线(`pipeline/reviewer.py`)已完成"有工具 vs 无工具"对比使命后移除(ADR-002 废弃说明)。当前的对照基准是**管线内的无工具直连引擎**(`DirectEngine`):`pipeline-notools` profile 跑出的指标即"管线但不开工具"的基线,与 `pipeline-file`(仅文件工具) / `pipeline-codegraph`(语义图工具) / `pipeline-fpverify`(误报复核) 对照量化各能力的增益;面试版消融档在 `eval-*` 四个 profile(见 evals/profiles.yaml)。加新能力时仍按"同一数据集、只改一个变量(profile)"的方式做对照。
+原 `--mode single` 的无 Agent 基线(`pipeline/reviewer.py`)已完成"有工具 vs 无工具"对比使命后移除(ADR-002 废弃说明)。当前的对照基准是**管线内的无工具直连引擎**(`DirectEngine`):`pipeline-notools` profile 跑出的指标即"管线但不开工具"的基线,与 `pipeline-file`(仅文件工具) / `pipeline-codegraph`(语义图工具) / `pipeline-fpverify`(误报复核) 对照量化各能力的增益;消融对照档在 `eval-*` 四个 profile(见 evals/profiles.yaml)。加新能力时仍按"同一数据集、只改一个变量(profile)"的方式做对照。
 
 ### 6.3 改核心数据结构要慎重
 

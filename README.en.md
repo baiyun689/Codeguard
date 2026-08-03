@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | English
 
-AI-powered pull request review with risk-aware multi-agent analysis.
+AI-powered pull request review with multi-agent analysis.
 
 Codeguard receives GitHub pull request events, analyzes the exact code change with a Python review council, and reports structured findings through GitHub Check Runs and pull request comments. The Java Gateway splits into three independent services: an LLM proxy (multi-provider routing with circuit breaker / rate limiting / retry), an Agent tool server (file sandbox + AST analysis), and a CI webhook pipeline (signature verification + idempotent scheduling + Check Runs feedback).
 
@@ -17,7 +17,7 @@ Codeguard receives GitHub pull request events, analyzes the exact code change wi
 - Plans and gathers supporting, counter, and severity evidence before producing a verdict.
 - Publishes Check Runs, diff annotations, and high-confidence critical comments to GitHub.
 - Verifies webhook signatures and deduplicates jobs by repository, pull request, and commit SHA.
-- Persists jobs in H2 and restores unfinished work after a restart.
+- Persists jobs in MySQL and restores unfinished work after a restart (tests use H2 in MySQL-compatibility mode).
 - Exposes liveness, readiness, and Prometheus metrics endpoints.
 - Runs the Python Agent and Java Gateway in one container with Docker Compose.
 
@@ -40,7 +40,8 @@ GitHub pull_request webhook
         |
         v
 Python Agent
-  diff tasks -> risk routing -> specialist discovery -> evidence -> council verdict
+  PR size routing (small/medium/large) -> diff tasks -> risk routing
+  -> specialist discovery -> evidence -> council verdict
   LLM calls routed through LLM Proxy or direct to provider
         |
         v
@@ -116,7 +117,7 @@ To build from the current checkout instead of relying on a published image:
 docker compose up -d --build
 ```
 
-The Gateway always listens on port `9090` inside the container. Change only the host-side port with `CODEGUARD_HOST_PORT`, for example:
+The CI webhook always listens on port `8080` inside the container; the internal Tool Server and LLM Proxy listen on `9090` and `9091`. Change only the host-side webhook port with `CODEGUARD_HOST_PORT`, for example:
 
 ```dotenv
 CODEGUARD_HOST_PORT=8080
@@ -232,7 +233,8 @@ Deployment settings:
 | Variable | Default | Purpose |
 |---|---|---|
 | `CODEGUARD_IMAGE_TAG` | `latest` | Image tag under `ghcr.io/baiyun689/codeguard` |
-| `CODEGUARD_HOST_PORT` | `9090` | Host port mapped to the container's fixed port `9090` |
+| `CODEGUARD_HOST_PORT` | `9090` | Host port mapped to the container's CI webhook port `8080` |
+| `CODEGUARD_TOOL_HOST_PORT` | `9092` | Loopback-only host port mapped to the container's Tool Server port `9090` |
 | `CODEGUARD_WEBHOOK_SECRET` | required | Secret used to verify GitHub webhook signatures |
 | `CODEGUARD_GITHUB_APP_ID` | required | GitHub App ID used for installation authentication |
 | `CODEGUARD_GITHUB_PRIVATE_KEY_FILE` | `./secrets/github-app.pem` | Host path to the App private key mounted by Compose |
@@ -250,11 +252,11 @@ Deployment settings:
 | `CODEGUARD_GRAPH_CACHE_TTL_MINUTES` | `30` | Snapshot expiry after last access |
 | `CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS` | `120` | Full-project AST and semantic graph build timeout |
 
-Compose sets container-only paths and ports for the bundled deployment. Do not change `CODEGUARD_TOOL_SERVER_PORT`, `CODEGUARD_TOOL_SERVER_URL`, `CODEGUARD_JOB_DB_PATH`, or `CODEGUARD_WORKSPACE_DIR` unless you are maintaining a custom deployment.
+Compose sets container-only paths and ports for the bundled deployment. Do not change `CODEGUARD_CI_PORT`, `CODEGUARD_TOOL_SERVER_PORT`, `CODEGUARD_TOOL_SERVER_URL`, `CODEGUARD_LLM_PROXY_PORT`, `CODEGUARD_JOB_DB_URL`, or `CODEGUARD_WORKSPACE_DIR` unless you are maintaining a custom deployment.
 
 ## Operations and Observability
 
-Codeguard currently supports a single Gateway instance. H2 persistence and the scheduler recover jobs within that instance, but the deployment does not implement multi-instance leader election, distributed locking, or shared-workspace coordination. Do not scale the Compose service above one replica.
+Codeguard currently supports a single Gateway instance. MySQL persistence and the scheduler recover jobs within that instance, but the deployment does not implement multi-instance leader election, distributed locking, or shared-workspace coordination. Do not scale the Compose service above one replica.
 
 The Java Gateway runs three services on separate ports within a single JVM:
 
@@ -270,10 +272,10 @@ Operational endpoints (available on all three services for `/health` and `/healt
 |---|---|
 | `GET /health` | Compatibility health endpoint; reports process liveness |
 | `GET /health/live` | Liveness probe |
-| `GET /health/ready` | CI service: readiness of H2, the scheduler, and Python initialization; returns `503` when unavailable |
-| `GET /metrics` | Prometheus text exposition (CI service and Tool Server) |
+| `GET /health/ready` | CI service: readiness of MySQL (connection ping), the scheduler, and Python initialization; returns `503` when unavailable |
+| `GET /metrics` | Prometheus text exposition (CI, Tool Server, and LLM Proxy) |
 
-Compose persists the H2 database in `gateway-data` and temporary SHA-scoped review workspaces in `job-workspaces`. Stop the service with `docker compose down`. Add `--volumes` only when you intentionally want to delete persisted job state and workspaces.
+Compose persists MySQL job data in the `mysql-data` volume (standalone MySQL container) and temporary SHA-scoped review workspaces in `job-workspaces`. Stop the service with `docker compose down`. Add `--volumes` only when you intentionally want to delete persisted job state and workspaces.
 
 The image publishing workflow uses:
 
@@ -308,7 +310,7 @@ Container build:
 docker build -t codeguard:local .
 ```
 
-The interview-grade quality evaluation uses 60 Java cases pinned to exact repository revisions. It compares direct diff review, ReviewCouncil, Council with the code graph, and the full evidence pipeline, then supports provisional DeepSeek judging followed by two-person blind adjudication. See [`services/agent/evals/INTERVIEW_EVAL.md`](services/agent/evals/INTERVIEW_EVAL.md).
+Real quality evaluation uses 20 real Java repositories with 115 planted defects (including Vul4J real CVE vulnerabilities), comparing profiles — single-model direct diff (direct) vs the full ReviewCouncil + code graph pipeline (full): Recall improves from 86.1% to 93.0%, and cross-file defects that require context beyond the diff improve from 0/8 to 7/8. See [`services/agent/evals/README.md`](services/agent/evals/README.md).
 
 ## Contributing
 

@@ -57,7 +57,7 @@ CODEGUARD_TOOL_SERVER_URL=http://localhost:9090 \
   工具/编排增益,比笼统的"工具开 vs 关"精确。
 
 ADR-032 默认路径还会在报告中追加 **ReviewCouncil 过程统计**:候选数、证据轮次、Challenge 数量、
-SelfChecker 移除来源与 trace 事件数。这些中间态只用于诊断和展示,不参与判分,也不进入产品
+SelfChecker 移除来源与 trace 事件数。这些中间态只用于诊断和呈现,不参与判分,也不进入产品
 `ReviewResult`。
 
 风险先验同样属于诊断链路，不改变 `expected` matcher 契约。每个 task 的
@@ -76,7 +76,7 @@ Phase 2 最小样本包括：删除 `@PreAuthorize`、新增 repository update�
 
 `evals/dataset` 中的旧合成案例继续用于廉价工程回归，其中没有 `repo_path` 的案例不能量化项目图工具增益。严格工具 profile 遇到这类案例会直接失败，不会静默降级。
 
-`dataset/interview-v1/` 是从 interview-v1 冻结快照迁入的 **60 例真实仓库素材库**(gitbug + vul4j,每例
+`dataset/` 下有 **60 例真实仓库素材库**(gitbug + vul4j,每例
 `repo/ + changes.diff + case.yaml`,对应项目代码的漏洞版本快照)。它是本地素材库,不参与 `load_cases`
 (见 `dataset.py:_LOCAL_ONLY_DIRS`),选材/造 diff 时参考。`dataset/selected-20-v2/` 是已跑评测集
 (`manifest.yaml + cases/<case_id>/`,含 planted-bugs.diff 与 checkpoint 数据)。
@@ -163,7 +163,7 @@ distractors:               # 诱饵:报了就是"中诱饵"误报
 内联合成用例磁盘上没有真实文件,工具读不到 —— 量化不了"读 diff 之外上下文"的增益。
 **repo-backed 用例**为此而生:每条用例自带一个可解析的最小工程,工具能真读到文件。
 
-目录约定(素材库 `dataset/interview-v1/<case_id>/` 与评测集 `dataset/selected-20-v2/cases/<case_id>/`):
+目录约定(素材库 `<case_id>/` 与评测集 `dataset/selected-20-v2/cases/<case_id>/`):
 
 ```
 <case_id>/

@@ -336,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--archive-dir",
         default="",
-        help="结构化归档目录；面试版统一跑批用它隔离本次四个 profile",
+        help="结构化归档目录；统一跑批用它隔离本次四个 profile",
     )
     parser.add_argument(
         "--checkpoint",

@@ -1,4 +1,4 @@
-"""面试版评测数据契约的公开行为测试。"""
+"""评测数据契约的公开行为测试。"""
 
 from codeguard_agent.models.schemas import Issue, Severity
 
