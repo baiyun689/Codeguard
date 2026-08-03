@@ -79,7 +79,6 @@ _FACT_SCOPES = {
     "ast_structure": "current_file",
     "symbol_context": "current_file",
     "sensitive_api": "current_file/current_hunk_lines",
-    "find_callers": "resolved_current_method/direct_static_callers",
     "get_code_metrics": "current_file/method_metrics",
 }
 

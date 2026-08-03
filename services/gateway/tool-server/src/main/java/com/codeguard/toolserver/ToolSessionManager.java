@@ -77,7 +77,7 @@ public final class ToolSessionManager {
             this.registry.register(new InspectChangeImpactTool(snapshot));
             this.registry.register(new InspectStructureTool(snapshot));
             for (String legacy : Set.of(
-                    "find_sensitive_apis", "find_callers", "get_code_metrics", "get_diff_ast")) {
+                    "find_sensitive_apis", "get_code_metrics", "get_diff_ast")) {
                 this.registry.register(new GraphCompatibilityTool(legacy, snapshot));
             }
         }

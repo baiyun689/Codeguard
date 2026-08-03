@@ -199,7 +199,8 @@ def test_task_context_bundle_render_lists_facts_with_truncation_flag():
         facts=[
             ContextFact(source="diff", kind="sensitive_api", content="Runtime.exec"),
             ContextFact(
-                source="tool:find_callers", kind="callers", content="X.java:10",
+                source="tool:resolve_change_context", kind="symbol_context",
+                content="X.java:10",
                 truncated=True,
             ),
         ],

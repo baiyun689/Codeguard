@@ -39,7 +39,6 @@ public final class GraphCompatibilityTool implements AgentTool {
         try {
             ProjectSnapshot value = GraphToolSupport.await(snapshot);
             return switch (name) {
-                case "find_callers" -> callers(value, input);
                 case "find_sensitive_apis" -> sensitive(value);
                 case "get_code_metrics" -> structure(value, input);
                 case "get_diff_ast" -> changedStructure(value, context);
@@ -48,30 +47,6 @@ public final class GraphCompatibilityTool implements AgentTool {
         } catch (Exception exception) {
             return ToolResult.error("graph_unavailable: " + exception.getMessage());
         }
-    }
-
-    private static ToolResult callers(ProjectSnapshot snapshot, String query) {
-        int separator = query == null ? -1 : query.lastIndexOf('#');
-        if (separator < 1) {
-            return ToolResult.error("参数格式应为 文件路径#方法名");
-        }
-        String file = query.substring(0, separator).replace('\\', '/');
-        String method = query.substring(separator + 1);
-        GraphNode target = snapshot.graph().symbolsInFile(file).stream()
-                .filter(node -> node.signature().contains(method + "("))
-                .findFirst()
-                .orElse(null);
-        if (target == null) {
-            return GraphToolSupport.facts(snapshot, query, List.of(), List.of(),
-                    List.of("symbol_not_resolved"));
-        }
-        List<GraphEdge> edges = snapshot.graph().incoming(target.id(), GraphEdgeKind.CALLS);
-        List<GraphNode> nodes = edges.stream()
-                .map(GraphEdge::sourceId)
-                .map(snapshot.graph()::node)
-                .flatMap(java.util.Optional::stream)
-                .toList();
-        return GraphToolSupport.facts(snapshot, target.id(), nodes, edges, List.of());
     }
 
     private static ToolResult sensitive(ProjectSnapshot snapshot) {

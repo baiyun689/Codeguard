@@ -90,9 +90,9 @@ def test_reviewer_user_prompt_renders_current_context_as_typed_dynamic_data() ->
         ],
         statuses=[
             ContextStatus(
-                kind="find_callers",
+                kind="symbol_context",
                 status="skipped",
-                reason="no_method_resolved",
+                reason="no_resolved_symbol_for_current_hunk",
             ),
             ContextStatus(
                 kind="get_code_metrics",
@@ -120,8 +120,8 @@ def test_reviewer_user_prompt_renders_current_context_as_typed_dynamic_data() ->
     assert 'scope="current_file"' in rendered
     assert 'kind="sensitive_api"' in rendered
     assert 'truncated="true"' in rendered
-    assert '<item kind="find_callers" status="skipped"' in rendered
-    assert 'reason="no_method_resolved"' in rendered
+    assert '<item kind="symbol_context" status="skipped"' in rendered
+    assert 'reason="no_resolved_symbol_for_current_hunk"' in rendered
     assert '<item kind="get_code_metrics" status="failed"' in rendered
     assert '<knowledge_bundle role="methodology_not_repository_fact">' in rendered
     assert "KNOWLEDGE_MARKER" in rendered

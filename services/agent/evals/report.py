@@ -175,26 +175,22 @@ def render_report(
         )
 
     # 工具使用画像:回答"工具到底有没有被用上"(ADR-022 未答的问题)。仅工具档的用例有 tool_usage。
-    # 用来分辨"真调工具导航"与"纯靠 diff 推理蒙对",尤其 callers 段有没有被实际读到。
+    # 用来分辨"真调工具导航"与"纯靠 diff 推理蒙对"——是否读到了 diff 之外的文件。
     usage_rows = [o for o in runs[-1] if o.tool_usage is not None]
     if usage_rows:
         lines += [
             "",
             "## 工具使用(最后一次跑测)",
             "",
-            "审查员实际发起的工具调用画像(去重后取得有效上下文的调用)。"
-            "若 repo_map / 读到 callers 段 全为 — 但该用例仍判 TP,即工具没用上、"
-            "纯靠 diff 推理蒙对(见 ADR-022)。",
+            "审查员实际发起的工具调用画像(去重后取得有效上下文的调用)。",
             "",
-            "| 用例 | 工具调用 | 用到的工具 | repo_map | 读到 callers 段 | 读取文件 |",
-            "|---|---|---|---|---|---|",
+            "| 用例 | 工具调用 | 用到的工具 | 读取文件 |",
+            "|---|---|---|---|",
         ]
         for o in usage_rows:
             u = o.tool_usage
             lines.append(
                 f"| {o.case_id} | {u.tool_calls} | {', '.join(u.tools_used) or '—'} | "
-                f"{'✓' if u.repomap_called else '—'} | "
-                f"{'✓' if u.repomap_caller_section_read else '—'} | "
                 f"{', '.join(u.files_read) or '—'} |"
             )
 

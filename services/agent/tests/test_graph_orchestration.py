@@ -780,10 +780,6 @@ class _MockToolClient:
             ),
         )
 
-    def find_callers(self, query: str = "") -> _MockToolResponse:
-        self.calls.append(("find_callers", {"query": query}))
-        return _MockToolResponse(True, result=f"callers of {query}")
-
     def get_code_metrics(self, file_path: str = "") -> _MockToolResponse:
         self.calls.append(("get_code_metrics", {"file_path": file_path}))
         return _MockToolResponse(True, result=f"CC=12 LOC=200 for {file_path}")
@@ -1270,7 +1266,7 @@ def test_context_provider_node_fills_symbol_context_per_task():
     assert {fact.source for fact in bundle.facts} == {
         "tool:resolve_change_context",
     }
-    assert not any(name == "find_callers" for name, _ in tool_client.calls)
+    assert not any(name == "get_code_metrics" for name, _ in tool_client.calls)
     assert any(
         trace.event == "task_bundle_filled" and f"task={task.id}" in trace.detail
         for trace in out["council_trace"]
@@ -1314,7 +1310,7 @@ def test_context_provider_node_records_skip_when_method_unresolved():
         }
     )
 
-    assert not any(call[0] == "find_callers" for call in tool_client.calls)
+    assert not any(call[0] == "get_code_metrics" for call in tool_client.calls)
     statuses = out["task_context_bundles"][task.id].statuses
     assert any(
         status.kind == "symbol_context"
@@ -1347,7 +1343,7 @@ def test_context_provider_node_general_review_gets_no_level1_call():
         }
     )
 
-    assert not any(call[0] in ("find_callers", "get_code_metrics") for call in tool_client.calls)
+    assert not any(call[0] in ("get_code_metrics",) for call in tool_client.calls)
 
 
 def test_context_provider_node_does_not_store_failed_graph_response_as_fact():

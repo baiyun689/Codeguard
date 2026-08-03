@@ -15,7 +15,6 @@ from codeguard_agent.tools.tool_client import ToolResponse
 DISCOVERY_GATEWAY_TOOLS = frozenset({
     "get_file_content",
     "find_sensitive_apis",
-    "find_callers",
     "get_code_metrics",
     "inspect_security_path",
     "inspect_change_impact",
@@ -303,13 +302,6 @@ class CoordinatedDiscoveryToolClient:
     def find_sensitive_apis(self) -> ToolResponse:
         return self._invoke(
             "find_sensitive_apis", {}, self._delegate.find_sensitive_apis
-        )
-
-    def find_callers(self, query: str) -> ToolResponse:
-        return self._invoke(
-            "find_callers",
-            {"query": query},
-            lambda: self._delegate.find_callers(query),
         )
 
     def get_code_metrics(self, file_path: str) -> ToolResponse:

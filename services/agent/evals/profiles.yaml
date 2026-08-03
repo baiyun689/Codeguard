@@ -67,22 +67,6 @@ profiles:
     orchestration: adr-032
     tools: [get_file_content]
 
-  # 管线 + 调用方追踪 + 文件细读:审查员可先用 find_callers 查调用方,再用 get_file_content 细读。
-  # 与 pipeline-file 相比多了"跨文件调用方追踪"能力,用于量化调用方感知(跨文件、影响面)的增益。
-  pipeline-callers:
-    mode: pipeline
-    orchestration: adr-032
-    tools: [find_callers, get_file_content]
-
-  # 管线 + 调用方追踪/细读 + 误报复核:在 pipeline-callers 基础上打开误报复核。
-  # 与 pipeline-callers 仅差 fp_verify 一个变量,用于量化"把审查员读到的 diff 外上下文
-  # 喂给复核员"后,复核是否不再误删跨文件真问题(见 fp-verify-reviewer-context)。需起 gateway + 异源模型。
-  pipeline-callers-fpverify:
-    mode: pipeline
-    orchestration: adr-032
-    tools: [find_callers, get_file_content]
-    fp_verify: true
-
   # 管线 + 项目语义图:三路角色工具共享完整 Java AST/符号图，只按 symbol_id 查询局部事实。
   pipeline-codegraph:
     mode: pipeline

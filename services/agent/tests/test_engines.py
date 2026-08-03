@@ -235,7 +235,7 @@ def test_gathered_context_excludes_complete_patch_short_marker() -> None:
 
 def _resolve_tool_names(enabled):
     """复刻 ToolAgentEngine.review 里的工具白名单解析逻辑(不构造真实 agent)。"""
-    available = ["find_sensitive_apis", "find_callers", "get_code_metrics", "get_file_content"]
+    available = ["find_sensitive_apis", "get_code_metrics", "get_file_content"]
     names = list(available) if enabled is None else enabled
     tools = [n for n in names if n in available]
     if not tools:
@@ -244,23 +244,23 @@ def _resolve_tool_names(enabled):
 
 
 def test_工具白名单_none_则全开():
-    assert _resolve_tool_names(None) == ["find_sensitive_apis", "find_callers", "get_code_metrics", "get_file_content"]
+    assert _resolve_tool_names(None) == ["find_sensitive_apis", "get_code_metrics", "get_file_content"]
 
 
 def test_工具白名单_只开_file():
     assert _resolve_tool_names(["get_file_content"]) == ["get_file_content"]
 
 
-def test_工具白名单_find_callers_档保持声明顺序():
-    assert _resolve_tool_names(["find_callers", "get_file_content"]) == [
-        "find_callers",
+def test_工具白名单_档保持声明顺序():
+    assert _resolve_tool_names(["get_code_metrics", "get_file_content"]) == [
+        "get_code_metrics",
         "get_file_content",
     ]
 
 
 def test_工具白名单_空或未知_回退全开():
-    assert _resolve_tool_names([]) == ["find_sensitive_apis", "find_callers", "get_code_metrics", "get_file_content"]
-    assert _resolve_tool_names(["nope"]) == ["find_sensitive_apis", "find_callers", "get_code_metrics", "get_file_content"]
+    assert _resolve_tool_names([]) == ["find_sensitive_apis", "get_code_metrics", "get_file_content"]
+    assert _resolve_tool_names(["nope"]) == ["find_sensitive_apis", "get_code_metrics", "get_file_content"]
 
 
 class _FakeStructLLM:

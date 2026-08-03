@@ -745,7 +745,7 @@ def test_trace_view_treats_tool_error_as_a_completed_failed_call():
                 "discover_behavior/review",
                 "tool-run",
                 detail={
-                    "tool_name": "find_callers",
+                    "tool_name": "get_code_metrics",
                     "input": {"symbol": "execute"},
                 },
             ),
@@ -756,7 +756,7 @@ def test_trace_view_treats_tool_error_as_a_completed_failed_call():
                 "discover_behavior/review",
                 "tool-run",
                 detail={
-                    "tool_name": "find_callers",
+                    "tool_name": "get_code_metrics",
                     "output": {
                         "type": "RuntimeError",
                         "message": "gateway unavailable",
@@ -1456,7 +1456,7 @@ class TestCollectorLineage:
         ))
         collector._handle_event({
             "event": "on_tool_error",
-            "name": "find_callers",
+            "name": "get_code_metrics",
             "run_id": "tool-run",
             "parent_ids": ["root", "review-run"],
             "metadata": {},
@@ -1503,7 +1503,7 @@ class TestCollectorLineage:
                 data={"input": {"reviewer": reviewer}},
             ))
             for index, tool_name in enumerate(
-                ("get_file_content", "find_callers"),
+                ("get_file_content", "get_code_metrics"),
                 start=1,
             ):
                 tool_run = f"{reviewer}-tool-{index}"
@@ -1580,7 +1580,7 @@ class TestCollectorLineage:
             ]
             assert [step["code_name"] for step in tool_steps] == [
                 "get_file_content",
-                "find_callers",
+                "get_code_metrics",
             ]
             assert [step["status"] for step in tool_steps] == [
                 "complete",

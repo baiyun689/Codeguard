@@ -1,7 +1,7 @@
 """工具使用画像 summarize_tool_usage 的单测(纯函数,不碰网络/管线)。
 
-重点验证 ADR-022 关心的判别力:能否如实区分"读到 callers 信息"与"只看了普通内容/没调工具"。
-find_callers 取代了原 get_repo_map 的调用方追踪能力。
+重点验证 ADR-022 关心的判别力:能否如实区分"真调工具导航(读到了 diff 之外的文件)"
+与"只看了普通内容/没调工具"。
 """
 
 from __future__ import annotations
@@ -24,30 +24,7 @@ def test_empty_trace_is_all_blank():
     u = summarize_tool_usage([])
     assert u.tool_calls == 0
     assert u.tools_used == []
-    assert u.repomap_called is False
-    assert u.repomap_caller_section_read is False
     assert u.files_read == []
-
-
-def test_find_callers_detected_as_caller_info():
-    trace = [
-        _FakeCtx(
-            tool="find_callers",
-            args='{"query": "src/Foo.java#bar"}',
-            content="# find_callers 查询结果\n| 1 | Payment.java:234 | `price = calc()` |",
-        )
-    ]
-    u = summarize_tool_usage(trace)
-    assert u.repomap_called is True
-    assert u.repomap_caller_section_read is True
-    assert "find_callers" in u.tools_used
-
-
-def test_find_callers_empty_result_still_called():
-    trace = [_FakeCtx(tool="find_callers", args='{"query": "src/X.java#y"}', content="未找到直接调用方")]
-    u = summarize_tool_usage(trace)
-    assert u.repomap_called is True
-    assert u.repomap_caller_section_read is False
 
 
 def test_files_read_parsed_and_deduped_sorted():
@@ -59,7 +36,6 @@ def test_files_read_parsed_and_deduped_sorted():
     u = summarize_tool_usage(trace)
     assert u.files_read == ["src/A.java", "src/B.java"]
     assert u.tool_calls == 3
-    assert u.repomap_called is False
 
 
 def test_malformed_args_falls_back_to_raw_string():
@@ -70,11 +46,10 @@ def test_malformed_args_falls_back_to_raw_string():
 
 def test_structured_response_sentinel_excluded():
     trace = [
-        _FakeCtx(tool="find_callers", args='{"query": "a#b"}', content="# find_callers\n| 1 | X.java:1 | `...` |"),
+        _FakeCtx(tool="get_code_metrics", args='{"file_path": "src/A.java"}', content="# 代码度量\n| CC=12 |"),
         _FakeCtx(tool="ReviewResult", args='{"issues": []}', content="结构化结果,非工具上下文"),
         _FakeCtx(tool="ReviewResult", args='{"issues": [1]}', content="另一审查员的结构化结果"),
     ]
     u = summarize_tool_usage(trace)
-    assert "find_callers" in u.tools_used
+    assert "get_code_metrics" in u.tools_used
     assert u.tool_calls == 1  # 只数真工具
-    assert u.repomap_caller_section_read is True

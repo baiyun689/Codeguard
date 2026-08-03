@@ -1,7 +1,7 @@
 """从管线工具上下文 trace 提炼"工具使用画像"(评测可观测性)。
 
-回答 ADR-022 没答上的问题:审查员到底有没有调工具、有没有真用到 find_callers 获取
-调用方信息——还是纯靠 diff 推理蒙对。纯函数,吃 GatheredContext 列表
+回答 ADR-022 没答上的问题:审查员到底有没有调工具、有没有真读到 diff 之外的上下文——
+还是纯靠 diff 推理蒙对。纯函数,吃 GatheredContext 列表
 (或任何带 ``.tool`` / ``.args`` / ``.content`` 属性的对象),与管线/网络解耦,可独立单测。
 
 注意:输入是管线**去重后**的 gathered_context(见 ReviewerStage._dedup_context),
@@ -16,10 +16,6 @@ from typing import Any
 from codeguard_agent.models.schemas import ReviewResult
 
 from evals.schema import ToolUsage
-
-# find_callers 返回的调用方标记:输出中包含"find_callers"表头即说明调用了调用方查询工具。
-# find_callers 永远返回调用方信息(有则列表,无则"未找到"),地图输出中含"调用方"标记说明读到了。
-_CALLER_SECTION_MARKER = "find_callers"
 
 # create_agent(response_format=ReviewResult) 把"产出结构化结果"实现为一次同名工具调用,
 # 它会以 ToolMessage 形式混进 gathered_context。那不是真去取外部上下文的工具,
@@ -52,12 +48,6 @@ def summarize_tool_usage(trace: list[Any]) -> ToolUsage:
     """
     trace = [t for t in trace if getattr(t, "tool", "") not in _STRUCTURED_SENTINELS]
     tools = sorted({t.tool for t in trace if getattr(t, "tool", "")})
-    repomap_called = "find_callers" in tools
-    caller_read = any(
-        getattr(t, "tool", "") == "find_callers"
-        and _CALLER_SECTION_MARKER in (getattr(t, "content", "") or "")
-        for t in trace
-    )
     files = sorted(
         {
             _file_from_args(getattr(t, "args", ""))
@@ -69,7 +59,5 @@ def summarize_tool_usage(trace: list[Any]) -> ToolUsage:
     return ToolUsage(
         tool_calls=len(trace),
         tools_used=tools,
-        repomap_called=repomap_called,
-        repomap_caller_section_read=caller_read,
         files_read=files,
     )

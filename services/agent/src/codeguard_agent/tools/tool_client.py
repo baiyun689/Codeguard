@@ -79,10 +79,6 @@ class ToolClient:
         """获取 diff 涉及文件的 AST 结构信息（context_provider 专属）。"""
         return self._post_tool("get_diff_ast", {"query": diff_text})
 
-    def find_callers(self, query: str) -> ToolResponse:
-        """查询指定方法的直接调用方(逻辑审查员专属)。"""
-        return self._post_tool("find_callers", {"query": query})
-
     def get_code_metrics(self, file_path: str) -> ToolResponse:
         """计算指定文件的代码度量(质量审查员专属)。"""
         return self._post_tool("get_code_metrics", {"file_path": file_path})

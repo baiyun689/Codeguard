@@ -919,7 +919,7 @@ def test_severity_request_reuses_prior_observation_with_same_evidence_id():
         findings=[
             EvidenceFinding(
                 evidence_id="shared-evidence",
-                source="tool:find_callers",
+                source="tool:inspect_change_impact",
                 observation="two public callers",
                 relation="supports",
                 strength="contextual",
@@ -938,7 +938,7 @@ def test_severity_request_reuses_prior_observation_with_same_evidence_id():
     batch = _collect([dossier], [request], client=None)
 
     reused = next(f for f in batch.notes[0].findings if f.evidence_id == "shared-evidence")
-    assert reused.source == "prior:tool:find_callers"
+    assert reused.source == "prior:tool:inspect_change_impact"
     assert reused.observation == "two public callers"
 
 

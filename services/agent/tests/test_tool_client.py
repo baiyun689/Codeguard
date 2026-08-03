@@ -74,15 +74,6 @@ def test_inspect_change_impact_使用稳定符号():
     assert response.success is True
 
 
-def test_find_callers_传参查询():
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v1/tools/find_callers"
-        return httpx.Response(200, json={"success": True, "result": "# find_callers\n未找到"})
-
-    resp = _mock_client(handler).find_callers("src/Foo.java#bar")
-    assert resp.success is True
-
-
 def test_get_code_metrics_传文件路径():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/tools/get_code_metrics"

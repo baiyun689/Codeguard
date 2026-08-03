@@ -215,16 +215,11 @@ class ToolUsage(BaseModel):
     故 tool_calls 是"去重后取得有效上下文的调用条数",不是原始调用次数。
 
     存在意义(ADR-022):before/after 都 3/3 时,要能分辨审查员是**真调工具导航**、
-    还是**纯靠 diff 推理蒙对**——尤其 callers 段到底有没有被读到。
+    还是**纯靠 diff 推理蒙对**(是否有 diff 之外的文件被实际读取)。
     """
 
     tool_calls: int = Field(default=0, description="去重后取得有效上下文的工具调用条数")
     tools_used: list[str] = Field(default_factory=list, description="用到的工具名(去重排序)")
-    repomap_called: bool = Field(default=False, description="是否调用过 get_repo_map")
-    repomap_caller_section_read: bool = Field(
-        default=False,
-        description="get_repo_map 返回里是否含'直接调用方(callers)'段(callers 段被实际读到)",
-    )
     files_read: list[str] = Field(
         default_factory=list, description="经 get_file_content 读取的文件路径(去重排序)"
     )

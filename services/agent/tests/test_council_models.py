@@ -71,7 +71,7 @@ def test_evidence_request_id_is_stable_for_the_same_semantics():
         purpose="counter",
         target="A.java",
         question="确认调用方",
-        preferred_tools=["find_callers"],
+        preferred_tools=["inspect_change_impact"],
     )
 
     assert first.id == second.id

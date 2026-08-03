@@ -160,16 +160,6 @@ def test_parameterless_tool_key_is_stable() -> None:
     )
 
 
-def test_find_callers_normalizes_only_query_path() -> None:
-    left = canonical_tool_key("find_callers", {"query": "src\\.\\A.java#Run"})
-    right = canonical_tool_key("find_callers", {"query": "src/A.java#Run"})
-    different_method_case = canonical_tool_key(
-        "find_callers", {"query": "src/A.java#run"}
-    )
-    assert left == right
-    assert left != different_method_case
-
-
 def test_parallel_failure_is_shared_then_later_call_retries(monkeypatch) -> None:
     started = Event()
     release = Event()

@@ -18,7 +18,7 @@ def test_evidence_request_id_distinguishes_strategy_and_purpose():
         "candidate_id": "candidate-1",
         "target": "src/Service.java",
         "question": "调用方是否完成权限校验？",
-        "preferred_tools": ["find_callers", "get_file_content"],
+        "preferred_tools": ["inspect_change_impact", "get_file_content"],
     }
 
     baseline = EvidenceRequest(
@@ -47,7 +47,7 @@ def test_evidence_request_id_is_stable_for_identical_semantics():
         "purpose": "severity",
         "target": "src/Service.java",
         "question": "影响范围是否跨越信任边界？",
-        "preferred_tools": ["find_callers", "get_file_content"],
+        "preferred_tools": ["inspect_change_impact", "get_file_content"],
     }
 
     first = EvidenceRequest(**semantics)
@@ -59,7 +59,7 @@ def test_evidence_request_id_is_stable_for_identical_semantics():
             "severity",
             "src/Service.java",
             "影响范围是否跨越信任边界？",
-            "find_callers",
+            "inspect_change_impact",
             "get_file_content",
         ]
     )

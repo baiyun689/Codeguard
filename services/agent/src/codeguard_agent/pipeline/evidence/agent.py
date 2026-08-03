@@ -414,7 +414,6 @@ def _has_fact_for_tool(
         "inspect_change_impact": ("inspect_change_impact",),
         "inspect_structure": ("inspect_structure",),
         "find_sensitive_apis": ("sensitive_api", "find_sensitive_apis"),
-        "find_callers": ("find_callers",),
         "get_code_metrics": ("get_code_metrics",),
     }
     if tool_name == "get_file_content":
@@ -834,7 +833,6 @@ def _production_source_limitation(
     if not fact.source.startswith(
         (
             "tool:inspect_",
-            "tool:find_callers",
             "tool:find_sensitive_apis",
         )
     ):

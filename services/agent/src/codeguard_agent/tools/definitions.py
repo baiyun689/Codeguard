@@ -64,33 +64,6 @@ def make_sensitive_apis_tool(client: ToolClient):
     )
 
 
-def make_callers_tool(client: ToolClient):
-    """构造 find_callers 工具(逻辑审查员专属)。
-
-    返回一个 LangChain StructuredTool:给定方法名,查询仓库内所有调用方。
-    入参格式:'文件路径#方法名'(如 src/main/java/OrderService.java#calculatePrice)。
-    """
-    from langchain_core.tools import StructuredTool
-
-    def _find_callers(query: str) -> str:
-        """查询指定方法在仓库内的所有直接调用方。
-
-        参数 query:格式为'文件路径#方法名'(如 src/main/java/com/example/OrderService.java#calculatePrice)。
-        当你发现一个方法的签名/返回值被修改、需要确认哪些调用方可能受影响时调用。
-        """
-        return client.find_callers(query).as_tool_output()
-
-    return StructuredTool.from_function(
-        func=_find_callers,
-        name="find_callers",
-        description=(
-            "查询指定方法在仓库内的所有直接调用方。"
-            "当你发现一个方法的签名/返回值被修改、需要确认哪些调用方可能受影响时调用。"
-            "入参格式:'文件路径#方法名'(如 src/main/java/OrderService.java#calculatePrice)。"
-        ),
-    )
-
-
 def make_metrics_tool(client: ToolClient):
     """构造 get_code_metrics 工具(质量审查员专属)。
 
