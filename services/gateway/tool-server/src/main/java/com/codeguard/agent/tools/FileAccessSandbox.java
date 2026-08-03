@@ -28,11 +28,9 @@ public final class FileAccessSandbox {
             "xml", "yml", "yaml", "properties", "toml", "json", "gradle", "mf");
 
     private final Path repoRoot;
-    private final Set<String> allowedFiles;
 
-    public FileAccessSandbox(Path repoRoot, Set<String> allowedFiles) {
+    public FileAccessSandbox(Path repoRoot) {
         this.repoRoot = repoRoot.normalize().toAbsolutePath();
-        this.allowedFiles = Set.copyOf(allowedFiles);
     }
 
     /**
@@ -47,18 +45,6 @@ public final class FileAccessSandbox {
             throw new SecurityException("路径超出仓库范围: " + relativePath);
         }
         return resolved;
-    }
-
-    /** 该相对路径是否落在本次 diff 的允许文件集合内。 */
-    public boolean isFileInScope(String relativePath) {
-        Path resolved;
-        try {
-            resolved = resolveWithinRepo(relativePath);
-        } catch (SecurityException e) {
-            return false;
-        }
-        String normalized = repoRoot.relativize(resolved).toString().replace('\\', '/');
-        return allowedFiles.contains(normalized);
     }
 
     /**

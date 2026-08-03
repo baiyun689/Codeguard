@@ -68,7 +68,7 @@ public final class ToolSessionManager {
             this.projectKey = ProjectKey.of(repoRoot, revision);
             this.snapshot = snapshotManager.getOrBuild(projectKey);
 
-            FileAccessSandbox sandbox = new FileAccessSandbox(repoRoot, allowedFiles);
+            FileAccessSandbox sandbox = new FileAccessSandbox(repoRoot);
             this.registry = new ToolRegistry();
             // 加工具 = 在这里 register 一个实现即可,无需改协议(扩展接缝 design.md D2)。
             this.registry.register(new GetFileContentTool(sandbox, snapshot));

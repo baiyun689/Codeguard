@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class GetFileContentToolTest {
 
     private GetFileContentTool toolFor(Path repoRoot, Set<String> allowed) {
-        return new GetFileContentTool(new FileAccessSandbox(repoRoot, allowed));
+        return new GetFileContentTool(new FileAccessSandbox(repoRoot));
     }
 
     private AgentContext ctx(Path repoRoot, Set<String> allowed) {
@@ -125,15 +125,4 @@ class GetFileContentToolTest {
         assertFalse(r.isSuccess());
     }
 
-    @Test
-    void sandboxScopeCheckNormalizesSeparators(@TempDir Path repo) throws IOException {
-        Path f = repo.resolve("src/App.java");
-        Files.createDirectories(f.getParent());
-        Files.writeString(f, "ok");
-
-        FileAccessSandbox sandbox = new FileAccessSandbox(repo, Set.of("src/App.java"));
-        // 反斜杠输入也应被规范化后命中白名单(跨平台)。
-        assertTrue(sandbox.isFileInScope("src\\App.java"));
-        assertFalse(sandbox.isFileInScope("src/Missing.java"));
-    }
 }

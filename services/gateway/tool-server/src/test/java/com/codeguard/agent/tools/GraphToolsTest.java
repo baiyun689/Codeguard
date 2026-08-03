@@ -57,7 +57,7 @@ class GraphToolsTest {
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "rev"));
         GetFileContentTool tool = new GetFileContentTool(
-                new FileAccessSandbox(repo, Set.of()), snapshot);
+                new FileAccessSandbox(repo), snapshot);
         AgentContext context = new AgentContext(repo, Set.of());
 
         ToolResult missing = tool.execute("GuessedController.java", context);
