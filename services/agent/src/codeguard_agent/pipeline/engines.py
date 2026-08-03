@@ -14,6 +14,7 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from time import sleep
 from typing import Any
 
 from codeguard_agent.llm.client import invoke_with_retry
@@ -93,14 +94,24 @@ class DirectEngine(ReviewEngine):
         enable_hitl: bool = False,
     ) -> ReviewOutcome:
         structured_llm = llm.with_structured_output(ReviewResult, method=structured_method)
-        result = invoke_with_retry(
-            structured_llm,
-            [("system", system_prompt), ("human", user_prompt)],
-            max_retries=max_retries,
-        )
-        # 结构化输出可能返回 None(模型没正确发起工具调用),兜底为空(沿用既有 None 防御)。
+        # 结构化输出可能返回 None(模型没正确发起工具调用):invoke_with_retry 只重试抛异常路径,
+        # None 需要单独重试(deepseek 对结构化收口偶发 None,重试有概率拿到合规输出),耗尽才兜底为空。
+        result = None
+        for attempt in range(3):
+            result = invoke_with_retry(
+                structured_llm,
+                [("system", system_prompt), ("human", user_prompt)],
+                max_retries=max_retries,
+            )
+            if result is not None:
+                break
+            if attempt < 2:
+                logger.warning(
+                    "[%s] 审查员未返回结构化结果(第 %d 次),1s 后重试", reviewer_name, attempt + 1
+                )
+                sleep(1)
         if result is None:
-            logger.warning("[%s] 审查员未返回结构化结果,本次按空处理", reviewer_name)
+            logger.warning("[%s] 审查员未返回结构化结果(重试 3 次后仍空),本次按空处理", reviewer_name)
             return ReviewOutcome(
                 ReviewResult(summary=""),
                 execution_events=["structured_output_missing"],
@@ -234,7 +245,6 @@ class ToolAgentEngine(ReviewEngine):
         from langchain.agents import create_agent
 
         from codeguard_agent.tools.definitions import (
-            make_callers_tool,
             make_change_impact_tool,
             make_file_content_tool,
             make_metrics_tool,
@@ -246,7 +256,6 @@ class ToolAgentEngine(ReviewEngine):
         # 已实现工具的工厂表。顺序即推荐用法:先专属工具发现问题,再 get_file_content 细读确认。
         available = {
             "find_sensitive_apis": lambda: make_sensitive_apis_tool(self._tool_client),
-            "find_callers": lambda: make_callers_tool(self._tool_client),
             "get_code_metrics": lambda: make_metrics_tool(self._tool_client),
             "get_file_content": lambda: make_file_content_tool(self._tool_client),
             "inspect_security_path": lambda: make_security_path_tool(self._tool_client),
