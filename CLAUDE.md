@@ -13,15 +13,17 @@ Codeguard 是一个 **AI 代码审查引擎**,以 Agent 为最终核心,双语�
 审查核心为证据驱动的 ReviewCouncil 多 Agent 编排；GitHub PR 自动审查链路由 Java Gateway 接收 webhook、调度 Python Agent，并把结果回写到 GitHub。
 
 ```
-START → diff_task_builder → risk_triage → task_rank ─┬─ summary(可选) → context_provider
-                                                      │                    │
-                                                      └─ (无摘要时直达) →──┘
-                                                                           │
-                          ┌────────────────────────────────────────────────┤
-                          ▼                        ▼                       ▼
-                 discover_threat_model    discover_behavior     discover_maintainability
-                          │                        │                       │
-                          └────────────────────────┼───────────────────────┘
+START → classify_mode ─┬─ small  → direct_review
+ (PR 规模路由)          └─ medium → file_task_builder → risk_triage → task_rank
+                        └─ large  → diff_task_builder ─┘     │
+                                                             ├─ summary(可选) → context_provider
+                                                             └─ (无摘要时直达) →──┘
+                                                                                  │
+                          ┌───────────────────────────────────────────────────────┤
+                          ▼                        ▼                              ▼
+                 discover_threat_model    discover_behavior            discover_maintainability
+                          │                        │                              │
+                          └────────────────────────┼──────────────────────────────┘
                                                    ▼
                                            council_coordinator ★
                                            (fan-in + RiskTag 解析
@@ -44,14 +46,14 @@ START → diff_task_builder → risk_triage → task_rank ─┬─ summary(可�
                                                   END
 ```
 
-管线入口由 `diff_task_builder` 将 diff 拆为审查任务，经 `risk_triage` 标定每项任务的风险标签，由 `task_rank` 排序限流后，可选经 `summary` 产出变更摘要作为背景。`context_provider` 通过 `get_diff_ast` 等工具为后续所有 Agent 预取共享上下文（类层次/方法签名+可见性+注解/控制流/调用边/敏感 API），减少各发现者冗余的工具调用。
+管线入口 `classify_mode` 按 PR 体量做纯确定性路由（只统计文件数/hunk 数/字符数，不调 LLM、不建任务）：small（≤3 文件、≤5 hunk、≤8000 字符）走 `direct_review` 单次 LLM 直接审查完整 diff；medium（≤15 文件、≤60000 字符）走 `file_task_builder` 按文件拆分；large 走 `diff_task_builder` 按 hunk 拆分 + 预算控制。后两者经 `risk_triage` 标定每项任务的风险标签，由 `task_rank` 排序限流后，可选经 `summary` 产出变更摘要作为背景。`context_provider` 通过 `get_diff_ast` 等工具为后续所有 Agent 预取共享上下文（类层次/方法签名+可见性+注解/控制流/调用边/敏感 API），减少各发现者冗余的工具调用。
 
-三个发现者 Agent（ThreatModel / Behavior / Maintainability）并行运行，各自配备专属工具（`find_sensitive_apis` / `find_callers` / `get_code_metrics`）+ 共享 `get_file_content`，走 ReAct 引擎。每个 Agent 的 prompt 含 ~100 行领域知识图谱（漏洞分类/缺陷模式/判例/共享上下文契约），三个合计 ~300 行——拆分是为分摊上下文压力，重叠是多角度验证。
+三个发现者 Agent（ThreatModel / Behavior / Maintainability）并行运行，各自配备专属语义图工具 + 共享 `get_file_content`，走 ReAct 引擎：威胁建模用 `inspect_security_path`、行为审查用 `inspect_change_impact`、可维护性用 `inspect_structure`（旧协议名 `find_sensitive_apis` / `get_code_metrics` / `get_diff_ast` 由 gateway 的 GraphCompatibilityTool 兼容）。每个 Agent 的 prompt = 45 行 base 领域知识 + 按 RiskTag 注入的知识文件（`prompts/knowledge/`，37 个），拆分是为分摊上下文压力，重叠是多角度验证。
 
 三路输出在 `council_coordinator` 处 fan-in：解析 RiskTag → 按文件路径和局部位置构建连通候选块 → 最多 8 个并行 LLM 调用做保守语义归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会去重；非法、低置信或失败结果一律完整保留。去重后经 `evidence_planner` 为每个候选按 RiskTag 匹配取证策略（counter + support + severity），`evidence_agent` 调 Java 工具获取原始事实并调 LLM 分析证据含义（SUPPORTS/CONTRADICTS/INSUFFICIENT），最后由 `council_judge` 做三阶段裁决：证据门控（3 条确定性规则，零 LLM 成本淘汰）→ LLM 语义综合 → 严重度策略定级。
 
-旧 supervisor 调度图及 SelfChecker/FP/聚合 stages 已迁移到
-`services/agent/legacy/`，不再随 Python wheel 打包，也不参与默认 pytest。
+旧 supervisor 调度图及 SelfChecker/FP/聚合 stages 的归档目录
+`services/agent/legacy/` 已于 2026-08 删除（git 历史可回溯），不再随 Python wheel 打包。
 
 ---
 
@@ -83,7 +85,8 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 ```
 管线(无工具):git diff → [摘要] → 并行三审查员(直连) → 两段式聚合 → 误报过滤 → 打印
 管线(有工具):配置 CODEGUARD_TOOL_SERVER_URL 后,审查员改走 ReAct,
-              可调 Java 工具(get_file_content / find_sensitive_apis 等)获取 diff 之外上下文
+              可调 Java 工具(get_file_content / inspect_security_path / inspect_change_impact / inspect_structure)
+              获取 diff 之外上下文
 
 LLM 调用路径:Python → LLM Proxy(:9091) → 按 model 路由 → DeepSeek/Claude/千问
               (或直连:Python → CODEGUARD_API_BASE_URL → LLM 提供商)
@@ -91,10 +94,10 @@ LLM 调用路径:Python → LLM Proxy(:9091) → 按 model 路由 → DeepSeek/C
 
 当前审查核心是 ReviewCouncil 多 Agent 编排：
 
-- **发现者 Agent ×3（并行）**:ThreatModelAgent（安全）/ BehaviorAgent（行为逻辑）/ MaintainabilityAgent（维护质量）。每个 Agent 配备专属工具 + 共享 `get_file_content`，走 ReAct 引擎。每个 prompt ~220 行领域知识图谱（漏洞分类/缺陷模式/判例/判定要点），三个合计 ~690 行——拆分是为分摊上下文压力。重叠不叫重复，叫多角度验证。
+- **发现者 Agent ×3（并行）**:ThreatModelAgent（安全）/ BehaviorAgent（行为逻辑）/ MaintainabilityAgent（维护质量）。每个 Agent 配备专属语义图工具（`inspect_security_path` / `inspect_change_impact` / `inspect_structure`）+ 共享 `get_file_content`，走 ReAct 引擎。prompt = 45 行 base + 按 RiskTag 注入的 `prompts/knowledge/` 知识文件——拆分是为分摊上下文压力。重叠不叫重复，叫多角度验证。
 - **CouncilCoordinator（确定性路由）**:读结构化字段做路由决策，不调 LLM。
 - **EvidenceAgent（智能举证）**:调 Java 工具获取原始事实 → 对每条工具输出调 LLM 分析证据含义，产出结构化 SUPPORTS/CONTRADICTS/INSUFFICIENT 判定 + 推理依据。contradicts 字段已激活。LLM 不可用时回退 raw output 模式。
-- **CouncilJudge（证据驱动裁决）**:4 条确定性规则（invalid_file / strong_support fast-track / contradicted / no_evidence）→ 两段式去重（指纹+LLM 语义综合）→ 安全网（根因标识符匹配优先、行号±3 兜底）→ LLM 终审（基于结构化证据摘要做 keep/drop/downgrade/merge，异源千问 temperature=0）。
+- **CouncilJudge（证据驱动裁决）**:3 条确定性证据门控（direct_counter_evidence 直接反证排除 / evidence_insufficient 无证据 / no_supporting_evidence 无支持证据，零 LLM 成本淘汰）→ 两段式去重（指纹+LLM 语义综合）→ 安全网（根因标识符匹配优先、行号±3 兜底）→ LLM 终审（基于结构化证据摘要做 keep/drop/downgrade/merge，异源千问 temperature=0）。
 
 ### CI 集成
 
@@ -163,23 +166,24 @@ Codeguard/
     │   │   ├── __main__.py        # python -m codeguard_agent 入口
     │   │   ├── cli.py             # 命令行:review 子命令、结果打印、退出码、工具会话建/销
     │   │   ├── config.py          # Settings:从环境变量/.env 读配置(含 CODEGUARD_TOOL_SERVER_URL)
-    │   │   ├── models/schemas.py  # ★核心数据结构:Severity / Issue / ReviewResult
+    │   │   ├── models/            # ★数据结构:schemas.py(Issue/Severity/ReviewResult)
+    │   │   │   └──               #   tasks.py(任务/PR 规模路由阈值) council.py knowledge.py
     │   │   ├── git/diff_collector.py  # 调系统 git 采集 diff + parse_changed_files(派生 allowed_files)
     │   │   ├── llm/client.py      # LLM 工厂(openai/claude/mock)+ 重试 + mock 假数据
-    │   │   ├── pipeline/graph.py          # ★ReviewCouncil 状态图、节点与条件边
+    │   │   ├── observability/     # HTML Trace:审查过程视图/统计(collector/dashboard/view_model)
+    │   │   ├── pipeline/graph.py          # ★ReviewCouncil 状态图、节点与条件边(含 classify_mode 规模路由)
     │   │   ├── pipeline/orchestrator.py   # PipelineOrchestrator 门面
     │   │   ├── pipeline/engines.py        # DirectEngine / ToolAgentEngine
-    │   │   ├── pipeline/risk/             # 任务、风险规则、路由与排序
+    │   │   ├── pipeline/risk/             # 任务、风险规则、路由与排序(classify_diff/diff_metrics)
     │   │   ├── pipeline/context/          # 图谱符号上下文与事实预算
     │   │   ├── pipeline/reviewers/        # 三路发现者与工具协调
     │   │   ├── pipeline/evidence/         # 证据策略、规划与执行
-    │   │   ├── pipeline/council/          # 候选归并、裁决与指标
+    │   │   ├── pipeline/council/          # 候选归并、裁决与指标(judge/dedup/severity)
+    │   │   ├── pipeline/knowledge/        # RiskTag 知识目录与选择器
     │   │   ├── pipeline/summary/          # 可选变更摘要阶段
-    │   │   ├── models/council.py          # 内部 ReviewCouncil 模型
-    │   │   └── prompts/                   # 发现、证据、裁决、摘要与 RiskTag 知识
-    │   ├── legacy/                # Supervisor 与旧 stages/prompts/tests 历史归档
+    │   │   └── prompts/                   # 发现、证据、裁决、摘要 prompt + knowledge/(按 RiskTag 注入)
     │   ├── tests/                 # pytest:测工程正确性
-    │   └── evals/                 # ★审查质量评测框架(量化效果,见 §5)
+    │   └── evals/                 # ★审查质量评测框架(量化效果,见 §5;profiles.yaml 定义被测档位)
     └── gateway/                   # ★Java Gateway——四模块 Maven 多模块项目
         ├── pom.xml               # 父 POM(管理 shared/tool-server/ci-webhook/llm-proxy 四个子模块)
         ├── start-ci.ps1          # ★本地一键启动 CI Gateway 脚本
@@ -211,10 +215,6 @@ Codeguard/
         │       ├── model/        #   OpenAiChatRequest / OpenAiChatResponse(Jackson record)
         │       ├── config/       #   ProxyConfig(YAML 加载+环境变量替换)
         │       └── resilience/   #   ResilienceService(限流→熔断 per-provider→重试 指数退避+jitter)
-        └── legacy/               # 历史源码归档(.java.legacy),不参与构建/项目图
-            ├── pre-modular-gateway/
-            ├── pre-codegraph-tool-server/
-            └── repomap/
 ```
 
 带 ★ 的是改动时最需要小心的核心文件。
@@ -226,14 +226,14 @@ Codeguard/
 一次 `python -m codeguard_agent review` 的完整链路:
 
 1. **`cli.py:main`** 解析参数(`--repo` / `--base`),构造 `Settings.from_env()`。
-2. **`config.py:Settings.from_env`** 就近加载 `.env`(已显式设置的环境变量优先),读出 provider / model / api_key / structured_method 等。
+2. **`config.py:Settings.from_env`** 就近加载 `.env`(已显式设置的环境变量优先),读出 provider / model / api_key / structured_method / tool_server_url 等。
 3. **`git/diff_collector.py:collect_diff`** 调系统 `git diff <base>` 拿 unified diff 文本;空 diff 直接结束。
-4. **`llm/client.py:build_llm`** 按 provider 造 LangChain Chat 模型;`provider=mock` 返回 `None`。
-5. **`pipeline/reviewer.py:review`** 是核心:
-   - 空 diff → 直接返回"无需审查"。
-   - `llm is None`(mock)→ 返回 `mock_review_result()` 假数据。
-   - 否则加载 `prompts/security.txt`,用 `with_structured_output(ReviewResult)` 让模型直接吐结构化结果,经 `invoke_with_retry` 调用。
-   - **结果可能为 `None`**(模型没正确发起工具调用时),已兜底成空 `ReviewResult`。
+4. **`llm/client.py:build_llm`** 按 provider 造 LangChain Chat 模型;`provider=mock` 返回 `None`(下游走假数据)。
+5. **`pipeline/graph.py` 的 ReviewCouncil 状态图**是核心:
+   - `classify_mode` 按 diff 体量路由(small→`direct_review` 单次直审 / medium→`file_task_builder` 按文件 / large→`diff_task_builder` 按 hunk)。
+   - medium/large 走完整管线:`risk_triage` 标风险标签 → `task_rank` 排序限流 → 可选 `summary` → `context_provider` 预取符号上下文 → 三路发现者并行(ReAct)→ `council_coordinator` 归并 → `evidence_planner`/`evidence_agent` 取证 → `council_judge` 裁决出 `Issue`。
+   - `llm is None`(mock)→ 各阶段返回 mock 假数据(如 `direct_review` 返回 `mock_review_result()`)。
+   - 工具服务不可用时显式降级(ReAct 退直连 / 空证据不炸管线)。
 6. **`cli.py:_print_result`** 打印;**退出码**:发现任一 `CRITICAL` 返回 1,否则 0(方便接 CI 门禁)。
 
 核心数据单元是 `models/schemas.py` 里的 **`Issue`**:`severity / file / line / type / message / suggestion / confidence`。前五个必需(定位 + 是什么),后两个可选。整个项目所有阶段都围绕它流转——**改它的字段要极其谨慎**(见 ADR-001)。
@@ -254,8 +254,9 @@ conda run -n codeguard python -m pytest tests/ -q          # 全部单测(工程
 conda run -n codeguard python -m pytest tests/test_xxx.py::test_name   # 跑单个测试
 conda run -n codeguard ruff check src/                     # lint
 conda run -n codeguard mypy src/                           # 类型检查
-conda run -n codeguard python -m evals.runner --mode pipeline --judge --runs 3   # 评测
-conda run -n codeguard python -m evals.runner --profile pipeline-file --runs 1   # 按 profile 评测(见 evals/profiles.yaml)
+conda run -n codeguard python -m evals.runner --profile eval-codeguard-full --runs 1   # 按 profile 评测(见 evals/profiles.yaml)
+conda run -n codeguard python -m evals.runner --tools --runs 1   # 或 --tools 合成 ad-hoc 档(管线 + 工具开/关)
+conda run -n codeguard python -m evals.runner --judge --runs 3   # 开 LLM 裁判做案例级语义配对
 
 # —— Java Gateway(services/gateway 工具服务)——
 mvn package                # 跑单测 + 出 fat jar
@@ -264,7 +265,7 @@ java -jar target/codeguard-gateway.jar    # 启动工具服务(默认 9090,CODEG
 
 # —— 真实 ReAct 审查(工具开档:先起 Java 工具服务,再设 URL)——
 $env:CODEGUARD_TOOL_SERVER_URL="http://localhost:9090"
-conda run -n codeguard python -m codeguard_agent review --repo <repo> --mode pipeline
+conda run -n codeguard python -m codeguard_agent review --repo <repo> --trace
 ```
 
 ### CI 模式（GitHub PR 自动审查）
@@ -343,7 +344,7 @@ python -m evals.runner --runs 3 --judge  # 额外开 LLM-as-judge
 
 ### 6.2 无工具对照基准
 
-原 `--mode single` 的无 Agent 基线(`pipeline/reviewer.py`)已完成"有工具 vs 无工具"对比使命后移除(ADR-002 废弃说明)。当前的对照基准是**管线内的无工具直连引擎**(`DirectEngine`):用 `pipeline-notools` profile 跑出的指标即"管线但不开工具"的基线,与 `pipeline-file` / `pipeline-repomap` 对照量化各工具的增益。加新能力时仍按"同一数据集、只改一个变量(profile)"的方式做对照。
+原 `--mode single` 的无 Agent 基线(`pipeline/reviewer.py`)已完成"有工具 vs 无工具"对比使命后移除(ADR-002 废弃说明)。当前的对照基准是**管线内的无工具直连引擎**(`DirectEngine`):`pipeline-notools` profile 跑出的指标即"管线但不开工具"的基线,与 `pipeline-file`(仅文件工具) / `pipeline-codegraph`(语义图工具) / `pipeline-fpverify`(误报复核) 对照量化各能力的增益;面试版消融档在 `eval-*` 四个 profile(见 evals/profiles.yaml)。加新能力时仍按"同一数据集、只改一个变量(profile)"的方式做对照。
 
 ### 6.3 改核心数据结构要慎重
 

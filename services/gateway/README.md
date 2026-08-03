@@ -23,7 +23,7 @@ GitHub and operations:
 
 - `POST /webhooks/github` verifies and accepts supported `pull_request` events.
 - `GET /health` and `GET /health/live` report process liveness.
-- `GET /health/ready` reports H2, scheduler, and Python readiness.
+- `GET /health/ready` reports MySQL (connection ping), scheduler, and Python readiness.
 - `GET /metrics` exposes Prometheus metrics.
 
 Agent tool sessions:
@@ -34,10 +34,10 @@ Agent tool sessions:
 
 The default tool registry includes guarded file content, project-symbol
 resolution, and role-specific semantic graph queries. The legacy
-`find_sensitive_apis`, `find_callers`, `get_code_metrics`, and `get_diff_ast`
-protocol names are served by `GraphCompatibilityTool` over the same
-`ProjectSnapshot`; the old repository scanners are archived under `legacy/`
-and are not compiled. Repository paths are constrained by the session
+`find_sensitive_apis`, `get_code_metrics`, and `get_diff_ast` protocol names
+are served by `GraphCompatibilityTool` over the same `ProjectSnapshot`; the
+old repository scanners were archived under `legacy/` and removed in 2026-08
+(git history preserves them). Repository paths are constrained by the session
 sandbox.
 
 ## Local Development
@@ -78,10 +78,10 @@ Without `CODEGUARD_WEBHOOK_SECRET`, the Gateway starts its tool and operational 
 
 ## Runtime Notes
 
-- The Gateway is single-instance. Do not run multiple replicas against the same H2 database or workspace volumes.
+- The Gateway is single-instance. Do not run multiple replicas against the same MySQL database or workspace volumes.
 - `CODEGUARD_CI_PORT` defaults to `8080`; Compose publishes this port through `CODEGUARD_HOST_PORT`.
 - `CODEGUARD_TOOL_SERVER_PORT` defaults to `9090` for direct JAR execution.
 - `CODEGUARD_LLM_PROXY_PORT` defaults to `9091`.
-- `CODEGUARD_JOB_DB_PATH` defaults to `./data/codeguard-jobs`.
+- `CODEGUARD_JOB_DB_URL` defaults to `jdbc:mysql://localhost:3306/codeguard` (with `CODEGUARD_JOB_DB_USER` / `CODEGUARD_JOB_DB_PASSWORD`); the H2 file mode is used by tests only.
 - `CODEGUARD_WORKSPACE_DIR` defaults to a directory under the system temporary directory.
 - On shutdown, the HTTP server stops accepting webhooks before the scheduler drains active work.

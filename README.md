@@ -2,7 +2,7 @@
 
 简体中文 | [English](README.en.md)
 
-基于风险感知多 Agent 分析的 AI Pull Request 审查系统。
+基于多 Agent 分析的 AI Pull Request 审查系统。
 
 Codeguard 接收 GitHub Pull Request 事件，由 Python 审查委员会分析本次代码变更，再通过 GitHub Check Run 和 PR 评论输出结构化问题。Java Gateway 拆分为三个独立服务：LLM 代理网关（多提供商路由 + 熔断/限流/重试）、Agent 工具服务（文件沙箱 + AST 分析）和 CI Webhook 链路（验签 + 幂等调度 + Check Runs 回写）。
 
@@ -17,7 +17,7 @@ Codeguard 接收 GitHub Pull Request 事件，由 Python 审查委员会分析�
 - 在最终裁决前规划并收集支持证据、反证和严重性证据。
 - 通过 GitHub Check Run、Diff Annotation 和高置信度严重问题评论反馈结果。
 - 校验 Webhook 签名，并按仓库、PR 和 Commit SHA 对任务去重。
-- 使用 H2 持久化任务，进程重启后可恢复未完成任务。
+- 使用 MySQL 持久化任务，进程重启后可恢复未完成任务（测试用 H2 的 MySQL 兼容模式）。
 - 提供存活、就绪和 Prometheus 指标端点。
 - 通过 Docker Compose 在同一容器中运行 Python Agent 与 Java Gateway。
 
@@ -40,7 +40,8 @@ GitHub pull_request Webhook
         |
         v
 Python Agent
-  Diff 任务 -> 风险路由 -> 专业审查 -> 证据收集 -> 委员会裁决
+  PR 规模路由(small/medium/large) -> Diff 任务 -> 风险路由 -> 专业审查
+  -> 证据收集 -> 委员会裁决
   LLM 调用经 LLM Proxy 或直连提供商
         |
         v
@@ -283,11 +284,11 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 Compose 会设置打包部署所需的容器内部路径和端口，并在未显式设置时将
 `CODEGUARD_API_BASE_URL` 指向容器内的 LLM Proxy。除非维护自定义部署，否则不要修改
 `CODEGUARD_CI_PORT`、`CODEGUARD_TOOL_SERVER_PORT`、`CODEGUARD_TOOL_SERVER_URL`、
-`CODEGUARD_LLM_PROXY_PORT`、`CODEGUARD_JOB_DB_PATH` 或 `CODEGUARD_WORKSPACE_DIR`。
+`CODEGUARD_LLM_PROXY_PORT`、`CODEGUARD_JOB_DB_URL` 或 `CODEGUARD_WORKSPACE_DIR`。
 
 ## 运维与可观测性
 
-Codeguard 当前只支持单 Gateway 实例。H2 持久化和调度器可以在该实例内恢复任务，但尚未实现多实例选主、分布式锁或共享工作区协调。不要将 Compose 服务扩容到一个以上副本。
+Codeguard 当前只支持单 Gateway 实例。MySQL 持久化和调度器可以在该实例内恢复任务，但尚未实现多实例选主、分布式锁或共享工作区协调。不要将 Compose 服务扩容到一个以上副本。
 
 Java Gateway 三个服务各监听独立端口：
 
@@ -303,10 +304,10 @@ Java Gateway 三个服务各监听独立端口：
 |---|---|
 | `GET /health` | 兼容健康检查端点，报告进程存活状态 |
 | `GET /health/live` | 存活探针 |
-| `GET /health/ready` | CI 服务：检查 H2、调度器和 Python 初始化状态；不可用时返回 `503` |
+| `GET /health/ready` | CI 服务：检查 MySQL（连接 ping）、调度器和 Python 初始化状态；不可用时返回 `503` |
 | `GET /metrics` | Prometheus 文本格式指标（CI、Tool Server 和 LLM Proxy 均提供） |
 
-Compose 将 H2 数据库持久化到 `gateway-data`，将按 SHA 隔离的临时审查工作区保存到 `job-workspaces`。使用 `docker compose down` 停止服务；只有在明确需要删除持久化任务状态和工作区时才添加 `--volumes`。
+Compose 将 MySQL 任务数据持久化到 `mysql-data` 卷（独立 MySQL 容器），将按 SHA 隔离的临时审查工作区保存到 `job-workspaces`。使用 `docker compose down` 停止服务；只有在明确需要删除持久化任务状态和工作区时才添加 `--volumes`。
 
 镜像发布规则：
 
@@ -341,7 +342,7 @@ mvn --batch-mode verify     # 构建全部四个子模块：shared、tool-server
 docker build -t codeguard:local .
 ```
 
-真实质量评测使用 60 个精确 revision 的 Java 仓库案例，对照“单模型 diff、Council、Council + 代码图谱、完整举证”四档，并支持 DeepSeek 自动暂定评分和双人人工盲审终评。执行方法见 [`services/agent/evals/INTERVIEW_EVAL.md`](services/agent/evals/INTERVIEW_EVAL.md)。
+真实质量评测使用 20 个真实 Java 仓库、115 个植入缺陷（含 Vul4J 真实 CVE 漏洞），按 profile 对照「单模型只看 diff（direct）vs 完整 ReviewCouncil + 代码图谱（full）」：Recall 86.1% → 93.0%，需跨文件上下文确认的缺陷从 0/8 提升到 7/8。评测框架、profile 定义与报告见 [`services/agent/evals/README.md`](services/agent/evals/README.md)。
 
 ## 参与贡献
 
