@@ -6,7 +6,6 @@ import com.codeguard.agent.graph.ProjectKey;
 import com.codeguard.agent.graph.ProjectSnapshot;
 import com.codeguard.agent.graph.ProjectSnapshotManager;
 import com.codeguard.agent.tools.FileAccessSandbox;
-import com.codeguard.agent.tools.GraphCompatibilityTool;
 import com.codeguard.agent.tools.GetFileContentTool;
 import com.codeguard.agent.tools.InspectChangeImpactTool;
 import com.codeguard.agent.tools.InspectSecurityPathTool;
@@ -76,10 +75,6 @@ public final class ToolSessionManager {
             this.registry.register(new InspectSecurityPathTool(snapshot));
             this.registry.register(new InspectChangeImpactTool(snapshot));
             this.registry.register(new InspectStructureTool(snapshot));
-            for (String legacy : Set.of(
-                    "find_sensitive_apis", "get_code_metrics", "get_diff_ast")) {
-                this.registry.register(new GraphCompatibilityTool(legacy, snapshot));
-            }
         }
 
         public String getId() {

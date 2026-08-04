@@ -110,10 +110,6 @@ class _ToolClient:
         self.calls.append(("get_file_content", file_path))
         return ToolResponse(success=True, result=self.file_content)
 
-    def find_sensitive_apis(self) -> ToolResponse:
-        self.calls.append(("find_sensitive_apis", {}))
-        return ToolResponse(success=True, result="")
-
     def inspect_security_path(self, symbol_id: str) -> ToolResponse:
         self.calls.append(("inspect_security_path", symbol_id))
         return ToolResponse(
@@ -262,36 +258,6 @@ def test_unique_tool_calls_run_concurrently_and_notes_keep_request_order():
     assert sum(name == "inspect_security_path" for name, _ in client.calls) == 3
 
 
-def test_context_fact_reuse_skips_matching_sensitive_api_tool():
-    task = ReviewTask(
-        id="src/Service.java#h0",
-        file="src/Service.java",
-        hunk_header="@@ -9,3 +9,3 @@",
-        patch="+public void update() { save(); }",
-        changed_lines=[10],
-    )
-    context = TaskContextBundle(
-        task_id=task.id,
-        facts=[
-            ContextFact(
-                source="tool:find_sensitive_apis",
-                kind="sensitive_api",
-                content="| sink | call | src/Service.java:10 |",
-            )
-        ],
-    )
-    dossier = _dossier(task=task, context=context)
-    client = _ToolClient()
-
-    batch = _collect([dossier], [_request(dossier)], client=client)
-
-    assert ("find_sensitive_apis", {}) not in client.calls
-    assert any(
-        finding.source == "context:sensitive_api"
-        for finding in batch.notes[0].findings
-    )
-
-
 def test_all_request_strategy_fields_are_validated_before_tools():
     dossier = _dossier()
     request = _request(dossier)
@@ -376,9 +342,17 @@ def test_truncated_context_can_only_be_insufficient():
         truncated=True,
         facts=[
             ContextFact(
-                source="tool:find_sensitive_apis",
-                kind="sensitive_api",
-                content="| sink | call | src/Service.java:10 |",
+                source="tool:inspect_security_path",
+                kind="symbol_context",
+                content=json.dumps(
+                    {
+                        "file": task.file,
+                        "symbol_id": "java:src/Service.java#update()",
+                        "start_line": 1,
+                        "end_line": 999,
+                        "resolution": "resolved",
+                    }
+                ),
             )
         ],
     )
@@ -389,7 +363,7 @@ def test_truncated_context_can_only_be_insufficient():
     contextual = next(
         finding
         for finding in batch.notes[0].findings
-        if finding.source == "context:sensitive_api"
+        if finding.source == "context:symbol_context"
     )
     assert contextual.relation == "insufficient"
     assert contextual.strength == "contextual"

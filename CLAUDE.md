@@ -46,9 +46,9 @@ START → classify_mode ─┬─ small  → direct_review
                                                   END
 ```
 
-管线入口 `classify_mode` 按 PR 体量做纯确定性路由（只统计文件数/hunk 数/字符数，不调 LLM、不建任务）：small（≤3 文件、≤5 hunk、≤8000 字符）走 `direct_review` 单次 LLM 直接审查完整 diff；medium（≤15 文件、≤60000 字符）走 `file_task_builder` 按文件拆分；large 走 `diff_task_builder` 按 hunk 拆分 + 预算控制。后两者经 `risk_triage` 标定每项任务的风险标签，由 `task_rank` 排序限流后，可选经 `summary` 产出变更摘要作为背景。`context_provider` 通过 `get_diff_ast` 等工具为后续所有 Agent 预取共享上下文（类层次/方法签名+可见性+注解/控制流/调用边/敏感 API），减少各发现者冗余的工具调用。
+管线入口 `classify_mode` 按 PR 体量做纯确定性路由（只统计文件数/hunk 数/字符数，不调 LLM、不建任务）：small（≤3 文件、≤5 hunk、≤8000 字符）走 `direct_review` 单次 LLM 直接审查完整 diff；medium（≤15 文件、≤60000 字符）走 `file_task_builder` 按文件拆分；large 走 `diff_task_builder` 按 hunk 拆分 + 预算控制。后两者经 `risk_triage` 标定每项任务的风险标签，由 `task_rank` 排序限流后，可选经 `summary` 产出变更摘要作为背景。`context_provider` 通过 `resolve_change_context` 为后续所有 Agent 预取共享上下文（类层次/方法签名+可见性+注解/控制流/调用边/敏感 API），减少各发现者冗余的工具调用。
 
-三个发现者 Agent（ThreatModel / Behavior / Maintainability）并行运行，各自配备专属语义图工具 + 共享 `get_file_content`，走 ReAct 引擎：威胁建模用 `inspect_security_path`、行为审查用 `inspect_change_impact`、可维护性用 `inspect_structure`（旧协议名 `find_sensitive_apis` / `get_code_metrics` / `get_diff_ast` 由 gateway 的 GraphCompatibilityTool 兼容）。每个 Agent 的 prompt = 45 行 base 领域知识 + 按 RiskTag 注入的知识文件（`prompts/knowledge/`，37 个），拆分是为分摊上下文压力，重叠是多角度验证。
+三个发现者 Agent（ThreatModel / Behavior / Maintainability）并行运行，各自配备专属语义图工具 + 共享 `get_file_content`，走 ReAct 引擎：威胁建模用 `inspect_security_path`、行为审查用 `inspect_change_impact`、可维护性用 `inspect_structure`。每个 Agent 的 prompt = 45 行 base 领域知识 + 按 RiskTag 注入的知识文件（`prompts/knowledge/`，37 个），拆分是为分摊上下文压力，重叠是多角度验证。
 
 三路输出在 `council_coordinator` 处 fan-in：解析 RiskTag → 按文件路径和局部位置构建连通候选块 → 最多 8 个并行 LLM 调用做保守语义归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会去重；非法、低置信或失败结果一律完整保留。去重后经 `evidence_planner` 为每个候选按 RiskTag 匹配取证策略（counter + support + severity），`evidence_agent` 调 Java 工具获取原始事实并调 LLM 分析证据含义（SUPPORTS/CONTRADICTS/INSUFFICIENT），最后由 `council_judge` 做三阶段裁决：证据门控（3 条确定性规则，零 LLM 成本淘汰）→ LLM 语义综合 → 严重度策略定级。
 
@@ -195,7 +195,7 @@ Codeguard/
         │       └── agent/
         │           ├── core/     #   AgentTool 接口 / ToolResult 信封 / AgentContext
         │           ├── graph/    # ★ ProjectSnapshot / ProjectCodeGraph / JavaParser 符号解析
-        │           └── tools/    #   沙箱、语义图工具与 GraphCompatibilityTool
+        │           └── tools/    #   沙箱与语义图工具
         ├── ci-webhook/           # GitHub PR 自动审查链路(:8080)
         │   └── src/.../
         │       ├── Main.java     # ★ 统一入口(同时启动三个服务)

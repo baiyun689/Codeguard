@@ -208,12 +208,8 @@ def _build_claim_strategies() -> "tuple[EvidenceStrategy, ...]":
             purpose = _POLARITY_PURPOSE[polarity]
             strategy_id = f"claim.{fact_type.value}.{polarity.value}"
             context_kinds = ["task_patch", "symbol_context"]
-            if EvidenceCapability.SECURITY_PATH in capabilities:
-                context_kinds.append("sensitive_api")
             if EvidenceCapability.UPSTREAM_REACHABILITY in capabilities:
                 context_kinds.append("ast_structure")
-            if EvidenceCapability.STRUCTURAL_METRICS in capabilities:
-                context_kinds.append("get_code_metrics")
             strategies.append(
                 EvidenceStrategy(
                     id=strategy_id,

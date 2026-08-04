@@ -71,18 +71,6 @@ class ToolClient:
     def get_file_content(self, file_path: str) -> ToolResponse:
         return self._post_tool("get_file_content", {"file_path": file_path})
 
-    def find_sensitive_apis(self) -> ToolResponse:
-        """扫描 diff 文件中的危险 API 调用(安全审查员专属,无入参)。"""
-        return self._post_tool("find_sensitive_apis", {})
-
-    def get_diff_ast(self, diff_text: str) -> ToolResponse:
-        """获取 diff 涉及文件的 AST 结构信息（context_provider 专属）。"""
-        return self._post_tool("get_diff_ast", {"query": diff_text})
-
-    def get_code_metrics(self, file_path: str) -> ToolResponse:
-        """计算指定文件的代码度量(质量审查员专属)。"""
-        return self._post_tool("get_code_metrics", {"file_path": file_path})
-
     def resolve_change_context(self, changes: list[dict]) -> ToolResponse:
         """批量把变更文件/行解析为稳定图谱符号。"""
         return self._post_tool(

@@ -762,28 +762,6 @@ class _MockToolClient:
         self.calls.append(("get_file_content", {"file_path": file_path}))
         return _MockToolResponse(True, result=f"content of {file_path}")
 
-    def find_sensitive_apis(self) -> _MockToolResponse:
-        self.calls.append(("find_sensitive_apis", {}))
-        return _MockToolResponse(
-            True,
-            result="| 🔴 HIGH | `Statement.execute` | A.java:12 | `sql` |",
-        )
-
-    def get_diff_ast(self, diff_text: str = "") -> _MockToolResponse:
-        self.calls.append(("get_diff_ast", {"query": diff_text}))
-        return _MockToolResponse(
-            True,
-            result=(
-                "AST for: A.java\n"
-                "  class: A\n"
-                "    public void save(Order order) [L12-L18]\n"
-            ),
-        )
-
-    def get_code_metrics(self, file_path: str = "") -> _MockToolResponse:
-        self.calls.append(("get_code_metrics", {"file_path": file_path}))
-        return _MockToolResponse(True, result=f"CC=12 LOC=200 for {file_path}")
-
     def resolve_change_context(self, changes) -> _MockToolResponse:
         self.calls.append(("resolve_change_context", {"changes": changes}))
         contexts = [
@@ -1266,7 +1244,6 @@ def test_context_provider_node_fills_symbol_context_per_task():
     assert {fact.source for fact in bundle.facts} == {
         "tool:resolve_change_context",
     }
-    assert not any(name == "get_code_metrics" for name, _ in tool_client.calls)
     assert any(
         trace.event == "task_bundle_filled" and f"task={task.id}" in trace.detail
         for trace in out["council_trace"]
@@ -1310,7 +1287,6 @@ def test_context_provider_node_records_skip_when_method_unresolved():
         }
     )
 
-    assert not any(call[0] == "get_code_metrics" for call in tool_client.calls)
     statuses = out["task_context_bundles"][task.id].statuses
     assert any(
         status.kind == "symbol_context"
@@ -1342,8 +1318,6 @@ def test_context_provider_node_general_review_gets_no_level1_call():
             "review_budget": G.ReviewBudget(),
         }
     )
-
-    assert not any(call[0] in ("get_code_metrics",) for call in tool_client.calls)
 
 
 def test_context_provider_node_does_not_store_failed_graph_response_as_fact():

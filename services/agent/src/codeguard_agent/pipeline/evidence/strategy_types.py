@@ -17,8 +17,6 @@ if TYPE_CHECKING:
 
 ToolName = Literal[
     "get_file_content",
-    "find_sensitive_apis",
-    "get_code_metrics",
     "inspect_security_path",
     "inspect_change_impact",
     "inspect_structure",

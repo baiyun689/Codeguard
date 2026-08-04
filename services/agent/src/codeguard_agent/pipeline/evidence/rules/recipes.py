@@ -40,7 +40,7 @@ def file_sensitive(dossier: "CandidateDossier") -> list[ToolCallSpec]:
 
 
 def file_metrics(dossier: "CandidateDossier") -> list[ToolCallSpec]:
-    """收集文件内容，仅对 .java 文件额外调用 get_code_metrics。"""
+    """收集文件内容，仅对 .java 文件额外调用 inspect_structure。"""
     calls = [*file_only(dossier)]
     if dossier.task.file.endswith(".java"):
         symbol = _symbol_id(dossier)

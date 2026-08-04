@@ -13,7 +13,6 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, field_validator
 
-from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.council import (
     EvidenceFactType,
     EvidenceFinding,
@@ -413,8 +412,6 @@ def _has_fact_for_tool(
         "inspect_security_path": ("inspect_security_path",),
         "inspect_change_impact": ("inspect_change_impact",),
         "inspect_structure": ("inspect_structure",),
-        "find_sensitive_apis": ("sensitive_api", "find_sensitive_apis"),
-        "get_code_metrics": ("get_code_metrics",),
     }
     if tool_name == "get_file_content":
         if (
@@ -830,12 +827,7 @@ def _production_source_limitation(
         return ""
     if request.fact_type not in _PRODUCTION_GRAPH_FACT_TYPES:
         return ""
-    if not fact.source.startswith(
-        (
-            "tool:inspect_",
-            "tool:find_sensitive_apis",
-        )
-    ):
+    if not fact.source.startswith("tool:inspect_"):
         return ""
     try:
         payload = json.loads(fact.raw)
@@ -1260,13 +1252,6 @@ def collect_evidence(
                 )
             scoped_raw = raw
             scoped_limitation = limitation
-            if call.tool_name == "find_sensitive_apis" and raw:
-                rows = context_rules.sensitive_api_rows_for_task(raw, dossier.task)
-                if rows:
-                    scoped_raw = "\n".join(rows)
-                else:
-                    scoped_raw = ""
-                    scoped_limitation = "no_task_sensitive_api"
             evidence_id = _digest(call.tool_name, use.canonical_args, scoped_raw)
             if not use.first_use:
                 work.tool_trace.append(

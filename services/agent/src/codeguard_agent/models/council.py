@@ -61,7 +61,7 @@ class ContextFact(BaseModel):
     """ContextProvider 收集到的一段事实。"""
 
     source: str = Field(description="事实来源,如 diff/tool:get_file_content")
-    kind: str = Field(description="事实类型,如 sensitive_api/ast_structure")
+    kind: str = Field(description="事实类型,如 symbol_context/ast_structure")
     content: str = Field(description="事实内容")
     truncated: bool = Field(default=False, description="内容是否因预算被截断")
 

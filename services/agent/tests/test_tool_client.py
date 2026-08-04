@@ -35,17 +35,6 @@ def test_成功信封_映射为_result():
     assert resp.as_tool_output() == "文件内容"
 
 
-def test_find_sensitive_apis_无入参_打到正确路径():
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v1/tools/find_sensitive_apis"
-        assert request.headers["X-Session-Id"] == "sess-1"
-        return httpx.Response(200, json={"success": True, "result": "# 敏感 API 扫描\n未发现"})
-
-    resp = _mock_client(handler).find_sensitive_apis()
-    assert resp.success is True
-    assert "敏感 API" in resp.as_tool_output()
-
-
 def test_resolve_change_context_发送结构化变更():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/tools/resolve_change_context"
@@ -72,16 +61,6 @@ def test_inspect_change_impact_使用稳定符号():
         "java:demo.Service#run()"
     )
     assert response.success is True
-
-
-def test_get_code_metrics_传文件路径():
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v1/tools/get_code_metrics"
-        return httpx.Response(200, json={"success": True, "result": "# 代码度量\nCC=3"})
-
-    resp = _mock_client(handler).get_code_metrics("src/Foo.java")
-    assert resp.success is True
-    assert "代码度量" in resp.as_tool_output()
 
 
 def test_失败信封_映射为_error_并加前缀():

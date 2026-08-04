@@ -154,8 +154,8 @@ def test_different_arguments_execute_separately() -> None:
 
 
 def test_parameterless_tool_key_is_stable() -> None:
-    assert canonical_tool_key("find_sensitive_apis", {}) == (
-        "find_sensitive_apis",
+    assert canonical_tool_key("inspect_security_path", {}) == (
+        "inspect_security_path",
         "{}",
     )
 

@@ -61,27 +61,6 @@ def resolve_method_name(ast_block: str, task: ReviewTask) -> str | None:
     return None
 
 
-_SENSITIVE_ROW = re.compile(r"^\|[^|]*\|[^|]*\|\s*([^:|]+):(\d+)\s*\|")
-
-
-def sensitive_api_rows_for_task(sensitive_api_text: str, task: ReviewTask) -> list[str]:
-    """筛选全局敏感 API 扫描中属于 task 文件和范围的 Gateway Markdown 行。"""
-    target = normalize_path(task.file)
-    span = _task_span(task)
-    rows: list[str] = []
-    for line in sensitive_api_text.splitlines():
-        match = _SENSITIVE_ROW.match(line)
-        if not match:
-            continue
-        file, line_no = match.group(1).strip(), int(match.group(2))
-        if normalize_path(file) != target:
-            continue
-        if span is not None and not (span[0] <= line_no <= span[1]):
-            continue
-        rows.append(line)
-    return rows
-
-
 def truncate_task_facts(
     facts: list[ContextFact], max_chars: int | None
 ) -> tuple[list[ContextFact], bool]:
