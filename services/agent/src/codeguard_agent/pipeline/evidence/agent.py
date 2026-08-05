@@ -484,8 +484,13 @@ def _call_tool(tool_client: Any, call: ToolCallSpec) -> tuple[str, str, float]:
                     and bool(test_relationships)
                 ):
                     return text, "graph_test_only_confirmation", duration_ms
-            if status == "unknown" or coverage == "partial":
+            if status == "unknown":
                 return text, "graph_unknown", duration_ms
+            # coverage=partial 只表示图数据可能不全(全局 unresolved 边/结果截断),
+            # 不再整体废弃——confirmed 的调用方/入口事实仍应进入证据链,
+            # 数据边界由返回中的 coverage/limitations 字段供分析层自行判断。
+            if coverage == "partial":
+                return text, "", duration_ms
             if status not in {"confirmed", "not_found"}:
                 return text, "invalid_graph_status", duration_ms
         except (TypeError, ValueError, json.JSONDecodeError):

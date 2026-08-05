@@ -958,6 +958,79 @@ class _FailingTools(_ToolClient):
         return ToolResponse(success=True, result="")
 
 
+class _PartialCoverageConfirmedGraphTools(_ToolClient):
+    """图查询返回 confirmed 但 coverage=partial(全局 unresolved 边/结果截断)。"""
+
+    def inspect_security_path(self, symbol_id: str) -> ToolResponse:
+        self.calls.append(("inspect_security_path", symbol_id))
+        return ToolResponse(
+            success=True,
+            result=json.dumps(
+                {
+                    "status": "confirmed",
+                    "coverage": "partial",
+                    "source_scope": "MAIN",
+                    "subject_symbol_id": symbol_id,
+                    "symbols": [{"id": symbol_id, "kind": "METHOD"}],
+                    "relationships": [
+                        {
+                            "sourceId": "java:src/Caller.java#invoke()",
+                            "targetId": symbol_id,
+                            "source_set": "MAIN",
+                        }
+                    ],
+                    "limitations": [],
+                }
+            ),
+        )
+
+
+def test_partial_coverage_confirmed_is_passed_through_not_discarded():
+    """coverage=partial 不再整体废弃:confirmed 的图结果透传进证据链。"""
+    dossier = _dossier()
+    batch = _collect(
+        [dossier],
+        [_request(dossier, strategy_id="claim.reachability.support")],
+        client=_PartialCoverageConfirmedGraphTools(),
+    )
+    limitations = {finding.limitation for finding in batch.notes[0].findings}
+    assert "graph_unknown" not in limitations
+    assert any(
+        finding.relation == "supports" for finding in batch.notes[0].findings
+    )
+
+
+class _UnknownStatusGraphTools(_ToolClient):
+    def inspect_security_path(self, symbol_id: str) -> ToolResponse:
+        self.calls.append(("inspect_security_path", symbol_id))
+        return ToolResponse(
+            success=True,
+            result=json.dumps(
+                {
+                    "status": "unknown",
+                    "coverage": "partial",
+                    "source_scope": "MAIN",
+                    "subject_symbol_id": symbol_id,
+                    "symbols": [],
+                    "relationships": [],
+                    "limitations": [],
+                }
+            ),
+        )
+
+
+def test_unknown_status_still_marked_graph_unknown():
+    """status=unknown 仍标记 graph_unknown(数据缺失语义保留)。"""
+    dossier = _dossier()
+    batch = _collect(
+        [dossier],
+        [_request(dossier, strategy_id="claim.reachability.support")],
+        client=_UnknownStatusGraphTools(),
+    )
+    limitations = {finding.limitation for finding in batch.notes[0].findings}
+    assert "graph_unknown" in limitations
+
+
 def test_tool_failure_and_empty_result_are_insufficient_but_count_actual_calls():
     dossier = _dossier()
     batch = _collect([dossier], [_request(dossier)], client=_FailingTools())
