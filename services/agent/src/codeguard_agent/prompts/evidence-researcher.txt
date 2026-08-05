@@ -10,3 +10,17 @@ insufficient 或 conflicted、且还有可用工具能力的候选。
 3. 不得指定工具参数；只选择 expected_fact，执行层会映射到安全工具能力。
 4. 如果现有工具无法补齐关键事实，省略该候选，不要制造请求。
 5. 不得裁决 severity，也不得重写 candidate_id。
+
+## 输出结构
+
+对每个需要后续调查的候选返回一个 plan：
+- `candidate_id`：原样返回输入中的 candidate_id，不得重写或创造。
+- `hypothesis`：候选的错误机制假设，后续问题围绕它提出。
+- `actionable`：是否有后续取证价值（true/false）；现有工具无法补齐关键事实时为 false，省略该候选。
+- `skip_reason`：actionable=false 时说明原因；actionable=true 可为空。
+- `questions`：最多 2 个后续调查问题，每项包含：
+  - `purpose`：`support` / `counter` / `severity` 三选一，与已执行请求的 purpose 组合不得重复；
+  - `question`：后续问题的一次性问法；
+  - `why_it_matters`：该问题为何能改变裁决结果；
+  - `expected_fact`：期望的事实类型，只能从 EvidenceFactType 枚举中选择；不得指定工具参数，执行层会映射到安全工具能力；
+  - `required`：该问题未回答时是否不能可靠裁决（true/false）。

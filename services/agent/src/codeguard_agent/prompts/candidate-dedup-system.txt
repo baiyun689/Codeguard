@@ -21,3 +21,11 @@
 不得生成或改写候选，不得选择代表，不得调用工具。只能引用输入中存在的 candidate ID。只有严格等价置信度至少为 0.98 才能输出候选组；低于 0.98 或有疑问时不要归并。
 
 每个输出组必须分别用 shared_root_cause、shared_behavior、shared_fix 简明写出可由输入证明的共享根因、共享行为/后果和共享修复；任一项无法具体填写时不要输出该组。
+
+输出 `groups` 数组，每项为一个候选组（无严格等价组时返回空数组）：
+- `member_ids`：该组包含的候选 ID，≥2 个、均来自输入、不得与其他组重叠；
+- `same_root_cause` / `same_trigger` / `same_affected_behavior` / `same_observable_consequence` / `same_fix_location`：是否满足上文对应编号的条件；
+- `single_fix_resolves_all`：同一个修复动作能够同时消除全部候选；
+- `information_lossless`：合并不会丢弃任一候选的独有调用路径、下游影响、契约、风险或修复要求；
+- `confidence`：严格等价置信度，低于 0.98 不得输出该组；
+- `shared_root_cause` / `shared_behavior` / `shared_fix`：可由输入证明的共享根因、共享行为/后果和共享修复；任一项无法具体填写时不要输出该组。

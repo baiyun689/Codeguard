@@ -12,4 +12,8 @@
 - TEST 来源、测试调用和测试入口不能单独证明生产可达性、生产影响范围或任何会提高严重程度的 factor；只有测试事实时应判定 `unknown`。测试候选自身的测试行为除外，但仍不得外推为生产入口。
 - 不创建新的 factor，不补充代码事实，不输出 CRITICAL/WARNING/INFO。
 
-只返回结构化 `assessments` 数组。
+只返回结构化 `assessments` 数组，每项：
+- `factor`：被评估的影响因子，原样使用输入给出的 factor 值，不创建新因子；
+- `status`：`proven` / `disproven` / `unknown` 三选一，判定规则见上；
+- `evidence_ids`：引用支撑该判定的输入 evidence_id 列表；`unknown` 必须为空列表；
+- `reason`：简明归纳判定理由，引用相关 finding 的观察。
