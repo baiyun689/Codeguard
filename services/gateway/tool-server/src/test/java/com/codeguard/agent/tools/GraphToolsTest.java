@@ -128,6 +128,55 @@ class GraphToolsTest {
     }
 
     @Test
+    void fieldSymbolReturnsReadWriteReferences(@TempDir Path repo) throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("State.java"), """
+                package demo;
+                class State {
+                    int counter;
+                    void reset() { counter = 0; }
+                    int read() { return counter; }
+                }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "field-rev"));
+        AgentContext context = new AgentContext(repo, Set.of("src/main/java/demo/State.java"));
+
+        ToolResult impact = new InspectChangeImpactTool(snapshot)
+                .execute("java:demo.State#counter", context);
+        assertTrue(impact.isSuccess(), impact.getError());
+        assertTrue(impact.getResult().contains("\"kind\":\"READS_FIELD\"")
+                        && impact.getResult().contains("\"kind\":\"WRITES_FIELD\""),
+                impact.getResult());
+        assertTrue(impact.getResult().contains("reset()"), impact.getResult());
+        assertTrue(impact.getResult().contains("read()"), impact.getResult());
+    }
+
+    @Test
+    void typeSymbolReturnsExtendsAndImplements(@TempDir Path repo) throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("Base.java"), """
+                package demo;
+                interface Base { void run(); }
+                """);
+        Files.writeString(root.resolve("Impl.java"), """
+                package demo;
+                class Impl implements Base { public void run() {} }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "type-rev"));
+        AgentContext context = new AgentContext(repo, Set.of("src/main/java/demo/Base.java"));
+
+        ToolResult impact = new InspectChangeImpactTool(snapshot)
+                .execute("java:demo.Base", context);
+        assertTrue(impact.isSuccess(), impact.getError());
+        assertTrue(impact.getResult().contains("\"kind\":\"IMPLEMENTS\""), impact.getResult());
+        assertTrue(impact.getResult().contains("Impl.java"), impact.getResult());
+    }
+
+    @Test
     void unresolvedProjectNeverReportsConfirmedAbsence(@TempDir Path repo) throws Exception {
         Files.writeString(repo.resolve("Partial.java"), """
                 class Partial {

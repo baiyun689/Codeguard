@@ -57,15 +57,16 @@ def make_change_impact_tool(client: ToolClient):
     from langchain_core.tools import StructuredTool
 
     def _inspect_change_impact(symbol_id: str) -> str:
-        """查询当前变更符号的真实调用方、框架入口与影响关系。"""
+        """查询变更符号的影响面：方法/构造器查调用方与框架入口，字段查读写引用，类查继承实现。"""
         return client.inspect_change_impact(symbol_id).as_tool_output()
 
     return StructuredTool.from_function(
         func=_inspect_change_impact,
         name="inspect_change_impact",
         description=(
-            "按 prefetched_context 给出的稳定 symbol_id 查询调用方、框架入口、"
-            "继承影响和解析覆盖。不得用惯用类名猜测路径。"
+            "按 prefetched_context 给出的稳定 symbol_id 查询影响面：方法/构造器返回"
+            "调用方、框架入口与继承覆盖；字段返回读写它的方法；类型返回继承/实现它的"
+            "类型；并附解析覆盖状态。不得用惯用类名猜测路径。"
         ),
     )
 
