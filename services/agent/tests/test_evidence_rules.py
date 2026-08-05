@@ -22,18 +22,28 @@ from codeguard_agent.pipeline.evidence.strategy_types import (
 )
 
 
-def _dossier(*facts: SimpleNamespace, file_path: str = "src/OrderService.java"):
-    symbol_fact = SimpleNamespace(
+def _symbol_fact(
+    symbol_id: str = "java:OrderService#save(Order)",
+    start_line: int = 10,
+    end_line: int = 20,
+    truncated: bool = False,
+) -> SimpleNamespace:
+    return SimpleNamespace(
         kind="symbol_context",
         content=json.dumps({
-            "file": file_path,
-            "symbol_id": "java:OrderService#save(Order)",
-            "start_line": 10,
-            "end_line": 20,
+            "file": "src/OrderService.java",
+            "symbol_id": symbol_id,
+            "start_line": start_line,
+            "end_line": end_line,
         }),
-        truncated=False,
+        truncated=truncated,
     )
+
+
+def _dossier(*facts: SimpleNamespace, file_path: str = "src/OrderService.java", line: int = 0):
+    symbol_fact = _symbol_fact()
     return SimpleNamespace(
+        candidate=SimpleNamespace(line=line),
         task=SimpleNamespace(
             file=file_path,
             hunk_header="@@ -12,2 +12,2 @@",
@@ -99,6 +109,61 @@ def test_callers_upstream_returns_empty_without_context_bundle():
     dossier = _dossier()
     dossier.context_bundle = None
     assert callers_upstream(dossier) == []
+
+
+def test_symbol_id_matches_candidate_line_range():
+    """候选行号命中第二个 symbol 区间时,应返回该 symbol 而非第一个。"""
+    second = _symbol_fact(
+        symbol_id="java:OrderService#archive(Order)",
+        start_line=30,
+        end_line=40,
+    )
+    dossier = _dossier(second, line=35)
+    assert callers_upstream(dossier) == [
+        ToolCallSpec(
+            "UPSTREAM_REACHABILITY",
+            (("symbol_id", "java:OrderService#archive(Order)"),),
+        )
+    ]
+
+
+def test_symbol_id_falls_back_to_first_when_line_outside_any_range():
+    """行号未命中任何 symbol 区间时回退第一个非空 symbol,保证工具调用不缺失。"""
+    dossier = _dossier(line=100)
+    assert callers_upstream(dossier) == [
+        ToolCallSpec(
+            "UPSTREAM_REACHABILITY",
+            (("symbol_id", "java:OrderService#save(Order)"),),
+        )
+    ]
+
+
+def test_symbol_id_falls_back_to_first_when_line_zero():
+    """line=0(无法定位)时行号匹配失效,回退第一个非空 symbol。"""
+    dossier = _dossier(line=0)
+    assert callers_upstream(dossier) == [
+        ToolCallSpec(
+            "UPSTREAM_REACHABILITY",
+            (("symbol_id", "java:OrderService#save(Order)"),),
+        )
+    ]
+
+
+def test_symbol_id_skips_truncated_symbol_facts():
+    """truncated 的 symbol 事实被跳过,即使其行号区间命中候选行。"""
+    truncated = _symbol_fact(
+        symbol_id="java:OrderService#truncated()",
+        start_line=30,
+        end_line=40,
+        truncated=True,
+    )
+    dossier = _dossier(truncated, line=35)
+    assert callers_upstream(dossier) == [
+        ToolCallSpec(
+            "UPSTREAM_REACHABILITY",
+            (("symbol_id", "java:OrderService#save(Order)"),),
+        )
+    ]
 
 
 def test_file_metrics_skips_structural_metrics_for_non_java_file():

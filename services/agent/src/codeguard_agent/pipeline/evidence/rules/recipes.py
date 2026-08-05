@@ -71,6 +71,9 @@ def callers_upstream(dossier: "CandidateDossier") -> list[ToolCallSpec]:
 def _symbol_id(dossier: "CandidateDossier") -> str:
     if dossier.context_bundle is None:
         return ""
+    candidate = getattr(dossier, "candidate", None)
+    candidate_line = getattr(candidate, "line", 0) or 0
+    fallback = ""
     for fact in dossier.context_bundle.facts:
         if fact.kind != "symbol_context" or fact.truncated:
             continue
@@ -79,6 +82,15 @@ def _symbol_id(dossier: "CandidateDossier") -> str:
         except (TypeError, ValueError, json.JSONDecodeError):
             continue
         symbol = str(value.get("symbol_id", ""))
-        if symbol:
-            return symbol
-    return ""
+        if not symbol:
+            continue
+        if not fallback:
+            fallback = symbol
+        # 候选行号精确匹配 symbol 的行号区间;line=0(无法定位)或未命中时
+        # 回退第一个非空 symbol,保证工具调用不因定位失败而缺失。
+        if candidate_line > 0:
+            start = int(value.get("start_line", 0) or 0)
+            end = int(value.get("end_line", 0) or 0)
+            if start <= candidate_line <= end:
+                return symbol
+    return fallback
