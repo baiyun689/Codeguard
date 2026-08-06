@@ -177,6 +177,65 @@ class GraphToolsTest {
     }
 
     @Test
+    void fieldSymbolSecurityPathReturnsReadersWritersAndSensitiveType(
+            @TempDir Path repo
+    ) throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("State.java"), """
+                package demo;
+                import java.util.concurrent.ExecutorService;
+                class State {
+                    ExecutorService executor;
+                    void init() { executor = java.util.concurrent.Executors.newFixedThreadPool(1); }
+                    void run() { executor.execute(() -> {}); }
+                }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "field-sec"));
+        AgentContext context = new AgentContext(repo, Set.of("src/main/java/demo/State.java"));
+
+        ToolResult impact = new InspectSecurityPathTool(snapshot)
+                .execute("java:demo.State#executor", context);
+
+        assertTrue(impact.isSuccess(), impact.getError());
+        assertTrue(impact.getResult().contains("\"kind\":\"READS_FIELD\"")
+                        && impact.getResult().contains("\"kind\":\"WRITES_FIELD\""),
+                impact.getResult());
+        assertTrue(impact.getResult().contains("field_type_sensitive"), impact.getResult());
+        assertTrue(impact.getResult().contains("ExecutorService"), impact.getResult());
+    }
+
+    @Test
+    void typeSymbolSecurityPathReturnsInternalSensitiveCallsAndInheritors(
+            @TempDir Path repo
+    ) throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("Base.java"), """
+                package demo;
+                class Base {
+                    void run() { Runtime.getRuntime().exec("ls"); }
+                }
+                """);
+        Files.writeString(root.resolve("Impl.java"), """
+                package demo;
+                class Impl extends Base { }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "type-sec"));
+        AgentContext context = new AgentContext(repo, Set.of("src/main/java/demo/Base.java"));
+
+        ToolResult impact = new InspectSecurityPathTool(snapshot)
+                .execute("java:demo.Base", context);
+
+        assertTrue(impact.isSuccess(), impact.getError());
+        assertTrue(impact.getResult().contains("\"kind\":\"EXTENDS\""), impact.getResult());
+        assertTrue(impact.getResult().contains("\"kind\":\"CALLS\""), impact.getResult());
+        assertTrue(impact.getResult().contains("exec"), impact.getResult());
+    }
+
+    @Test
     void unresolvedProjectNeverReportsConfirmedAbsence(@TempDir Path repo) throws Exception {
         Files.writeString(repo.resolve("Partial.java"), """
                 class Partial {

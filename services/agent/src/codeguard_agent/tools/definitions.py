@@ -47,8 +47,9 @@ def make_security_path_tool(client: ToolClient):
         func=_inspect_security_path,
         name="inspect_security_path",
         description=(
-            "按 prefetched_context 给出的稳定 symbol_id 查询框架入口、敏感 API 调用"
-            "和静态分析限制。不得自行编造 symbol_id 或文件名。"
+            "按 prefetched_context 给出的稳定 symbol_id 查询安全路径：方法/构造器返回"
+            "框架入口与敏感调用链；字段返回读写它的方法并标记敏感字段类型；类型返回"
+            "内部方法的敏感调用与继承者；并附解析限制。不得自行编造 symbol_id 或文件名。"
         ),
     )
 
