@@ -128,6 +128,20 @@ def test_shipped_profiles_valid():
     assert profiles["pipeline-fpverify"].tools == []
 
 
+def test_noevidence_differs_from_full_only_in_evidence_mode():
+    # 对照纪律:eval-council-noevidence 与 eval-codeguard-full 仅差 evidence_mode。
+    profiles = load_profiles(_REAL_PROFILES)
+    ne, full = profiles["eval-council-noevidence"], profiles["eval-codeguard-full"]
+    assert ne.evidence_mode == "off"
+    assert full.evidence_mode == "full"
+    assert (ne.mode, ne.tools, ne.strict_tools) == (full.mode, full.tools, full.strict_tools)
+
+
+def test_evidence_mode_defaults_to_full(tmp_path):
+    profiles = load_profiles(_write_profiles(tmp_path))
+    assert profiles["pipeline-file"].evidence_mode == "full"
+
+
 def test_case_repo_root_repo_backed_用自带快照():
     # repo-backed 用例有 repo_path,直接用它(忽略 repo_base)。
     assert case_repo_root("/abs/snap", None) == "/abs/snap"

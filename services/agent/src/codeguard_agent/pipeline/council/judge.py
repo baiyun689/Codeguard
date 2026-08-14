@@ -12,6 +12,7 @@ from typing import Any
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.council import (
     CandidateConcern,
+    CandidateDirectAssessment,
     CandidateEvidenceAssessment,
     ConcernAnalysis,
     EvidenceFinding,
@@ -550,4 +551,196 @@ def judge_candidates(
     return batch
 
 
-__all__ = ["JudgeBatch", "judge_candidates"]
+# ── DirectJudge:无证据链消融档的候选终审 ─────────────────────────────────
+
+
+def _direct_payload(
+    dossier: CandidateDossier,
+    concern: CandidateConcern | None,
+) -> str:
+    """DirectJudge 输入:候选 + concern + task patch,不含任何证据字段。"""
+    primary = _primary_tag(dossier, concern)
+    return _stable_json({
+        "candidate_alias": "C001",
+        "candidate": {
+            "type": dossier.candidate.type,
+            "claim": dossier.candidate.claim,
+            "file": dossier.candidate.file,
+            "line": dossier.candidate.line,
+            "severity_proposal": dossier.candidate.severity_proposal.value,
+            "suggestion": dossier.candidate.suggestion,
+            "confidence": dossier.candidate.confidence,
+        },
+        "concern": (
+            {
+                "concern_id": concern.concern_id,
+                "member_candidate_ids": concern.member_candidate_ids,
+                "claims": [
+                    claim.model_dump(mode="json")
+                    for claim in concern.claims
+                    if claim.candidate_id in ("", dossier.candidate.id)
+                ],
+                "primary_tag": (
+                    concern.tags.primary_tag.value
+                    if concern.tags.primary_tag is not None
+                    else None
+                ),
+                "secondary_tags": [
+                    tag.value for tag in concern.tags.secondary_tags
+                ],
+            }
+            if concern is not None
+            else None
+        ),
+        "task_patch": dossier.task.patch,
+        "primary_tag": primary.value,
+    })
+
+
+def _direct_synthesize(
+    dossier: CandidateDossier,
+    *,
+    judge_llm: Any,
+    structured_method: str,
+    max_retries: int,
+    concern: CandidateConcern | None = None,
+) -> CandidateDirectAssessment | None:
+    """LLM 直接终审;llm 为 None(mock)或失败时返回 None,由调用方确定性保留。"""
+    if judge_llm is None:
+        return None
+    try:
+        structured = judge_llm.with_structured_output(
+            CandidateDirectAssessment,
+            method=structured_method,
+        )
+        system_prompt = (_PROMPT_DIR / "council-judge-direct.txt").read_text(encoding="utf-8")
+        result = invoke_with_retry(
+            structured,
+            [
+                ("system", system_prompt),
+                ("user", _direct_payload(dossier, concern)),
+            ],
+            max_retries=max_retries,
+        )
+        if result is None:
+            return None
+        if not isinstance(result, CandidateDirectAssessment):
+            result = CandidateDirectAssessment.model_validate(result)
+        if result.candidate_id != "C001":
+            logger.warning("DirectJudge returned unexpected candidate_id: %s", result.candidate_id)
+            return None
+        return result
+    except Exception:
+        logger.warning("DirectJudge LLM assessment failed", exc_info=True)
+        return None
+
+
+def direct_judge_candidates(
+    assembly: DossierAssembly,
+    *,
+    judge_llm: Any,
+    structured_method: str,
+    max_retries: int,
+    candidate_groups: Sequence[CandidateGroup] = (),
+    concern_analysis: ConcernAnalysis | None = None,
+) -> JudgeBatch:
+    """无证据链消融档的候选终审:每候选一次 LLM 直接裁决 keep/drop + severity。
+
+    与 `judge_candidates` 同构(绑定失败确定性 drop、候选并行、组内等价合并),
+    差异仅在裁决依据:候选主张 + patch/上下文,无证据请求/发现/门控。
+    """
+    batch = JudgeBatch()
+    concern_by_candidate = {
+        candidate_id: concern
+        for concern in (
+            concern_analysis.concerns if concern_analysis is not None else ()
+        )
+        for candidate_id in concern.member_candidate_ids
+    }
+
+    for failure in assembly.failures:
+        verdict = Verdict(
+            failure.candidate.id,
+            "drop",
+            "invalid_candidate_binding",
+            failure.reason,
+        )
+        batch.verdicts.append(verdict)
+        _trace(
+            batch, "direct_judge_verdict",
+            {"candidate_id": verdict.candidate_id, "action": "drop",
+             "reason_code": verdict.reason_code},
+        )
+
+    if not assembly.dossiers:
+        return batch
+
+    def _invoke(dossier: CandidateDossier):
+        assessment = _direct_synthesize(
+            dossier,
+            judge_llm=judge_llm,
+            structured_method=structured_method,
+            max_retries=max_retries,
+            concern=concern_by_candidate.get(dossier.candidate.id),
+        )
+        candidate = dossier.candidate
+        if assessment is None:
+            # LLM 不可用(mock)/失败/未按 schema 输出:确定性保留 + 沿用提案级别。
+            severity = candidate.severity_proposal
+            verdict = Verdict(
+                candidate.id, "keep",
+                "direct_assessment_missing",
+                "DirectJudge LLM assessment unavailable; kept with proposed severity",
+                resolved_severity=severity,
+            )
+            _trace(batch, "direct_judge_verdict", {
+                "candidate_id": candidate.id, "action": "keep",
+                "reason_code": "direct_assessment_missing",
+                "resolved_severity": severity.value,
+            })
+            return verdict, candidate.to_issue().model_copy(
+                update={"severity": severity}
+            ), candidate.id
+
+        if assessment.action == "drop":
+            verdict = Verdict(
+                candidate.id, "drop",
+                "direct_judge_drop", assessment.reason,
+            )
+            _trace(batch, "direct_judge_verdict", {
+                "candidate_id": candidate.id, "action": "drop",
+                "reason_code": "direct_judge_drop",
+            })
+            return verdict, None, ""
+
+        verdict = Verdict(
+            candidate.id, "keep",
+            "direct_judge_keep", assessment.reason,
+            resolved_severity=assessment.severity,
+        )
+        issue = candidate.to_issue().model_copy(
+            update={"severity": assessment.severity}
+        )
+        _trace(batch, "direct_judge_verdict", {
+            "candidate_id": candidate.id, "action": "keep",
+            "reason_code": "direct_judge_keep",
+            "resolved_severity": assessment.severity.value,
+        })
+        return verdict, issue, candidate.id
+
+    results = run_bounded_parallel(assembly.dossiers, _invoke, max_workers=6)
+
+    supported: list[tuple[str, Issue]] = []
+    for result in results:
+        if result is None:
+            continue
+        verdict, issue, candidate_id = result
+        batch.verdicts.append(verdict)
+        if issue is not None and candidate_id:
+            supported.append((candidate_id, issue))
+
+    _emit_supported_issues(batch, supported, candidate_groups)
+    return batch
+
+
+__all__ = ["JudgeBatch", "judge_candidates", "direct_judge_candidates"]

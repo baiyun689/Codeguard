@@ -38,6 +38,18 @@ profiles:
     evidence_tools: [get_file_content, inspect_security_path, inspect_change_impact, inspect_structure]
     strict_tools: true
 
+  # 消融 5:证据链整链关闭——Council + 发现者工具照跑,候选由 DirectJudge
+  # 直接终审(无取证/门控/证据综合)。与 eval-codeguard-full 仅差 evidence_mode
+  # 这一个变量,用于量化证据链本体的净收益。
+  # 注意:off 必须加引号——YAML 1.1 会把裸 off 解析成布尔 False。
+  eval-council-noevidence:
+    mode: pipeline
+    execution: pipeline
+    orchestration: adr-032
+    tools: [get_file_content, inspect_security_path, inspect_change_impact, inspect_structure]
+    evidence_mode: "off"
+    strict_tools: true
+
   # 管线但不开工具:并行三审查员直连(无工具对照基准)。
   pipeline-notools:
     mode: pipeline

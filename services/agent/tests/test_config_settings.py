@@ -30,6 +30,24 @@ def test_default_settings_has_no_evidence_round_config():
     assert not hasattr(settings, "max_evidence_rounds")
 
 
+def test_evidence_mode_defaults_to_full(monkeypatch):
+    monkeypatch.delenv("CODEGUARD_EVIDENCE_MODE", raising=False)
+    monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
+    assert Settings.from_env().evidence_mode == "full"
+
+
+def test_evidence_mode_off(monkeypatch):
+    monkeypatch.setenv("CODEGUARD_EVIDENCE_MODE", "off")
+    monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
+    assert Settings.from_env().evidence_mode == "off"
+
+
+def test_evidence_mode_invalid_falls_back_to_full(monkeypatch):
+    monkeypatch.setenv("CODEGUARD_EVIDENCE_MODE", "no-gate")
+    monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
+    assert Settings.from_env().evidence_mode == "full"
+
+
 def test_phase2_budget_defaults(monkeypatch):
     monkeypatch.delenv("CODEGUARD_MAX_REVIEW_TASKS", raising=False)
     monkeypatch.delenv("CODEGUARD_MAX_TASKS_PER_FILE", raising=False)

@@ -33,6 +33,7 @@ class Profile:
     execution: str = "pipeline"
     evidence_tools: list[str] | None = None
     strict_tools: bool = False
+    evidence_mode: str = "full"  # "off" = 无证据链消融档(DirectJudge 直接终审)
 
     @property
     def wants_tools(self) -> bool:
@@ -64,6 +65,7 @@ def load_profiles(path: Path | None = None) -> dict[str, Profile]:
                 else None
             ),
             strict_tools=bool(cfg.get("strict_tools", False)),
+            evidence_mode=cfg.get("evidence_mode", "full"),
         )
     return profiles
 

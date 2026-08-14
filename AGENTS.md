@@ -240,6 +240,7 @@ python -m evals.runner --profile eval-codeguard-full --runs 1   # 完整档单�
 | `CODEGUARD_DISABLE_THINKING` | `false` | 用 DeepSeek 推理模型时设 `true` |
 | `CODEGUARD_MAX_RETRIES` | `3` | LLM 调用重试次数 |
 | `CODEGUARD_ENABLE_SUMMARY` | `true` | ADR-032 选中范围摘要开关;关闭则 TaskRank 后直接进入 ContextProvider |
+| `CODEGUARD_EVIDENCE_MODE` | `full` | 证据链开关;`off` 跳过取证/门控,候选由 DirectJudge 直接终审(无证据链消融基线档) |
 | `CODEGUARD_MAX_REVIEW_TASKS` | `100` | 仅作为大 diff 的更严格总任务上限 |
 | `CODEGUARD_MAX_TASKS_PER_FILE` | `10` | 仅作为大 diff 的更严格单文件上限 |
 | `CODEGUARD_MAX_REACT_TASKS` | `20` | 普通/大 diff 选中范围内允许使用 ReAct 的 task 上限；其余 Direct |

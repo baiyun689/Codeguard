@@ -702,6 +702,35 @@ def test_build_graph_default_nodes_are_adr032():
     assert "fp_filter" not in names
 
 
+def test_build_graph_evidence_mode_off_contains_direct_judge():
+    graph = G.build_review_graph(enable_summary=False, llm=None, evidence_mode="off")
+    names = set(graph.get_graph().nodes)
+    assert "direct_judge" in names
+    assert "concern_analyzer" in names
+
+
+def test_evidence_mode_off_routes_to_direct_judge_mock():
+    """evidence_mode=off:跳过取证/门控,mock 下 DirectJudge 确定性保留候选。"""
+    orch = PipelineOrchestrator(
+        enable_summary=False,
+        checkpoint_backend="memory",
+        review_budget=ReviewBudget(small_max_files=0),
+    )
+    meta: dict = {}
+    result = orch.run(
+        None,
+        _MOCK_DIFF,
+        evidence_mode="off",
+        thread_id="adr032-no-evidence",
+        metadata_sink=meta,
+    )
+    assert len(result.issues) >= 1
+    stats = meta["council"]
+    assert stats["evidence_request_count"] == 0
+    assert stats["investigation_plan_count"] == 0
+    assert stats["verdict_count"] == stats["candidate_count"]
+
+
 def test_checkpointer_factory_memory_creates_MemorySaver():
     from codeguard_agent.pipeline.orchestrator import _create_checkpointer
     from langgraph.checkpoint.memory import MemorySaver

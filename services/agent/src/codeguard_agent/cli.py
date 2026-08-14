@@ -161,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo_path=repo_abspath,
                 allowed_files=allowed_files,
                 tool_client=tool_client,
+                evidence_mode=settings.evidence_mode,
                 thread_id=effective_thread_id,
                 trace_enabled=trace_enabled,
                 trace_dir=settings.trace_dir,

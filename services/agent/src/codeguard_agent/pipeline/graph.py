@@ -46,7 +46,10 @@ from codeguard_agent.models.tasks import (
 )
 from codeguard_agent.pipeline.context import rules as context_rules
 from codeguard_agent.pipeline.risk import task_prep
-from codeguard_agent.pipeline.council.judge import judge_candidates
+from codeguard_agent.pipeline.council.judge import (
+    direct_judge_candidates,
+    judge_candidates,
+)
 from codeguard_agent.pipeline.council.dedup import (
     CandidateGroup,
     CandidateDedupStats,
@@ -1671,6 +1674,51 @@ def _council_judge_node(llm, judge_llm=None):
     return _node
 
 
+def _direct_judge_node(judge_llm=None):
+    """无证据链消融档的候选终审:跳过取证/门控,DirectJudge 直接裁决。"""
+
+    def _node(state: ReviewState) -> dict:
+        assembly = _assemble_state_dossiers(state)
+        batch = direct_judge_candidates(
+            assembly,
+            judge_llm=judge_llm,
+            structured_method=state.get("structured_method", "function_calling"),
+            max_retries=state.get("max_retries", 2),
+            candidate_groups=state.get("candidate_groups") or [],
+            concern_analysis=state.get("concern_analysis"),
+        )
+        judge_trace = [
+            CouncilTrace(node="direct_judge", event=event, detail=detail)
+            for event, detail in (*assembly.trace, *batch.trace)
+        ]
+        stats = compute_council_run_stats(
+            candidates=state.get("candidate_issues") or [],
+            assembly=assembly,
+            verdicts=batch.verdicts,
+            final_candidate_ids=batch.final_candidate_ids,
+            evidence_request_count=0,
+            truncated_candidates=state.get("truncated_candidates", 0),
+            council_trace=[*(state.get("council_trace") or []), *judge_trace],
+            investigation_plans=[],
+            evidence_dossier_summaries=[],
+            candidate_dedup_stats=state.get("candidate_dedup_stats"),
+        )
+        summaries = list(state.get("review_summaries") or [])
+        selection = state.get("task_selection")
+        if selection is not None:
+            notice = _scope_plan(state).coverage_notice(selection)
+            if notice:
+                summaries.insert(0, notice)
+        return {
+            "final_issues": batch.final_issues,
+            "council_stats": stats,
+            "summary": "  ".join(summaries),
+            "council_trace": judge_trace,
+        }
+
+    return _node
+
+
 def build_review_graph(
     *,
     enable_summary: bool = True,
@@ -1679,6 +1727,7 @@ def build_review_graph(
     fp_verify_llm=None,
     tool_client=None,
     discovery_only: bool = False,
+    evidence_mode: str = "full",
 ):
     """编译审查状态图。
 
@@ -1694,9 +1743,12 @@ def build_review_graph(
           └─ large  → diff_task_builder → risk_triage → task_rank → review_coverage → summary?
                        → context_provider → discover_*(×3)
                        → council_coordinator(fan-in)
-                       → concern_analyzer → evidence_strategist
-                       → evidence_researcher → impact_assessor
-                       → council_judge → END
+                       → concern_analyzer
+                         ├─ evidence_mode=full → evidence_strategist
+                         │    → evidence_researcher → impact_assessor
+                         │    → council_judge → END
+                         └─ evidence_mode=off  → direct_judge → END
+                           (无证据链消融基线:跳过取证/门控,DirectJudge 直接终审)
 
     discovery_only 拓扑:
         START → classify_mode
@@ -1735,6 +1787,10 @@ def build_review_graph(
         g.add_node(
             "concern_analyzer",
             _concern_analyzer_node(effective_judge_llm),
+        )
+        g.add_node(
+            "direct_judge",
+            _direct_judge_node(effective_judge_llm),
         )
         g.add_node(
             "evidence_strategist",
@@ -1808,10 +1864,14 @@ def build_review_graph(
         g.add_edge("discovery_collector", END)
     else:
         g.add_edge("council_coordinator", "concern_analyzer")
-        g.add_edge("concern_analyzer", "evidence_strategist")
-        g.add_edge("evidence_strategist", "evidence_researcher")
-        g.add_edge("evidence_researcher", "impact_assessor")
-        g.add_edge("impact_assessor", "council_judge")
-        g.add_edge("council_judge", END)
+        if evidence_mode == "off":
+            g.add_edge("concern_analyzer", "direct_judge")
+            g.add_edge("direct_judge", END)
+        else:
+            g.add_edge("concern_analyzer", "evidence_strategist")
+            g.add_edge("evidence_strategist", "evidence_researcher")
+            g.add_edge("evidence_researcher", "impact_assessor")
+            g.add_edge("impact_assessor", "council_judge")
+            g.add_edge("council_judge", END)
 
     return g.compile(checkpointer=checkpointer)

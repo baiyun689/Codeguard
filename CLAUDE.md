@@ -329,6 +329,7 @@ python -m evals.runner --runs 3 --judge  # 额外开 LLM-as-judge
 | `CODEGUARD_DISABLE_THINKING` | `false` | 用 DeepSeek 推理模型时设 `true` |
 | `CODEGUARD_MAX_RETRIES` | `3` | LLM 调用重试次数 |
 | `CODEGUARD_ENABLE_SUMMARY` | `true` | 前置摘要/软分派阶段开关;关闭则审查员吃整份 diff(仅 pipeline) |
+| `CODEGUARD_EVIDENCE_MODE` | `full` | 证据链开关;`off` 跳过取证/门控,候选由 DirectJudge 直接终审(无证据链消融基线档) |
 
 > **Windows/PowerShell 注意**:bash 的 `VAR=value cmd` 内联写法在 PowerShell 不生效,要先 `$env:VAR="value"` 再跑命令;或直接写 `.env`(推荐)。
 

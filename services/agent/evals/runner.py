@@ -504,6 +504,7 @@ def main(argv: list[str] | None = None) -> int:
                     else None
                 ),
                 allow_direct_fallback=not profile.strict_tools,
+                evidence_mode=profile.evidence_mode,
                 trace_enabled=settings.trace_enabled,
                 trace_dir=settings.trace_dir,
                 trace_max_llm_content=settings.trace_max_llm_content,

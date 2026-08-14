@@ -57,6 +57,20 @@ class CandidateEvidenceAssessment(BaseModel):
     reason: str = ""
 
 
+class CandidateDirectAssessment(BaseModel):
+    """DirectJudge(无证据链消融档)对单个候选的直接终审。
+
+    evidence_mode=off 时取代 CandidateEvidenceAssessment:LLM 基于候选主张
+    与 patch/上下文直接裁决,severity 由终审自选(与 rubric 定级机制不同,
+    评测报告需如实标注)。
+    """
+
+    candidate_id: NonBlankStr
+    action: Literal["keep", "drop"]
+    severity: Severity
+    reason: str = ""
+
+
 class ContextFact(BaseModel):
     """ContextProvider 收集到的一段事实。"""
 

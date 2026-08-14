@@ -6,8 +6,11 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
+
+logger = logging.getLogger("codeguard")
 
 # 各 provider 的默认模型:用户不显式指定 CODEGUARD_MODEL 时按 provider 回退到对应默认值,
 # 避免出现"provider=openai 却用着 claude 模型名"的错配。
@@ -61,6 +64,9 @@ class Settings:
     graph_build_timeout_seconds: int = 120
     # 前置摘要阶段开关:默认开。关闭时审查员不收到 diff_summary 背景。
     enable_summary: bool = True
+    # 证据链开关:"full"(默认,取证/门控/综合全跑) | "off"(跳过取证与门控,
+    # 候选由 DirectJudge 直接终审——消融基线档)。
+    evidence_mode: str = "full"
     # 大 diff 覆盖预算；普通 diff 默认全选。
     max_review_tasks: int = 100
     max_tasks_per_file: int = 10
@@ -117,6 +123,13 @@ class Settings:
         enable_summary = os.environ.get(
             "CODEGUARD_ENABLE_SUMMARY", "true"
         ).strip().lower() not in ("0", "false", "no", "off")
+        # 证据链开关:只接受 full/off,非法值告警并回退 full。
+        evidence_mode = os.environ.get("CODEGUARD_EVIDENCE_MODE", "full").strip().lower()
+        if evidence_mode not in ("full", "off"):
+            logger.warning(
+                "未知 CODEGUARD_EVIDENCE_MODE '%s',回退 'full'", evidence_mode
+            )
+            evidence_mode = "full"
         max_review_tasks = _positive_int_env("CODEGUARD_MAX_REVIEW_TASKS", 100)
         max_tasks_per_file = _positive_int_env("CODEGUARD_MAX_TASKS_PER_FILE", 10)
         max_react_assignments = _positive_int_env("CODEGUARD_MAX_REACT_TASKS", 20)
@@ -149,6 +162,7 @@ class Settings:
             tool_server_url=os.environ.get("CODEGUARD_TOOL_SERVER_URL", "").strip(),
             graph_build_timeout_seconds=graph_build_timeout_seconds,
             enable_summary=enable_summary,
+            evidence_mode=evidence_mode,
             max_review_tasks=max_review_tasks,
             max_tasks_per_file=max_tasks_per_file,
             max_react_assignments=max_react_assignments,

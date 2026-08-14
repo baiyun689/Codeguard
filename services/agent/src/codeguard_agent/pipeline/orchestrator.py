@@ -89,6 +89,7 @@ class PipelineOrchestrator:
         enabled_tools: list[str] | None = None,
         enabled_evidence_tools: list[str] | None = None,
         allow_direct_fallback: bool = True,
+        evidence_mode: str = "full",
         trace_enabled: bool = False,
         trace_dir: str = "trace",
         trace_max_llm_content: int = 0,
@@ -103,6 +104,7 @@ class PipelineOrchestrator:
         enabled_tools:暴露给审查员的工具白名单(评测 profile 控制);None=全开(CLI 默认)。
         enabled_evidence_tools:EvidenceAgent 的独立白名单；None 时沿用 enabled_tools。
         allow_direct_fallback:ReAct 失败/空结果时是否允许无工具直连复审；严格 eval 关闭。
+        evidence_mode:证据链开关；"off" 时跳过取证/门控,候选由 DirectJudge 直接终审(消融基线档)。
         trace_sink / metadata_sink：可选 eval 侧信道，不进入 ReviewResult 对外接口。
         thread_id:可选的检查点线程标识,用于中断恢复。
         """
@@ -117,6 +119,7 @@ class PipelineOrchestrator:
             llm=llm,
             fp_verify_llm=fp_verify_llm,
             tool_client=tool_client,
+            evidence_mode=evidence_mode,
         )
         initial: ReviewState = {
             "diff_text": diff_text,
