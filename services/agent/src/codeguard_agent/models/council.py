@@ -364,6 +364,13 @@ class CouncilRunStats(BaseModel):
     evidence_plan_skipped_count: int = Field(
         default=0, description="证据规划因超 cap 跳过的请求数"
     )
+    # ── 取证溯源统计(ADR-046) ──
+    fact_count: int = Field(default=0, description="取证后按候选累计的事实总数")
+    replay_verified_count: int = Field(default=0, description="链引用命中重放的 fact 数")
+    replay_unverified_count: int = Field(default=0, description="链引用未命中重放的 fact 数")
+    replay_failed_count: int = Field(default=0, description="重放调用失败的 fact 数")
+    chain_used_count: int = Field(default=0, description="使用合法取证链的候选数")
+    recipe_fallback_count: int = Field(default=0, description="无链/废链回退固定配方的候选数")
 
 
 # ── Phase 3: Candidate Concern & Claim-based Evidence ──
