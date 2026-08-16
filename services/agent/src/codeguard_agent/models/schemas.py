@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +21,26 @@ class Severity(str, Enum):
     CRITICAL = "CRITICAL"  # 严重:必须修复(如 SQL 注入、鉴权绕过)
     WARNING = "WARNING"    # 警告:建议修复(如空指针风险、资源未释放)
     INFO = "INFO"          # 提示:可选优化(如命名、可读性)
+
+
+class EvidenceTraceStep(BaseModel):
+    """审查员对一条 Issue 的取证溯源步骤:调了什么工具、查了什么、看到了什么。
+
+    这是"引文"不是日志:只包含直接支撑结论的调用,located 是逐字引用的
+    代码段/事实原文。证据阶段按此重放验证(见 ADR-033)。
+    """
+
+    tool: Literal[
+        "get_file_content",
+        "inspect_change_impact",
+        "inspect_security_path",
+        "inspect_structure",
+    ] = Field(description="实际调用的 Gateway 工具名")
+    args: dict[str, str] = Field(
+        default_factory=dict,
+        description="调用参数(键为 file_path 或 symbol_id)",
+    )
+    located: str = Field(default="", description="逐字引用的关键代码段/事实原文")
 
 
 class Issue(BaseModel):
@@ -44,6 +65,10 @@ class Issue(BaseModel):
         ge=0.0,
         le=1.0,
         description="置信度 0.0~1.0,LLM 对该问题判断的把握程度",
+    )
+    evidence_chain: list[EvidenceTraceStep] = Field(
+        default_factory=list,
+        description="取证溯源:直接支撑该结论的工具调用与定位到的代码段(可选,见 ADR-033)",
     )
 
 
