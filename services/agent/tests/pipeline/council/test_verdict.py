@@ -1,6 +1,13 @@
-"""verdict 门控测试(ADR-046)。"""
-from codeguard_agent.models.council import FactRelation
-from codeguard_agent.pipeline.council.verdict import gate_candidate
+"""verdict 门控与终审测试(ADR-046)。"""
+from codeguard_agent.models.council import (
+    CandidateDirectAssessment,
+    CandidateIssue,
+    FactRelation,
+)
+from codeguard_agent.models.schemas import Severity
+from codeguard_agent.models.tasks import ReviewTask
+from codeguard_agent.pipeline.council.verdict import gate_candidate, synthesize_verdict
+from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 
 
 def _relation(relation, strength="contextual"):
@@ -44,17 +51,6 @@ def test_gate_supported_with_contextual_counter_passes():
     ]) is None
 
 
-from codeguard_agent.models.council import (  # noqa: E402
-    CandidateDirectAssessment,
-    CandidateIssue,
-    FactRelation,
-)
-from codeguard_agent.models.schemas import Severity  # noqa: E402
-from codeguard_agent.models.tasks import ReviewTask  # noqa: E402
-from codeguard_agent.pipeline.council.verdict import synthesize_verdict  # noqa: E402
-from codeguard_agent.pipeline.evidence.planner import CandidateDossier  # noqa: E402
-
-
 class _FakeStructured:
     def __init__(self, result):
         self._result = result
@@ -71,6 +67,11 @@ class _FakeLLM:
         return _FakeStructured(self._result)
 
 
+class _RaisingLLM:
+    def with_structured_output(self, _schema, method=None):
+        raise RuntimeError("structured output unavailable")
+
+
 def _verdict_dossier() -> CandidateDossier:
     candidate = CandidateIssue(
         id="c1", task_id="t1", source_agent="threat_model",
@@ -83,15 +84,16 @@ def _verdict_dossier() -> CandidateDossier:
 
 
 def test_synthesize_returns_unified_assessment():
-    expected = CandidateDirectAssessment(
+    raw = CandidateDirectAssessment(
         candidate_id="C001", action="keep", severity=Severity.WARNING,
         cited_fact_ids=("f1",), reason="有支持证据",
     )
     result = synthesize_verdict(
         _verdict_dossier(),
         [FactRelation(fact_id="f1", relation="supports", observation="上游可达")],
-        judge_llm=_FakeLLM(expected), structured_method="function_calling", max_retries=1,
+        judge_llm=_FakeLLM(raw), structured_method="function_calling", max_retries=1,
     )
+    expected = raw.model_copy(update={"candidate_id": "c1"})
     assert result == expected
     assert result.cited_fact_ids == ("f1",)
 
@@ -109,5 +111,19 @@ def test_synthesize_wrong_candidate_id_returns_none():
     )
     assert synthesize_verdict(
         _verdict_dossier(), [], judge_llm=_FakeLLM(wrong),
+        structured_method="function_calling", max_retries=1,
+    ) is None
+
+
+def test_synthesize_no_llm_returns_none():
+    assert synthesize_verdict(
+        _verdict_dossier(), [], judge_llm=None,
+        structured_method="function_calling", max_retries=1,
+    ) is None
+
+
+def test_synthesize_structured_failure_returns_none():
+    assert synthesize_verdict(
+        _verdict_dossier(), [], judge_llm=_RaisingLLM(),
         structured_method="function_calling", max_retries=1,
     ) is None

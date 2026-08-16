@@ -44,7 +44,11 @@ def synthesize_verdict(
     structured_method: str,
     max_retries: int,
 ) -> CandidateDirectAssessment | None:
-    """终审:基于关系三元输出统一裁决。失败/None 返回 None,由调用方确定性保留。"""
+    """终审:基于关系三元输出统一裁决。失败/None 返回 None,由调用方确定性保留。
+
+    裁决模型固定用别名 C001 指向候选;校验通过后重映射回 dossier 真实候选 id,
+    调用方拿到的结果可直接落 State。
+    """
     if judge_llm is None:
         return None
     try:
@@ -68,7 +72,7 @@ def synthesize_verdict(
         if result.candidate_id != "C001":
             logger.warning("verdict returned unexpected candidate_id: %s", result.candidate_id)
             return None
-        return result
+        return result.model_copy(update={"candidate_id": dossier.candidate.id})
     except Exception:
         logger.warning("verdict LLM synthesis failed", exc_info=True)
         return None
