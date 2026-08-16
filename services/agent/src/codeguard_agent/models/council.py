@@ -76,7 +76,7 @@ class CandidateFact(BaseModel):
     replay_status:
     - verified:   链引用原文在重放结果中命中(规范化子串匹配)
     - unverified: 链有引用但重放结果中找不到
-    - failed:     工具调用本身失败(符号不存在/沙箱拒绝/参数非法)
+    - failed:     工具调用失败或图响应无效(沙箱拒绝/符号不存在/参数非法,详见 limitation)
     - recipe:     固定配方来源(非重放),无引用可验证
     """
 
