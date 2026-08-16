@@ -188,12 +188,7 @@ def test_prior_has_only_hypotheses_and_coverage():
     }
 
 
-def test_task_context_bundle_render_empty_facts():
-    bundle = TaskContextBundle(task_id="A.java#h0")
-    assert bundle.render() == "(无任务上下文事实)"
-
-
-def test_task_context_bundle_render_lists_facts_with_truncation_flag():
+def test_task_context_bundle_fields_are_serializable():
     bundle = TaskContextBundle(
         task_id="A.java#h0",
         facts=[
@@ -205,16 +200,6 @@ def test_task_context_bundle_render_lists_facts_with_truncation_flag():
             ),
         ],
     )
-    rendered = bundle.render()
-    assert "Runtime.exec" in rendered
-    assert "(已截断)" in rendered
-
-
-def test_task_context_bundle_render_respects_budget():
-    bundle = TaskContextBundle(
-        task_id="A.java#h0",
-        facts=[ContextFact(source="diff", kind="x", content="A" * 100)],
-    )
-    rendered = bundle.render(budget=10)
-    assert len(rendered) <= 10 + len("\n...(TaskContextBundle 已达预算上限,后续省略)")
-    assert rendered.endswith("...(TaskContextBundle 已达预算上限,后续省略)")
+    dumped = bundle.model_dump()
+    assert dumped["facts"][0]["content"] == "Runtime.exec"
+    assert dumped["facts"][1]["truncated"] is True

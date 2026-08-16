@@ -85,24 +85,6 @@ class ContextBundle(BaseModel):
     changed_files: list[str] = Field(default_factory=list)
     facts: list[ContextFact] = Field(default_factory=list)
 
-    def render(self, budget: int = 6000) -> str:
-        """渲染为 prompt 可读文本,并按字符预算截断。"""
-        lines: list[str] = []
-        if self.changed_files:
-            lines.append("变更文件:")
-            lines.extend(f"- {path}" for path in self.changed_files)
-        if self.facts:
-            if lines:
-                lines.append("")
-            lines.append("上下文事实:")
-            for fact in self.facts:
-                flag = " (已截断)" if fact.truncated else ""
-                lines.append(f"- [{fact.source}/{fact.kind}]{flag} {fact.content}")
-        text = "\n".join(lines).strip() or "(无额外上下文事实)"
-        if len(text) <= budget:
-            return text
-        return text[:budget] + "\n...(ContextBundle 已达预算上限,后续省略)"
-
 
 class EvidenceRequest(BaseModel):
     """候选 issue 对证据的结构化请求。"""

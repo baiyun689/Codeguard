@@ -317,17 +317,19 @@ def test_general_review_routes_to_all_reviewers():
 
 
 def test_controller_path_strengthens_matching_hypotheses():
-    prior = catalog.classify_task(
-        ReviewTask(
-            id="controller",
-            file="src/main/java/com/example/controller/UserController.java",
-            patch=(
-                "@@ -1 +1,2 @@\n"
-                "+@PreAuthorize(\"hasRole('ADMIN')\")\n"
-                "+public void update(UserRequest request) {}"
-            ),
-        )
-    )
+    prior = catalog.triage_tasks(
+        [
+            ReviewTask(
+                id="controller",
+                file="src/main/java/com/example/controller/UserController.java",
+                patch=(
+                    "@@ -1 +1,2 @@\n"
+                    "+@PreAuthorize(\"hasRole('ADMIN')\")\n"
+                    "+public void update(UserRequest request) {}"
+                ),
+            )
+        ]
+    ).priors["controller"]
 
     by_tag = {item.tag: item for item in prior.hypotheses}
     assert prior.coverage is RiskCoverage.CONFIDENT
@@ -337,13 +339,15 @@ def test_controller_path_strengthens_matching_hypotheses():
 
 
 def test_config_path_strengthens_matching_security_prior():
-    prior = catalog.classify_task(
-        ReviewTask(
-            id="config",
-            file="src/main/resources/application.yml",
-            patch="@@ -1 +1 @@\n+password: ${DB_PASSWORD}",
-        )
-    )
+    prior = catalog.triage_tasks(
+        [
+            ReviewTask(
+                id="config",
+                file="src/main/resources/application.yml",
+                patch="@@ -1 +1 @@\n+password: ${DB_PASSWORD}",
+            )
+        ]
+    ).priors["config"]
     hypothesis = next(
         item for item in prior.hypotheses
         if item.tag is RiskTag.CONFIG_SECURITY
@@ -353,13 +357,15 @@ def test_config_path_strengthens_matching_security_prior():
 
 
 def test_path_does_not_create_hypothesis_without_text_signal():
-    prior = catalog.classify_task(
-        ReviewTask(
-            id="repository",
-            file="src/main/java/com/example/repository/UserRepository.java",
-            patch="@@ -1 +1 @@\n+int value = 1;",
-        )
-    )
+    prior = catalog.triage_tasks(
+        [
+            ReviewTask(
+                id="repository",
+                file="src/main/java/com/example/repository/UserRepository.java",
+                patch="@@ -1 +1 @@\n+int value = 1;",
+            )
+        ]
+    ).priors["repository"]
     assert prior.coverage is RiskCoverage.UNCLASSIFIED
     assert prior.hypotheses == ()
 
@@ -386,9 +392,9 @@ def test_prior_aggregates_duplicate_rule_hits_without_exposing_signals(monkeypat
     )
     monkeypatch.setattr(catalog, "RULE_SPECS", (rule,))
 
-    prior = catalog.classify_task(
-        ReviewTask(id="t", file="A.java", patch="+x")
-    )
+    prior = catalog.triage_tasks(
+        [ReviewTask(id="t", file="A.java", patch="+x")]
+    ).priors["t"]
     assert len(prior.hypotheses) == 1
     assert prior.hypotheses[0].review_priority == 3
     assert prior.hypotheses[0].match_confidence == 0.9
@@ -397,7 +403,7 @@ def test_prior_aggregates_duplicate_rule_hits_without_exposing_signals(monkeypat
     )
 
 
-def test_classify_task_falls_back_when_detector_returns_path_only(monkeypatch):
+def test_triage_falls_back_when_detector_returns_path_only(monkeypatch):
     path_signal = make_risk_signal(
         tag=RiskTag.API_CONTRACT,
         priority=2,
@@ -413,9 +419,9 @@ def test_classify_task_falls_back_when_detector_returns_path_only(monkeypatch):
     )
     monkeypatch.setattr(catalog, "RULE_SPECS", (rule,))
 
-    prior = catalog.classify_task(
-        ReviewTask(id="t", file="A.java", patch="+x")
-    )
+    prior = catalog.triage_tasks(
+        [ReviewTask(id="t", file="A.java", patch="+x")]
+    ).priors["t"]
     assert prior.coverage is RiskCoverage.UNCLASSIFIED
     assert prior.hypotheses == ()
 

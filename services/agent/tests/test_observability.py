@@ -13,8 +13,6 @@ from codeguard_agent.observability.collector import (
     _NODE_PHASE_MAP,
     _TraceCollector,
     _phase_for,
-    _serialize_messages,
-    _summarize_value,
 )
 from codeguard_agent.observability.dashboard import render_dashboard, render_dashboard_file
 from codeguard_agent.observability.models import (
@@ -1202,51 +1200,6 @@ class TestPhaseMapping:
         assert _phase_for("evidence_researcher") == "evidence"
         assert _phase_for("impact_assessor") == "judge"
         assert _phase_for("summary") == "outer_graph"
-
-
-class TestSummarizeValue:
-    def test_none(self):
-        assert _summarize_value(None) == "None"
-
-    def test_dict(self):
-        assert "diff_text" in _summarize_value({"diff_text": "long...", "enabled_tools": None})
-
-    def test_list(self):
-        assert "[3 items]" in _summarize_value([1, 2, 3])
-
-    def test_string_truncation(self):
-        assert _summarize_value("a" * 300, max_len=50).endswith("...")
-
-    def test_string_no_truncation(self):
-        assert _summarize_value("short", max_len=50) == "short"
-
-
-class TestSerializeMessages:
-    def test_empty(self):
-        assert _serialize_messages({}) == []
-
-    def test_not_dict(self):
-        assert _serialize_messages("not a dict") == []
-
-    def test_list_of_tuples(self):
-        msgs = {"messages": [("system", "you are a reviewer"), ("human", "review this diff")]}
-        result = _serialize_messages(msgs)
-        assert len(result) == 2
-        assert result[0]["role"] == "system"
-        assert result[1]["role"] == "human"
-
-    def test_message_objects(self):
-        """模拟 LangChain 消息对象。"""
-        class FakeMsg:
-            type = "ai"
-            content = "I found an issue"
-            tool_calls = [{"name": "get_file_content", "args": {"file_path": "Foo.java"}}]
-        msgs = {"messages": [FakeMsg()]}
-        result = _serialize_messages(msgs)
-        assert len(result) == 1
-        assert result[0]["role"] == "ai"
-        assert "tool_calls" in result[0]
-        assert result[0]["tool_calls"][0]["name"] == "get_file_content"
 
 
 def _chain_event(

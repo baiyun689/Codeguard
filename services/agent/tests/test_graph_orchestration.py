@@ -73,32 +73,6 @@ def test_dedup_gathered_reducer_canonicalizes_path_variants():
     assert out == [first]
 
 
-def test_context_bundle_render_truncates():
-    bundle = ContextBundle(
-        changed_files=["A.java"],
-        facts=[
-            ContextFact(
-                source="tool:get_diff_ast",
-                kind="ast_structure",
-                content="A.java " * 20,
-            )
-        ],
-    )
-    rendered = bundle.render(20)
-    assert "A.java" in rendered
-    assert "ContextBundle 已达预算上限" in rendered
-
-
-def test_context_provider_builds_fact_bundle_without_judgement():
-    diff = "diff --git a/A.java b/A.java\n--- a/A.java\n+++ b/A.java\n@@ -1 +1,2 @@\n+int x=1;\n"
-    ctx = PipelineContext(diff_text=diff, diff_summary="新增字段")
-    ContextProviderStage().execute(ctx)
-    assert ctx.context_bundle.changed_files == ["A.java"]
-    text = ctx.context_bundle.render()
-    assert "新增字段" not in text
-    assert "漏洞" not in text
-
-
 def test_context_provider_keeps_summary_and_files_out_of_facts():
     diff = "diff --git a/A.java b/A.java\n+++ b/A.java\n+class A {}"
     ctx = PipelineContext(diff_text=diff, diff_summary="新增 A")

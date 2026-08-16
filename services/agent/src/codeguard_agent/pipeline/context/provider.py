@@ -42,9 +42,6 @@ class ContextProviderStage(PipelineStage):
     第一版只产出事实和来源信息,不判断候选是否为真实问题。
     """
 
-    def __init__(self, *, include_broad_scan: bool = True) -> None:
-        self._include_broad_scan = include_broad_scan
-
     @property
     def name(self) -> str:
         return "context_provider"

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from time import sleep
@@ -273,42 +272,6 @@ class ToolAgentEngine(ReviewEngine):
             config={"recursion_limit": self._recursion_limit},
         )
 
-    def _extract_result(self, raw: Any, reviewer_name: str) -> ReviewResult:
-        """从 create_agent 的返回状态里取结构化结果,层层兜底。"""
-        # 1) 首选:图内置的结构化收口结果。
-        structured = raw.get("structured_response") if isinstance(raw, dict) else None
-        if isinstance(structured, ReviewResult):
-            return structured
-        # 部分模型返回 dict 而非 Pydantic 实例(Pydantic v1/v2 兼容差异),尝试转换。
-        if isinstance(structured, dict):
-            try:
-                return ReviewResult.model_validate(structured)
-            except Exception:  # noqa: BLE001
-                pass
-
-        # 2) 兜底:扫描全部消息的文本抠 JSON(不止最后一条,防止模型在中间消息吐了结果)。
-        raw_messages = raw.get("messages") if isinstance(raw, dict) else []
-        msgs = raw_messages if isinstance(raw_messages, list) else []
-        for msg in reversed(msgs):  # 从后往前扫,优先用最后一条
-            text = getattr(msg, "content", "") if hasattr(msg, "content") else str(msg)
-            snippet = _extract_json_object(text)
-            if snippet:
-                try:
-                    return ReviewResult.model_validate_json(snippet)
-                except Exception:  # noqa: BLE001
-                    continue
-
-        # 3) 最终兜底:空结果 + 告警(含诊断信息,便于定位模型产出格式)。
-        last_text = (_last_message_text(raw) or "")[:300]
-        sr_type = type(structured).__name__ if structured is not None else "None"
-        logger.warning(
-            "[%s] ReAct 未产出可用结构化结果,本次按空处理 "
-            "(structured_response type=%s, last_msg[:300]=%s)",
-            reviewer_name, sr_type, last_text,
-        )
-        return ReviewResult(summary="")
-
-
 def _extract_gathered_context(
     raw: Any,
     *,
@@ -443,50 +406,3 @@ def _summarize_args(args: Any) -> str:
         return json.dumps(args, ensure_ascii=False, sort_keys=True)
     except Exception:  # noqa: BLE001
         return str(args)
-
-
-def _last_message_text(raw: Any) -> str:
-    """取 create_agent 返回状态里最后一条消息的文本内容。"""
-    if not isinstance(raw, dict):
-        return str(raw)
-    messages = raw.get("messages") or []
-    if not messages:
-        return ""
-    last = messages[-1]
-    content = getattr(last, "content", last)
-    return content if isinstance(content, str) else str(content)
-
-
-def _extract_json_object(text: str) -> str | None:
-    """从可能混了 markdown/文字的文本里抽出第一个花括号配平的 JSON 对象。"""
-    if not text:
-        return None
-    # 优先 ```json ... ``` 代码块
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if fence:
-        candidate = fence.group(1)
-        if _is_json(candidate):
-            return candidate
-    # 否则做花括号配平扫描
-    depth = 0
-    start = -1
-    for i, c in enumerate(text):
-        if c == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0 and start >= 0:
-                candidate = text[start : i + 1]
-                if _is_json(candidate):
-                    return candidate
-    return None
-
-
-def _is_json(s: str) -> bool:
-    try:
-        json.loads(s)
-        return True
-    except json.JSONDecodeError:
-        return False

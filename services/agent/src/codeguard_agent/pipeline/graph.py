@@ -654,7 +654,7 @@ def _context_provider_node(tool_client):
             {"file": task.file, "lines": task.changed_lines}
             for task in tasks
         ]
-        ContextProviderStage(include_broad_scan=not scope.active).execute(ctx)
+        ContextProviderStage().execute(ctx)
         bundle = ctx.context_bundle
 
         budget = scope.effective_budget

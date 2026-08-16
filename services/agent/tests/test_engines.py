@@ -9,18 +9,14 @@ from __future__ import annotations
 
 import pytest
 
-from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
+from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.pipeline.risk.discovery import COMPLETE_PATCH_RESULT
 from codeguard_agent.pipeline.engines import (
     DirectEngine,
     ReviewOutcome,
     ToolAgentEngine,
     _extract_gathered_context,
-    _extract_json_object,
-    _last_message_text,
 )
-def _engine() -> ToolAgentEngine:
-    return ToolAgentEngine(tool_client=None)
 
 
 class _AIMsg:
@@ -102,54 +98,6 @@ def test_抽取_跳过空内容与非工具消息():
 def test_抽取_异常或非dict_返回空_不抛():
     assert _extract_gathered_context("not a dict") == []
     assert _extract_gathered_context({"messages": None}) == []
-
-
-def test_优先用图内置的_structured_response():
-    expected = ReviewResult(
-        summary="ok",
-        issues=[Issue(severity=Severity.CRITICAL, file="A.java", line=10,
-                      type="SQL注入", message="拼接用户输入", confidence=0.9)],
-    )
-    raw = {"structured_response": expected, "messages": []}
-    result = _engine()._extract_result(raw, "security")  # noqa: SLF001
-    assert result is expected
-    assert result.issues[0].type == "SQL注入"
-
-
-def test_无结构化_则从末条消息文本抠_json():
-    class _Msg:
-        content = '收尾:{"summary": "clean", "issues": []}'
-
-    raw = {"structured_response": None, "messages": [_Msg()]}
-    result = _engine()._extract_result(raw, "logic")  # noqa: SLF001
-    assert result.summary == "clean"
-    assert result.issues == []
-
-
-def test_都拿不到_兜底为空结果_不抛断():
-    raw = {"structured_response": None, "messages": [type("M", (), {"content": "纯文字没有 JSON"})()]}
-    result = _engine()._extract_result(raw, "quality")  # noqa: SLF001
-    assert result.issues == []
-    assert result.summary == ""
-
-
-def test_last_message_text_取末条内容():
-    raw = {"messages": [type("M", (), {"content": "first"})(), type("M", (), {"content": "last"})()]}
-    assert _last_message_text(raw) == "last"
-    assert _last_message_text({"messages": []}) == ""
-
-
-def test_extract_json_object_花括号配平():
-    assert _extract_json_object('prefix {"a": {"b": 1}} suffix') == '{"a": {"b": 1}}'
-
-
-def test_extract_json_object_代码块():
-    assert _extract_json_object('```json\n{"x": 1}\n```') == '{"x": 1}'
-
-
-def test_extract_json_object_无_json_返回_none():
-    assert _extract_json_object("no json at all") is None
-    assert _extract_json_object("") is None
 
 
 def test_gathered_context_excludes_structured_response_tool_message() -> None:

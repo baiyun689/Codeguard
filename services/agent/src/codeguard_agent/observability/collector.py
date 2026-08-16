@@ -55,24 +55,6 @@ def _phase_for(node_name: str) -> str:
     return _NODE_PHASE_MAP.get(node_name, "outer_graph")
 
 
-def _summarize_value(value: Any, max_len: int = 200) -> str:
-    """保留旧测试和摘要调用使用的一行值摘要。"""
-    if value is None:
-        return "None"
-    if isinstance(value, dict):
-        keys = list(value.keys())
-        return "{" + ", ".join(f"{key}=..." for key in keys[:8]) + "}"
-    if isinstance(value, list):
-        return f"[{len(value)} items]"
-    text = str(value)
-    return text[:max_len] + "..." if len(text) > max_len else text
-
-
-def _serialize_messages(messages_input: Any) -> list[dict[str, Any]]:
-    """向后兼容旧私有 helper；新代码统一走无损序列化模块。"""
-    return serialize_messages(messages_input)
-
-
 @dataclass
 class _NodeRun:
     run_id: str

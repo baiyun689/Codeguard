@@ -213,11 +213,6 @@ def _classify(task: ReviewTask) -> tuple[TaskRiskPrior, tuple[RuleDiagnostic, ..
     return _prior(task.id, signals), tuple(diagnostics)
 
 
-def classify_task(task: ReviewTask) -> TaskRiskPrior:
-    """Classify one task, retaining no diagnostic state for direct callers."""
-    return _classify(task)[0]
-
-
 def triage_tasks(tasks: list[ReviewTask]) -> TriageResult:
     """Classify tasks independently and retain rule failures as diagnostics."""
     priors: dict[str, TaskRiskPrior] = {}
