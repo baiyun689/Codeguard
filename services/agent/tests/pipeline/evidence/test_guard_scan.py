@@ -11,6 +11,8 @@ from codeguard_agent.models.tasks import (
     RiskTag,
     TaskContextBundle,
 )
+# 模块级导入冒烟:guard_scan 与 verifier 可同时导入(标签常量抽叶子模块后防循环导入)。
+from codeguard_agent.pipeline.evidence import guard_scan, verifier  # noqa: F401
 from codeguard_agent.pipeline.evidence.guard_scan import scan_guard_fact
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 
@@ -73,6 +75,63 @@ def _fact(raw: str) -> CandidateFact:
     return CandidateFact(
         fact_id="f1", source="tool:get_file_content", raw=raw, replay_status="verified"
     )
+
+
+def _ast_fallback_dossier(hunk_header: str) -> CandidateDossier:
+    """构造只有 ast_structure fact(legacy 兜底)的 dossier,无 symbol_context。"""
+    task = ReviewTask(
+        id="src/Service.java#h0",
+        file="src/Service.java",
+        hunk_header=hunk_header,
+        patch="+public void update() { save(); }",
+        changed_lines=[10],
+    )
+    candidate = CandidateIssue(
+        id="c1",
+        task_id=task.id,
+        source_agent="threat_model",
+        file=task.file,
+        line=10,
+        type="authorization",
+        severity_proposal=Severity.WARNING,
+        claim="update lacks authorization guard",
+        confidence=0.8,
+    )
+    bundle = TaskContextBundle(
+        task_id=task.id,
+        facts=[
+            ContextFact(
+                source="tool:get_diff_ast",
+                kind="ast_structure",
+                content=(
+                    "AST for: src/Service.java\n"
+                    "  class: Service\n"
+                    "    public void update() [L9-L12]"
+                ),
+            )
+        ],
+    )
+    return CandidateDossier(
+        candidate=candidate, task=task, context_bundle=bundle, requests=(), notes=()
+    )
+
+
+# 12 行文件:update() 位于 1-based 第 10 行(ast_structure 兜底声明的 [L9-L12] 区间内),
+# 其上一行带 @PreAuthorize。
+_METHOD_GUARD_FILE = (
+    "public class Service {\n"
+    "    private int a = 1;\n"
+    "    private int b = 2;\n"
+    "    private int c = 3;\n"
+    "    private int d = 4;\n"
+    "    private int e = 5;\n"
+    "    private int f = 6;\n"
+    "    private int g = 7;\n"
+    "    @PreAuthorize(\"hasRole('ADMIN')\")\n"
+    "    public void update() { save(); }\n"
+    "    }\n"
+    "}"
+)
 
 
 def test_scan_guard_detects_preauthorize_as_direct_contradicts():
@@ -159,4 +218,38 @@ def test_scan_guard_silent_without_annotation():
 def test_scan_guard_silent_for_empty_raw():
     dossier = _dossier_for_method()
     fact = _fact("")
+    assert scan_guard_fact(dossier, fact, RiskTag.AUTHORIZATION) is None
+
+
+def test_scan_guard_detects_class_level_guard():
+    # 类声明块分支:guard 在类声明上、被审方法本体无注解 → 命中所属类声明文案。
+    dossier = _dossier_for_method(start_line=3, end_line=4)
+    fact = _fact(
+        "@PreAuthorize(\"hasRole('ADMIN')\")\n"
+        "public class Service {\n"
+        "    public void update() { save(); }\n"
+        "}"
+    )
+    relation = scan_guard_fact(dossier, fact, RiskTag.AUTHORIZATION)
+    assert relation is not None
+    assert relation.relation == "contradicts"
+    assert relation.strength == "direct"
+    assert "所属类声明" in relation.observation
+
+
+def test_scan_guard_legacy_ast_structure_fallback_resolves_candidate_method():
+    # 无 method 类 symbol_context,只有 ast_structure fact:
+    # _resolved_method 走 _METHOD_RANGE 匹配 + task_span 过滤兜底,命中方法声明块 guard。
+    dossier = _ast_fallback_dossier("@@ -9,3 +9,3 @@")
+    fact = _fact(_METHOD_GUARD_FILE)
+    relation = scan_guard_fact(dossier, fact, RiskTag.AUTHORIZATION)
+    assert relation is not None
+    assert relation.relation == "contradicts"
+    assert relation.strength == "direct"
+
+
+def test_scan_guard_legacy_ast_structure_fallback_filters_outside_task_span():
+    # task_span 不覆盖 ast 声明的 [L9-L12] 区间时兜底不命中 → 不产出。
+    dossier = _ast_fallback_dossier("@@ -50,3 +50,3 @@")
+    fact = _fact(_METHOD_GUARD_FILE)
     assert scan_guard_fact(dossier, fact, RiskTag.AUTHORIZATION) is None

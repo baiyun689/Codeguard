@@ -13,7 +13,7 @@ from codeguard_agent.models.council import CandidateFact, FactRelation
 from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.context import rules as context_rules
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
-from codeguard_agent.pipeline.evidence.verifier import SECURITY_TAGS
+from codeguard_agent.pipeline.evidence.tags import SECURITY_TAGS
 
 _AUTHZ_ANNOTATIONS = ("PreAuthorize", "PostAuthorize", "Secured", "RolesAllowed")
 

@@ -15,6 +15,10 @@ from codeguard_agent.models.schemas import EvidenceTraceStep
 from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
+from codeguard_agent.pipeline.evidence.tags import (
+    MAINTAINABILITY_TAGS,
+    SECURITY_TAGS,
+)
 
 logger = logging.getLogger("codeguard")
 
@@ -27,19 +31,6 @@ CHAIN_TOOL_NAMES = (
 MAX_CHAIN_STEPS = 3
 _FILE_ARG = "file_path"
 _SYMBOL_ARG = "symbol_id"
-
-# 配方开关:安全敏感标签加安全路径,维护性标签加结构指标(确定性,零 LLM)。
-SECURITY_TAGS = frozenset({
-    RiskTag.AUTHORIZATION, RiskTag.AUTHENTICATION_SESSION,
-    RiskTag.WEB_SECURITY_CONFIG, RiskTag.INPUT_VALIDATION,
-    RiskTag.INJECTION, RiskTag.SQL_DATA_ACCESS, RiskTag.FILE_PATH_IO,
-    RiskTag.SSRF_OUTBOUND, RiskTag.CONFIG_SECURITY, RiskTag.DATA_EXPOSURE,
-    RiskTag.DESERIALIZATION,
-})
-MAINTAINABILITY_TAGS = frozenset({
-    RiskTag.COMPLEXITY_CONTROL_FLOW, RiskTag.DUPLICATION_DESIGN,
-    RiskTag.OBSERVABILITY_TESTABILITY,
-})
 
 
 def validate_chain(
