@@ -125,36 +125,6 @@ def _claim_security(dossier: "CandidateDossier") -> "list[ToolCallSpec]":
     return file_sensitive(dossier)
 
 
-def _claim_upstream_security(dossier: "CandidateDossier") -> "list[ToolCallSpec]":
-    """上游调用方 + 安全路径（不含文件内容）。保留供将来使用。"""
-    from codeguard_agent.pipeline.evidence.rules.recipes import callers_upstream
-    from codeguard_agent.pipeline.evidence.strategy_types import (
-        EvidenceCapability,
-        ToolCallSpec,
-    )
-
-    calls: "list[ToolCallSpec]" = [*callers_upstream(dossier)]
-    if dossier.context_bundle is not None:
-        import json
-        for fact in dossier.context_bundle.facts:
-            if fact.kind != "symbol_context" or fact.truncated:
-                continue
-            try:
-                value = json.loads(fact.content)
-                symbol = str(value.get("symbol_id", ""))
-                if symbol:
-                    calls.append(
-                        ToolCallSpec(
-                            capability=EvidenceCapability.SECURITY_PATH,
-                            arguments=(("symbol_id", symbol),),
-                        )
-                    )
-                    break
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
-    return calls
-
-
 def _claim_file_and_metrics(dossier: "CandidateDossier") -> "list[ToolCallSpec]":
     """文件 + 上游 + 结构指标。适用 FIX_SCOPE。"""
     from codeguard_agent.pipeline.evidence.rules.recipes import (

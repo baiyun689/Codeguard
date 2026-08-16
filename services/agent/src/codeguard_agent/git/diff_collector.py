@@ -53,22 +53,6 @@ def collect_head_revision(repo_path: str = ".") -> str:
     return result.stdout.strip()
 
 
-def collect_staged_diff(repo_path: str = ".") -> str:
-    """采集已暂存(git add 之后)的改动。
-
-    适合在 commit 前做"提交前审查"的场景。
-    """
-    result = subprocess.run(
-        ["git", "-C", repo_path, "diff", "--cached"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"git diff --cached 执行失败: {result.stderr.strip()}")
-    return result.stdout
-
-
 def parse_changed_files(diff_text: str) -> list[str]:
     """从 unified diff 解析出本次变更涉及的"现文件"相对路径集合(去重、排序)。
 

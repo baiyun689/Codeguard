@@ -25,7 +25,6 @@ if TYPE_CHECKING:
     from codeguard_agent.models.tasks import RiskTag  # noqa: F401
 
 
-SourceAgent = Literal["threat_model", "behavior", "maintainability"]
 EvidencePurpose = Literal["support", "counter", "severity"]
 
 
