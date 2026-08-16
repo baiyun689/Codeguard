@@ -4,10 +4,12 @@ from codeguard_agent.models.council import (
     CandidateIssue,
     FactRelation,
 )
-from codeguard_agent.models.schemas import Issue, Severity
+from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import ReviewTask, RiskTag
 from codeguard_agent.pipeline.council.dedup import CandidateGroup
 from codeguard_agent.pipeline.council.verdict import (
+    VerdictBatch,
+    consolidate_groups,
     gate_candidate,
     judge_direct,
     judge_with_evidence,
@@ -193,3 +195,65 @@ def test_judge_direct_llm_unavailable_keeps_proposal():
     )
     assert batch.verdicts[0].action == "keep"
     assert batch.final_issues[0].severity == Severity.WARNING
+
+
+def test_consolidate_ungrouped_passes_through():
+    candidate = _verdict_dossier().candidate
+    issue = candidate.to_issue()
+    batch = VerdictBatch()
+    consolidate_groups(batch, [(candidate.id, issue)], ())
+    assert batch.final_candidate_ids == [candidate.id]
+    assert batch.final_issues == [issue]
+
+
+def test_consolidate_shape_mismatch_splits_back():
+    candidate = _verdict_dossier().candidate
+    other = candidate.model_copy(update={"id": "c2", "line": 12})
+    group = _group_with([candidate, other])
+    batch = VerdictBatch()
+    consolidate_groups(
+        batch,
+        [
+            (candidate.id, candidate.to_issue()),
+            (other.id, other.to_issue().model_copy(update={"severity": Severity.CRITICAL})),
+        ],
+        [group],
+    )
+    assert batch.final_candidate_ids == [candidate.id, other.id]
+    assert len(batch.final_issues) == 2
+    assert any(event == "candidate_group_split" for event, _ in batch.trace)
+
+
+def test_consolidate_shape_match_merges_semantics():
+    candidate = _verdict_dossier().candidate  # line=10, type="t", claim="claim", conf=0.8
+    other = candidate.model_copy(update={
+        "id": "c2", "line": 12, "claim": "claim2", "confidence": 0.6,
+        "suggestion": "建议",
+    })
+    group = _group_with([candidate, other])
+    batch = VerdictBatch()
+    consolidate_groups(
+        batch,
+        [(candidate.id, candidate.to_issue()), (other.id, other.to_issue())],
+        [group],
+    )
+    assert batch.final_candidate_ids == ["c1"]
+    assert len(batch.final_issues) == 1
+    merged = batch.final_issues[0]
+    assert merged.line == 10  # 最小正行号
+    assert merged.type == "t"  # 相同类型去重
+    assert merged.message == "claim；claim2"  # 消息去重拼接
+    assert merged.suggestion == "建议"  # 空建议被过滤
+    assert merged.confidence == 0.6  # 置信度取 min
+    assert any(event == "candidate_group_consolidated" for event, _ in batch.trace)
+
+
+def test_consolidate_partial_support_keeps_only_kept_member():
+    candidate = _verdict_dossier().candidate
+    other = candidate.model_copy(update={"id": "c2", "line": 12})
+    group = _group_with([candidate, other])
+    batch = VerdictBatch()
+    consolidate_groups(batch, [(other.id, other.to_issue())], [group])
+    assert batch.final_candidate_ids == [other.id]
+    assert len(batch.final_issues) == 1
+    assert batch.final_issues[0].line == 12

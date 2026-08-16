@@ -332,7 +332,10 @@ def judge_with_evidence(
     max_retries: int,
     candidate_groups: Sequence[CandidateGroup] = (),
 ) -> VerdictBatch:
-    """完整档裁决:门控 → 终审 → 组内合并。"""
+    """完整档裁决:门控 → 终审 → 组内合并。
+
+    两入口刻意同构——ADR-046 §5.6 要求消融档与完整档唯一差异是输入里有没有证据,勿合并重构。
+    """
     batch = VerdictBatch()
     for failure in assembly.failures:
         verdict = Verdict(failure.candidate.id, "drop", "invalid_candidate_binding", failure.reason)
@@ -371,7 +374,10 @@ def judge_direct(
     max_retries: int,
     candidate_groups: Sequence[CandidateGroup] = (),
 ) -> VerdictBatch:
-    """无证据链消融档:与 judge_with_evidence 同构,唯一差异是无门控、终审输入无关系。"""
+    """无证据链消融档:与 judge_with_evidence 同构,唯一差异是无门控、终审输入无关系。
+
+    两入口刻意同构——ADR-046 §5.6 要求消融档与完整档唯一差异是输入里有没有证据,勿合并重构。
+    """
     batch = VerdictBatch()
     for failure in assembly.failures:
         verdict = Verdict(failure.candidate.id, "drop", "invalid_candidate_binding", failure.reason)
