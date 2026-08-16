@@ -323,16 +323,18 @@ def test_evidence_and_judge_prompts_describe_wrapper_contracts() -> None:
     assert "severity 与 confidence 是两条独立轴" in judge
 
 
-def test_summary_and_classifier_prompts_name_structured_fields() -> None:
+def test_summary_prompt_names_structured_fields() -> None:
     summary = _prompt("summary-system.txt") + _prompt("summary-user.txt")
     assert "`summary`" in summary
     assert "唯一字段" in summary
 
-    classifier = _prompt("evidence-tag-classifier-system.txt")
-    assert all(
-        f"`{field}`" in classifier for field in ("tag", "confidence", "reason")
-    )
-    assert "恰好选择一个" in classifier
+
+def test_base_prompts_carry_evidence_trace_contract() -> None:
+    for name in ("threat-model-base.txt", "behavior-base.txt", "maintainability-base.txt"):
+        text = _prompt(name)
+        assert "## 取证溯源" in text
+        assert "宁缺毋滥" in text
+        assert "## 输出" in text
 
 
 def test_judge_prompt_names_every_synthesis_field() -> None:
