@@ -35,3 +35,10 @@ def test_gate_no_support_drops():
 
 def test_gate_supported_passes():
     assert gate_candidate([_relation("supports")]) is None
+
+
+def test_gate_supported_with_contextual_counter_passes():
+    # supports + contextual contradicts 放行给终审,不触发 no_supporting_evidence
+    assert gate_candidate([
+        _relation("supports"), _relation("contradicts"),
+    ]) is None

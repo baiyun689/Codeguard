@@ -5,12 +5,9 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Sequence
 
 from codeguard_agent.models.council import FactRelation
-
-logger = logging.getLogger("codeguard")
 
 
 def gate_candidate(relations: Sequence[FactRelation]) -> tuple[str, str] | None:
