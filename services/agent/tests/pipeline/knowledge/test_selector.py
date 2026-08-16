@@ -9,11 +9,13 @@ from codeguard_agent.models.knowledge import (
     SelectedKnowledge,
 )
 from codeguard_agent.models.tasks import (
+    ContextFact,
     ReviewTask,
     ReviewerKind,
     RiskCoverage,
     RiskHypothesis,
     RiskTag,
+    TaskContextBundle,
     TaskRiskPrior,
 )
 from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
@@ -192,3 +194,33 @@ class TestKnowledgeSelector:
         )
         topics = [s.fragment.topic for s in bundle.specialized]
         assert "AUTHORIZATION" in topics
+
+    def test_knowledge_uses_prefetched_context_and_reports_omitted_topics(self):
+        """迁移自 test_four_phase_contracts(ADR-046):预取 symbol_context 时选知识并上报省略主题。"""
+        catalog = KnowledgeCatalog()
+        task = ReviewTask(
+            id="OrderService.java#h0",
+            file="src/main/java/OrderService.java",
+            patch="+repository.save(order);\n+publisher.publish(event);",
+        )
+        context = TaskContextBundle(
+            task_id=task.id,
+            facts=[
+                ContextFact(
+                    source="resolve_change_context",
+                    kind="symbol_context",
+                    content='{"declaration":"KafkaTemplate publisher; @Transactional"}',
+                )
+            ],
+        )
+        bundle = select_knowledge(
+            reviewer=ReviewerKind.BEHAVIOR,
+            task=task,
+            prior=_make_prior(task_id=task.id),
+            context=context,
+            catalog=catalog,
+            budget=KnowledgeBudget(max_chars=6000, max_specialized_fragments=1),
+        )
+
+        assert bundle.specialized
+        assert bundle.omitted_topics
