@@ -45,6 +45,23 @@ def gate_candidate(relations: Sequence[FactRelation]) -> tuple[str, str] | None:
     return None
 
 
+_ANALYSIS_FAILURE_LIMITATIONS = frozenset({
+    "analysis_failed_or_missing",
+    "parallel_analysis_failed",
+})
+
+
+def _analysis_failed(relations: Sequence[FactRelation]) -> bool:
+    """关系分析层整体失败(所有关系均为分析失败降级产物)时,门控不得误杀。"""
+    if not relations:
+        return False
+    return all(
+        rel.relation == "insufficient"
+        and rel.limitation in _ANALYSIS_FAILURE_LIMITATIONS
+        for rel in relations
+    )
+
+
 def synthesize_verdict(
     dossier: CandidateDossier,
     relations: Sequence[FactRelation],
@@ -237,7 +254,9 @@ def _invoke_with_evidence(
             fact.fact_id: fact
             for fact in facts_by_candidate.get(dossier.candidate.id, [])
         }
-    gate = gate_candidate(relations)
+    # 防误杀(ADR-046 §7):关系分析层整体失败(LLM 瞬时故障)时跳过门控直接终审,
+    # 否则 gate ② 会把全部候选确定性 drop,整轮 Recall 全崩;终审再失败走 keep+提案兜底。
+    gate = None if _analysis_failed(relations) else gate_candidate(relations)
     if gate is not None:
         reason_code, reason = gate
         verdict = Verdict(dossier.candidate.id, "drop", reason_code, reason)

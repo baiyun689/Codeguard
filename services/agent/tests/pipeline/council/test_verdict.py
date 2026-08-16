@@ -229,6 +229,45 @@ def test_judge_with_evidence_gate_drops_without_llm():
     assert batch.verdicts[0].reason_code == "evidence_insufficient"
 
 
+def test_judge_with_evidence_analysis_failure_skips_gate():
+    """关系分析层整体失败(ADR-046 §7):跳过门控②直接终审,不被误杀。"""
+    dossier = _verdict_dossier()
+    assessment = CandidateDirectAssessment(
+        candidate_id="C001", action="keep", severity=Severity.WARNING,
+        reason="终审兜底保留", cited_fact_ids=(),
+    )
+    batch = judge_with_evidence(
+        _assembly(dossier),
+        {"c1": [
+            FactRelation(
+                fact_id="f1", relation="insufficient",
+                limitation="analysis_failed_or_missing",
+            ),
+        ]},
+        judge_llm=_FakeLLM(assessment), structured_method="function_calling", max_retries=1,
+    )
+    assert [v.action for v in batch.verdicts] == ["keep"]
+    assert batch.verdicts[0].reason_code == "severity_resolved"
+    assert batch.final_issues == [dossier.candidate.to_issue()]
+
+
+def test_judge_with_evidence_normal_insufficient_still_gated():
+    """对照:正常 insufficient(非分析失败标记)仍被门控② drop,修复不过宽。"""
+    dossier = _verdict_dossier()
+    batch = judge_with_evidence(
+        _assembly(dossier),
+        {"c1": [
+            FactRelation(
+                fact_id="f1", relation="insufficient",
+                limitation="fact_empty",
+            ),
+        ]},
+        judge_llm=_FakeLLM(None), structured_method="function_calling", max_retries=1,
+    )
+    assert [v.action for v in batch.verdicts] == ["drop"]
+    assert batch.verdicts[0].reason_code == "evidence_insufficient"
+
+
 def test_judge_with_evidence_llm_failure_keeps_proposal_severity():
     dossier = _verdict_dossier()
     batch = judge_with_evidence(
