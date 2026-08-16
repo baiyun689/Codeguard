@@ -95,8 +95,9 @@ def _verdict_dossier() -> CandidateDossier:
         claim="claim", confidence=0.8,
     )
     task = ReviewTask(id="t1", file="A.java", patch="+x")
-    return CandidateDossier(candidate=candidate, task=task, context_bundle=None,
-                            requests=(), notes=())
+    return CandidateDossier(
+        candidate=candidate, task=task, context_bundle=None
+    )
 
 
 def test_verdict_payload_carries_replay_status_and_omits_when_missing():

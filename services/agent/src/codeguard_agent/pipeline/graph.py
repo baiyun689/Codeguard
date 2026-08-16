@@ -1196,8 +1196,6 @@ def _coordinator_node(effective_judge_llm):
             raw,
             scoped_tasks,
             bundles,
-            (),
-            (),
         )
         resolutions = {
             dossier.candidate.id: resolve_candidate_tag(dossier.candidate)
@@ -1327,8 +1325,6 @@ def _assemble_state_dossiers(state: ReviewState):
         state.get("candidate_issues") or [],
         state.get("review_tasks") or [],
         state.get("task_context_bundles") or {},
-        (),
-        (),
         state.get("candidate_groups") or [],
     )
 

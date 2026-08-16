@@ -1,156 +1,17 @@
 """Phase 5B evidence model contracts."""
 
-from hashlib import sha256
-
-import pytest
-from pydantic import ValidationError
-
 from codeguard_agent.models import council
-from codeguard_agent.models.council import (
-    CandidateEvidenceAssessment,
-    EvidenceRequest,
-    Verdict,
-)
-
-
-def test_evidence_request_id_distinguishes_strategy_and_purpose():
-    common = {
-        "candidate_id": "candidate-1",
-        "target": "src/Service.java",
-        "question": "调用方是否完成权限校验？",
-        "preferred_tools": ["inspect_change_impact", "get_file_content"],
-    }
-
-    baseline = EvidenceRequest(
-        **common,
-        strategy_id="auth-callers",
-        purpose="counter",
-    )
-    different_strategy = EvidenceRequest(
-        **common,
-        strategy_id="auth-guards",
-        purpose="counter",
-    )
-    different_purpose = EvidenceRequest(
-        **common,
-        strategy_id="auth-callers",
-        purpose="support",
-    )
-
-    assert len({baseline.id, different_strategy.id, different_purpose.id}) == 3
-
-
-def test_evidence_request_id_is_stable_for_identical_semantics():
-    semantics = {
-        "candidate_id": "candidate-1",
-        "strategy_id": "auth-callers",
-        "purpose": "severity",
-        "target": "src/Service.java",
-        "question": "影响范围是否跨越信任边界？",
-        "preferred_tools": ["inspect_change_impact", "get_file_content"],
-    }
-
-    first = EvidenceRequest(**semantics)
-    second = EvidenceRequest(**semantics)
-    payload = "\0".join(
-        [
-            "candidate-1",
-            "auth-callers",
-            "severity",
-            "src/Service.java",
-            "影响范围是否跨越信任边界？",
-            "inspect_change_impact",
-            "get_file_content",
-        ]
-    )
-    expected_id = f"evidence-{sha256(payload.encode('utf-8')).hexdigest()[:16]}"
-
-    assert first.id == second.id == expected_id
-
-
-@pytest.mark.parametrize(
-    "missing",
-    ["candidate_id", "strategy_id", "purpose", "target", "question"],
-)
-def test_evidence_request_requires_all_strategy_fields(missing):
-    values = {
-        "candidate_id": "candidate-1",
-        "strategy_id": "claim.changed_condition.counter",
-        "purpose": "counter",
-        "target": "src/Service.java",
-        "question": "当前作用域是否已有鉴权保护？",
-    }
-    values.pop(missing)
-
-    with pytest.raises(ValidationError):
-        EvidenceRequest(**values)
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("candidate_id", " "),
-        ("strategy_id", ""),
-        ("target", "\t"),
-        ("question", "\n"),
-    ],
-)
-def test_evidence_request_rejects_blank_strategy_fields(field, value):
-    values = {
-        "candidate_id": "candidate-1",
-        "strategy_id": "claim.changed_condition.counter",
-        "purpose": "counter",
-        "target": "src/Service.java",
-        "question": "当前作用域是否已有鉴权保护？",
-    }
-    values[field] = value
-
-    with pytest.raises(ValidationError):
-        EvidenceRequest(**values)
-
-
-def test_evidence_note_requires_at_least_one_finding():
-    with pytest.raises(ValidationError):
-        council.EvidenceNote(request_id="request-1", candidate_id="candidate-1", findings=[])
-
-
-@pytest.mark.parametrize("relation", ["supports", "contradicts"])
-def test_relational_finding_requires_observation(relation):
-    with pytest.raises(ValidationError):
-        council.EvidenceFinding(
-            evidence_id="evidence-1",
-            source="task_patch",
-            observation=" ",
-            relation=relation,
-            strength="direct",
-        )
-
-
-def test_insufficient_finding_is_contextual_and_requires_limitation():
-    with pytest.raises(ValidationError):
-        council.EvidenceFinding(
-            evidence_id="evidence-1",
-            source="task_patch",
-            observation="",
-            relation="insufficient",
-            strength="direct",
-            limitation="not enough context",
-        )
-    with pytest.raises(ValidationError):
-        council.EvidenceFinding(
-            evidence_id="evidence-1",
-            source="task_patch",
-            observation="",
-            relation="insufficient",
-            strength="contextual",
-            limitation=" ",
-        )
+from codeguard_agent.models.council import Verdict
 
 
 def test_legacy_evidence_types_are_removed():
     assert not hasattr(council, "EvidenceNoteStatus")
     assert not hasattr(council, "EvidenceJudgment")
     assert not hasattr(council, "build_evidence_requests")
+    assert not hasattr(council, "EvidenceRequest")
+    assert not hasattr(council, "EvidenceNote")
+    assert not hasattr(council, "EvidenceFinding")
+    assert not hasattr(council, "CandidateEvidenceAssessment")
 
 
 def test_verdict_action_is_keep_or_drop():
@@ -159,34 +20,3 @@ def test_verdict_action_is_keep_or_drop():
     assert keep.action == "keep"
     assert drop.action == "drop"
     assert keep.resolved_severity is None
-
-
-# ── Evidence synthesis models (Task 1) ──
-
-
-def test_candidate_evidence_assessment_only_synthesizes_claim_status():
-    assessment = CandidateEvidenceAssessment(
-        candidate_id="C001",
-        claim_status="supported",
-        counter_effect="partial",
-        conflicts=[],
-        reason="candidate remains supported after partial mitigation",
-    )
-    assert set(CandidateEvidenceAssessment.model_fields) == {
-        "candidate_id",
-        "claim_status",
-        "counter_effect",
-        "conflicts",
-        "reason",
-    }
-    assert assessment.claim_status == "supported"
-    assert assessment.counter_effect == "partial"
-
-
-def test_candidate_evidence_assessment_requires_candidate_id():
-    with pytest.raises(ValidationError):
-        CandidateEvidenceAssessment(
-            candidate_id="  ",
-            claim_status="supported",
-            counter_effect="none",
-        )

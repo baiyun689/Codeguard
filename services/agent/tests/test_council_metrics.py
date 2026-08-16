@@ -33,7 +33,7 @@ def _dossier(candidate_id: str, *, file: str | None = None) -> CandidateDossier:
         severity_proposal=Severity.WARNING,
         claim="敏感操作缺少授权保护",
     )
-    return CandidateDossier(candidate, task, None, (), ())
+    return CandidateDossier(candidate, task, None)
 
 
 def _fact_and_relation(
@@ -130,7 +130,7 @@ def test_all_insufficient_retained_rate_counts_only_nonempty_relations():
     assert stats.all_insufficient_retained_rate == 1.0
 
 
-def test_final_issue_strategy_and_fact_coverage_use_surviving_candidates():
+def test_final_issue_fact_coverage_uses_surviving_candidates():
     with_fact, fact_a, rel_a = _with_relation(
         _dossier("with-fact"),
         relation="supports",
@@ -156,9 +156,7 @@ def test_final_issue_strategy_and_fact_coverage_use_surviving_candidates():
     )
 
     assert stats.final_issue_count == 3
-    # strategy covered = 幸存候选存在非空关系;fact covered = 存在非 insufficient 关系
-    assert stats.final_issue_strategy_covered_count == 2
-    assert stats.final_issue_strategy_coverage == 2 / 3
+    # fact covered = 幸存候选存在非 insufficient 关系
     assert stats.final_issue_fact_covered_count == 1
     assert stats.final_issue_fact_coverage == 1 / 3
 
@@ -182,7 +180,6 @@ def test_zero_denominators_are_none_except_average_tool_calls():
 
     assert stats.direct_counter_retained_rate is None
     assert stats.all_insufficient_retained_rate is None
-    assert stats.final_issue_strategy_coverage is None
     assert stats.final_issue_fact_coverage is None
     assert stats.average_evidence_tool_calls == 0.0
 
@@ -214,7 +211,7 @@ def test_replay_stats_are_derived_from_facts():
     assert stats.replay_failed_count == 1
 
 
-def test_gate_and_severity_metrics_are_derived_from_verdicts_and_trace():
+def test_gate_and_severity_metrics_are_derived_from_verdicts():
     candidates = [
         _dossier("no-support"),
         _dossier("defaulted"),
@@ -242,32 +239,6 @@ def test_gate_and_severity_metrics_are_derived_from_verdicts_and_trace():
             resolved_severity=Severity.CRITICAL,
         ),
     ]
-    traces = [
-        CouncilTrace(
-            node="council_judge",
-            event="severity_resolved",
-            detail=(
-                '{"candidate_id":"normal-default","matched_rule":"authorization.default",'
-                '"severity":"WARNING","missing_critical_factors":["impact"]}'
-            ),
-        ),
-        CouncilTrace(
-            node="council_judge",
-            event="severity_resolved",
-            detail=(
-                '{"candidate_id":"defaulted","matched_rule":"authorization.default",'
-                '"severity":"WARNING","missing_critical_factors":["impact"]}'
-            ),
-        ),
-        CouncilTrace(
-            node="council_judge",
-            event="severity_resolved",
-            detail=(
-                '{"candidate_id":"critical","matched_rule":"authorization.critical",'
-                '"severity":"CRITICAL","missing_critical_factors":[]}'
-            ),
-        ),
-    ]
 
     stats = compute_council_run_stats(
         candidates=[item.candidate for item in candidates],
@@ -277,15 +248,13 @@ def test_gate_and_severity_metrics_are_derived_from_verdicts_and_trace():
         facts_by_candidate={},
         relations_by_candidate={},
         truncated_candidates=0,
-        council_trace=traces,
+        council_trace=[],
     )
 
     assert stats.no_support_candidate_count == 1
     assert stats.no_support_retained_count == 0
     assert stats.judge_synthesis_failed_count == 1
     assert stats.critical_candidate_count == 1
-    assert stats.critical_policy_matched_count == 1
-    assert stats.critical_missing_factor_count == 2
     assert stats.severity_transitions == {
         "WARNING->WARNING": 2,
         "WARNING->CRITICAL": 1,

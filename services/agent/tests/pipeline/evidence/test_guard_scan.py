@@ -67,7 +67,7 @@ def _dossier_for_method(
         ],
     )
     return CandidateDossier(
-        candidate=candidate, task=task, context_bundle=bundle, requests=(), notes=()
+        candidate=candidate, task=task, context_bundle=bundle
     )
 
 
@@ -112,7 +112,7 @@ def _ast_fallback_dossier(hunk_header: str) -> CandidateDossier:
         ],
     )
     return CandidateDossier(
-        candidate=candidate, task=task, context_bundle=bundle, requests=(), notes=()
+        candidate=candidate, task=task, context_bundle=bundle
     )
 
 

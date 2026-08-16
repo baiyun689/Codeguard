@@ -5,28 +5,17 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from enum import Enum
-from hashlib import sha256
-from typing import Annotated, Literal, TYPE_CHECKING
+from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
     Field,
     StringConstraints,
-    field_validator,
     model_validator,
 )
 
 from codeguard_agent.models.schemas import EvidenceTraceStep, Issue, Severity
-
-if TYPE_CHECKING:
-    from codeguard_agent.models.tasks import RiskTag  # noqa: F401
-
-
-EvidencePurpose = Literal["support", "counter", "severity"]
-
 
 MAX_CANDIDATES_PER_AGENT = 10
 NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -44,16 +33,6 @@ class Verdict:
     reason_code: str
     reason: str = ""
     resolved_severity: Severity | None = None
-
-
-class CandidateEvidenceAssessment(BaseModel):
-    """LLM evidence synthesizer 对单个候选的完整证据综合。"""
-
-    candidate_id: NonBlankStr
-    claim_status: Literal["supported", "refuted", "unresolved"]
-    counter_effect: Literal["none", "partial", "complete", "unknown"]
-    conflicts: list[str] = Field(default_factory=list)
-    reason: str = ""
 
 
 class CandidateDirectAssessment(BaseModel):
@@ -127,46 +106,6 @@ class ContextBundle(BaseModel):
     facts: list[ContextFact] = Field(default_factory=list)
 
 
-class EvidenceRequest(BaseModel):
-    """候选 issue 对证据的结构化请求。"""
-
-    id: str = ""
-    candidate_id: NonBlankStr
-    strategy_id: NonBlankStr
-    purpose: EvidencePurpose
-    target: NonBlankStr
-    question: NonBlankStr
-    preferred_tools: list[str] = Field(default_factory=list)
-    # Phase 3: concern 对齐字段
-    goal_id: str | None = None
-    concern_id: str | None = None
-    claim_ids: tuple[str, ...] = ()
-    fact_type: "EvidenceFactType | None" = None
-
-    @model_validator(mode="after")
-    def assign_stable_id(self) -> "EvidenceRequest":
-        if not self.id:
-            parts = [
-                self.candidate_id,
-                self.strategy_id,
-                self.purpose,
-                self.target,
-                self.question,
-                *self.preferred_tools,
-            ]
-            # 保持旧 request 的稳定 ID；claim-driven request 才加入对齐维度。
-            if self.goal_id is not None:
-                parts.extend([
-                    self.goal_id,
-                    self.concern_id or "",
-                    ",".join(self.claim_ids),
-                    self.fact_type.value if self.fact_type is not None else "",
-                ])
-            payload = "\0".join(parts)
-            self.id = f"evidence-{sha256(payload.encode('utf-8')).hexdigest()[:16]}"
-        return self
-
-
 class CandidateIssue(BaseModel):
     """发现者 Agent 写入共享黑板的候选问题。"""
 
@@ -224,41 +163,6 @@ class CandidateIssue(BaseModel):
         )
 
 
-class EvidenceFinding(BaseModel):
-    """一项事实与候选主张之间的受约束关系。"""
-
-    evidence_id: NonBlankStr
-    source: NonBlankStr
-    observation: str
-    relation: Literal["supports", "contradicts", "insufficient"]
-    strength: Literal["direct", "contextual"]
-    limitation: str = ""
-    # Phase 3: concern 对齐字段
-    goal_id: str | None = None
-    concern_id: str | None = None
-    claim_ids: tuple[str, ...] = ()
-    fact_type: "EvidenceFactType | None" = None
-
-    @model_validator(mode="after")
-    def validate_safe_relation(self) -> "EvidenceFinding":
-        if self.relation in {"supports", "contradicts"} and not self.observation.strip():
-            raise ValueError("supports/contradicts finding requires observation")
-        if self.relation == "insufficient":
-            if self.strength != "contextual":
-                raise ValueError("insufficient finding must be contextual")
-            if not self.limitation.strip():
-                raise ValueError("insufficient finding requires limitation")
-        return self
-
-
-class EvidenceNote(BaseModel):
-    """一个请求对应的非空证据发现集合。"""
-
-    request_id: NonBlankStr
-    candidate_id: NonBlankStr
-    findings: list[EvidenceFinding] = Field(min_length=1)
-
-
 class CouncilTrace(BaseModel):
     """ReviewCouncil 的轻量过程事件。"""
 
@@ -281,12 +185,9 @@ class CouncilRunStats(BaseModel):
     candidate_dedup_removed_count: int = Field(default=0, description="归并阶段真实删除的候选数")
     candidate_dedup_llm_calls: int = Field(default=0, description="归并 LLM 调用次数")
     candidate_dedup_block_failure_count: int = Field(default=0, description="归并失败块数")
-    evidence_request_count: int = Field(default=0, description="累计证据请求总数")
     truncated_candidates: int = Field(default=0, description="发现阶段因候选上限被截断的数量")
     verdict_count: int = Field(default=0, description="Judge 产生的候选裁决总数")
     removed_by_judge: int = Field(default=0, description="Judge 裁决为 drop 的候选数")
-    removed_by_fp_rules: int = 0
-    removed_by_fp_llm: int = 0
     no_support_candidate_count: int = Field(
         default=0, description="因缺少 support 证据而被 gate 拒绝的候选数"
     )
@@ -314,26 +215,13 @@ class CouncilRunStats(BaseModel):
         description="all_insufficient_retained_count/all_insufficient_candidate_count；分母为零时 None",
     )
     critical_candidate_count: int = Field(
-        default=0, description="最终解析为 CRITICAL 的候选数"
-    )
-    critical_policy_matched_count: int = Field(
-        default=0, description="满足完整 CRITICAL policy 的候选数"
-    )
-    critical_missing_factor_count: int = Field(
-        default=0, description="所有候选累计缺失的 CRITICAL factor 数"
+        default=0, description="keep 且解析为 CRITICAL 的候选数"
     )
     severity_transitions: dict[str, int] = Field(
         default_factory=dict,
         description="severity_proposal 到 resolved_severity 的转移计数",
     )
     final_issue_count: int = Field(default=0, description="最终 Issue 对应的 survivor 候选数")
-    final_issue_strategy_covered_count: int = Field(
-        default=0, description="survivor 中至少关联一条有效 EvidenceRequest 的数量"
-    )
-    final_issue_strategy_coverage: float | None = Field(
-        default=None,
-        description="final_issue_strategy_covered_count/final_issue_count；分母为零时 None",
-    )
     final_issue_fact_covered_count: int = Field(
         default=0, description="survivor 中至少有关联非 insufficient finding 的数量"
     )
@@ -377,289 +265,3 @@ class CouncilRunStats(BaseModel):
     replay_failed_count: int = Field(default=0, description="重放调用失败的 fact 数")
     chain_used_count: int = Field(default=0, description="使用合法取证链的候选数")
     recipe_fallback_count: int = Field(default=0, description="无链/废链回退固定配方的候选数")
-
-
-# ── Phase 3: Candidate Concern & Claim-based Evidence ──
-
-
-class EvidenceFactType(str, Enum):
-    """证据目标的事实类型——描述"要证明什么"，不是"用什么工具"。"""
-
-    CHANGED_CONDITION = "changed_condition"
-    VALUE_IDENTITY = "value_identity"
-    CALL_PATH = "call_path"
-    DATA_FLOW = "data_flow"
-    STATE_TRANSITION = "state_transition"
-    TRANSACTION_BOUNDARY = "transaction_boundary"
-    ORDERING = "ordering"
-    GUARD_PRESENCE = "guard_presence"
-    REACHABILITY = "reachability"
-    SIDE_EFFECT = "side_effect"
-    OBSERVABLE_CONSEQUENCE = "observable_consequence"
-    FIX_SCOPE = "fix_scope"
-    IMPACT_FACTOR = "impact_factor"
-
-
-class EvidencePolarity(str, Enum):
-    SUPPORT = "support"
-    COUNTER = "counter"
-    IMPACT = "impact"
-
-
-class CandidateClaim(BaseModel):
-    """候选的结构化主张——代码中的错误机制，而非风险类别。"""
-
-    claim_id: str = ""
-    candidate_id: str = ""
-    root_cause: str = ""
-    trigger: str = ""
-    observable_consequence: str = ""
-    fix_location: str = ""
-    fix_action: str = ""
-    affected_path: tuple[str, ...] = ()
-    unresolved_fields: tuple[str, ...] = ()
-
-    @model_validator(mode="after")
-    def assign_claim_id(self) -> "CandidateClaim":
-        if not self.claim_id:
-            payload = "\0".join(
-                [self.candidate_id, self.root_cause, self.trigger, self.observable_consequence,
-                 self.fix_location, self.fix_action]
-            )
-            self.claim_id = f"claim-{sha256(payload.encode('utf-8')).hexdigest()[:12]}"
-        return self
-
-
-class ConcernTagResolution(BaseModel):
-    """多标签视角：primary 表达 root cause，secondary 表达独立后果或验证方法。"""
-
-    primary_tag: RiskTag | None = None
-    secondary_tags: tuple[RiskTag, ...] = ()
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
-    source: Literal["deterministic", "llm", "mixed", "unclassified"] = "unclassified"
-    reasons: tuple[str, ...] = ()
-
-    @model_validator(mode="after")
-    def validate_tag_set(self) -> "ConcernTagResolution":
-        if len(self.secondary_tags) > 2:
-            raise ValueError("secondary_tags must contain at most two tags")
-        if len(set(self.secondary_tags)) != len(self.secondary_tags):
-            raise ValueError("secondary_tags must be unique")
-        if self.primary_tag is not None and self.primary_tag in self.secondary_tags:
-            raise ValueError("primary_tag must not appear in secondary_tags")
-        tags = tuple(
-            tag for tag in (self.primary_tag, *self.secondary_tags)
-            if tag is not None
-        )
-        if any(tag.value == "GENERAL_REVIEW" for tag in tags) and len(tags) > 1:
-            raise ValueError("GENERAL_REVIEW cannot coexist with concrete tags")
-        return self
-
-
-class CandidateConcern(BaseModel):
-    """一个或多个候选成员的结构化审查关注点。"""
-
-    concern_id: str = ""
-    group_id: str = ""
-    member_candidate_ids: tuple[str, ...] = ()
-    claims: tuple[CandidateClaim, ...] = ()
-    tags: ConcernTagResolution = Field(default_factory=ConcernTagResolution)
-    member_risk_tags: dict[str, tuple[RiskTag, ...]] = Field(default_factory=dict)
-    source_agents: tuple[str, ...] = ()
-    task_ids: tuple[str, ...] = ()
-    files: tuple[str, ...] = ()
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
-    diagnostics: tuple[str, ...] = ()
-
-    @model_validator(mode="after")
-    def assign_concern_id(self) -> "CandidateConcern":
-        if not self.concern_id:
-            payload = "\0".join(self.member_candidate_ids)
-            self.concern_id = f"concern-{sha256(payload.encode('utf-8')).hexdigest()[:12]}"
-        return self
-
-
-class ConcernAnalysis(BaseModel):
-    """ConcernAnalyzer 的输出：concerns + candidate 到 concern 的映射。"""
-
-    concerns: tuple[CandidateConcern, ...] = ()
-    candidate_to_concern: dict[str, str] = Field(default_factory=dict)
-    diagnostics: tuple[str, ...] = ()
-
-
-# ── Agentic evidence investigation ──
-
-
-class InvestigationQuestion(BaseModel):
-    """Strategist 为单个候选提出的一项可执行调查问题。"""
-
-    question_id: str = ""
-    purpose: EvidencePurpose
-    question: NonBlankStr
-    why_it_matters: NonBlankStr
-    expected_fact: EvidenceFactType
-    required: bool = True
-
-    @model_validator(mode="after")
-    def assign_question_id(self) -> "InvestigationQuestion":
-        if not self.question_id:
-            payload = "\0".join(
-                [self.purpose, self.question, self.expected_fact.value]
-            )
-            self.question_id = (
-                f"question-{sha256(payload.encode('utf-8')).hexdigest()[:12]}"
-            )
-        return self
-
-
-class CandidateInvestigationPlan(BaseModel):
-    """一个候选的动态调查计划；不包含工具或固定查询模板。"""
-
-    candidate_id: NonBlankStr
-    hypothesis: NonBlankStr
-    actionable: bool = True
-    skip_reason: str = ""
-    questions: tuple[InvestigationQuestion, ...] = ()
-    source: Literal["llm", "fallback"] = "llm"
-
-    @field_validator("questions", mode="before")
-    @classmethod
-    def parse_stringified_questions(cls, value: object) -> object:
-        if isinstance(value, str):
-            try:
-                return json.loads(value)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                return value
-        return value
-
-    @model_validator(mode="after")
-    def validate_actionability(self) -> "CandidateInvestigationPlan":
-        if self.actionable and not self.questions:
-            raise ValueError("actionable investigation plan requires questions")
-        if not self.actionable and not self.skip_reason.strip():
-            raise ValueError("non-actionable investigation plan requires skip_reason")
-        return self
-
-
-class EvidenceDossierStatus(str, Enum):
-    SUPPORTED = "supported"
-    REFUTED = "refuted"
-    INSUFFICIENT = "insufficient"
-    CONFLICTED = "conflicted"
-    NOT_ACTIONABLE = "not_actionable"
-
-
-class EvidenceDossierSummary(BaseModel):
-    """Researcher 的候选级调查摘要，供 trace/eval 诊断。"""
-
-    candidate_id: NonBlankStr
-    status: EvidenceDossierStatus
-    unanswered_question_ids: tuple[str, ...] = ()
-    limitations: tuple[str, ...] = ()
-    rounds: int = Field(default=1, ge=0, le=3)
-    tool_call_count: int = Field(default=0, ge=0)
-    react_used: bool = False
-
-
-# ── Phase 4: Evidence-factor Severity ──
-
-
-class ImpactFactor(str, Enum):
-    """可证明的影响因子——每个 factor 描述一个具体的后果维度。"""
-
-    RUNTIME_REACHABLE = "runtime_reachable"
-    EXTERNAL_ACTOR_CONTROLLED = "external_actor_controlled"
-    AUTHORIZATION_BYPASS = "authorization_bypass"
-    CROSS_TENANT_SCOPE = "cross_tenant_scope"
-    PRIVILEGED_OPERATION = "privileged_operation"
-    CONFIDENTIALITY_LOSS = "confidentiality_loss"
-    INTEGRITY_LOSS = "integrity_loss"
-    AVAILABILITY_LOSS = "availability_loss"
-    FINANCIAL_IMPACT = "financial_impact"
-    PERSISTENT_STATE_CORRUPTION = "persistent_state_corruption"
-    EXTERNAL_SIDE_EFFECT = "external_side_effect"
-    MULTI_ENTITY_BLAST_RADIUS = "multi_entity_blast_radius"
-    REPEATED_OR_AUTOMATIC_TRIGGER = "repeated_or_automatic_trigger"
-    IRREVERSIBLE = "irreversible"
-    AUTO_RECOVERABLE = "auto_recoverable"
-    OPERATOR_RECOVERABLE = "operator_recoverable"
-    LOCAL_MAINTAINABILITY_ONLY = "local_maintainability_only"
-
-
-class FactorStatus(str, Enum):
-    PROVEN = "proven"
-    DISPROVEN = "disproven"
-    UNKNOWN = "unknown"
-    NOT_APPLICABLE = "not_applicable"
-
-
-class ImpactFactorAssessment(BaseModel):
-    """单个影响因子的证据评估。"""
-
-    factor: ImpactFactor
-    status: FactorStatus
-    evidence_ids: tuple[str, ...] = ()
-    reason: str = ""
-
-    @model_validator(mode="after")
-    def validate_evidence_binding(self) -> "ImpactFactorAssessment":
-        if (
-            self.status in (FactorStatus.PROVEN, FactorStatus.DISPROVEN)
-            and not self.evidence_ids
-        ):
-            self.status = FactorStatus.UNKNOWN
-            self.reason = (
-                f"{self.reason}; " if self.reason else ""
-            ) + "factor status downgraded because no evidence_id was cited"
-        if (
-            self.status in (FactorStatus.UNKNOWN, FactorStatus.NOT_APPLICABLE)
-            and self.evidence_ids
-        ):
-            self.evidence_ids = ()
-        return self
-
-
-class ImpactClass(str, Enum):
-    MAINTAINABILITY = "maintainability"
-    RUNTIME_CORRECTNESS = "runtime_correctness"
-    SECURITY = "security"
-    AVAILABILITY = "availability"
-
-
-class ImpactAssessment(BaseModel):
-    """一个 concern 的完整影响评估——所有 factor 的状态汇总。"""
-
-    concern_id: str = ""
-    impact_class: ImpactClass = ImpactClass.RUNTIME_CORRECTNESS
-    factors: tuple[ImpactFactorAssessment, ...] = ()
-    diagnostics: tuple[str, ...] = ()
-
-
-class SeverityResolution(BaseModel):
-    """确定性的严重级别裁决结果。"""
-
-    concern_id: str = ""
-    severity: Severity = Severity.WARNING
-    rule_id: str = ""
-    proven_factors: tuple[ImpactFactor, ...] = ()
-    limiting_factors: tuple[ImpactFactor, ...] = ()
-    evidence_ids: tuple[str, ...] = ()
-    fallback_used: bool = False
-    rationale: str = ""
-
-
-class CriticalPredicate(BaseModel):
-    """CRITICAL 判定规则：一组 factor 条件的组合。"""
-
-    rule_id: str = ""
-    all_of: tuple[ImpactFactor, ...] = ()
-    any_of: tuple[ImpactFactor, ...] = ()
-    none_of: tuple[ImpactFactor, ...] = ()
-
-
-class ImpactRubric(BaseModel):
-    """一组 concern tags 对应的评估标准。"""
-
-    rubric_id: str = ""
-    required_factors: tuple[ImpactFactor, ...] = ()
-    critical_predicates: tuple[CriticalPredicate, ...] = ()

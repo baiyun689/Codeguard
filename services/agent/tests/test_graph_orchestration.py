@@ -720,7 +720,6 @@ def test_evidence_mode_off_routes_to_direct_judge_mock():
     )
     assert len(result.issues) >= 1
     stats = meta["council"]
-    assert stats["evidence_request_count"] == 0
     assert stats["verdict_count"] == stats["candidate_count"]
 
 

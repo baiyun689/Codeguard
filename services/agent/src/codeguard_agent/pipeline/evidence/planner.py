@@ -11,11 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from codeguard_agent.models.council import (
-    CandidateIssue,
-    EvidenceNote,
-    EvidenceRequest,
-)
+from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.tasks import ReviewTask, TaskContextBundle
 from codeguard_agent.pipeline.risk import task_prep
 
@@ -30,8 +26,6 @@ class CandidateDossier:
     candidate: CandidateIssue
     task: ReviewTask
     context_bundle: TaskContextBundle | None
-    requests: tuple[EvidenceRequest, ...]
-    notes: tuple[EvidenceNote, ...]
     candidate_group: CandidateGroup | None = None
 
 
@@ -60,20 +54,12 @@ def assemble_dossiers(
     candidates: Sequence[CandidateIssue],
     tasks: Sequence[ReviewTask],
     bundles: Mapping[str, TaskContextBundle],
-    requests: Sequence[EvidenceRequest],
-    notes: Sequence[EvidenceNote],
     candidate_groups: Sequence[CandidateGroup] = (),
 ) -> DossierAssembly:
     """把 graph state 关联为候选级只读快照，并显式保留绑定失败。"""
     tasks_by_id: dict[str, list[ReviewTask]] = {}
     for task in tasks:
         tasks_by_id.setdefault(task.id, []).append(task)
-    requests_by_candidate: dict[str, list[EvidenceRequest]] = {}
-    for request in requests:
-        requests_by_candidate.setdefault(request.candidate_id, []).append(request)
-    notes_by_candidate: dict[str, list[EvidenceNote]] = {}
-    for note in notes:
-        notes_by_candidate.setdefault(note.candidate_id, []).append(note)
     groups_by_candidate = {
         member.id: group
         for group in candidate_groups
@@ -123,8 +109,6 @@ def assemble_dossiers(
                 candidate=candidate,
                 task=task,
                 context_bundle=bundles.get(task.id),
-                requests=tuple(requests_by_candidate.get(candidate.id, ())),
-                notes=tuple(notes_by_candidate.get(candidate.id, ())),
                 candidate_group=groups_by_candidate.get(candidate.id),
             )
         )

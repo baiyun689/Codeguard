@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from codeguard_agent.models.council import (
-    CandidateIssue,
-    EvidenceRequest,
-)
+from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.schemas import Issue, Severity
 
 
@@ -47,33 +44,3 @@ def test_candidate_contains_only_the_candidate_claim():
         "confidence",
         "evidence_chain",
     }
-
-
-def test_evidence_request_id_is_stable_for_the_same_semantics():
-    first = EvidenceRequest(
-        candidate_id="c1",
-        strategy_id="general_review.counter",
-        purpose="counter",
-        target="A.java",
-        question="确认保护逻辑",
-        preferred_tools=["get_file_content"],
-    )
-    second = EvidenceRequest(
-        candidate_id="c1",
-        strategy_id="general_review.counter",
-        purpose="counter",
-        target="A.java",
-        question="确认保护逻辑",
-        preferred_tools=["get_file_content"],
-    )
-    different = EvidenceRequest(
-        candidate_id="c1",
-        strategy_id="general_review.counter_upstream",
-        purpose="counter",
-        target="A.java",
-        question="确认调用方",
-        preferred_tools=["inspect_change_impact"],
-    )
-
-    assert first.id == second.id
-    assert first.id != different.id

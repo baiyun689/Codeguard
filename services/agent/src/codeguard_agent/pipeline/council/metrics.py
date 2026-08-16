@@ -1,15 +1,13 @@
-"""ReviewCouncil 证据链过程指标的计算入口(ADR-046 过渡版)。
+"""ReviewCouncil 证据链过程指标的计算入口(ADR-046 定稿)。
 
-过渡说明:本实现承接 verifier+judge 两节点接线后的新签名
-(candidates/assembly/verdicts/final_candidate_ids/facts/relations/...),
-内部用旧逻辑继续推导仍被 evals 消费的字段,relation 语义按 Task 14 计划
-(direct counter = contradicts+direct;全 insufficient = 非空且全 insufficient)。
-Task 14 的完整重写将替换本文件为纯关系三元版并收敛冗余字段。
+从稳定候选映射、事实/关系与裁决派生过程指标:
+- 关系推导字段(direct counter / all insufficient / fact coverage)全部从 relations 出;
+- 事实总数与重放状态统计(verified/unverified/failed)从 facts 出;
+- critical_candidate_count = keep 且 resolved_severity 为 CRITICAL 的 verdict 数。
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 
 from codeguard_agent.models.council import (
@@ -40,11 +38,7 @@ def compute_council_run_stats(
     council_trace: Sequence[CouncilTrace],
     candidate_dedup_stats: Mapping[str, int] | CandidateDedupStats | None = None,
 ) -> CouncilRunStats:
-    """从稳定候选映射、事实/关系与裁决派生审查过程指标(过渡签名)。
-
-    关系推导字段(direct counter / all insufficient / coverage)全部从 relations 出;
-    facts 用于事实总数与重放状态统计(ADR-046 T3 字段)。
-    """
+    """从稳定候选映射、事实/关系与裁决派生审查过程指标。"""
     final_ids = set(final_candidate_ids)
     fact_count = sum(len(facts) for facts in facts_by_candidate.values())
     replay_verified_count = sum(
@@ -78,25 +72,16 @@ def compute_council_run_stats(
         for cid, rels in relations_by_cid.items()
         if rels and all(rel.relation == "insufficient" for rel in rels)
     }
-    final_dossiers = [
-        dossier
-        for dossier in assembly.dossiers
-        if dossier.candidate.id in final_ids
-    ]
-
-    strategy_covered = sum(
-        bool(relations_by_cid.get(dossier.candidate.id)) for dossier in final_dossiers
-    )
     fact_covered = sum(
         any(
             rel.relation != "insufficient"
             for rel in relations_by_cid.get(dossier.candidate.id, ())
         )
-        for dossier in final_dossiers
+        for dossier in assembly.dossiers
+        if dossier.candidate.id in final_ids
     )
     actual_tool_calls = sum(
-        trace.node in {"evidence_agent", "evidence_researcher", "evidence_verifier"}
-        and trace.event == "evidence_tool_called"
+        trace.node == "evidence_verifier" and trace.event == "evidence_tool_called"
         for trace in council_trace
     )
     candidate_count = len(candidates)
@@ -113,40 +98,9 @@ def compute_council_run_stats(
     }
     no_support_retained = len(no_support_ids & final_ids)
 
-    severity_events: list[dict[str, object]] = []
-    for trace in council_trace:
-        if trace.node != "council_judge" or trace.event != "severity_resolved":
-            continue
-        try:
-            detail = json.loads(trace.detail)
-        except (TypeError, json.JSONDecodeError):
-            continue
-        if isinstance(detail, dict):
-            severity_events.append(detail)
-
     severity_defaulted = sum(
         verdict.reason_code == "severity_evidence_incomplete"
         for verdict in verdicts
-    )
-    critical_policy_matched = sum(
-        (
-            str(event.get("matched_rule", "")).startswith("critical.")
-            or str(event.get("matched_rule", "")).endswith(".critical")
-        )
-        for event in severity_events
-    )
-    critical_missing_factors = sum(
-        len(missing)
-        for event in severity_events
-        if isinstance(
-            (
-                missing := event.get(
-                    "limiting_factors",
-                    event.get("missing_critical_factors", []),
-                )
-            ),
-            list,
-        )
     )
     proposals = {candidate.id: candidate.severity_proposal for candidate in candidates}
     severity_transitions: dict[str, int] = {}
@@ -225,12 +179,8 @@ def compute_council_run_stats(
             verdict.action == "keep" and verdict.resolved_severity is Severity.CRITICAL
             for verdict in verdicts
         ),
-        critical_policy_matched_count=critical_policy_matched,
-        critical_missing_factor_count=critical_missing_factors,
         severity_transitions=severity_transitions,
         final_issue_count=final_issue_count,
-        final_issue_strategy_covered_count=strategy_covered,
-        final_issue_strategy_coverage=_ratio(strategy_covered, final_issue_count),
         final_issue_fact_covered_count=fact_covered,
         final_issue_fact_coverage=_ratio(fact_covered, final_issue_count),
         actual_evidence_tool_calls=actual_tool_calls,

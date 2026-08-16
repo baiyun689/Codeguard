@@ -48,8 +48,9 @@ def _dossier(line=10, symbol="S1", task_file="src/A.java",
             )
         ]
     bundle = TaskContextBundle(task_id="t1", facts=facts)
-    return CandidateDossier(candidate=candidate, task=task, context_bundle=bundle,
-                            requests=(), notes=())
+    return CandidateDossier(
+        candidate=candidate, task=task, context_bundle=bundle
+    )
 
 
 def test_validate_chain_drops_unknown_tool_and_missing_located():
@@ -111,7 +112,7 @@ def test_symbol_id_none_bundle_returns_empty():
     base = _dossier()
     dossier = CandidateDossier(
         candidate=base.candidate, task=base.task,
-        context_bundle=None, requests=(), notes=(),
+        context_bundle=None,
     )
     assert _symbol_id(dossier) == ""
 
