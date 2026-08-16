@@ -15,7 +15,11 @@ from codeguard_agent.pipeline.council.verdict import (
     judge_with_evidence,
     synthesize_verdict,
 )
-from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
+from codeguard_agent.pipeline.evidence.planner import (
+    CandidateBindingFailure,
+    CandidateDossier,
+    DossierAssembly,
+)
 
 
 def _relation(relation, strength="contextual"):
@@ -148,6 +152,35 @@ def _group_with(candidates) -> CandidateGroup:
 
 def _assembly(*dossiers) -> DossierAssembly:
     return DossierAssembly(dossiers=tuple(dossiers), failures=(), trace=())
+
+
+def test_judge_with_evidence_invalid_binding_drops():
+    candidate = _verdict_dossier().candidate
+    assembly = DossierAssembly(
+        dossiers=(), failures=(CandidateBindingFailure(candidate, "no task match"),),
+        trace=(),
+    )
+    batch = judge_with_evidence(
+        assembly, {}, judge_llm=None,
+        structured_method="function_calling", max_retries=1,
+    )
+    assert [v.action for v in batch.verdicts] == ["drop"]
+    assert batch.verdicts[0].reason_code == "invalid_candidate_binding"
+    assert batch.final_issues == []
+
+
+def test_judge_direct_invalid_binding_drops():
+    candidate = _verdict_dossier().candidate
+    assembly = DossierAssembly(
+        dossiers=(), failures=(CandidateBindingFailure(candidate, "no task match"),),
+        trace=(),
+    )
+    batch = judge_direct(
+        assembly, judge_llm=None,
+        structured_method="function_calling", max_retries=1,
+    )
+    assert [v.action for v in batch.verdicts] == ["drop"]
+    assert batch.verdicts[0].reason_code == "invalid_candidate_binding"
 
 
 def test_judge_with_evidence_gate_drops_without_llm():

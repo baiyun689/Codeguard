@@ -24,15 +24,6 @@ from codeguard_agent.pipeline.council.concern import analyze_candidate_groups
 from codeguard_agent.pipeline.council.dedup import CandidateGroup
 from codeguard_agent.pipeline.council.impact import assess_impact
 from codeguard_agent.pipeline.council.severity import rubric_for
-from codeguard_agent.pipeline.evidence.agent import (
-    collect_evidence,
-    request_strategy_mismatch,
-)
-from codeguard_agent.pipeline.evidence.planner import assemble_dossiers
-from codeguard_agent.pipeline.evidence.strategist import (
-    build_investigation_plans,
-    investigation_plans_to_requests,
-)
 from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
 from codeguard_agent.pipeline.knowledge.selector import select_knowledge
 from codeguard_agent.models.knowledge import KnowledgeBudget, KnowledgeSelectionSource
@@ -108,87 +99,6 @@ def test_concern_analysis_covers_grouped_and_ungrouped_candidates() -> None:
         "duplicate",
         "singleton",
     }
-
-
-def test_strategist_fallback_requests_are_executable_and_cover_group_members() -> None:
-    first = _candidate("first", "commit succeeds while event publication can fail")
-    duplicate = _candidate("duplicate", "commit succeeds while event publication can fail")
-    group = CandidateGroup(
-        id="group-1",
-        members=(first, duplicate),
-        primary_risk_tag=RiskTag.TRANSACTION_ATOMICITY,
-        severity_proposal=Severity.WARNING,
-        confidence=0.99,
-        shared_root_cause="commit and publication are not atomic",
-        shared_behavior="the event may be lost after commit",
-        shared_fix="use a transactional outbox",
-    )
-    analysis = analyze_candidate_groups(
-        (group,), candidates=(first, duplicate),
-    )
-    tasks = [
-        ReviewTask(id=c.task_id, file=c.file, patch="+changed")
-        for c in (first, duplicate)
-    ]
-    base_assembly = assemble_dossiers(
-        (first, duplicate),
-        tasks,
-        {},
-        (),
-        (),
-    )
-
-    # LLM 不可用(mock/降级)时 Strategist 走小型回退计划,仍产出可执行请求。
-    plans = build_investigation_plans(
-        analysis.concerns,
-        llm=None,
-        structured_method="function_calling",
-        dossiers=base_assembly.dossiers,
-    )
-    requests = investigation_plans_to_requests(plans.plans, analysis.concerns)
-    assembly = assemble_dossiers(
-        (first, duplicate),
-        tasks,
-        {},
-        requests,
-        (),
-        (group,),
-    )
-
-    assert {request.candidate_id for request in requests} == {
-        "first",
-        "duplicate",
-    }
-    assert all(
-        request_strategy_mismatch(request, dossier) is None
-        for dossier in assembly.dossiers
-        for request in dossier.requests
-    )
-
-    batch = collect_evidence(
-        assembly.dossiers,
-        requests,
-        tool_client=None,
-        analyst_llm=None,
-        structured_method="function_calling",
-        enabled_tools=None,
-    )
-    request_by_id = {request.id: request for request in requests}
-    concern = analysis.concerns[0]
-    assert len(batch.notes) == len(requests)
-    assert all(
-        finding.goal_id == request_by_id[note.request_id].goal_id
-        and finding.concern_id == concern.concern_id
-        and finding.claim_ids == request_by_id[note.request_id].claim_ids
-        and finding.fact_type == request_by_id[note.request_id].fact_type
-        for note in batch.notes
-        for finding in note.findings
-    )
-    assert all(
-        finding.source != "request_validation"
-        for note in batch.notes
-        for finding in note.findings
-    )
 
 
 def test_generic_rubric_cannot_produce_critical_and_tag_rubric_is_complete() -> None:

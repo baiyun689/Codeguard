@@ -1,7 +1,7 @@
 """候选、任务与证据请求的纯组装层。
 
-Dossier 组装只做确定性绑定，不产生证据请求——请求由 Strategist
-在 graph 节点中批量生成。
+Dossier 组装只做确定性绑定，不产生证据请求——请求由 graph 节点
+在取证阶段经 verifier 重放/配方生成。
 """
 
 from __future__ import annotations

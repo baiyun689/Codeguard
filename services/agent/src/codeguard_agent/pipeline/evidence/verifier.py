@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from codeguard_agent.models.council import CandidateFact, FactRelation
 from codeguard_agent.models.schemas import EvidenceTraceStep
@@ -322,6 +322,25 @@ class VerifyBatch:
 
 class _RelationBatch(BaseModel):
     findings: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("findings", mode="before")
+    @classmethod
+    def parse_stringified_findings(cls, value: object) -> object:
+        # 兼容部分 OpenAI 端点把数组参数序列化为 JSON 字符串(自旧 evidence.agent 迁移)
+        if isinstance(value, str):
+            for candidate in (
+                value,
+                value[value.find("[") : value.rfind("]") + 1],
+            ):
+                try:
+                    parsed = json.loads(candidate)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if isinstance(parsed, dict):
+                    parsed = parsed.get("findings", parsed)
+                if isinstance(parsed, list):
+                    return parsed
+        return value
 
 
 def analyze_relations(

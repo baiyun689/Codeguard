@@ -10,7 +10,7 @@ import pytest
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import RiskTag
-from codeguard_agent.pipeline.evidence.rules import resolve_candidate_tag
+from codeguard_agent.pipeline.evidence.rules.classify import resolve_candidate_tag
 from codeguard_agent.pipeline.evidence.rules.terms import CANDIDATE_TAG_TERMS
 
 

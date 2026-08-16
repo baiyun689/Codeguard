@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, Mock
 
+import pytest
+
 from codeguard_agent.models.council import CandidateFact, CandidateIssue
 from codeguard_agent.models.schemas import EvidenceTraceStep, Severity
 from codeguard_agent.models.tasks import (
@@ -269,6 +271,39 @@ def test_call_tool_graph_partial_coverage_confirmed_passes():
     )
     raw, limitation = _call_tool(
         client, "inspect_change_impact", {"symbol_id": "S1"}
+    )
+    assert limitation == ""
+    assert raw
+
+
+@pytest.mark.parametrize("source_scope", ["MAIN", "GENERATED"])
+def test_call_tool_graph_test_only_relationships_rejected_in_production_scope(
+    source_scope: str,
+):
+    """生产 scope 下仅有 test 关系的图数据不能支撑语义(自旧 evidence.agent 迁移)。"""
+    client = MagicMock()
+    client.inspect_security_path.return_value = _graph_response(
+        '{"status": "confirmed", "subject_symbol_id": "S1",'
+        f' "source_scope": "{source_scope}", "relationships": [],'
+        ' "test_relationships": [{"source_set": "TEST"}]}'
+    )
+    raw, limitation = _call_tool(
+        client, "inspect_security_path", {"symbol_id": "S1"}
+    )
+    assert limitation == "graph_test_only_confirmation"
+    assert raw  # 原文保留,供分析层降级为 insufficient
+
+
+def test_call_tool_graph_test_scoped_relationships_pass_for_test_scope():
+    """测试候选的 TEST scope 图数据原样透传,不做 test_only 降级。"""
+    client = MagicMock()
+    client.inspect_security_path.return_value = _graph_response(
+        '{"status": "confirmed", "subject_symbol_id": "S1",'
+        ' "source_scope": "TEST", "relationships": [],'
+        ' "test_relationships": [{"source_set": "TEST"}]}'
+    )
+    raw, limitation = _call_tool(
+        client, "inspect_security_path", {"symbol_id": "S1"}
     )
     assert limitation == ""
     assert raw
