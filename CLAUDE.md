@@ -29,28 +29,26 @@ START → classify_mode ─┬─ small  → direct_review
                                            (fan-in + RiskTag 解析
                                             + 保守语义归并 + 去重)
                                                    │
-                                                   ▼
-                                           evidence_planner
-                                           (为每个候选规划取证策略)
-                                                   │
-                                                   ▼
-                                           evidence_agent ★
-                                           (调 Java 工具 → LLM 证据分析
-                                            → SUPPORTS/CONTRADICTS/INSUFFICIENT)
-                                                   │
-                                                   ▼
-                                           council_judge ★
-                                           (证据门控 → LLM 语义综合
-                                            → 严重度策略定级 → 最终 Issue)
-                                                   │
-                                                  END
+                    ┌──────────────────────────────┴──────────────────────────────┐
+                    ▼ (evidence_mode=off)                                          ▼ (evidence_mode=full)
+            direct_judge ★                                                evidence_verifier ★
+            (消融档:跳过取证/门控,                                          (链校验 → 链重放|配方兜底
+             候选无证据直接终审)                                             → 去重执行 → 引用匹配 → 关系三元)
+                                                                                       │
+                                                                                       ▼
+                                                                               council_judge ★
+                                                                               (三条确定性门控 → LLM 终审
+                                                                                severity 引用证据 → 组内合并)
+                    └───────────────────────────────┬────────────────────────────────┘
+                                                    ▼
+                                                   END
 ```
 
 管线入口 `classify_mode` 按 PR 体量做纯确定性路由（只统计文件数/hunk 数/字符数，不调 LLM、不建任务）：small（≤3 文件、≤5 hunk、≤8000 字符）走 `direct_review` 单次 LLM 直接审查完整 diff；medium（≤15 文件、≤60000 字符）走 `file_task_builder` 按文件拆分；large 走 `diff_task_builder` 按 hunk 拆分 + 预算控制。后两者经 `risk_triage` 标定每项任务的风险标签，由 `task_rank` 排序限流后，可选经 `summary` 产出变更摘要作为背景。`context_provider` 通过 `resolve_change_context` 为后续所有 Agent 预取共享上下文（类层次/方法签名+可见性+注解/控制流/调用边/敏感 API），减少各发现者冗余的工具调用。
 
 三个发现者 Agent（ThreatModel / Behavior / Maintainability）并行运行，各自配备专属语义图工具 + 共享 `get_file_content`，走 ReAct 引擎：威胁建模用 `inspect_security_path`、行为审查用 `inspect_change_impact`、可维护性用 `inspect_structure`。每个 Agent 的 prompt = 45 行 base 领域知识 + 按 RiskTag 注入的知识文件（`prompts/knowledge/`，37 个），拆分是为分摊上下文压力，重叠是多角度验证。
 
-三路输出在 `council_coordinator` 处 fan-in：解析 RiskTag → 按文件路径和局部位置构建连通候选块 → 最多 8 个并行 LLM 调用做保守语义归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会去重；非法、低置信或失败结果一律完整保留。去重后经 `evidence_planner` 为每个候选按 RiskTag 匹配取证策略（counter + support + severity），`evidence_agent` 调 Java 工具获取原始事实并调 LLM 分析证据含义（SUPPORTS/CONTRADICTS/INSUFFICIENT），最后由 `council_judge` 做三阶段裁决：证据门控（3 条确定性规则，零 LLM 成本淘汰）→ LLM 语义综合 → 严重度策略定级。
+三路输出在 `council_coordinator` 处 fan-in：解析 RiskTag → 按文件路径和局部位置构建连通候选块 → 最多 8 个并行 LLM 调用做保守语义归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会去重；非法、低置信或失败结果一律完整保留。审查员的每个候选输出都带 `evidence_chain` 取证溯源（引文不是日志），`evidence_verifier` 先做确定性链校验——合法链按原参数重放执行并与引文逐字比对（verified/unverified），无链/废链回退固定配方（recipe：文件内容 + 上游调用方 + 标签开关），调用失败记 failed；随后对每条事实做关系分析，产出支持/否定/无说明的关系三元（FactRelation）。最后由 `council_judge` 终审：三条确定性门控（零 LLM 成本淘汰）→ LLM 语义综合（统一裁决模型，完整档 severity 必须引用证据）→ 组内合并。`evidence_mode=off` 时跳过取证与门控，候选由 `direct_judge` 直接终审（无证据链消融基线档）。
 
 旧 supervisor 调度图及 SelfChecker/FP/聚合 stages 的归档目录
 `services/agent/legacy/` 已于 2026-08 删除（git 历史可回溯），不再随 Python wheel 打包。
@@ -83,7 +81,7 @@ START → classify_mode ─┬─ small  → direct_review
 Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执行方式按是否配置工具服务分流:
 
 ```
-管线(无工具):git diff → [摘要] → 并行三审查员(直连) → 两段式聚合 → 误报过滤 → 打印
+管线(无工具):git diff → [摘要] → 并行三审查员(直连) → 归并 → 裁决(门控+终审) → 打印
 管线(有工具):配置 CODEGUARD_TOOL_SERVER_URL 后,审查员改走 ReAct,
               可调 Java 工具(get_file_content / inspect_security_path / inspect_change_impact / inspect_structure)
               获取 diff 之外上下文
@@ -94,10 +92,10 @@ LLM 调用路径:Python → LLM Proxy(:9091) → 按 model 路由 → DeepSeek/C
 
 当前审查核心是 ReviewCouncil 多 Agent 编排：
 
-- **发现者 Agent ×3（并行）**:ThreatModelAgent（安全）/ BehaviorAgent（行为逻辑）/ MaintainabilityAgent（维护质量）。每个 Agent 配备专属语义图工具（`inspect_security_path` / `inspect_change_impact` / `inspect_structure`）+ 共享 `get_file_content`，走 ReAct 引擎。prompt = 45 行 base + 按 RiskTag 注入的 `prompts/knowledge/` 知识文件——拆分是为分摊上下文压力。重叠不叫重复，叫多角度验证。
-- **CouncilCoordinator（确定性路由）**:读结构化字段做路由决策，不调 LLM。
-- **EvidenceAgent（智能举证）**:调 Java 工具获取原始事实 → 对每条工具输出调 LLM 分析证据含义，产出结构化 SUPPORTS/CONTRADICTS/INSUFFICIENT 判定 + 推理依据。contradicts 字段已激活。LLM 不可用时回退 raw output 模式。
-- **CouncilJudge（证据驱动裁决）**:3 条确定性证据门控（direct_counter_evidence 直接反证排除 / evidence_insufficient 无证据 / no_supporting_evidence 无支持证据，零 LLM 成本淘汰）→ 两段式去重（指纹+LLM 语义综合）→ 安全网（根因标识符匹配优先、行号±3 兜底）→ LLM 终审（基于结构化证据摘要做 keep/drop/downgrade/merge，异源千问 temperature=0）。
+- **发现者 Agent ×3（并行）**:ThreatModelAgent（安全）/ BehaviorAgent（行为逻辑）/ MaintainabilityAgent（维护质量）。每个 Agent 配备专属语义图工具（`inspect_security_path` / `inspect_change_impact` / `inspect_structure`）+ 共享 `get_file_content`，走 ReAct 引擎。prompt = 45 行 base + 按 RiskTag 注入的 `prompts/knowledge/` 知识文件——拆分是为分摊上下文压力。重叠不叫重复，叫多角度验证。每个候选输出带 `evidence_chain` 取证溯源——它是"引文"不是日志：只记录直接支撑结论的工具调用（工具四选一 + `file_path`/`symbol_id` 参数）与逐字引用代码段（`located`）。
+- **CouncilCoordinator（fan-in 归并）**:三路发现者输出的显式汇聚屏障——批量解析 RiskTag → 按同文件/邻行构建连通候选块 → 每块并行 LLM 保守语义归并（同根因+同影响+单一修复，最多 8 路）→ 产出严格等价逻辑组；非法/低置信/失败结果一律完整保留。
+- **EvidenceVerifier（确定性取证 + LLM 关系分析）**:取证层全部确定性、零 LLM——① 链校验（工具白名单/参数键白名单/`located` 必填/链长 ≤3）；② 合法链重放执行并与引文逐字比对，产出四态 `replay_status`：`verified`（引文命中）/ `unverified`（有引用未命中）/ `failed`（调用失败）/ `recipe`（固定配方兜底：文件内容 + 有 symbol 则上游调用方 + 标签开关）；③ 相同 tool+args 全局去重只调一次；④ guard 注解扫描器（确定性：@PreAuthorize/@Transactional 命中直接产出 direct 反证先验，供门控①零成本淘汰）。最后调 LLM 做关系分析，产出关系三元 `FactRelation`（supports / contradicts / insufficient × direct / contextual）。
+- **CouncilJudge（证据驱动裁决）**:三条确定性证据门控（`direct_counter_evidence` 直接反证排除 / `evidence_insufficient` 无可用证据 / `no_supporting_evidence` 无支持证据，零 LLM 成本淘汰）→ LLM 终审（基于关系三元输出统一裁决模型 `CandidateDirectAssessment`：keep/drop + severity，完整档 severity 必须引用证据 `cited_fact_ids`；裁决 LLM 优先异源 + temperature=0，见 ADR-008）→ 组内合并（严格等价组收敛，组内形状不一致安全拆回）。`evidence_mode=off` 时走 `direct_judge` 消融档：与完整档共用同一裁决模型，唯一差异是无证据输入、跳过取证与门控。
 
 ### CI 集成
 
@@ -134,7 +132,7 @@ docker compose up -d
 ```
 
 **前提条件**: GitHub App（Checks R&W + PR R&W + Contents R），SSH 反向隧道或公网暴露。
-- **去重体系**:5 层——fan-in reducer（指纹+根因标识符+邻行）→ 规则淘汰（4 条）→ 两段式去重 → 安全网 → LLM 终审。核心设计：行号是 LLM 推算的天然不精确值，降级为兜底弱信号；去重主键改为"同文件+共享关键标识符（方法名/变量名）"。
+- **去重体系**:分层归并——发现者侧按候选 id 去重（fan-in reducer）+ 任务错配/噪音候选拒绝 → `council_coordinator` 内规范化排序、同文件邻行连通分块 → 每块并行 LLM 保守归并（同根因+同影响+单一修复，非破坏性逻辑组）→ 终审后按严格等价组收敛最终 Issue。核心设计：行号是 LLM 推算的天然不精确值，只作分块窗口的兜底弱信号，归并语义由 LLM 判断。
 
 审查员的"执行方式"抽成可插拔引擎(`pipeline/engines.py`):`DirectEngine`(无工具基准)/ `ToolAgentEngine`(ReAct,基于 langchain v1 `create_agent`)。`ReviewerStage` 按 `tool_client` 是否存在分流。
 
@@ -144,7 +142,7 @@ docker compose up -d
 - **CI Webhook (:8080)**:GitHub PR 自动审查链路——验签、幂等调度、git clone、Python 子进程调用、Check Runs 回写。
 四条不变量:Python 调 Java 单向;代码探索只走 Java 沙箱;不确定性只在 Python;Java 不判断"是不是问题"(LLM Proxy 仅协议转发,不做语义判断)。
 
-误报过滤两段式:确定性规则(零成本)+ 可选 LLM 验证(默认关,开启时优先异源模型,见 ADR-008)。
+误报过滤由裁决阶段承担:三条确定性门控(零成本淘汰)+ LLM 终审(keep/drop 裁决;评判环节遵循异源 + temperature=0,见 ADR-008)。
 
 `services/gateway`(Java)提供工具服务 + 护栏。**只放"事实与护栏"(工具执行 / 沙箱 / 重计算),绝不在 gateway 里调 LLM 或做"是不是问题"的判断**(那是 Python 的事,见职责边界)。
 
@@ -167,7 +165,8 @@ Codeguard/
     │   │   ├── cli.py             # 命令行:review 子命令、结果打印、退出码、工具会话建/销
     │   │   ├── config.py          # Settings:从环境变量/.env 读配置(含 CODEGUARD_TOOL_SERVER_URL)
     │   │   ├── models/            # ★数据结构:schemas.py(Issue/Severity/ReviewResult)
-    │   │   │   └──               #   tasks.py(任务/PR 规模路由阈值) council.py knowledge.py
+    │   │   │   └──               #   tasks.py(任务/PR 规模路由阈值) council.py(裁决模型:
+    │   │   │                     #     关系三元 FactRelation/重放四态/统一裁决/统计) knowledge.py
     │   │   ├── git/diff_collector.py  # 调系统 git 采集 diff + parse_changed_files(派生 allowed_files)
     │   │   ├── llm/client.py      # LLM 工厂(openai/claude/mock)+ 重试 + mock 假数据
     │   │   ├── observability/     # HTML Trace:审查过程视图/统计(collector/dashboard/view_model)
@@ -177,11 +176,15 @@ Codeguard/
     │   │   ├── pipeline/risk/             # 任务、风险规则、路由与排序(classify_diff/diff_metrics)
     │   │   ├── pipeline/context/          # 图谱符号上下文与事实预算
     │   │   ├── pipeline/reviewers/        # 三路发现者与工具协调
-    │   │   ├── pipeline/evidence/         # 证据策略、规划与执行
-    │   │   ├── pipeline/council/          # 候选归并、裁决与指标(judge/dedup/severity)
+    │   │   ├── pipeline/evidence/         # 取证验证(verifier 链校验/重放/配方兜底+关系分析,
+    │   │   │                             #   guard_scan 注解扫描, tags 标签开关, planner,
+    │   │   │                             #   rules/classify+terms)
+    │   │   ├── pipeline/council/          # 裁决与指标(verdict 门控+终审+组内合并, dedup 归并, metrics)
     │   │   ├── pipeline/knowledge/        # RiskTag 知识目录与选择器
     │   │   ├── pipeline/summary/          # 可选变更摘要阶段
-    │   │   └── prompts/                   # 发现、证据、裁决、摘要 prompt + knowledge/(按 RiskTag 注入)
+    │   │   └── prompts/                   # 发现者 base×3、evidence-analysis(关系分析)、council-judge(终审)、
+    │   │                                 #   candidate-dedup-*(归并)、summary-*(摘要)、eval-direct-reviewer、
+    │   │                                 #   discovery-context-contract + knowledge/(按 RiskTag 注入)
     │   ├── tests/                 # pytest:测工程正确性
     │   └── evals/                 # ★审查质量评测框架(量化效果,见 §5;profiles.yaml 定义被测档位)
     └── gateway/                   # ★Java Gateway——四模块 Maven 多模块项目
@@ -231,7 +234,7 @@ Codeguard/
 4. **`llm/client.py:build_llm`** 按 provider 造 LangChain Chat 模型;`provider=mock` 返回 `None`(下游走假数据)。
 5. **`pipeline/graph.py` 的 ReviewCouncil 状态图**是核心:
    - `classify_mode` 按 diff 体量路由(small→`direct_review` 单次直审 / medium→`file_task_builder` 按文件 / large→`diff_task_builder` 按 hunk)。
-   - medium/large 走完整管线:`risk_triage` 标风险标签 → `task_rank` 排序限流 → 可选 `summary` → `context_provider` 预取符号上下文 → 三路发现者并行(ReAct)→ `council_coordinator` 归并 → `evidence_planner`/`evidence_agent` 取证 → `council_judge` 裁决出 `Issue`。
+   - medium/large 走完整管线:`risk_triage` 标风险标签 → `task_rank` 排序限流 → 可选 `summary` → `context_provider` 预取符号上下文 → 三路发现者并行(ReAct,输出带 `evidence_chain` 取证溯源)→ `council_coordinator` 归并 → `evidence_verifier` 取证验证(链校验/重放验证/配方兜底 → 关系三元)→ `council_judge` 门控+终审裁决出 `Issue`(`evidence_mode=off` 时经 `direct_judge` 直接终审)。
    - `llm is None`(mock)→ 各阶段返回 mock 假数据(如 `direct_review` 返回 `mock_review_result()`)。
    - 工具服务不可用时显式降级(ReAct 退直连 / 空证据不炸管线)。
 6. **`cli.py:_print_result`** 打印;**退出码**:发现任一 `CRITICAL` 返回 1,否则 0(方便接 CI 门禁)。
