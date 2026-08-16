@@ -19,7 +19,7 @@ from pydantic import (
     model_validator,
 )
 
-from codeguard_agent.models.schemas import Issue, Severity
+from codeguard_agent.models.schemas import EvidenceTraceStep, Issue, Severity
 
 if TYPE_CHECKING:
     from codeguard_agent.models.tasks import RiskTag  # noqa: F401
@@ -180,6 +180,10 @@ class CandidateIssue(BaseModel):
     claim: str
     suggestion: str = ""
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    evidence_chain: list[EvidenceTraceStep] = Field(
+        default_factory=list,
+        description="取证溯源:直接支撑该候选的工具调用与引文(ADR-046)",
+    )
 
     @classmethod
     def from_issue(
@@ -203,6 +207,7 @@ class CandidateIssue(BaseModel):
             claim=issue.message,
             suggestion=issue.suggestion,
             confidence=issue.confidence,
+            evidence_chain=list(issue.evidence_chain),
         )
 
     def to_issue(self) -> Issue:
@@ -215,6 +220,7 @@ class CandidateIssue(BaseModel):
             message=self.claim,
             suggestion=self.suggestion,
             confidence=self.confidence,
+            evidence_chain=list(self.evidence_chain),
         )
 
 

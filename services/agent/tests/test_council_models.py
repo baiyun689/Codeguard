@@ -45,6 +45,7 @@ def test_candidate_contains_only_the_candidate_claim():
         "claim",
         "suggestion",
         "confidence",
+        "evidence_chain",
     }
 
 
