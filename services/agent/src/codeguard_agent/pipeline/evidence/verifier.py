@@ -8,12 +8,17 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Literal, cast
 
-from codeguard_agent.models.council import CandidateFact
+from pydantic import BaseModel, Field
+
+from codeguard_agent.models.council import CandidateFact, FactRelation
 from codeguard_agent.models.schemas import EvidenceTraceStep
 from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
+from codeguard_agent.pipeline.evidence.guard_scan import scan_guard_fact
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 from codeguard_agent.pipeline.evidence.tags import (
     MAINTAINABILITY_TAGS,
@@ -21,6 +26,8 @@ from codeguard_agent.pipeline.evidence.tags import (
 )
 
 logger = logging.getLogger("codeguard")
+
+_PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
 
 CHAIN_TOOL_NAMES = (
     "get_file_content",
@@ -303,3 +310,209 @@ def _digest(*parts: str) -> str:
 
     payload = "\0".join(parts)
     return f"fact-{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:12]}"
+
+
+@dataclass
+class VerifyBatch:
+    facts: dict[str, list[CandidateFact]] = field(default_factory=dict)
+    relations: dict[str, list[FactRelation]] = field(default_factory=dict)
+    trace: list[tuple[str, str]] = field(default_factory=list)
+    gathered_context: list[Any] = field(default_factory=list)
+
+
+class _RelationBatch(BaseModel):
+    findings: list[dict[str, Any]] = Field(default_factory=list)
+
+
+def analyze_relations(
+    dossier: CandidateDossier,
+    facts: list[CandidateFact],
+    *,
+    tag: RiskTag,
+    analyst_llm: Any,
+    structured_method: str,
+) -> list[FactRelation]:
+    """对单个候选的全部事实做一次关系分析(ADR-046:每候选 1 次 LLM)。
+
+    - 带 limitation/空 raw 的事实直接 insufficient(不花 LLM);
+    - guard 注解扫描器命中的事实直接 direct contradicts(确定性先验);
+    - mock(analyst_llm=None)时:其余有内容的事实按 supports/contextual 处理;
+    - LLM 失败/None 输出:全部 insufficient(门控按"无支持"处理,终审兜底,不误杀)。
+    """
+    direct: dict[str, FactRelation] = {}
+    analyzable: list[CandidateFact] = []
+    for fact in facts:
+        if fact.limitation or not fact.raw.strip():
+            direct[fact.fact_id] = FactRelation(
+                fact_id=fact.fact_id, relation="insufficient", strength="contextual",
+                limitation=fact.limitation or "fact_empty",
+            )
+        else:
+            analyzable.append(fact)
+
+    # guard 确定性先验:命中的事实不再交 LLM 重复分析
+    for fact in list(analyzable):
+        prior = scan_guard_fact(dossier, fact, tag)
+        if prior is not None:
+            direct[fact.fact_id] = prior
+            analyzable.remove(fact)
+
+    if analyzable and analyst_llm is None:
+        for fact in analyzable:
+            direct[fact.fact_id] = FactRelation(
+                fact_id=fact.fact_id, relation="supports", strength="contextual",
+                observation=fact.raw[:500], limitation="mock_mode_synthetic_relation",
+            )
+
+    if analyzable and analyst_llm is not None:
+        try:
+            structured = analyst_llm.with_structured_output(
+                _RelationBatch, method=structured_method,
+            )
+            from codeguard_agent.llm.client import invoke_with_retry
+
+            raw_result = invoke_with_retry(
+                structured,
+                [
+                    ("system", (_PROMPT_DIR / "evidence-analysis.txt").read_text(encoding="utf-8")),
+                    ("user", _relation_payload(dossier, analyzable)),
+                ],
+                max_retries=1,
+            )
+            batch_result = (
+                raw_result if isinstance(raw_result, _RelationBatch)
+                else _RelationBatch.model_validate(raw_result)
+            )
+            facts_by_id = {fact.fact_id: fact for fact in analyzable}
+            seen: set[str] = set()
+            for item in batch_result.findings:
+                fact_id = str(item.get("fact_id", ""))
+                if fact_id not in facts_by_id or fact_id in seen:
+                    continue
+                seen.add(fact_id)
+                relation = item.get("relation")
+                if relation not in {"supports", "contradicts", "insufficient"}:
+                    relation = "insufficient"
+                strength = item.get("strength")
+                if strength not in {"direct", "contextual"}:
+                    strength = "contextual"
+                observation = str(item.get("observation", "")).strip()
+                limitation = str(item.get("limitation", ""))
+                # 遵守 FactRelation 观察不变量(与 validator 一致)
+                if relation in {"supports", "contradicts"} and not observation:
+                    relation = "insufficient"
+                    strength = "contextual"
+                    limitation = limitation or "observation_missing"
+                elif relation == "insufficient":
+                    strength = "contextual"
+                    limitation = limitation or "analysis_unclear"
+                direct[fact_id] = FactRelation(
+                    fact_id=fact_id,
+                    relation=cast(
+                        Literal["supports", "contradicts", "insufficient"], relation,
+                    ),
+                    strength=cast(Literal["direct", "contextual"], strength),
+                    observation=observation,
+                    limitation=limitation,
+                )
+        except Exception as exc:  # noqa: BLE001 分析失败安全降级
+            logger.warning("evidence relation analysis failed: %s", exc)
+        for fact in analyzable:
+            if fact.fact_id not in direct:
+                direct[fact.fact_id] = FactRelation(
+                    fact_id=fact.fact_id, relation="insufficient", strength="contextual",
+                    limitation="analysis_failed_or_missing",
+                )
+
+    return [direct[fact.fact_id] for fact in facts]
+
+
+def _relation_payload(dossier: CandidateDossier, facts: list[CandidateFact]) -> str:
+    return _stable_json({
+        "candidate_alias": "C001",
+        "candidate": {
+            "type": dossier.candidate.type,
+            "claim": dossier.candidate.claim,
+            "file": dossier.candidate.file,
+            "line": dossier.candidate.line,
+        },
+        "task_patch": dossier.task.patch,
+        "facts": [
+            {
+                "fact_id": fact.fact_id,
+                "source": fact.source,
+                "raw": fact.raw,
+                "replay_status": fact.replay_status,
+                "limitation": fact.limitation,
+            }
+            for fact in facts
+        ],
+    })
+
+
+def verify_evidence(
+    dossiers: list[CandidateDossier],
+    *,
+    tool_client: Any,
+    analyst_llm: Any,
+    structured_method: str,
+    enabled_tools: list[str] | None,
+    tag_by_candidate: dict[str, RiskTag],
+) -> VerifyBatch:
+    """取证验证主入口:收集事实(链重放/配方兜底)→ 逐候选关系分析。
+
+    enabled_tools 本阶段接收但暂不用于过滤——validate_chain 的 CHAIN_TOOL_NAMES
+    已隐含工具白名单;保留参数以匹配 graph 接线契约(Task 11)。
+    """
+    batch = VerifyBatch()
+
+    facts_by_candidate: dict[str, list[CandidateFact]] = {}
+    trace: list[tuple[str, str]] = []
+    if tool_client is not None:
+        facts_by_candidate, trace, batch.gathered_context = _collect_facts(
+            dossiers, tool_client=tool_client, tag_by_candidate=tag_by_candidate,
+        )
+    else:
+        # 无工具服务:事实=patch 文本,关系分析照常(ADR-046 §7)
+        for dossier in dossiers:
+            cid = dossier.candidate.id
+            facts_by_candidate[cid] = [
+                CandidateFact(
+                    fact_id=_digest(cid, "patch", "0"),
+                    source="diff",
+                    raw=dossier.task.patch,
+                    replay_status="recipe",
+                )
+            ]
+    batch.facts = facts_by_candidate
+    batch.trace.extend(trace)
+
+    analyzable_items = [
+        (dossier, facts_by_candidate.get(dossier.candidate.id, []))
+        for dossier in dossiers
+        if facts_by_candidate.get(dossier.candidate.id)
+    ]
+    outcomes = run_bounded_parallel(
+        analyzable_items,
+        lambda item: analyze_relations(
+            item[0], item[1],
+            tag=tag_by_candidate.get(item[0].candidate.id, RiskTag.GENERAL_REVIEW),
+            analyst_llm=analyst_llm,
+            structured_method=structured_method,
+        ),
+    )
+    for (dossier, facts), outcome in zip(analyzable_items, outcomes, strict=True):
+        batch.relations[dossier.candidate.id] = (
+            outcome if outcome is not None else [
+                FactRelation(fact_id=fact.fact_id, relation="insufficient",
+                             strength="contextual", limitation="parallel_analysis_failed")
+                for fact in facts
+            ]
+        )
+    batch.trace.append(
+        ("evidence_batch_metrics", _stable_json({
+            "candidates": len(dossiers),
+            "fact_count": sum(len(v) for v in facts_by_candidate.values()),
+        }))
+    )
+    return batch

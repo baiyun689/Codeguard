@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, Mock
 
-from codeguard_agent.models.council import CandidateIssue
+from codeguard_agent.models.council import CandidateFact, CandidateIssue
 from codeguard_agent.models.schemas import EvidenceTraceStep, Severity
 from codeguard_agent.models.tasks import (
     ContextFact,
@@ -17,9 +17,11 @@ from codeguard_agent.pipeline.evidence.verifier import (
     _collect_facts,
     _located_match,
     _symbol_id,
+    analyze_relations,
     recipe_calls,
     replay_calls,
     validate_chain,
+    verify_evidence,
 )
 
 
@@ -267,3 +269,81 @@ def test_call_tool_graph_partial_coverage_confirmed_passes():
     )
     assert limitation == ""
     assert raw
+
+
+def test_analyze_relations_mock_path_without_llm():
+    facts = [
+        CandidateFact(
+            fact_id="f1", source="tool:get_file_content",
+            raw="int x = 1;", replay_status="verified",
+        ),
+        CandidateFact(
+            fact_id="f2", source="tool:x", raw="",
+            replay_status="failed", limitation="tool_empty",
+        ),
+    ]
+    relations = analyze_relations(
+        dossier=_dossier(), facts=facts, tag=RiskTag.GENERAL_REVIEW,
+        analyst_llm=None, structured_method="function_calling",
+    )
+    by_id = {r.fact_id: r for r in relations}
+    assert by_id["f1"].relation == "supports"      # mock: 有内容的事实按支持处理
+    assert by_id["f2"].relation == "insufficient"  # 带 limitation 的事实恒为不足
+
+
+def test_verify_evidence_routes_chain_and_recipe():
+    dossier = _dossier()
+    tool_client = Mock()
+    tool_client.get_file_content.return_value = Mock(
+        success=True, result=None, as_tool_output=lambda: "body",
+    )
+    batch = verify_evidence(
+        [dossier], tool_client=tool_client, analyst_llm=None,
+        structured_method="function_calling", enabled_tools=None,
+        tag_by_candidate={"c1": RiskTag.GENERAL_REVIEW},
+    )
+    assert set(batch.facts) == {"c1"}
+    assert set(batch.relations) == {"c1"}
+
+
+def test_verify_evidence_without_tool_client_uses_patch_facts():
+    dossier = _dossier()
+    batch = verify_evidence(
+        [dossier], tool_client=None, analyst_llm=None,
+        structured_method="function_calling", enabled_tools=None,
+        tag_by_candidate={"c1": RiskTag.GENERAL_REVIEW},
+    )
+    assert batch.facts["c1"][0].source == "diff"
+    assert batch.facts["c1"][0].replay_status == "recipe"
+
+
+def test_analyze_relations_guard_scan_prior_wins():
+    from codeguard_agent.pipeline.evidence.guard_scan import scan_guard_fact
+
+    # symbol_context 形状按 test_guard_scan.py 夹具:锚定 update() 方法声明块
+    dossier = _dossier(
+        line=2,
+        facts=[
+            ContextFact(
+                source="tool:resolve_change_context",
+                kind="symbol_context",
+                content=(
+                    '{"symbol_id": "java:Service#update()", "kind": "method",'
+                    ' "start_line": 1, "end_line": 2}'
+                ),
+            )
+        ],
+    )
+    fact = CandidateFact(
+        fact_id="f1", source="tool:get_file_content",
+        raw='@PreAuthorize("hasRole(\'ADMIN\')")\npublic void update() {}',
+        replay_status="verified",
+    )
+    prior = scan_guard_fact(dossier, fact, RiskTag.AUTHORIZATION)
+    assert prior is not None  # 前置:scanner 应命中
+    relations = analyze_relations(
+        dossier=dossier, facts=[fact], tag=RiskTag.AUTHORIZATION,
+        analyst_llm=None, structured_method="function_calling",
+    )
+    assert relations[0].relation == "contradicts"
+    assert relations[0].strength == "direct"
