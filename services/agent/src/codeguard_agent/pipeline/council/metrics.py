@@ -1,4 +1,11 @@
-"""ReviewCouncil 证据链过程指标的唯一计算入口。"""
+"""ReviewCouncil 证据链过程指标的计算入口(ADR-046 过渡版)。
+
+过渡说明:本实现承接 verifier+judge 两节点接线后的新签名
+(candidates/assembly/verdicts/final_candidate_ids/facts/relations/...),
+内部用旧逻辑继续推导仍被 evals 消费的字段,relation 语义按 Task 14 计划
+(direct counter = contradicts+direct;全 insufficient = 非空且全 insufficient)。
+Task 14 的完整重写将替换本文件为纯关系三元版并收敛冗余字段。
+"""
 
 from __future__ import annotations
 
@@ -6,15 +13,15 @@ import json
 from collections.abc import Mapping, Sequence
 
 from codeguard_agent.models.council import (
+    CandidateFact,
     CandidateIssue,
     CouncilRunStats,
     CouncilTrace,
-    EvidenceFinding,
+    FactRelation,
     Verdict,
 )
 from codeguard_agent.models.schemas import Severity
-from codeguard_agent.pipeline.evidence.agent import bound_evidence, request_strategy_mismatch
-from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
+from codeguard_agent.pipeline.evidence.planner import DossierAssembly
 from codeguard_agent.pipeline.council.dedup import CandidateDedupStats
 
 
@@ -22,48 +29,54 @@ def _ratio(numerator: int, denominator: int) -> float | None:
     return numerator / denominator if denominator else None
 
 
-def _valid_findings(dossier: CandidateDossier) -> list[EvidenceFinding]:
-    return [item.finding for item in bound_evidence(dossier)]
-
-
-def _has_valid_request(dossier: CandidateDossier) -> bool:
-    return any(
-        request_strategy_mismatch(request, dossier) is None
-        for request in dossier.requests
-    )
-
-
 def compute_council_run_stats(
-    *,
     candidates: Sequence[CandidateIssue],
     assembly: DossierAssembly,
     verdicts: Sequence[Verdict],
     final_candidate_ids: Sequence[str],
-    evidence_request_count: int,
+    facts_by_candidate: Mapping[str, Sequence[CandidateFact]],
+    relations_by_candidate: Mapping[str, Sequence[FactRelation]],
     truncated_candidates: int,
     council_trace: Sequence[CouncilTrace],
     candidate_dedup_stats: Mapping[str, int] | CandidateDedupStats | None = None,
 ) -> CouncilRunStats:
-    """从稳定候选映射和结构化证据计算审查过程指标。"""
+    """从稳定候选映射、事实/关系与裁决派生审查过程指标(过渡签名)。
+
+    关系推导字段(direct counter / all insufficient / coverage)全部从 relations 出;
+    facts 用于事实总数与重放状态统计(ADR-046 T3 字段)。
+    """
     final_ids = set(final_candidate_ids)
-    findings_by_candidate = {
-        dossier.candidate.id: _valid_findings(dossier)
-        for dossier in assembly.dossiers
+    fact_count = sum(len(facts) for facts in facts_by_candidate.values())
+    replay_verified_count = sum(
+        fact.replay_status == "verified"
+        for facts in facts_by_candidate.values()
+        for fact in facts
+    )
+    replay_unverified_count = sum(
+        fact.replay_status == "unverified"
+        for facts in facts_by_candidate.values()
+        for fact in facts
+    )
+    replay_failed_count = sum(
+        fact.replay_status == "failed"
+        for facts in facts_by_candidate.values()
+        for fact in facts
+    )
+    relations_by_cid: dict[str, Sequence[FactRelation]] = {
+        cid: tuple(rels) for cid, rels in relations_by_candidate.items()
     }
     direct_counter_ids = {
-        dossier.candidate.id
-        for dossier in assembly.dossiers
+        cid
+        for cid, rels in relations_by_cid.items()
         if any(
-            item.request.purpose == "counter"
-            and item.finding.strength == "direct"
-            and item.finding.relation == "contradicts"
-            for item in bound_evidence(dossier)
+            rel.relation == "contradicts" and rel.strength == "direct"
+            for rel in rels
         )
     }
     all_insufficient_ids = {
-        candidate_id
-        for candidate_id, findings in findings_by_candidate.items()
-        if findings and all(finding.relation == "insufficient" for finding in findings)
+        cid
+        for cid, rels in relations_by_cid.items()
+        if rels and all(rel.relation == "insufficient" for rel in rels)
     }
     final_dossiers = [
         dossier
@@ -71,16 +84,18 @@ def compute_council_run_stats(
         if dossier.candidate.id in final_ids
     ]
 
-    strategy_covered = sum(_has_valid_request(dossier) for dossier in final_dossiers)
+    strategy_covered = sum(
+        bool(relations_by_cid.get(dossier.candidate.id)) for dossier in final_dossiers
+    )
     fact_covered = sum(
         any(
-            finding.relation != "insufficient"
-            for finding in findings_by_candidate[dossier.candidate.id]
+            rel.relation != "insufficient"
+            for rel in relations_by_cid.get(dossier.candidate.id, ())
         )
         for dossier in final_dossiers
     )
     actual_tool_calls = sum(
-        trace.node in {"evidence_agent", "evidence_researcher"}
+        trace.node in {"evidence_agent", "evidence_researcher", "evidence_verifier"}
         and trace.event == "evidence_tool_called"
         for trace in council_trace
     )
@@ -183,7 +198,6 @@ def compute_council_run_stats(
     return CouncilRunStats(
         candidate_count=candidate_count,
         candidate_count_by_agent=by_agent,
-        evidence_request_count=evidence_request_count,
         truncated_candidates=truncated_candidates,
         raw_candidate_count=raw_candidate_count,
         logical_candidate_count=logical_candidate_count,
@@ -230,6 +244,10 @@ def compute_council_run_stats(
         task_review_failed_count=task_review_failed_count,
         judge_synthesis_failed_count=severity_defaulted,
         evidence_plan_skipped_count=evidence_plan_skipped_count,
+        fact_count=fact_count,
+        replay_verified_count=replay_verified_count,
+        replay_unverified_count=replay_unverified_count,
+        replay_failed_count=replay_failed_count,
     )
 
 

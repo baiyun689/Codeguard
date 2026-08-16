@@ -16,16 +16,13 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from codeguard_agent.llm.client import mock_review_result
 from codeguard_agent.models.council import (
+    CandidateFact,
     CandidateIssue,
     ContextBundle,
     ContextFact,
     CouncilRunStats,
     CouncilTrace,
-    CandidateInvestigationPlan,
-    EvidenceDossierSummary,
-    EvidenceNote,
-    EvidenceRequest,
-    ImpactAssessment,
+    FactRelation,
     MAX_CANDIDATES_PER_AGENT,
 )
 from codeguard_agent.models.schemas import ReviewResult
@@ -46,10 +43,6 @@ from codeguard_agent.models.tasks import (
 )
 from codeguard_agent.pipeline.context import rules as context_rules
 from codeguard_agent.pipeline.risk import task_prep
-from codeguard_agent.pipeline.council.judge import (
-    direct_judge_candidates,
-    judge_candidates,
-)
 from codeguard_agent.pipeline.council.dedup import (
     CandidateGroup,
     CandidateDedupStats,
@@ -77,24 +70,8 @@ from codeguard_agent.pipeline.engines import (
     ReviewOutcome,
     ToolAgentEngine,
 )
-from codeguard_agent.pipeline.council.metrics import compute_council_run_stats
 from codeguard_agent.pipeline.evidence.planner import assemble_dossiers
 from codeguard_agent.pipeline.evidence.rules.classify import resolve_candidate_tag
-from codeguard_agent.models.council import ConcernAnalysis
-from codeguard_agent.pipeline.council.concern import (
-    analyze_candidate_groups,
-)
-from codeguard_agent.pipeline.evidence.strategist import (
-    build_investigation_plans,
-    investigation_plans_to_requests,
-)
-from codeguard_agent.pipeline.evidence.researcher import research_evidence
-from codeguard_agent.pipeline.council.impact import (
-    assess_impact,
-    assess_impact_fallback,
-    is_impact_relevant_request,
-)
-from codeguard_agent.pipeline.council.severity import rubric_for
 from codeguard_agent.pipeline.context.base import PipelineContext
 from codeguard_agent.pipeline.context.provider import ContextProviderStage
 from codeguard_agent.pipeline.reviewers.reviewers import (
@@ -113,13 +90,20 @@ _ALL_REVIEWER_NAMES = [r.source_agent for r in DEFAULT_REVIEWERS]
 
 
 def dedup_gathered_reducer(existing: list | None, new: list | None) -> list:
-    """`gathered_context` reducer:按规范化工具参数去重,保留首次出现顺序。"""
+    """`gathered_context` reducer:按规范化工具参数去重,保留首次出现顺序。
+
+    兼容两种元素:GatheredContext 对象与 verifier 产出的 {"tool","args","content"} dict。
+    """
     merged = list(existing or []) + list(new or [])
     seen: set[tuple[str, str]] = set()
     out: list = []
     for it in merged:
-        tool = getattr(it, "tool", "")
-        args = getattr(it, "args", "")
+        if isinstance(it, dict):
+            tool = str(it.get("tool", ""))
+            args = str(it.get("args", ""))
+        else:
+            tool = getattr(it, "tool", "")
+            args = getattr(it, "args", "")
         try:
             structured_args = json.loads(args)
         except (TypeError, json.JSONDecodeError):
@@ -135,19 +119,6 @@ def dedup_gathered_reducer(existing: list | None, new: list | None) -> list:
         out.append(it)
 
     return out
-
-
-def dedup_evidence_request_reducer(existing: list | None, new: list | None) -> list:
-    """`evidence_requests` reducer:仅按稳定 ID 去重，绝不截断。"""
-    merged = list(existing or []) + list(new or [])
-    seen: set[str] = set()
-    unique: list[EvidenceRequest] = []
-    for request in merged:
-        if request.id in seen:
-            continue
-        seen.add(request.id)
-        unique.append(request)
-    return unique
 
 
 def collect_candidate_reducer(existing: list | None, new: list | None) -> list:
@@ -200,12 +171,8 @@ class ReviewState(TypedDict, total=False):
     candidate_groups: list[CandidateGroup]
     candidate_tag_resolutions: dict[str, RiskTag]
     candidate_dedup_stats: CandidateDedupStats
-    concern_analysis: ConcernAnalysis
-    investigation_plans: list[CandidateInvestigationPlan]
-    evidence_dossier_summaries: list[EvidenceDossierSummary]
-    evidence_requests: Annotated[list[EvidenceRequest], dedup_evidence_request_reducer]
-    evidence_notes: Annotated[list[EvidenceNote], operator.add]
-    impact_assessments: dict[str, ImpactAssessment]
+    candidate_facts: dict[str, list[CandidateFact]]
+    candidate_relations: dict[str, list[FactRelation]]
     council_trace: Annotated[list[CouncilTrace], operator.add]
     truncated_candidates: Annotated[int, operator.add]
 
@@ -1352,284 +1319,65 @@ def _coordinator_node(effective_judge_llm):
     return _node
 
 
-def _concern_analyzer_node(effective_judge_llm=None):
-    """把 CandidateGroup 转换为结构化 CandidateConcern。"""
-
-    def _node(state: ReviewState) -> dict:
-        groups = state.get("candidate_groups") or []
-        candidates = state.get("candidate_issues") or []
-        tag_resolutions = state.get("candidate_tag_resolutions") or {}
-
-        analysis = analyze_candidate_groups(
-            groups,
-            candidates=candidates,
-            candidate_tag_resolutions=tag_resolutions,
-            llm=effective_judge_llm,
-            structured_method=state.get(
-                "structured_method", "function_calling",
-            ),
-        )
-        if not candidates:
-            event = "no_op"
-            detail = "no candidate issues"
-        elif not groups:
-            event = "singleton_concerns_built"
-            detail = f"no duplicate groups; built {len(analysis.concerns)} concerns"
-        else:
-            event = "concerns_built"
-            detail = (
-                f"concerns={len(analysis.concerns)} "
-                f"diagnostics={len(analysis.diagnostics)}"
-            )
-        return {
-            "concern_analysis": analysis,
-            "council_trace": [
-                CouncilTrace(
-                    node="concern_analyzer",
-                    event=event,
-                    detail=detail,
-                ),
-            ],
-        }
-
-    return _node
-
-
 def _assemble_state_dossiers(state: ReviewState):
     return assemble_dossiers(
         state.get("candidate_issues") or [],
         state.get("review_tasks") or [],
         state.get("task_context_bundles") or {},
-        state.get("evidence_requests") or [],
-        state.get("evidence_notes") or [],
+        (),
+        (),
         state.get("candidate_groups") or [],
     )
 
 
-def _evidence_strategist_node(effective_judge_llm):
-    """批量提出候选特定的调查问题，并投影到稳定 request 契约。"""
+def _evidence_verifier_node(tool_client=None, judge_llm=None):
+    """取证验证节点:链校验→(链重放|配方兜底)→去重执行→引用匹配→关系分析。"""
 
     def _node(state: ReviewState) -> dict:
-        concern_analysis = state.get("concern_analysis")
-        concerns = (
-            list(concern_analysis.concerns)
-            if concern_analysis is not None
-            else []
+        from codeguard_agent.pipeline.evidence.verifier import verify_evidence
+        from codeguard_agent.pipeline.evidence.rules.classify import resolve_candidate_tag
+
+        assembly = _assemble_state_dossiers(state)
+        tag_by_candidate = {
+            dossier.candidate.id: resolve_candidate_tag(dossier.candidate)
+            for dossier in assembly.dossiers
+        }
+        batch = verify_evidence(
+            assembly.dossiers,
+            tool_client=tool_client,
+            analyst_llm=judge_llm,
+            structured_method=state.get("structured_method", "function_calling"),
+            enabled_tools=state.get("enabled_evidence_tools", state.get("enabled_tools")),
+            tag_by_candidate=tag_by_candidate,
         )
-        if concerns:
-            assembly = _assemble_state_dossiers(state)
-            batch = build_investigation_plans(
-                concerns,
-                llm=effective_judge_llm,
-                structured_method=state.get(
-                    "structured_method", "function_calling",
-                ),
-                dossiers=assembly.dossiers,
-            )
-            requests = investigation_plans_to_requests(batch.plans, concerns)
-            detail = json.dumps(
-                {
-                    "candidates": len(batch.plans),
-                    "requests": len(requests),
-                    "llm_calls": batch.llm_call_count,
-                    "fallback_candidates": len(batch.fallback_candidate_ids),
-                    "not_actionable": sum(
-                        not plan.actionable for plan in batch.plans
-                    ),
-                    "diagnostics": list(batch.diagnostics),
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-            return {
-                "investigation_plans": list(batch.plans),
-                "evidence_requests": requests,
-                "council_trace": [
-                    CouncilTrace(
-                        node="evidence_strategist",
-                        event="investigations_planned",
-                        detail=detail,
-                    )
-                ],
-            }
         return {
-            "investigation_plans": [],
-            "evidence_requests": [],
+            "candidate_facts": batch.facts,
+            "candidate_relations": batch.relations,
+            "gathered_context": batch.gathered_context,
             "council_trace": [
-                CouncilTrace(
-                    node="evidence_strategist",
-                    event="no_op",
-                    detail="no structured concerns available",
-                )
+                CouncilTrace(node="evidence_verifier", event=event, detail=detail)
+                for event, detail in batch.trace
             ],
         }
 
     return _node
 
 
-def _evidence_researcher_node(tool_client=None, judge_llm=None):
-    """执行快速路径，并只对有可补事实的疑难候选追加一轮调查。"""
+def _council_judge_node(llm=None, judge_llm=None):
+    """裁决节点:确定性门控 → LLM 终审 → 组内合并(ADR-046)。"""
 
     def _node(state: ReviewState) -> dict:
-        requests = state.get("evidence_requests") or []
+        from codeguard_agent.pipeline.council.metrics import compute_council_run_stats
+        from codeguard_agent.pipeline.council.verdict import judge_with_evidence
+
         assembly = _assemble_state_dossiers(state)
-        concern_analysis = state.get("concern_analysis")
-        concerns = (
-            list(concern_analysis.concerns)
-            if concern_analysis is not None
-            else []
-        )
-        batch = research_evidence(
-            state.get("investigation_plans") or [],
-            concerns,
-            dossiers=assembly.dossiers,
-            initial_requests=requests,
-            tool_client=tool_client,
-            analyst_llm=judge_llm,
-            structured_method=state.get("structured_method", "function_calling"),
-            enabled_tools=state.get(
-                "enabled_evidence_tools",
-                state.get("enabled_tools"),
-            ),
-        )
-        trace = [
-            CouncilTrace(node="evidence_researcher", event=event, detail=detail)
-            for event, detail in batch.trace
-        ]
-        if not requests:
-            trace.append(
-                CouncilTrace(
-                    node="evidence_researcher",
-                    event="no_op",
-                    detail="no investigation requests",
-                )
-            )
-        return {
-            "evidence_requests": batch.requests,
-            "evidence_notes": batch.notes,
-            "gathered_context": batch.gathered_context,
-            "evidence_dossier_summaries": batch.dossier_summaries,
-            "council_trace": trace,
-        }
-
-    return _node
-
-
-def _impact_assessor_node(judge_llm=None):
-    """从已对齐的影响相关 findings 归纳因子，不参与候选真伪裁决。"""
-
-    def _node(state: ReviewState) -> dict:
-        concern_analysis = state.get("concern_analysis")
-        concerns = (
-            concern_analysis.concerns
-            if concern_analysis is not None
-            else ()
-        )
-        request_by_id = {
-            request.id: request
-            for request in state.get("evidence_requests") or []
-        }
-        assessments: dict[str, ImpactAssessment] = {}
-        trace: list[CouncilTrace] = []
-
-        def _assess_one(concern):
-            tags = tuple(
-                tag
-                for tag in (
-                    concern.tags.primary_tag,
-                    *concern.tags.secondary_tags,
-                )
-                if tag is not None and tag is not RiskTag.GENERAL_REVIEW
-            )
-            findings = [
-                finding
-                for note in state.get("evidence_notes") or []
-                if (
-                    (request := request_by_id.get(note.request_id)) is not None
-                    and is_impact_relevant_request(request)
-                    and request.concern_id == concern.concern_id
-                )
-                for finding in note.findings
-            ]
-            try:
-                assessment = assess_impact(
-                    concern.concern_id,
-                    findings,
-                    rubric_for(tags=tags),
-                    llm=judge_llm,
-                )
-                degraded = False
-            except Exception:
-                logger.warning(
-                    "ImpactAssessor failed for %s; using fallback",
-                    concern.concern_id,
-                    exc_info=True,
-                )
-                assessment = assess_impact_fallback(concern.concern_id)
-                degraded = True
-            return concern, findings, assessment, degraded
-
-        outcomes = run_bounded_parallel(
-            list(concerns),
-            _assess_one,
-            max_workers=6,
-        )
-        for concern, outcome in zip(concerns, outcomes, strict=True):
-            if outcome is None:
-                findings = []
-                assessment = assess_impact_fallback(concern.concern_id)
-                degraded = True
-            else:
-                _matched_concern, findings, assessment, degraded = outcome
-            assessments[concern.concern_id] = assessment
-            trace.append(
-                CouncilTrace(
-                    node="impact_assessor",
-                    event=(
-                        "impact_assessment_degraded"
-                        if degraded
-                        else "impact_assessed"
-                    ),
-                    detail=json.dumps(
-                        {
-                            "concern_id": concern.concern_id,
-                            "findings": len(findings),
-                            "impact_class": assessment.impact_class.value,
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    ),
-                )
-            )
-        if not concerns:
-            trace.append(
-                CouncilTrace(
-                    node="impact_assessor",
-                    event="no_op",
-                    detail="no structured concerns available",
-                )
-            )
-        return {
-            "impact_assessments": assessments,
-            "council_trace": trace,
-        }
-
-    return _node
-
-
-def _council_judge_node(llm, judge_llm=None):
-    effective_judge_llm = judge_llm or llm
-
-    def _node(state: ReviewState) -> dict:
-        assembly = _assemble_state_dossiers(state)
-        batch = judge_candidates(
+        batch = judge_with_evidence(
             assembly,
-            judge_llm=effective_judge_llm,
+            state.get("candidate_relations") or {},
+            judge_llm=judge_llm,
             structured_method=state.get("structured_method", "function_calling"),
             max_retries=state.get("max_retries", 2),
             candidate_groups=state.get("candidate_groups") or [],
-            concern_analysis=state.get("concern_analysis"),
-            impact_assessments=state.get("impact_assessments"),
         )
         judge_trace = [
             CouncilTrace(node="council_judge", event=event, detail=detail)
@@ -1640,7 +1388,8 @@ def _council_judge_node(llm, judge_llm=None):
             assembly=assembly,
             verdicts=batch.verdicts,
             final_candidate_ids=batch.final_candidate_ids,
-            evidence_request_count=len(state.get("evidence_requests") or []),
+            facts_by_candidate=state.get("candidate_facts") or {},
+            relations_by_candidate=state.get("candidate_relations") or {},
             truncated_candidates=state.get("truncated_candidates", 0),
             council_trace=[*(state.get("council_trace") or []), *judge_trace],
             candidate_dedup_stats=state.get("candidate_dedup_stats"),
@@ -1662,17 +1411,19 @@ def _council_judge_node(llm, judge_llm=None):
 
 
 def _direct_judge_node(judge_llm=None):
-    """无证据链消融档的候选终审:跳过取证/门控,DirectJudge 直接裁决。"""
+    """无证据链消融档的候选终审:跳过取证/门控,DirectJudge 直接裁决(ADR-046)。"""
 
     def _node(state: ReviewState) -> dict:
+        from codeguard_agent.pipeline.council.metrics import compute_council_run_stats
+        from codeguard_agent.pipeline.council.verdict import judge_direct
+
         assembly = _assemble_state_dossiers(state)
-        batch = direct_judge_candidates(
+        batch = judge_direct(
             assembly,
             judge_llm=judge_llm,
             structured_method=state.get("structured_method", "function_calling"),
             max_retries=state.get("max_retries", 2),
             candidate_groups=state.get("candidate_groups") or [],
-            concern_analysis=state.get("concern_analysis"),
         )
         judge_trace = [
             CouncilTrace(node="direct_judge", event=event, detail=detail)
@@ -1683,7 +1434,8 @@ def _direct_judge_node(judge_llm=None):
             assembly=assembly,
             verdicts=batch.verdicts,
             final_candidate_ids=batch.final_candidate_ids,
-            evidence_request_count=0,
+            facts_by_candidate=state.get("candidate_facts") or {},
+            relations_by_candidate=state.get("candidate_relations") or {},
             truncated_candidates=state.get("truncated_candidates", 0),
             council_trace=[*(state.get("council_trace") or []), *judge_trace],
             candidate_dedup_stats=state.get("candidate_dedup_stats"),
@@ -1728,9 +1480,7 @@ def build_review_graph(
           └─ large  → diff_task_builder → risk_triage → task_rank → review_coverage → summary?
                        → context_provider → discover_*(×3)
                        → council_coordinator(fan-in)
-                       → concern_analyzer
-                         ├─ evidence_mode=full → evidence_strategist
-                         │    → evidence_researcher → impact_assessor
+                         ├─ evidence_mode=full → evidence_verifier
                          │    → council_judge → END
                          └─ evidence_mode=off  → direct_judge → END
                            (无证据链消融基线:跳过取证/门控,DirectJudge 直接终审)
@@ -1770,27 +1520,15 @@ def build_review_graph(
     else:
         g.add_node("council_coordinator", _coordinator_node(effective_judge_llm))
         g.add_node(
-            "concern_analyzer",
-            _concern_analyzer_node(effective_judge_llm),
-        )
-        g.add_node(
             "direct_judge",
             _direct_judge_node(effective_judge_llm),
         )
         g.add_node(
-            "evidence_strategist",
-            _evidence_strategist_node(effective_judge_llm),
-        )
-        g.add_node(
-            "evidence_researcher",
-            _evidence_researcher_node(
+            "evidence_verifier",
+            _evidence_verifier_node(
                 tool_client,
                 judge_llm=effective_judge_llm,
             ),
-        )
-        g.add_node(
-            "impact_assessor",
-            _impact_assessor_node(effective_judge_llm),
         )
         g.add_node(
             "council_judge",
@@ -1848,15 +1586,12 @@ def build_review_graph(
     if discovery_only:
         g.add_edge("discovery_collector", END)
     else:
-        g.add_edge("council_coordinator", "concern_analyzer")
         if evidence_mode == "off":
-            g.add_edge("concern_analyzer", "direct_judge")
+            g.add_edge("council_coordinator", "direct_judge")
             g.add_edge("direct_judge", END)
         else:
-            g.add_edge("concern_analyzer", "evidence_strategist")
-            g.add_edge("evidence_strategist", "evidence_researcher")
-            g.add_edge("evidence_researcher", "impact_assessor")
-            g.add_edge("impact_assessor", "council_judge")
+            g.add_edge("council_coordinator", "evidence_verifier")
+            g.add_edge("evidence_verifier", "council_judge")
             g.add_edge("council_judge", END)
 
     return g.compile(checkpointer=checkpointer)

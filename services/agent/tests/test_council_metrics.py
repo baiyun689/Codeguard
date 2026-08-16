@@ -1,21 +1,18 @@
-"""Phase 5 证据链过程指标的确定性测试。"""
+"""证据链过程指标的确定性测试(ADR-046 过渡签名:facts/relations 输入)。"""
 
 from __future__ import annotations
 
 from codeguard_agent.models.council import (
+    CandidateFact,
     CandidateIssue,
     CouncilTrace,
-    EvidenceFactType,
-    EvidenceFinding,
-    EvidenceNote,
-    EvidenceRequest,
+    FactRelation,
     Verdict,
 )
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import ReviewTask
 from codeguard_agent.pipeline.council.metrics import compute_council_run_stats
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
-from codeguard_agent.pipeline.evidence.rules import STRATEGIES_BY_ID
 
 
 def _dossier(candidate_id: str, *, file: str | None = None) -> CandidateDossier:
@@ -39,57 +36,35 @@ def _dossier(candidate_id: str, *, file: str | None = None) -> CandidateDossier:
     return CandidateDossier(candidate, task, None, (), ())
 
 
-def _with_finding(
+def _fact_and_relation(
     dossier: CandidateDossier,
     *,
-    purpose: str,
     relation: str,
     strength: str = "contextual",
-) -> CandidateDossier:
-    strategy = STRATEGIES_BY_ID[{
-        "support": "claim.changed_condition.support",
-        "counter": "claim.guard_presence.counter",
-        "severity": "claim.impact_factor.impact",
-    }[purpose]]
-    calls = strategy.build_tool_calls(dossier)
-    request = EvidenceRequest(
-        candidate_id=dossier.candidate.id,
-        strategy_id=strategy.id,
-        purpose=purpose,
-        target=dossier.task.file,
-        question="test proposition",
-        preferred_tools=list(dict.fromkeys(call.tool_name for call in calls)),
-        goal_id="goal-test",
-        concern_id="concern-test",
-        claim_ids=(dossier.candidate.id,),
-        fact_type=EvidenceFactType(strategy.id.split(".")[1]),
+    replay_status: str = "recipe",
+) -> tuple[CandidateFact, FactRelation]:
+    fact = CandidateFact(
+        fact_id=f"fact-{dossier.candidate.id}",
+        source="diff",
+        raw="+service.update();",
+        replay_status=replay_status,
     )
-    finding = EvidenceFinding(
-        evidence_id=f"evidence-{dossier.candidate.id}",
-        source="task_patch",
-        observation="事实" if relation != "insufficient" else "",
+    rel = FactRelation(
+        fact_id=fact.fact_id,
         relation=relation,
         strength=strength,
-        limitation="没有足够上下文" if relation == "insufficient" else "",
+        observation="事实" if relation != "insufficient" else "",
+        limitation="" if relation != "insufficient" else "没有足够上下文",
     )
-    note = EvidenceNote(
-        request_id=request.id,
-        candidate_id=dossier.candidate.id,
-        findings=[finding],
-    )
-    return CandidateDossier(
-        dossier.candidate,
-        dossier.task,
-        dossier.context_bundle,
-        (request,),
-        (note,),
-    )
+    return fact, rel
 
 
 def _stats(
     dossiers: list[CandidateDossier],
     *,
     final_ids: list[str],
+    relations: dict[str, list[FactRelation]] | None = None,
+    facts: dict[str, list[CandidateFact]] | None = None,
     traces: list[CouncilTrace] | None = None,
 ):
     candidates = [dossier.candidate for dossier in dossiers]
@@ -98,36 +73,57 @@ def _stats(
         assembly=DossierAssembly(tuple(dossiers), (), ()),
         verdicts=[Verdict(item.id, "keep", "test") for item in candidates],
         final_candidate_ids=final_ids,
-        evidence_request_count=sum(len(dossier.requests) for dossier in dossiers),
+        facts_by_candidate=facts or {},
+        relations_by_candidate=relations or {},
         truncated_candidates=0,
         council_trace=traces or [],
     )
 
 
+def _with_relation(
+    dossier: CandidateDossier,
+    *,
+    relation: str,
+    strength: str = "contextual",
+) -> tuple[CandidateDossier, CandidateFact, FactRelation]:
+    fact, rel = _fact_and_relation(
+        dossier, relation=relation, strength=strength
+    )
+    return dossier, fact, rel
+
+
 def test_direct_counter_retained_rate_uses_candidate_survivor_mapping():
-    dropped = _with_finding(
+    dropped, fact, rel = _with_relation(
         _dossier("dropped"),
-        purpose="counter",
         relation="contradicts",
         strength="direct",
     )
 
-    stats = _stats([dropped], final_ids=[])
+    stats = _stats(
+        [dropped],
+        final_ids=[],
+        relations={"dropped": [rel]},
+        facts={"dropped": [fact]},
+    )
 
     assert stats.direct_counter_candidate_count == 1
     assert stats.direct_counter_retained_count == 0
     assert stats.direct_counter_retained_rate == 0.0
 
 
-def test_all_insufficient_retained_rate_counts_only_nonempty_associated_findings():
-    retained = _with_finding(
+def test_all_insufficient_retained_rate_counts_only_nonempty_relations():
+    retained, fact, rel = _with_relation(
         _dossier("retained"),
-        purpose="counter",
         relation="insufficient",
     )
-    no_findings = _dossier("no-findings")
+    no_relations = _dossier("no-relations")
 
-    stats = _stats([retained, no_findings], final_ids=["retained", "no-findings"])
+    stats = _stats(
+        [retained, no_relations],
+        final_ids=["retained", "no-relations"],
+        relations={"retained": [rel]},
+        facts={"retained": [fact]},
+    )
 
     assert stats.all_insufficient_candidate_count == 1
     assert stats.all_insufficient_retained_count == 1
@@ -135,37 +131,44 @@ def test_all_insufficient_retained_rate_counts_only_nonempty_associated_findings
 
 
 def test_final_issue_strategy_and_fact_coverage_use_surviving_candidates():
-    with_fact = _with_finding(
+    with_fact, fact_a, rel_a = _with_relation(
         _dossier("with-fact"),
-        purpose="support",
         relation="supports",
         strength="direct",
     )
-    insufficient = _with_finding(
+    insufficient, fact_b, rel_b = _with_relation(
         _dossier("insufficient"),
-        purpose="counter",
         relation="insufficient",
     )
-    no_request = _dossier("no-request")
+    no_relations = _dossier("no-relations")
 
     stats = _stats(
-        [with_fact, insufficient, no_request],
-        final_ids=["with-fact", "insufficient", "no-request"],
+        [with_fact, insufficient, no_relations],
+        final_ids=["with-fact", "insufficient", "no-relations"],
+        relations={
+            "with-fact": [rel_a],
+            "insufficient": [rel_b],
+        },
+        facts={
+            "with-fact": [fact_a],
+            "insufficient": [fact_b],
+        },
     )
 
     assert stats.final_issue_count == 3
+    # strategy covered = 幸存候选存在非空关系;fact covered = 存在非 insufficient 关系
     assert stats.final_issue_strategy_covered_count == 2
     assert stats.final_issue_strategy_coverage == 2 / 3
     assert stats.final_issue_fact_covered_count == 1
     assert stats.final_issue_fact_coverage == 1 / 3
 
 
-def test_actual_tool_calls_come_from_evidence_agent_trace_not_global_context():
+def test_actual_tool_calls_come_from_evidence_nodes_trace_not_global_context():
     dossiers = [_dossier("one"), _dossier("two")]
     traces = [
         CouncilTrace(node="context_provider", event="context_tool_called"),
-        CouncilTrace(node="evidence_agent", event="evidence_tool_called"),
-        CouncilTrace(node="evidence_agent", event="evidence_tool_reused"),
+        CouncilTrace(node="evidence_verifier", event="evidence_tool_called"),
+        CouncilTrace(node="evidence_verifier", event="evidence_tool_reused"),
     ]
 
     stats = _stats(dossiers, final_ids=["one", "two"], traces=traces)
@@ -182,6 +185,33 @@ def test_zero_denominators_are_none_except_average_tool_calls():
     assert stats.final_issue_strategy_coverage is None
     assert stats.final_issue_fact_coverage is None
     assert stats.average_evidence_tool_calls == 0.0
+
+
+def test_replay_stats_are_derived_from_facts():
+    dossiers = [_dossier("verified"), _dossier("failed")]
+    facts = {
+        "verified": [
+            CandidateFact(
+                fact_id="f1", source="diff", raw="+x", replay_status="verified"
+            ),
+            CandidateFact(
+                fact_id="f2", source="diff", raw="+y", replay_status="unverified"
+            ),
+        ],
+        "failed": [
+            CandidateFact(
+                fact_id="f3", source="diff", raw="", replay_status="failed",
+                limitation="tool_error",
+            )
+        ],
+    }
+
+    stats = _stats(dossiers, final_ids=[], facts=facts)
+
+    assert stats.fact_count == 3
+    assert stats.replay_verified_count == 1
+    assert stats.replay_unverified_count == 1
+    assert stats.replay_failed_count == 1
 
 
 def test_gate_and_severity_metrics_are_derived_from_verdicts_and_trace():
@@ -244,7 +274,8 @@ def test_gate_and_severity_metrics_are_derived_from_verdicts_and_trace():
         assembly=DossierAssembly(tuple(candidates), (), ()),
         verdicts=verdicts,
         final_candidate_ids=["defaulted", "normal-default", "critical"],
-        evidence_request_count=0,
+        facts_by_candidate={},
+        relations_by_candidate={},
         truncated_candidates=0,
         council_trace=traces,
     )

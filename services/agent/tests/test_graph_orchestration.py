@@ -7,6 +7,8 @@ from pathlib import Path
 from threading import Lock
 import json
 
+from langgraph.graph import END
+
 import codeguard_agent.pipeline.orchestrator as orchestrator_module
 from codeguard_agent.models.council import ContextBundle, ContextFact
 from codeguard_agent.models.knowledge import KnowledgeBundle
@@ -71,6 +73,16 @@ def test_dedup_gathered_reducer_canonicalizes_path_variants():
     out = G.dedup_gathered_reducer([first], [duplicate])
 
     assert out == [first]
+
+
+def test_dedup_gathered_reducer_handles_verifier_dict_entries():
+    first = {"tool": "get_file_content", "args": '{"file_path": "A.java"}', "content": "x"}
+    duplicate = {"tool": "get_file_content", "args": '{"file_path": "A.java"}', "content": "y"}
+    distinct = {"tool": "get_file_content", "args": '{"file_path": "B.java"}', "content": "z"}
+
+    out = G.dedup_gathered_reducer([first], [duplicate, distinct])
+
+    assert out == [first, distinct]
 
 
 def test_context_provider_keeps_summary_and_files_out_of_facts():
@@ -430,6 +442,8 @@ def test_orchestrator_initial_state_omits_empty_runtime_outputs(monkeypatch):
         "gathered_context",
         "review_summaries",
         "candidate_issues",
+        "candidate_facts",
+        "candidate_relations",
         "evidence_requests",
         "evidence_notes",
         "council_verdicts",
@@ -558,13 +572,13 @@ def test_small_direct_review_success_ends_without_risk_pipeline_state():
     assert "risk_priors" not in output
 
 
-class _EvidenceBatchStub:
+class _RelationBatchStub:
     def invoke(self, messages):
         payload = json.loads(messages[-1][1])
         return {
             "findings": [
                 {
-                    "evidence_id": fact["evidence_id"],
+                    "fact_id": fact["fact_id"],
                     "relation": "supports",
                     "strength": "contextual",
                     "observation": "the changed task patch supports the candidate",
@@ -576,19 +590,17 @@ class _EvidenceBatchStub:
 
 
 class _CouncilLLM:
-    """Return valid evidence/synthesis structures for graph wiring tests."""
+    """Return valid relation/verdict structures for graph wiring tests."""
 
     def with_structured_output(self, schema, *args, **kwargs):
-        if schema.__name__ == "_EvidenceAnalysisBatch":
-            return _EvidenceBatchStub()
-        if schema.__name__ == "CandidateEvidenceAssessment":
+        if schema.__name__ == "_RelationBatch":
+            return _RelationBatchStub()
+        if schema.__name__ == "CandidateDirectAssessment":
             return _ValueStub(
                 {
                     "candidate_id": "C001",
-                    "claim_status": "supported",
-                    "counter_effect": "none",
-                    "severity_factors": [],
-                    "conflicts": [],
+                    "action": "keep",
+                    "severity": "INFO",
                     "reason": "supported for graph wiring test",
                 }
             )
@@ -664,23 +676,25 @@ def test_build_graph_default_nodes_are_adr032():
     assert "discover_behavior" in names
     assert "discover_maintainability" in names
     assert "council_coordinator" in names
+    assert "evidence_verifier" in names
     assert "council_judge" in names
-    assert "evidence_strategist" in names
-    assert "evidence_researcher" in names
-    assert "impact_assessor" in names
     # 旧节点已删除
     assert "challenge_agent" not in names
     assert "self_checker" not in names
     assert "supervisor" not in names
     assert "aggregation" not in names
     assert "fp_filter" not in names
+    assert "concern_analyzer" not in names
+    assert "evidence_strategist" not in names
+    assert "evidence_researcher" not in names
+    assert "impact_assessor" not in names
 
 
 def test_build_graph_evidence_mode_off_contains_direct_judge():
     graph = G.build_review_graph(enable_summary=False, llm=None, evidence_mode="off")
     names = set(graph.get_graph().nodes)
     assert "direct_judge" in names
-    assert "concern_analyzer" in names
+    assert "evidence_verifier" in names
 
 
 def test_evidence_mode_off_routes_to_direct_judge_mock():
@@ -702,6 +716,107 @@ def test_evidence_mode_off_routes_to_direct_judge_mock():
     stats = meta["council"]
     assert stats["evidence_request_count"] == 0
     assert stats["verdict_count"] == stats["candidate_count"]
+
+
+def _evidence_state(candidate=None, **over):
+    if candidate is None:
+        candidate = _candidate()
+    task = G.ReviewTask(
+        id=candidate.task_id,
+        file=candidate.file,
+        patch="+x",
+        changed_lines=[candidate.line or 1],
+    )
+    state = {
+        "candidate_issues": [candidate],
+        "review_tasks": [task],
+        "task_context_bundles": {},
+        "structured_method": "function_calling",
+    }
+    state.update(over)
+    return state
+
+
+def test_evidence_verifier_node_populates_facts_and_relations():
+    candidate = _candidate()
+    out = G._evidence_verifier_node(tool_client=None, judge_llm=None)(
+        _evidence_state(candidate)
+    )
+
+    assert list(out["candidate_facts"]) == [candidate.id]
+    assert list(out["candidate_relations"]) == [candidate.id]
+    fact = out["candidate_facts"][candidate.id][0]
+    assert fact.source == "diff"
+    assert fact.replay_status == "recipe"
+    relation = out["candidate_relations"][candidate.id][0]
+    assert relation.relation in {"supports", "insufficient", "contradicts"}
+    assert any(
+        trace.node == "evidence_verifier" for trace in out["council_trace"]
+    )
+
+
+def test_council_judge_node_mock_keeps_supported_candidate_and_builds_stats():
+    candidate = _candidate()
+    fact = G.CandidateFact(
+        fact_id="fact-1", source="diff", raw="+x", replay_status="recipe"
+    )
+    relation = G.FactRelation(
+        fact_id="fact-1",
+        relation="supports",
+        strength="contextual",
+        observation="变更出现在 patch 中",
+    )
+    out = G._council_judge_node(llm=None, judge_llm=None)(
+        _evidence_state(
+            candidate,
+            candidate_facts={candidate.id: [fact]},
+            candidate_relations={candidate.id: [relation]},
+        )
+    )
+
+    assert len(out["final_issues"]) == 1
+    assert out["final_issues"][0].severity == candidate.severity_proposal
+    assert out["council_stats"].verdict_count == 1
+    assert out["council_stats"].candidate_count == 1
+    assert out["council_stats"].final_issue_fact_covered_count == 1
+    assert any(
+        trace.node == "council_judge" for trace in out["council_trace"]
+    )
+
+
+def test_council_judge_node_gates_candidate_without_supporting_evidence():
+    candidate = _candidate()
+    fact = G.CandidateFact(
+        fact_id="fact-1", source="diff", raw="+x", replay_status="recipe"
+    )
+    relation = G.FactRelation(
+        fact_id="fact-1",
+        relation="insufficient",
+        strength="contextual",
+        limitation="没有足够上下文",
+    )
+    out = G._council_judge_node(llm=None, judge_llm=None)(
+        _evidence_state(
+            candidate,
+            candidate_facts={candidate.id: [fact]},
+            candidate_relations={candidate.id: [relation]},
+        )
+    )
+
+    assert out["final_issues"] == []
+    assert out["council_stats"].all_insufficient_candidate_count == 1
+    assert out["council_stats"].no_support_candidate_count == 0
+
+
+def test_direct_judge_node_mock_keeps_candidate_without_evidence():
+    candidate = _candidate()
+    out = G._direct_judge_node(judge_llm=None)(_evidence_state(candidate))
+
+    assert len(out["final_issues"]) == 1
+    assert out["council_stats"].verdict_count == 1
+    assert any(
+        trace.node == "direct_judge" for trace in out["council_trace"]
+    )
 
 
 def test_checkpointer_factory_memory_creates_MemorySaver():
@@ -888,16 +1003,22 @@ def test_coordinator_edges_through_agentic_evidence_chain():
     graph = G.build_review_graph(enable_summary=False, llm=None)
     edges = graph.get_graph().edges
     pairs = {(e.source, e.target) for e in edges}
-    # coordinator → concern → strategist → researcher → impact → judge
-    assert ("council_coordinator", "concern_analyzer") in pairs
-    assert ("concern_analyzer", "evidence_strategist") in pairs
-    assert ("evidence_strategist", "evidence_researcher") in pairs
-    assert ("evidence_researcher", "impact_assessor") in pairs
-    assert ("impact_assessor", "council_judge") in pairs
-    # 旧的 evidence → coordinator 回环已移除
-    assert ("evidence_researcher", "council_coordinator") not in pairs
-    # concern_analyzer 在非 discovery_only 图中存在
-    assert "concern_analyzer" in set(graph.get_graph().nodes)
+    # coordinator → verifier → judge(ADR-046 两节点证据链)
+    assert ("council_coordinator", "evidence_verifier") in pairs
+    assert ("evidence_verifier", "council_judge") in pairs
+    assert ("council_judge", END) in pairs
+    # 旧四阶段链已移除
+    assert ("council_coordinator", "concern_analyzer") not in pairs
+    assert ("evidence_researcher", "impact_assessor") not in pairs
+    assert "concern_analyzer" not in set(graph.get_graph().nodes)
+
+
+def test_evidence_mode_off_edges_route_coordinator_to_direct_judge():
+    graph = G.build_review_graph(enable_summary=False, llm=None, evidence_mode="off")
+    pairs = {(e.source, e.target) for e in graph.get_graph().edges}
+    assert ("council_coordinator", "direct_judge") in pairs
+    assert ("direct_judge", END) in pairs
+    assert ("council_coordinator", "evidence_verifier") not in pairs
 
 
 def test_evidence_agent_runs_once_before_judge(monkeypatch):
