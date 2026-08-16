@@ -6,18 +6,20 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from codeguard_agent.models.council import CandidateFact, FactRelation
 from codeguard_agent.models.tasks import RiskTag
+from codeguard_agent.pipeline.context import rules as context_rules
+from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 from codeguard_agent.pipeline.evidence.verifier import SECURITY_TAGS
 
 _AUTHZ_ANNOTATIONS = ("PreAuthorize", "PostAuthorize", "Secured", "RolesAllowed")
 
-# 以下四个私有函数自 agent.py 迁移(_strip_comments_and_strings / _resolved_method /
-# _matching_brace / _scoped_annotation):文本扫描部分语义逐行保留;
-# _resolved_method/_scoped_annotation 去掉 dossier 依赖,改为直扫文件内容
-# (无 AST symbol_context 可用,仅需标准库 re,无需 json)。
+# 以下四个私有函数自 agent.py 原样迁移(docstring 与语义逐行保留,旧副本待 T12 删除):
+# 扫描锚定被审方法(dossier 的 symbol_context 方法解析 + legacy ast_structure 兜底),
+# 不按"文件首个方法"直扫,避免多方法文件误报/漏报与字段初始化器劫持锚点。
 
 
 def _strip_comments_and_strings(source: str) -> str:
@@ -80,23 +82,54 @@ def _strip_comments_and_strings(source: str) -> str:
     return "".join(result)
 
 
-_METHOD_DECL = re.compile(r"\b(\w+)\s*\(")
+_METHOD_RANGE = re.compile(r"\b(\w+)\([^)]*\).*\[L(\d+)-L(\d+)\]\s*$")
 
 
-def _resolved_method(source: str) -> tuple[str, int, int] | None:
-    """从文件内容解析首个方法声明(文本直扫版,无 dossier 上下文)。
-
-    原 agent.py 版依赖 AST symbol_context 解析方法名与行区间;本模块只有
-    文件内容事实,退化为扫描整份内容中首个方法声明行,行区间覆盖全文件。
-    """
-    lines = _strip_comments_and_strings(source).splitlines()
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("@"):
+def _resolved_method(dossier: CandidateDossier) -> tuple[str, int, int, str] | None:
+    bundle = dossier.context_bundle
+    if bundle is None:
+        return None
+    for context_fact in bundle.facts:
+        if context_fact.kind == "symbol_context" and not context_fact.truncated:
+            try:
+                payload = json.loads(context_fact.content)
+                if payload.get("kind") not in {"method", "constructor"}:
+                    continue
+                symbol_id = str(payload.get("symbol_id", ""))
+                method_name = symbol_id.rsplit("#", 1)[-1].split("(", 1)[0]
+                return (
+                    method_name,
+                    int(payload.get("start_line", 0)),
+                    int(payload.get("end_line", 0)),
+                    " ".join(
+                        [
+                            *(
+                                f"@{name}"
+                                for name in payload.get("annotations", [])
+                            ),
+                            str(payload.get("signature", "")),
+                        ]
+                    ).strip(),
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        if context_fact.kind != "ast_structure" or context_fact.truncated:
             continue
-        match = _METHOD_DECL.search(line)
-        if match is not None:
-            return match.group(1), index, len(lines)
+        legacy_method_name = context_rules.resolve_method_name(
+            context_fact.content, dossier.task
+        )
+        if legacy_method_name is None:
+            continue
+        task_span = context_rules._task_span(dossier.task)
+        if task_span is None:
+            return None
+        for line in context_fact.content.splitlines():
+            match = _METHOD_RANGE.search(line.strip())
+            if not match or match.group(1) != legacy_method_name:
+                continue
+            start, end = int(match.group(2)), int(match.group(3))
+            if start <= task_span[1] and end >= task_span[0]:
+                return legacy_method_name, start, end, line.strip()
     return None
 
 
@@ -113,23 +146,20 @@ def _matching_brace(source: str, open_index: int) -> int | None:
 
 
 def _scoped_annotation(
+    dossier: CandidateDossier,
     source: str,
     annotation_names: tuple[str, ...],
 ) -> str | None:
-    """在文件内容中确定性扫描方法声明块与所属类声明块上的目标注解。
-
-    原 agent.py 版以 dossier 定位待审方法并用 AST 签名先行检查;本模块退化为
-    文本直扫:先找首个方法声明行,检查其声明块(含上方注解行)是否含目标注解,
-    未命中再检查该方法所属类声明的注解块。
-    """
-    resolved = _resolved_method(source)
+    resolved = _resolved_method(dossier)
     if resolved is None:
         return None
-    method_name, start, end = resolved
+    method_name, start, end, ast_signature = resolved
     annotation_pattern = re.compile(
         r"@(" + "|".join(re.escape(name) for name in annotation_names) + r")\b"
     )
-    # AST 签名检查需要 dossier 上下文,文本直扫版跳过,直接扫声明块。
+    ast_match = annotation_pattern.search(ast_signature)
+    if ast_match:
+        return f"当前方法 AST 声明含 @{ast_match.group(1)}"
 
     sanitized = _strip_comments_and_strings(source)
     lines = sanitized.splitlines()
@@ -145,13 +175,6 @@ def _scoped_annotation(
     )
     if method_line is None:
         return None
-    # 声明块向上含注解行(与 AST start_line 含注解的语义对齐)。
-    while start_index > 0:
-        previous = lines[start_index - 1].strip()
-        if not previous or previous.startswith("@") or previous.endswith(")"):
-            start_index -= 1
-            continue
-        break
     method_declaration = "\n".join(lines[start_index : method_line + 1])
     method_match = annotation_pattern.search(method_declaration)
     if method_match:
@@ -190,12 +213,14 @@ def _scoped_annotation(
 
 
 def scan_guard_fact(
-    fact: CandidateFact, tag: RiskTag,
+    dossier: CandidateDossier,
+    fact: CandidateFact,
+    tag: RiskTag,
 ) -> FactRelation | None:
     """在文件内容事实中确定性扫描 guard 注解;命中返回 direct contradicts,否则 None。"""
     if fact.raw.strip() and tag in SECURITY_TAGS:
-        observation = _scoped_annotation(fact.raw, _AUTHZ_ANNOTATIONS)
-        if observation is not None:
+        observation = _scoped_annotation(dossier, fact.raw, _AUTHZ_ANNOTATIONS)
+        if observation and observation.strip():
             return FactRelation(
                 fact_id=fact.fact_id,
                 relation="contradicts",
@@ -203,8 +228,8 @@ def scan_guard_fact(
                 observation=observation,
             )
     if fact.raw.strip() and tag is RiskTag.TRANSACTION_ATOMICITY:
-        observation = _scoped_annotation(fact.raw, ("Transactional",))
-        if observation is not None:
+        observation = _scoped_annotation(dossier, fact.raw, ("Transactional",))
+        if observation and observation.strip():
             return FactRelation(
                 fact_id=fact.fact_id,
                 relation="contradicts",
