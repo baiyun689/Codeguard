@@ -1652,10 +1652,6 @@ def _council_judge_node(llm, judge_llm=None):
             evidence_request_count=len(state.get("evidence_requests") or []),
             truncated_candidates=state.get("truncated_candidates", 0),
             council_trace=[*(state.get("council_trace") or []), *judge_trace],
-            investigation_plans=state.get("investigation_plans") or [],
-            evidence_dossier_summaries=(
-                state.get("evidence_dossier_summaries") or []
-            ),
             candidate_dedup_stats=state.get("candidate_dedup_stats"),
         )
         summaries = list(state.get("review_summaries") or [])
@@ -1699,8 +1695,6 @@ def _direct_judge_node(judge_llm=None):
             evidence_request_count=0,
             truncated_candidates=state.get("truncated_candidates", 0),
             council_trace=[*(state.get("council_trace") or []), *judge_trace],
-            investigation_plans=[],
-            evidence_dossier_summaries=[],
             candidate_dedup_stats=state.get("candidate_dedup_stats"),
         )
         summaries = list(state.get("review_summaries") or [])

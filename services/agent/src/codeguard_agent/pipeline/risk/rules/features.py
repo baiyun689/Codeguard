@@ -16,17 +16,14 @@ class DiffFeatures:
     path: str
     added_lines: tuple[tuple[int, str], ...]
     deleted_lines: tuple[str, ...]
-    context_lines: tuple[str, ...]
     has_added: bool
     has_deleted: bool
-    has_changed: bool
 
 
 def extract_features(task: ReviewTask) -> DiffFeatures:
     """Extract added, deleted, and context text from one unified-diff task."""
     added: list[tuple[int, str]] = []
     deleted: list[str] = []
-    context: list[str] = []
     header_match = _HUNK_HEADER.match(task.hunk_header)
     new_line = int(header_match.group(1)) if header_match else 0
     fallback = header_match is None
@@ -54,7 +51,6 @@ def extract_features(task: ReviewTask) -> DiffFeatures:
         elif line.startswith("-"):
             deleted.append(line[1:])
         elif line.startswith(" "):
-            context.append(line[1:])
             new_line += 1
 
     has_added = bool(added)
@@ -63,8 +59,6 @@ def extract_features(task: ReviewTask) -> DiffFeatures:
         path=task.file,
         added_lines=tuple(added),
         deleted_lines=tuple(deleted),
-        context_lines=tuple(context),
         has_added=has_added,
         has_deleted=has_deleted,
-        has_changed=has_added and has_deleted,
     )

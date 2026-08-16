@@ -141,7 +141,6 @@ class PipelineOrchestrator:
             from codeguard_agent.observability.dashboard import render_dashboard_file
 
             tracer = _TraceCollector(
-                diff_text,
                 _run_id,
                 max_llm_content=trace_max_llm_content,
             )

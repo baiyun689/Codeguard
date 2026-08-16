@@ -18,10 +18,8 @@ def test_extracts_added_only_hunk_with_new_file_line_numbers():
         path="A.java",
         added_lines=((2, "added"),),
         deleted_lines=(),
-        context_lines=("context", "tail"),
         has_added=True,
         has_deleted=False,
-        has_changed=False,
     )
 
 
@@ -39,7 +37,6 @@ def test_extracts_deleted_only_hunk():
     assert features.added_lines == ()
     assert features.has_deleted is True
     assert features.has_added is False
-    assert features.has_changed is False
 
 
 def test_extracts_replacement_as_both_directions():
@@ -54,7 +51,6 @@ def test_extracts_replacement_as_both_directions():
 
     assert features.added_lines == ((3, "new"),)
     assert features.deleted_lines == ("old",)
-    assert features.has_changed is True
 
 
 def test_uses_review_task_file_as_path():
@@ -88,7 +84,6 @@ def test_excludes_diff_metadata_from_all_text_collections():
 
     assert features.added_lines == ((1, "new"),)
     assert features.deleted_lines == ("old",)
-    assert features.context_lines == ()
 
 
 def test_extracts_deleted_protection_lines_from_no_hunk_fallback():
@@ -123,6 +118,4 @@ def test_fallback_tracks_deletion_context_and_addition_without_hunk_header():
     features = extract_features(task)
 
     assert features.deleted_lines == ("old",)
-    assert features.context_lines == ("context",)
     assert features.added_lines == ((11, "new"),)
-    assert features.has_changed is True

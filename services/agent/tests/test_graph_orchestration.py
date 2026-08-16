@@ -701,7 +701,6 @@ def test_evidence_mode_off_routes_to_direct_judge_mock():
     assert len(result.issues) >= 1
     stats = meta["council"]
     assert stats["evidence_request_count"] == 0
-    assert stats["investigation_plan_count"] == 0
     assert stats["verdict_count"] == stats["candidate_count"]
 
 
@@ -911,9 +910,6 @@ def test_evidence_agent_runs_once_before_judge(monkeypatch):
     orch.run(_FakeLLM(), _DIFF, metadata_sink=meta)
 
     assert meta["council"]["verdict_count"] >= 1
-    assert meta["council"]["investigation_plan_count"] >= 1
-    assert "evidence_dossier_status_counts" in meta["council"]
-    assert "evidence_react_candidate_count" in meta["council"]
     assert "evidence_rounds" not in meta["council"]
 
 

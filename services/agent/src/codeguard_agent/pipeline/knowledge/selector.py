@@ -182,7 +182,6 @@ def _select_specialized(
         ctx_score, ctx_source = _score_context_symbols(fragment, context)
 
         total = risk_score + patch_score + file_score + ctx_score
-        sources = tuple(s for s in (risk_source, patch_source, file_source, ctx_source) if s is not None)
         reasons = []
         if risk_score > 0:
             reasons.append(f"risk prior ({risk_score:.1f})")
@@ -197,7 +196,6 @@ def _select_specialized(
             scored.append(SelectedKnowledge(
                 fragment=fragment,
                 score=total,
-                selection_sources=sources,
                 reasons=tuple(reasons),
             ))
 
@@ -321,7 +319,6 @@ def select_knowledge(
         base = SelectedKnowledge(
             fragment=base_fragment,
             score=1.0,
-            selection_sources=(KnowledgeSelectionSource.FILE_ROLE,),
             reasons=("reviewer baseline methodology",),
         )
     else:

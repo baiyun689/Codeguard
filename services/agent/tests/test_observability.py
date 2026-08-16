@@ -1131,7 +1131,7 @@ class TestTraceEvent:
 
 class TestNodeStats:
     def test_basic(self):
-        s = NodeStats(node_name="discover_threat_model", start_ms=10.0, end_ms=30.0, duration_ms=20.0, llm_calls=2, tool_calls=3)
+        s = NodeStats(node_name="discover_threat_model", start_ms=10.0, end_ms=30.0, duration_ms=20.0, tool_calls=3)
         assert s.duration_ms == 20.0
         assert s.tokens.total_tokens == 0
 
@@ -1145,7 +1145,6 @@ class TestTraceSummary:
         s = TraceSummary()
         assert s.total_duration_ms == 0.0
         assert s.total_tokens.total_tokens == 0
-        assert s.tokens_by_node == {}
         assert s.event_counts == {}
         assert s.node_timeline == []
 
@@ -1161,18 +1160,16 @@ class TestTraceReport:
         summary = TraceSummary(
             total_duration_ms=200.0,
             total_tokens=TokenUsage(input_tokens=100, output_tokens=50, total_tokens=150),
-            tokens_by_node={"summary": TokenUsage(input_tokens=100, output_tokens=50, total_tokens=150, node_name="summary")},
             event_counts={"node_start": 1, "node_end": 1, "llm_start": 1, "llm_end": 1},
             node_timeline=[NodeStats(node_name="summary", start_ms=10, end_ms=100, duration_ms=90)],
         )
-        report = TraceReport(run_id="test-1", timestamp="2026-07-09T00:00:00", diff_size=100, events=events, summary=summary)
+        report = TraceReport(run_id="test-1", timestamp="2026-07-09T00:00:00", events=events, summary=summary)
 
         d = report.model_dump()
         report2 = TraceReport.model_validate(d)
         assert report2.run_id == "test-1"
         assert len(report2.events) == 4
         assert report2.summary.total_tokens.total_tokens == 150
-        assert report2.summary.tokens_by_node["summary"].total_tokens == 150
 
 
 class TestPhaseMapping:
@@ -1228,7 +1225,7 @@ def _chain_event(
 
 class TestCollectorLineage:
     def test_parallel_nodes_are_siblings_and_wrapper_events_are_ignored(self):
-        collector = _TraceCollector("diff", "trace-run")
+        collector = _TraceCollector("trace-run")
         root = "graph-root"
         for name in (
             "discover_threat_model",
@@ -1267,7 +1264,7 @@ class TestCollectorLineage:
         }
 
     def test_same_named_subgraph_nodes_keep_distinct_reviewer_paths(self):
-        collector = _TraceCollector("diff", "trace-run")
+        collector = _TraceCollector("trace-run")
         root = "graph-root"
         for reviewer in ("discover_threat_model", "discover_behavior"):
             reviewer_run = f"run-{reviewer}"
@@ -1304,7 +1301,7 @@ class TestCollectorLineage:
         assert len({event.invocation_id for event in prepares}) == 2
 
     def test_node_events_store_complete_input_and_output_values(self):
-        collector = _TraceCollector("diff", "trace-run")
+        collector = _TraceCollector("trace-run")
         start = _chain_event(
             "on_chain_start",
             name="context_provider",
@@ -1345,7 +1342,7 @@ class TestCollectorLineage:
         )
 
     def test_llm_and_tool_events_attach_to_nearest_node_and_keep_full_data(self):
-        collector = _TraceCollector("diff", "trace-run")
+        collector = _TraceCollector("trace-run")
         collector._handle_event(_chain_event(
             "on_chain_start",
             name="review",
@@ -1397,7 +1394,7 @@ class TestCollectorLineage:
         assert tool.detail["input"]["content"] == "x" * 5000
 
     def test_tool_errors_are_collected_as_visible_outputs(self):
-        collector = _TraceCollector("diff", "trace-run")
+        collector = _TraceCollector("trace-run")
         collector._handle_event(_chain_event(
             "on_chain_start",
             name="review",
@@ -1429,7 +1426,7 @@ class TestCollectorLineage:
     def test_all_reviewers_keep_multiple_tool_inputs_and_outputs_in_dashboard(
         self,
     ):
-        collector = _TraceCollector("diff", "trace-run")
+        collector = _TraceCollector("trace-run")
         reviewers = (
             "discover_threat_model",
             "discover_behavior",
@@ -1595,7 +1592,7 @@ class _FakeGraph:
 
 def test_run_with_tracing_returns_root_output_without_second_execution():
     graph = _FakeGraph()
-    collector = _TraceCollector("diff", "trace-run")
+    collector = _TraceCollector("trace-run")
 
     result = collector.run_with_tracing(graph, {"diff_text": "diff"}, {})
 
@@ -1694,7 +1691,6 @@ class TestDashboard:
         report = TraceReport(
             run_id="test-dash",
             timestamp="2026-07-09T00:00:00",
-            diff_size=42,
             events=[
                 TraceEvent(sequence=1, timestamp_ms=10.0, event_type="node_start", node_name="summary", phase="outer_graph", depth=0, summary="start"),
                 TraceEvent(sequence=2, timestamp_ms=100.0, event_type="node_end", node_name="summary", phase="outer_graph", depth=0, summary="end"),
@@ -1713,7 +1709,6 @@ class TestDashboard:
         report = TraceReport(
             run_id="test-file",
             timestamp="2026-07-09T00:00:00",
-            diff_size=10,
             events=[],
             summary=TraceSummary(),
         )
@@ -1845,7 +1840,6 @@ class TestEndToEnd:
         class FakeCollector:
             def __init__(
                 self,
-                diff_text,
                 run_id,
                 max_llm_content=0,
             ):

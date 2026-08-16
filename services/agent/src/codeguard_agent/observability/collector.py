@@ -71,7 +71,6 @@ class _TraceCollector:
 
     def __init__(
         self,
-        diff_text: str,
         run_id: str,
         max_llm_content: int = 0,
     ) -> None:
@@ -79,7 +78,6 @@ class _TraceCollector:
         self._seq = 0
         self._start = time.time()
         self._run_id = run_id
-        self._diff_size = len(diff_text)
         self._max_llm_content = max(0, max_llm_content)
         self._node_runs: dict[str, _NodeRun] = {}
         self._llm_counts: dict[str, int] = {}
@@ -122,7 +120,6 @@ class _TraceCollector:
                 start_ms=node_run.start_ms,
                 end_ms=end_ms,
                 duration_ms=end_ms - node_run.start_ms,
-                llm_calls=self._llm_counts.get(node_run.run_id, 0),
                 tool_calls=self._tool_counts.get(node_run.run_id, 0),
                 tokens=tokens,
                 run_id=node_run.run_id,
@@ -150,12 +147,10 @@ class _TraceCollector:
                 "%Y-%m-%dT%H:%M:%S",
                 time.localtime(self._start),
             ),
-            diff_size=self._diff_size,
             events=self._events,
             summary=TraceSummary(
                 total_duration_ms=(time.time() - self._start) * 1000,
                 total_tokens=total_tokens,
-                tokens_by_node=self._tokens_by_path,
                 event_counts=event_counts,
                 node_timeline=node_timeline,
             ),

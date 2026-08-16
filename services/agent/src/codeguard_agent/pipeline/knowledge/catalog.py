@@ -117,10 +117,6 @@ _SELECTION_TERMS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
 }
 
 
-def _build_fragment_id(reviewer: ReviewerKind, topic: str, kind: KnowledgeKind) -> str:
-    return f"{reviewer.value}/{kind.value}/{topic}"
-
-
 def _parse_risk_tag(tag_str: str) -> RiskTag | None:
     try:
         return RiskTag(tag_str)
@@ -186,13 +182,11 @@ class KnowledgeCatalog:
             return None
         strong, weak = _SELECTION_TERMS.get(topic, ((), ()))
         return KnowledgeFragment(
-            fragment_id=_build_fragment_id(reviewer, topic, kind),
             reviewer=reviewer,
             kind=kind,
             topic=topic,
             risk_tag=tag,
             content=content,
-            source_path=str(path),
             strong_terms=strong,
             weak_terms=weak,
         )

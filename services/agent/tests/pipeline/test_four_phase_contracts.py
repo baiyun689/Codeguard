@@ -80,7 +80,6 @@ def test_knowledge_uses_prefetched_context_and_reports_omitted_topics() -> None:
     )
 
     assert bundle.specialized
-    assert KnowledgeSelectionSource.CONTEXT_SYMBOL in bundle.specialized[0].selection_sources
     assert bundle.omitted_topics
 
 

@@ -28,13 +28,11 @@ class KnowledgeSelectionSource(str, Enum):
 class KnowledgeFragment(BaseModel):
     """一段 Knowledge 内容及其元数据。"""
 
-    fragment_id: str
     reviewer: ReviewerKind
     kind: KnowledgeKind
     topic: str
     risk_tag: RiskTag | None = None
     content: str = ""
-    source_path: str = ""
     # 专门主题的检索词：strong_terms 强匹配（函数调用/API名），weak_terms 弱匹配（概念/模式）
     strong_terms: tuple[str, ...] = ()
     weak_terms: tuple[str, ...] = ()
@@ -45,7 +43,6 @@ class SelectedKnowledge(BaseModel):
 
     fragment: KnowledgeFragment
     score: float = 0.0
-    selection_sources: tuple[KnowledgeSelectionSource, ...] = ()
     reasons: tuple[str, ...] = ()
 
 

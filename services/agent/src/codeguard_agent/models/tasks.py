@@ -200,7 +200,6 @@ class ReviewBudget(BaseModel):
     max_tasks_per_file: StrictInt | None = Field(default=10, gt=0)
     max_context_chars_per_task: StrictInt | None = Field(default=4000, gt=0)
     max_react_assignments: StrictInt = Field(default=20, gt=0)
-    max_final_issues: StrictInt | None = Field(default=None, gt=0)
 
     # ── PR 体量分类阈值（可配置，方便评测调参） ──
     # 设为 0 时该模式永不被选中（如 small_max_files=0 → 永远不走 small）

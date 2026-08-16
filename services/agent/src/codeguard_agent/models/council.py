@@ -235,19 +235,6 @@ class CouncilRunStats(BaseModel):
     candidate_dedup_llm_calls: int = Field(default=0, description="归并 LLM 调用次数")
     candidate_dedup_block_failure_count: int = Field(default=0, description="归并失败块数")
     evidence_request_count: int = Field(default=0, description="累计证据请求总数")
-    investigation_plan_count: int = Field(default=0, description="动态调查计划数")
-    investigation_fallback_plan_count: int = Field(
-        default=0,
-        description="Strategist 失败或遗漏后使用小型回退计划的候选数",
-    )
-    investigation_not_actionable_count: int = Field(
-        default=0,
-        description="Strategist 判定无需事实调查的候选数",
-    )
-    evidence_dossier_status_counts: dict[str, int] = Field(default_factory=dict)
-    evidence_unanswered_question_count: int = 0
-    evidence_react_candidate_count: int = 0
-    evidence_max_research_rounds: int = 0
     truncated_candidates: int = Field(default=0, description="发现阶段因候选上限被截断的数量")
     verdict_count: int = Field(default=0, description="Judge 产生的候选裁决总数")
     removed_by_judge: int = Field(default=0, description="Judge 裁决为 drop 的候选数")

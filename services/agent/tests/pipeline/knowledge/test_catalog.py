@@ -1,8 +1,7 @@
 """KnowledgeCatalog 单元测试。"""
 from __future__ import annotations
 
-import pytest
-from codeguard_agent.models.tasks import ReviewerKind, RiskTag
+from codeguard_agent.models.tasks import ReviewerKind
 from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
 
 
@@ -28,7 +27,7 @@ class TestKnowledgeCatalog:
         catalog = KnowledgeCatalog()
         first = catalog.specialized_fragments(ReviewerKind.THREAT_MODEL)
         second = catalog.specialized_fragments(ReviewerKind.THREAT_MODEL)
-        assert [f.fragment_id for f in first] == [f.fragment_id for f in second]
+        assert [f.topic for f in first] == [f.topic for f in second]
 
     def test_behavior_has_no_threat_fragments(self):
         catalog = KnowledgeCatalog()

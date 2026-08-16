@@ -44,7 +44,6 @@ class NodeStats(BaseModel):
     start_ms: float
     end_ms: float
     duration_ms: float
-    llm_calls: int = 0
     tool_calls: int = 0
     tokens: TokenUsage = Field(default_factory=TokenUsage)
     run_id: str = ""
@@ -59,7 +58,6 @@ class TraceSummary(BaseModel):
 
     total_duration_ms: float = 0.0
     total_tokens: TokenUsage = Field(default_factory=TokenUsage)
-    tokens_by_node: dict[str, TokenUsage] = Field(default_factory=dict)
     event_counts: dict[str, int] = Field(default_factory=dict)
     node_timeline: list[NodeStats] = Field(default_factory=list)
 
@@ -96,7 +94,6 @@ class TraceReport(BaseModel):
 
     run_id: str
     timestamp: str
-    diff_size: int = 0
     events: list[TraceEvent] = Field(default_factory=list)
     summary: TraceSummary = Field(default_factory=TraceSummary)
     degradation: DegradationReport = Field(default_factory=DegradationReport)

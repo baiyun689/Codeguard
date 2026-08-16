@@ -44,10 +44,8 @@ def features(*added: str, deleted: tuple[str, ...] = (), path: str = "src/App.ja
         path=path,
         added_lines=tuple((index + 10, line) for index, line in enumerate(added)),
         deleted_lines=deleted,
-        context_lines=(),
         has_added=bool(added),
         has_deleted=bool(deleted),
-        has_changed=bool(added) and bool(deleted),
     )
 
 

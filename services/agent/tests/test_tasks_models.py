@@ -84,7 +84,6 @@ def test_review_budget_has_phase_2_defaults():
     assert budget.max_tasks_to_review == 100
     assert budget.max_tasks_per_file == 10
     assert budget.max_react_assignments == 20
-    assert budget.max_final_issues is None
 
 
 def test_review_route_is_typed_and_trace_serializable():
@@ -120,7 +119,6 @@ def test_review_budget_defaults_context_chars_per_task_to_4000():
         "max_tasks_per_file",
         "max_context_chars_per_task",
         "max_react_assignments",
-        "max_final_issues",
     ],
 )
 @pytest.mark.parametrize("value", [0, -1])
@@ -136,7 +134,6 @@ def test_review_budget_rejects_non_positive_values(field, value):
         "max_tasks_per_file",
         "max_context_chars_per_task",
         "max_react_assignments",
-        "max_final_issues",
     ],
 )
 @pytest.mark.parametrize("value", [True, "1"])
@@ -151,13 +148,11 @@ def test_review_budget_accepts_positive_integer_values():
         max_tasks_per_file=2,
         max_context_chars_per_task=3,
         max_react_assignments=5,
-        max_final_issues=4,
     )
     assert budget.max_tasks_to_review == 1
     assert budget.max_tasks_per_file == 2
     assert budget.max_context_chars_per_task == 3
     assert budget.max_react_assignments == 5
-    assert budget.max_final_issues == 4
 
 
 def test_task_selection_records_skips():

@@ -35,7 +35,6 @@ def test_large_diff_tightens_budget_without_loosening_user_limits():
             max_tasks_to_review=7,
             max_tasks_per_file=2,
             max_context_chars_per_task=1000,
-            max_final_issues=4,
         ),
     )
 
@@ -48,7 +47,6 @@ def test_large_diff_tightens_budget_without_loosening_user_limits():
         max_tasks_to_review=7,
         max_tasks_per_file=2,
         max_context_chars_per_task=1000,
-        max_final_issues=4,
     )
 
 
