@@ -273,7 +273,7 @@ def test_trace_view_groups_reviewer_react_steps_and_state_writes():
         "council_judge",
     ]
     assert view["main_stages"][3]["summary"] == (
-        "协调 2 次，证据补充 1 次，路由 2 次"
+        "协调 2 次，证据验证 1 次，路由 2 次"
     )
     threat = next(
         item
@@ -1198,6 +1198,47 @@ class TestPhaseMapping:
         assert _phase_for("direct_judge") == "judge"
         assert _phase_for("evidence_verifier") == "evidence"
         assert _phase_for("summary") == "outer_graph"
+
+    def test_graph_nodes_are_covered_by_phase_map(self):
+        """交叉校验:全部图节点必须被 _NODE_PHASE_MAP 覆盖,防止追踪相位静默回退。
+
+        免映射节点需在白名单中显式列出并注明理由(当前无,所有节点均有相位映射);
+        新增图节点漏加映射时本测试直接失败。
+        """
+        import codeguard_agent.pipeline.graph as graph_module
+
+        unmapped_allowlist: dict[str, str] = {
+            # LangGraph 编译图的虚拟起止节点,非业务节点,不产生追踪事件,无需相位
+            "__start__": "LangGraph 虚拟起点,不产生节点事件",
+            "__end__": "LangGraph 虚拟终点,不产生节点事件",
+        }
+        node_sets: list[tuple[str, set[str]]] = [
+            (
+                "full",
+                set(graph_module.build_review_graph(enable_summary=True).get_graph().nodes),
+            ),
+            (
+                "discovery_only",
+                set(graph_module.build_review_graph(discovery_only=True).get_graph().nodes),
+            ),
+            (
+                "reviewer_subgraph",
+                set(graph_module.build_reviewer_subgraph(
+                    graph_module.DEFAULT_REVIEWERS[0],
+                ).get_graph().nodes),
+            ),
+        ]
+        for label, nodes in node_sets:
+            assert nodes, f"{label} 图节点集为空,交叉校验失去意义"
+            unmapped = {
+                name
+                for name in nodes
+                if name not in _NODE_PHASE_MAP and name not in unmapped_allowlist
+            }
+            assert unmapped == set(), (
+                f"{label} 图存在未映射相位的节点 {sorted(unmapped)}:"
+                "请在 _NODE_PHASE_MAP 补充映射或加入白名单并注明理由"
+            )
 
 
 def _chain_event(

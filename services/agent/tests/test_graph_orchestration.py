@@ -12,8 +12,6 @@ from langgraph.graph import END
 import codeguard_agent.pipeline.orchestrator as orchestrator_module
 from codeguard_agent.models.council import (
     CandidateDirectAssessment,
-    ContextBundle,
-    ContextFact,
 )
 from codeguard_agent.models.knowledge import KnowledgeBundle
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity

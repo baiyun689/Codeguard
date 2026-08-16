@@ -861,7 +861,7 @@ def _coordination_loop_step(
     )
     summary_parts = [
         f"协调 {coordinator_count} 次",
-        f"证据补充 {evidence_count} 次",
+        f"证据验证 {evidence_count} 次",
         f"路由 {route_count} 次",
     ]
     return {
