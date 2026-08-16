@@ -1533,7 +1533,7 @@ class TestCandidateCollectReducer:
         assert G.collect_candidate_reducer([first], [second]) == [first, second]
 
 
-def test_coordinator_batches_tag_resolution_and_emits_complete_trace(monkeypatch):
+def test_coordinator_resolves_candidate_tags_and_emits_trace(monkeypatch):
     from codeguard_agent.pipeline.council.dedup import (
         CandidateGroup,
         CandidateBlockFailure,

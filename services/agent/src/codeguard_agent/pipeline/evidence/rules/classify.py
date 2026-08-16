@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import re
 
 from codeguard_agent.models.council import CandidateIssue
@@ -11,9 +10,6 @@ from codeguard_agent.pipeline.evidence.rules.terms import (
     CANDIDATE_TAG_TERMS,
     normalize_candidate_text,
 )
-
-
-logger = logging.getLogger("codeguard")
 
 
 def _contains_any(text: str, terms: frozenset[str]) -> bool:
@@ -27,7 +23,7 @@ def _term_matches(text: str, term: str) -> bool:
     return term in text
 
 
-def _score_candidate(candidate: CandidateIssue) -> tuple[RiskTag | None, str]:
+def _score_candidate(candidate: CandidateIssue) -> RiskTag | None:
     """规则评分(与旧 dossier 版逐行一致,输入改为 CandidateIssue)。
 
     标签只驱动配方开关与候选分块,不再需要 LLM 高置信分类(ADR-046)。
@@ -59,12 +55,8 @@ def _score_candidate(candidate: CandidateIssue) -> tuple[RiskTag | None, str]:
     top_count = sum(score == top_score for score in scores.values())
     ambiguous = top_score < 4 or top_count != 1 or top_score - second_score < 2
     if ambiguous:
-        reason = (
-            "规则得分存在歧义: "
-            f"top={top_score}, second={second_score}, tied={top_count != 1}"
-        )
-        return None, reason
-    return top_tag, f"候选语义规则命中 {top_tag.value}"
+        return None
+    return top_tag
 
 
 def resolve_candidate_tag(candidate: CandidateIssue) -> RiskTag:
@@ -72,7 +64,7 @@ def resolve_candidate_tag(candidate: CandidateIssue) -> RiskTag:
 
     标签只驱动配方开关与候选分块,不再需要 LLM 高置信分类(ADR-046)。
     """
-    tag, _reason = _score_candidate(candidate)
+    tag = _score_candidate(candidate)
     return tag if tag is not None else RiskTag.GENERAL_REVIEW
 
 
