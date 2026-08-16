@@ -456,45 +456,11 @@ class CandidateConcern(BaseModel):
         return self
 
 
-class EvidenceGoal(BaseModel):
-    """一个可判真假的证据命题——描述"要证明什么"。"""
-
-    goal_id: str = ""
-    concern_id: str = ""
-    claim_ids: tuple[str, ...] = ()
-    fact_type: EvidenceFactType = EvidenceFactType.VALUE_IDENTITY
-    polarity: EvidencePolarity = EvidencePolarity.SUPPORT
-    proposition: str = ""
-    why_needed: str = ""
-    preferred_capabilities: tuple[str, ...] = ()
-    required: bool = True
-
-    @model_validator(mode="after")
-    def assign_goal_id(self) -> "EvidenceGoal":
-        if not self.goal_id:
-            payload = "\0".join(
-                [self.concern_id, self.fact_type.value, self.polarity.value,
-                 self.proposition]
-            )
-            self.goal_id = f"goal-{sha256(payload.encode('utf-8')).hexdigest()[:12]}"
-        return self
-
-
 class ConcernAnalysis(BaseModel):
     """ConcernAnalyzer 的输出：concerns + candidate 到 concern 的映射。"""
 
     concerns: tuple[CandidateConcern, ...] = ()
     candidate_to_concern: dict[str, str] = Field(default_factory=dict)
-    diagnostics: tuple[str, ...] = ()
-
-
-class ConcernEvidencePlan(BaseModel):
-    """单个 concern 的证据计划：goals + 对应的 requests。"""
-
-    concern_id: str = ""
-    goals: tuple[EvidenceGoal, ...] = ()
-    requests: tuple[EvidenceRequest, ...] = ()
-    uncovered_goals: tuple[str, ...] = ()
     diagnostics: tuple[str, ...] = ()
 
 

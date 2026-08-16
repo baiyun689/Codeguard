@@ -28,9 +28,10 @@ from codeguard_agent.pipeline.evidence.agent import (
     collect_evidence,
     request_strategy_mismatch,
 )
-from codeguard_agent.pipeline.evidence.planner import (
-    assemble_dossiers,
-    plan_claim_evidence,
+from codeguard_agent.pipeline.evidence.planner import assemble_dossiers
+from codeguard_agent.pipeline.evidence.strategist import (
+    build_investigation_plans,
+    investigation_plans_to_requests,
 )
 from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
 from codeguard_agent.pipeline.knowledge.selector import select_knowledge
@@ -110,7 +111,7 @@ def test_concern_analysis_covers_grouped_and_ungrouped_candidates() -> None:
     }
 
 
-def test_claim_plan_is_executable_and_covers_every_group_member() -> None:
+def test_strategist_fallback_requests_are_executable_and_cover_group_members() -> None:
     first = _candidate("first", "commit succeeds while event publication can fail")
     duplicate = _candidate("duplicate", "commit succeeds while event publication can fail")
     group = CandidateGroup(
@@ -123,24 +124,39 @@ def test_claim_plan_is_executable_and_covers_every_group_member() -> None:
         shared_behavior="the event may be lost after commit",
         shared_fix="use a transactional outbox",
     )
-    concern = analyze_candidate_groups(
+    analysis = analyze_candidate_groups(
         (group,), candidates=(first, duplicate),
-    ).concerns[0]
-    plan = plan_claim_evidence(concern)
+    )
     tasks = [
         ReviewTask(id=c.task_id, file=c.file, patch="+changed")
         for c in (first, duplicate)
     ]
+    base_assembly = assemble_dossiers(
+        (first, duplicate),
+        tasks,
+        {},
+        (),
+        (),
+    )
+
+    # LLM 不可用(mock/降级)时 Strategist 走小型回退计划,仍产出可执行请求。
+    plans = build_investigation_plans(
+        analysis.concerns,
+        llm=None,
+        structured_method="function_calling",
+        dossiers=base_assembly.dossiers,
+    )
+    requests = investigation_plans_to_requests(plans.plans, analysis.concerns)
     assembly = assemble_dossiers(
         (first, duplicate),
         tasks,
         {},
-        plan.requests,
+        requests,
         (),
         (group,),
     )
 
-    assert {request.candidate_id for request in plan.requests} == {
+    assert {request.candidate_id for request in requests} == {
         "first",
         "duplicate",
     }
@@ -152,14 +168,15 @@ def test_claim_plan_is_executable_and_covers_every_group_member() -> None:
 
     batch = collect_evidence(
         assembly.dossiers,
-        plan.requests,
+        requests,
         tool_client=None,
         analyst_llm=None,
         structured_method="function_calling",
         enabled_tools=None,
     )
-    request_by_id = {request.id: request for request in plan.requests}
-    assert len(batch.notes) == len(plan.requests)
+    request_by_id = {request.id: request for request in requests}
+    concern = analysis.concerns[0]
+    assert len(batch.notes) == len(requests)
     assert all(
         finding.goal_id == request_by_id[note.request_id].goal_id
         and finding.concern_id == concern.concern_id
