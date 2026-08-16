@@ -13,7 +13,12 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from codeguard_agent.llm.client import invoke_with_retry
-from codeguard_agent.models.council import CandidateDirectAssessment, FactRelation, Verdict
+from codeguard_agent.models.council import (
+    CandidateDirectAssessment,
+    CandidateFact,
+    FactRelation,
+    Verdict,
+)
 from codeguard_agent.models.schemas import Issue
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.council.dedup import CandidateGroup
@@ -47,11 +52,13 @@ def synthesize_verdict(
     judge_llm: Any,
     structured_method: str,
     max_retries: int,
+    facts_by_id: dict[str, CandidateFact] | None = None,
 ) -> CandidateDirectAssessment | None:
     """终审:基于关系三元输出统一裁决。失败/None 返回 None,由调用方确定性保留。
 
     裁决模型固定用别名 C001 指向候选;校验通过后重映射回 dossier 真实候选 id,
-    调用方拿到的结果可直接落 State。
+    调用方拿到的结果可直接落 State。facts_by_id 非 None 时,每条 relation
+    附带对应事实的 replay_status,供裁决员区分可复现引用与未复现引用。
     """
     if judge_llm is None:
         return None
@@ -65,7 +72,7 @@ def synthesize_verdict(
             structured,
             [
                 ("system", system_prompt),
-                ("user", _verdict_payload(dossier, relations)),
+                ("user", _verdict_payload(dossier, relations, facts_by_id)),
             ],
             max_retries=max_retries,
         )
@@ -85,7 +92,16 @@ def synthesize_verdict(
 def _verdict_payload(
     dossier: CandidateDossier,
     relations: Sequence[FactRelation],
+    facts_by_id: dict[str, CandidateFact] | None = None,
 ) -> str:
+    relation_items: list[dict[str, Any]] = []
+    for item in relations:
+        dumped = item.model_dump(mode="json")
+        if facts_by_id is not None:
+            fact = facts_by_id.get(item.fact_id)
+            if fact is not None:
+                dumped["replay_status"] = fact.replay_status
+        relation_items.append(dumped)
     return json.dumps(
         {
             "candidate_alias": "C001",
@@ -99,7 +115,7 @@ def _verdict_payload(
                 "confidence": dossier.candidate.confidence,
             },
             "task_patch": dossier.task.patch,
-            "relations": [item.model_dump(mode="json") for item in relations],
+            "relations": relation_items,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -207,6 +223,7 @@ def consolidate_groups(
 def _invoke_with_evidence(
     dossier: CandidateDossier,
     relations_by_candidate: dict[str, list[FactRelation]],
+    facts_by_candidate: dict[str, list[CandidateFact]] | None,
     *,
     judge_llm: Any,
     structured_method: str,
@@ -214,6 +231,12 @@ def _invoke_with_evidence(
 ) -> tuple[Verdict, Issue | None, str, list[tuple[str, str]]]:
     """单个候选的完整档裁决:门控 → 终审 → (Issue, candidate_id, traces)。"""
     relations = relations_by_candidate.get(dossier.candidate.id, [])
+    facts_by_id: dict[str, CandidateFact] | None = None
+    if facts_by_candidate is not None:
+        facts_by_id = {
+            fact.fact_id: fact
+            for fact in facts_by_candidate.get(dossier.candidate.id, [])
+        }
     gate = gate_candidate(relations)
     if gate is not None:
         reason_code, reason = gate
@@ -227,6 +250,7 @@ def _invoke_with_evidence(
     assessment = synthesize_verdict(
         dossier, relations, judge_llm=judge_llm,
         structured_method=structured_method, max_retries=max_retries,
+        facts_by_id=facts_by_id,
     )
     candidate = dossier.candidate
     if assessment is None:
@@ -331,10 +355,13 @@ def judge_with_evidence(
     structured_method: str,
     max_retries: int,
     candidate_groups: Sequence[CandidateGroup] = (),
+    facts_by_candidate: dict[str, list[CandidateFact]] | None = None,
 ) -> VerdictBatch:
     """完整档裁决:门控 → 终审 → 组内合并。
 
-    两入口刻意同构——ADR-046 §5.6 要求消融档与完整档唯一差异是输入里有没有证据,勿合并重构。
+    facts_by_candidate 非 None 时,终审 payload 的每条 relation 附带对应事实
+    的 replay_status(消融档无事实输入,不传)。两入口刻意同构——ADR-046 §5.6
+    要求消融档与完整档唯一差异是输入里有没有证据,勿合并重构。
     """
     batch = VerdictBatch()
     for failure in assembly.failures:
@@ -348,7 +375,8 @@ def judge_with_evidence(
         results = run_bounded_parallel(
             assembly.dossiers,
             lambda dossier: _invoke_with_evidence(
-                dossier, relations_by_candidate, judge_llm=judge_llm,
+                dossier, relations_by_candidate, facts_by_candidate,
+                judge_llm=judge_llm,
                 structured_method=structured_method, max_retries=max_retries,
             ),
             max_workers=6,

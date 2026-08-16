@@ -1,6 +1,9 @@
 """verdict 门控、终审与批量裁决测试(ADR-046)。"""
+import json
+
 from codeguard_agent.models.council import (
     CandidateDirectAssessment,
+    CandidateFact,
     CandidateIssue,
     FactRelation,
 )
@@ -9,6 +12,7 @@ from codeguard_agent.models.tasks import ReviewTask, RiskTag
 from codeguard_agent.pipeline.council.dedup import CandidateGroup
 from codeguard_agent.pipeline.council.verdict import (
     VerdictBatch,
+    _verdict_payload,
     consolidate_groups,
     gate_candidate,
     judge_direct,
@@ -93,6 +97,36 @@ def _verdict_dossier() -> CandidateDossier:
     task = ReviewTask(id="t1", file="A.java", patch="+x")
     return CandidateDossier(candidate=candidate, task=task, context_bundle=None,
                             requests=(), notes=())
+
+
+def test_verdict_payload_carries_replay_status_and_omits_when_missing():
+    """终审 payload 的每条 relation 附带事实 replay_status;facts_by_id 缺失/未命中时省略键。"""
+    relations = [
+        FactRelation(fact_id="f1", relation="supports", observation="可达"),
+        FactRelation(fact_id="f2", relation="insufficient", limitation="lim"),
+    ]
+    facts_by_id = {
+        "f1": CandidateFact(
+            fact_id="f1", source="tool:get_file_content",
+            raw="x", replay_status="verified",
+        ),
+        "f2": CandidateFact(
+            fact_id="f2", source="tool:inspect_change_impact",
+            raw="", replay_status="failed", limitation="tool_empty",
+        ),
+    }
+
+    payload = json.loads(_verdict_payload(_verdict_dossier(), relations, facts_by_id))
+    by_id = {item["fact_id"]: item for item in payload["relations"]}
+    assert by_id["f1"]["replay_status"] == "verified"
+    assert by_id["f2"]["replay_status"] == "failed"
+
+    without = json.loads(_verdict_payload(_verdict_dossier(), relations, None))
+    assert "replay_status" not in without["relations"][0]
+    assert "replay_status" not in without["relations"][1]
+
+    partial = json.loads(_verdict_payload(_verdict_dossier(), relations, {}))
+    assert "replay_status" not in partial["relations"][0]
 
 
 def test_synthesize_returns_unified_assessment():

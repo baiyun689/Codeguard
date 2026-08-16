@@ -1381,6 +1381,7 @@ def _council_judge_node(judge_llm=None):
             structured_method=state.get("structured_method", "function_calling"),
             max_retries=state.get("max_retries", 2),
             candidate_groups=state.get("candidate_groups") or [],
+            facts_by_candidate=state.get("candidate_facts") or {},
         )
         judge_trace = [
             CouncilTrace(node="council_judge", event=event, detail=detail)
