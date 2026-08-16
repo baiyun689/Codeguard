@@ -241,6 +241,32 @@ def test_judge_with_evidence_llm_failure_keeps_proposal_severity():
     assert batch.final_issues[0].severity == Severity.WARNING
 
 
+def test_judge_with_evidence_llm_drop_rejects_candidate():
+    """终审 LLM 主动否决(门控放行后 action=drop):verdict=drop + synthesized_evidence_drop。
+
+    锁定 ADR-046 终审路径:LLM 有支持证据仍可否决候选,产出 drop 且不落最终 Issue。
+    """
+    dossier = _verdict_dossier()
+    assessment = CandidateDirectAssessment(
+        candidate_id="C001", action="drop", severity=Severity.WARNING,
+        reason="证据不支持该主张", cited_fact_ids=(),
+    )
+    batch = judge_with_evidence(
+        _assembly(dossier),
+        {"c1": [FactRelation(fact_id="f1", relation="supports", observation="可达")]},
+        judge_llm=_FakeLLM(assessment), structured_method="function_calling", max_retries=1,
+    )
+    assert [v.action for v in batch.verdicts] == ["drop"]
+    assert batch.verdicts[0].reason_code == "synthesized_evidence_drop"
+    assert batch.final_issues == []
+    assert batch.final_candidate_ids == []
+    assert any(
+        event == "judge_verdict"
+        and json.loads(detail)["reason_code"] == "synthesized_evidence_drop"
+        for event, detail in batch.trace
+    )
+
+
 def test_judge_direct_keeps_and_uses_assessment_severity():
     dossier = _verdict_dossier()
     assessment = CandidateDirectAssessment(

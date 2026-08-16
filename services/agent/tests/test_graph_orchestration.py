@@ -137,16 +137,6 @@ def test_summary_prompts_only_request_summary():
     assert "summary" in combined
 
 
-def _base_state(**over):
-    state = {
-        "candidate_issues": [],
-        "evidence_notes": [],
-        "challenges": [],
-    }
-    state.update(over)
-    return state
-
-
 def _candidate(*, confidence=0.9):
     issue = Issue(
         severity=Severity.WARNING,
@@ -449,11 +439,7 @@ def test_orchestrator_initial_state_omits_empty_runtime_outputs(monkeypatch):
         "candidate_issues",
         "candidate_facts",
         "candidate_relations",
-        "evidence_requests",
-        "evidence_notes",
-        "council_verdicts",
         "council_trace",
-        "judge_pass",
         "final_issues",
     }.isdisjoint(captured)
     assert captured["diff_text"] == _DIFF
@@ -1026,7 +1012,7 @@ def test_evidence_mode_off_edges_route_coordinator_to_direct_judge():
     assert ("council_coordinator", "evidence_verifier") not in pairs
 
 
-def test_evidence_agent_runs_once_before_judge(monkeypatch):
+def test_evidence_verifier_runs_once_before_judge(monkeypatch):
     monkeypatch.setattr(G, "_make_engine", lambda state, tool_client=None: _FakeEngine())
     orch = PipelineOrchestrator(
         enable_summary=False,

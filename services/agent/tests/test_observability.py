@@ -180,22 +180,28 @@ def _flow_report_fixture() -> TraceReport:
             "council_coordinator",
             "council_coordinator",
             "coordinator-run",
-            detail={"output": {"council_route": "evidence_agent"}},
+            detail={"output": {"council_route": "evidence_verifier"}},
         ),
         _flow_event(
             17,
             "node_start",
-            "evidence_agent",
-            "evidence_agent",
+            "evidence_verifier",
+            "evidence_verifier",
             "evidence-run",
         ),
         _flow_event(
             18,
             "node_end",
-            "evidence_agent",
-            "evidence_agent",
+            "evidence_verifier",
+            "evidence_verifier",
             "evidence-run",
-            detail={"output": {"evidence_notes": [{"status": "supported"}]}},
+            detail={
+                "output": {
+                    "candidate_facts": {},
+                    "candidate_relations": {},
+                    "council_trace": [],
+                }
+            },
         ),
         _flow_event(
             19,
@@ -296,7 +302,7 @@ def test_trace_view_main_stages_resolve_without_copying_state_values():
         for stage in view["main_stages"]
     )
     assert view["steps"]["group:review_council"]["kind"] == "group"
-    assert {"diff_summary", "context_bundle", "evidence_notes", "final_issues"} <= set(
+    assert {"diff_summary", "context_bundle", "candidate_facts", "final_issues"} <= set(
         view["state_writes"]
     )
     assert all(
@@ -353,8 +359,7 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
     ):
         node(reviewer, {"raw_candidate_issues": []})
     node("council_coordinator", {"council_trace": []})
-    node("evidence_planner", {"evidence_requests": []})
-    node("evidence_agent", {"evidence_notes": []})
+    node("evidence_verifier", {"candidate_facts": {}, "candidate_relations": {}})
     node("council_judge", {"final_issues": [], "council_stats": {}})
 
     view = build_trace_view(
@@ -395,11 +400,10 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
         for step_id in view["coordination_steps"]
     } == {
         "council_coordinator",
-        "evidence_planner",
-        "evidence_agent",
+        "evidence_verifier",
         "council_judge",
     }
-    assert {"review_tasks", "risk_priors", "task_selection", "evidence_requests"} <= set(
+    assert {"review_tasks", "risk_priors", "task_selection", "candidate_relations"} <= set(
         view["state_writes"]
     )
 
@@ -675,7 +679,7 @@ def test_trace_view_indexes_state_writes_from_hidden_discover_nodes():
                 detail={
                     "output": {
                         "raw_candidate_issues": [{"type": "null-deref"}],
-                        "evidence_requests": [{"candidate_id": "c1"}],
+                        "truncated_candidates": 0,
                     }
                 },
             ),
@@ -899,15 +903,15 @@ def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
             _flow_event(
                 1,
                 "node_start",
-                "evidence_agent",
-                "evidence_agent",
+                "evidence_verifier",
+                "evidence_verifier",
                 "evidence-run",
             ),
             _flow_event(
                 2,
                 "node_end",
-                "evidence_agent",
-                "evidence_agent",
+                "evidence_verifier",
+                "evidence_verifier",
                 "evidence-run",
                 detail={
                     "output": {
@@ -922,7 +926,7 @@ def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
                         ],
                         "council_trace": [
                             {
-                                "node": "evidence_agent",
+                                "node": "evidence_verifier",
                                 "event": "evidence_tool_called",
                                 "detail": json.dumps(
                                     {
@@ -936,7 +940,7 @@ def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
                                 ),
                             },
                             {
-                                "node": "evidence_agent",
+                                "node": "evidence_verifier",
                                 "event": "evidence_tool_reused",
                                 "detail": json.dumps(
                                     {
@@ -993,21 +997,21 @@ def test_trace_view_exposes_evidence_batch_phase_metrics():
             _flow_event(
                 1,
                 "node_start",
-                "evidence_agent",
-                "evidence_agent",
+                "evidence_verifier",
+                "evidence_verifier",
                 "evidence-run",
             ),
             _flow_event(
                 2,
                 "node_end",
-                "evidence_agent",
-                "evidence_agent",
+                "evidence_verifier",
+                "evidence_verifier",
                 "evidence-run",
                 detail={
                     "output": {
                         "council_trace": [
                             {
-                                "node": "evidence_agent",
+                                "node": "evidence_verifier",
                                 "event": "evidence_batch_metrics",
                                 "detail": json.dumps(metrics),
                             }
@@ -1022,7 +1026,7 @@ def test_trace_view_exposes_evidence_batch_phase_metrics():
     step = next(
         item
         for item in view["steps"].values()
-        if item["code_name"] == "evidence_agent"
+        if item["code_name"] == "evidence_verifier"
     )
 
     assert step["metrics"] == metrics
@@ -1179,9 +1183,8 @@ class TestPhaseMapping:
             "diff_task_builder", "risk_triage", "task_rank", "review_coverage",
             "context_provider",
             "discover_threat_model", "discover_behavior", "discover_maintainability",
-            "discovery_collector", "council_coordinator", "concern_analyzer",
-            "evidence_planner", "evidence_agent", "council_judge",
-            "evidence_strategist", "evidence_researcher", "impact_assessor",
+            "discovery_collector", "council_coordinator",
+            "evidence_verifier", "direct_judge", "council_judge",
             "prepare", "review", "collect",
         }
         assert set(_NODE_PHASE_MAP.keys()) == expected
@@ -1192,10 +1195,8 @@ class TestPhaseMapping:
     def test_known_nodes(self):
         assert _phase_for("discover_threat_model") == "reviewer_subgraph"
         assert _phase_for("council_judge") == "judge"
-        assert _phase_for("evidence_agent") == "evidence"
-        assert _phase_for("evidence_strategist") == "evidence"
-        assert _phase_for("evidence_researcher") == "evidence"
-        assert _phase_for("impact_assessor") == "judge"
+        assert _phase_for("direct_judge") == "judge"
+        assert _phase_for("evidence_verifier") == "evidence"
         assert _phase_for("summary") == "outer_graph"
 
 

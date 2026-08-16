@@ -310,6 +310,40 @@ def test_call_tool_graph_test_scoped_relationships_pass_for_test_scope():
     assert raw
 
 
+def test_verify_evidence_not_found_with_test_only_relations_is_analyzed():
+    """回归锁:not_found 图响应不触发 confirmed-only 的 test_only 守卫,事实照常进关系分析。
+
+    call 层守卫(graph_test_only_confirmation)只拦 confirmed + 空 relationships + 仅 test
+    关系;not_found 表示 MAIN 中未命中,原始响应保留给分析层,mock 路径按有内容事实处理。
+    """
+    dossier = _dossier(chain=[
+        EvidenceTraceStep(
+            tool="inspect_change_impact",
+            args={"symbol_id": "S1"},
+            located="x",
+        )
+    ])
+    tool_client = _tool_client(
+        inspect_change_impact=(
+            '{"status": "not_found", "subject_symbol_id": "S1",'
+            ' "source_scope": "MAIN", "relationships": [],'
+            ' "test_relationships": [{"source_set": "TEST"}]}'
+        )
+    )
+    batch = verify_evidence(
+        [dossier], tool_client=tool_client, analyst_llm=None,
+        structured_method="function_calling", enabled_tools=None,
+        tag_by_candidate={"c1": RiskTag.GENERAL_REVIEW},
+    )
+    (fact,) = batch.facts["c1"]
+    assert fact.limitation == ""  # 守卫未命中,不是 graph_test_only_confirmation
+    assert "not_found" in fact.raw
+    (relation,) = batch.relations["c1"]
+    assert relation.relation == "supports"  # mock 分析:not_found 事实仍进入分析
+    assert relation.strength == "contextual"
+    assert relation.limitation == "mock_mode_synthetic_relation"
+
+
 def test_analyze_relations_mock_path_without_llm():
     facts = [
         CandidateFact(
