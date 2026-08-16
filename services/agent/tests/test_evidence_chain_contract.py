@@ -1,4 +1,4 @@
-"""EvidenceTraceStep 与 Issue.evidence_chain 契约测试(ADR-033)。"""
+"""EvidenceTraceStep 与 Issue.evidence_chain 契约测试(ADR-046)。"""
 import pytest
 from pydantic import ValidationError
 
@@ -21,6 +21,7 @@ def test_issue_accepts_evidence_chain():
         ],
     )
     assert issue.evidence_chain[0].tool == "get_file_content"
+    assert issue.evidence_chain[0].args == {"file_path": "A.java"}
     assert issue.evidence_chain[0].located == "int x = 1;"
 
 
@@ -32,3 +33,9 @@ def test_issue_defaults_to_empty_chain():
 def test_trace_step_rejects_unknown_tool():
     with pytest.raises(ValidationError):
         EvidenceTraceStep(tool="rm_rf", args={}, located="x")
+
+
+def test_trace_step_defaults():
+    step = EvidenceTraceStep(tool="get_file_content", args={})
+    assert step.located == ""
+    assert step.args == {}

@@ -27,7 +27,7 @@ class EvidenceTraceStep(BaseModel):
     """审查员对一条 Issue 的取证溯源步骤:调了什么工具、查了什么、看到了什么。
 
     这是"引文"不是日志:只包含直接支撑结论的调用,located 是逐字引用的
-    代码段/事实原文。证据阶段按此重放验证(见 ADR-033)。
+    代码段/事实原文。证据阶段按此重放验证(见 ADR-046)。
     """
 
     tool: Literal[
@@ -68,7 +68,7 @@ class Issue(BaseModel):
     )
     evidence_chain: list[EvidenceTraceStep] = Field(
         default_factory=list,
-        description="取证溯源:直接支撑该结论的工具调用与定位到的代码段(可选,见 ADR-033)",
+        description="取证溯源:直接支撑该结论的工具调用与定位到的代码段(可选,见 ADR-046)",
     )
 
 
