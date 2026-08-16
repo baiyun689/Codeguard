@@ -1,13 +1,19 @@
-"""verdict 门控与终审测试(ADR-046)。"""
+"""verdict 门控、终审与批量裁决测试(ADR-046)。"""
 from codeguard_agent.models.council import (
     CandidateDirectAssessment,
     CandidateIssue,
     FactRelation,
 )
-from codeguard_agent.models.schemas import Severity
-from codeguard_agent.models.tasks import ReviewTask
-from codeguard_agent.pipeline.council.verdict import gate_candidate, synthesize_verdict
-from codeguard_agent.pipeline.evidence.planner import CandidateDossier
+from codeguard_agent.models.schemas import Issue, Severity
+from codeguard_agent.models.tasks import ReviewTask, RiskTag
+from codeguard_agent.pipeline.council.dedup import CandidateGroup
+from codeguard_agent.pipeline.council.verdict import (
+    gate_candidate,
+    judge_direct,
+    judge_with_evidence,
+    synthesize_verdict,
+)
+from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
 
 
 def _relation(relation, strength="contextual"):
@@ -127,3 +133,63 @@ def test_synthesize_structured_failure_returns_none():
         _verdict_dossier(), [], judge_llm=_RaisingLLM(),
         structured_method="function_calling", max_retries=1,
     ) is None
+
+
+def _group_with(candidates) -> CandidateGroup:
+    first = candidates[0]
+    return CandidateGroup(
+        id="g1", members=tuple(candidates), primary_risk_tag=RiskTag.GENERAL_REVIEW,
+        severity_proposal=first.severity_proposal, confidence=0.8,
+        shared_root_cause="shared", shared_behavior="shared", shared_fix="shared",
+    )
+
+
+def _assembly(*dossiers) -> DossierAssembly:
+    return DossierAssembly(dossiers=tuple(dossiers), failures=(), trace=())
+
+
+def test_judge_with_evidence_gate_drops_without_llm():
+    dossier = _verdict_dossier()
+    batch = judge_with_evidence(
+        _assembly(dossier),
+        {"c1": []},  # 无任何关系 → gate ②
+        judge_llm=_FakeLLM(None), structured_method="function_calling", max_retries=1,
+    )
+    assert [v.action for v in batch.verdicts] == ["drop"]
+    assert batch.verdicts[0].reason_code == "evidence_insufficient"
+
+
+def test_judge_with_evidence_llm_failure_keeps_proposal_severity():
+    dossier = _verdict_dossier()
+    batch = judge_with_evidence(
+        _assembly(dossier),
+        {"c1": [FactRelation(fact_id="f1", relation="supports", observation="可达")]},
+        judge_llm=_FakeLLM(None), structured_method="function_calling", max_retries=1,
+    )
+    assert batch.verdicts[0].action == "keep"
+    assert batch.verdicts[0].resolved_severity == Severity.WARNING
+    assert batch.final_issues[0].severity == Severity.WARNING
+
+
+def test_judge_direct_keeps_and_uses_assessment_severity():
+    dossier = _verdict_dossier()
+    assessment = CandidateDirectAssessment(
+        candidate_id="C001", action="keep", severity=Severity.CRITICAL,
+        reason="直接可见", cited_fact_ids=(),
+    )
+    batch = judge_direct(
+        _assembly(dossier),
+        judge_llm=_FakeLLM(assessment), structured_method="function_calling", max_retries=1,
+    )
+    assert batch.verdicts[0].action == "keep"
+    assert batch.final_issues[0].severity == Severity.CRITICAL
+
+
+def test_judge_direct_llm_unavailable_keeps_proposal():
+    dossier = _verdict_dossier()
+    batch = judge_direct(
+        _assembly(dossier),
+        judge_llm=_FakeLLM(None), structured_method="function_calling", max_retries=1,
+    )
+    assert batch.verdicts[0].action == "keep"
+    assert batch.final_issues[0].severity == Severity.WARNING
