@@ -238,7 +238,7 @@ def render_report(
             "### Phase 5 证据链指标",
             "",
             "比率均由 Judge 使用的 survivor candidate 映射计算；`—` 表示分母为零。",
-            "实际工具调用只统计 EvidenceAgent 新调用，缓存复用不计。",
+            "实际工具调用只统计 evidence_verifier 新调用，缓存复用不计。",
             "",
             "| 用例 | 无 support 保留 | direct counter 保留率 | 全 insufficient 保留率 | CRITICAL 候选 | 等级转移 |",
             "|---|---|---|---|---|---|",

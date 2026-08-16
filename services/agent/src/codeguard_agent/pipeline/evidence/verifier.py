@@ -204,6 +204,7 @@ def _collect_facts(
     per_candidate_calls: dict[str, list[tuple[str, dict[str, str]]]] = {}
     per_candidate_located: dict[str, dict[tuple[str, str], str]] = {}
     unique_calls: dict[tuple[str, str], tuple[str, dict[str, str]]] = {}
+    trace: list[tuple[str, str]] = []
 
     for dossier in dossiers:
         cid = dossier.candidate.id
@@ -211,6 +212,7 @@ def _collect_facts(
         steps = validate_chain(dossier.candidate.evidence_chain)
         if steps:
             calls = replay_calls(steps)
+            path = "chain"
             for step in steps:
                 key_args = (
                     {_FILE_ARG: step.args[_FILE_ARG]}
@@ -233,7 +235,14 @@ def _collect_facts(
             calls = deduped
         else:
             calls = recipe_calls(dossier, tag)
+            path = "recipe"
         per_candidate_calls[cid] = calls
+        trace.append(
+            (
+                "candidate_evidence_path",
+                _stable_json({"candidate_id": cid, "path": path}),
+            )
+        )
 
     for cid, calls in per_candidate_calls.items():
         for tool, arguments in calls:
@@ -253,7 +262,6 @@ def _collect_facts(
         )
 
     facts_by_candidate: dict[str, list[CandidateFact]] = {}
-    trace: list[tuple[str, str]] = []
     gathered: list[Any] = []
 
     for dossier in dossiers:

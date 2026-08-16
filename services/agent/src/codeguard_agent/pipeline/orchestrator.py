@@ -170,7 +170,6 @@ class PipelineOrchestrator:
                 metadata_sink["council"] = stats.model_dump()
             else:
                 metadata_sink["council"] = stats
-            metadata_sink["council_trace_events"] = len(final_state.get("council_trace") or [])
             metadata_sink["context_diagnostics"] = dict(
                 final_state.get("context_diagnostics") or {}
             )

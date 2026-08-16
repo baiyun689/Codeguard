@@ -182,7 +182,11 @@ def test_collect_facts_verified_and_recipe_statuses():
     )
     statuses = {f.source: f.replay_status for f in facts["c1"]}
     assert statuses["tool:get_file_content"] == "verified"
-    assert len(trace) == 1 and trace[0][0] == "evidence_tool_called"
+    assert [event for event, _ in trace] == [
+        "candidate_evidence_path",
+        "evidence_tool_called",
+    ]
+    assert json.loads(trace[0][1]) == {"candidate_id": "c1", "path": "chain"}
     assert len(gathered) == 1
 
 
@@ -196,11 +200,13 @@ def test_collect_facts_recipe_fallback_when_chain_invalid():
             '{"status": "confirmed", "subject_symbol_id": "S1", "relationships": []}'
         ),
     )
-    facts, _, _ = _collect_facts(
+    facts, trace, _ = _collect_facts(
         [dossier], tool_client=tool_client,
         tag_by_candidate={"c1": RiskTag.GENERAL_REVIEW},
     )
     assert all(f.replay_status == "recipe" for f in facts["c1"])
+    assert trace[0][0] == "candidate_evidence_path"
+    assert json.loads(trace[0][1]) == {"candidate_id": "c1", "path": "recipe"}
 
 
 def test_collect_facts_chain_tool_error_marks_failed():

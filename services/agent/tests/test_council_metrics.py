@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from codeguard_agent.models.council import (
     CandidateFact,
     CandidateIssue,
@@ -211,33 +213,26 @@ def test_replay_stats_are_derived_from_facts():
     assert stats.replay_failed_count == 1
 
 
-def test_chain_used_and_recipe_fallback_are_derived_from_fact_status():
-    chain = _dossier("chain")
-    recipe = _dossier("recipe")
-    mixed = _dossier("mixed")
-    empty = _dossier("empty")
-    facts = {
-        "chain": [
-            CandidateFact(fact_id="f1", source="diff", raw="+a", replay_status="verified")
-        ],
-        "recipe": [
-            CandidateFact(fact_id="f2", source="diff", raw="+b", replay_status="recipe")
-        ],
-        "mixed": [
-            CandidateFact(fact_id="f3", source="diff", raw="+c", replay_status="recipe"),
-            CandidateFact(fact_id="f4", source="diff", raw="+d", replay_status="unverified"),
-        ],
-        "empty": [],
-    }
+def test_chain_used_and_recipe_fallback_are_derived_from_path_trace_events():
+    dossiers = [_dossier("chain"), _dossier("recipe"), _dossier("no-event")]
+    traces = [
+        CouncilTrace(
+            node="evidence_verifier",
+            event="candidate_evidence_path",
+            detail=json.dumps({"candidate_id": "chain", "path": "chain"}),
+        ),
+        CouncilTrace(
+            node="evidence_verifier",
+            event="candidate_evidence_path",
+            detail=json.dumps({"candidate_id": "recipe", "path": "recipe"}),
+        ),
+        CouncilTrace(node="council_judge", event="judge_done", detail=""),
+    ]
 
-    stats = _stats(
-        [chain, recipe, mixed, empty],
-        final_ids=[],
-        facts=facts,
-    )
+    stats = _stats(dossiers, final_ids=[], traces=traces)
 
-    # chain=存在任何非 recipe 事实;recipe=事实全为 recipe;零事实候选两者都不计
-    assert stats.chain_used_count == 2
+    # 按 verifier 的路径决策事件统计,与事实状态无关;其他事件不干扰
+    assert stats.chain_used_count == 1
     assert stats.recipe_fallback_count == 1
 
 

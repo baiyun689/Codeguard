@@ -3,12 +3,13 @@
 从稳定候选映射、事实/关系与裁决派生过程指标:
 - 关系推导字段(direct counter / all insufficient / fact coverage)全部从 relations 出;
 - 事实总数与重放状态统计(verified/unverified/failed)从 facts 出;
-- chain_used_count = 存在任何非 recipe 状态事实的候选数;recipe_fallback_count = 全 recipe 事实的候选数;
+- chain_used/recipe_fallback 从 council_trace 的 candidate_evidence_path 事件按真实规划路径统计;
 - critical_candidate_count = keep 且 resolved_severity 为 CRITICAL 的 verdict 数。
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 
 from codeguard_agent.models.council import (
@@ -57,17 +58,14 @@ def compute_council_run_stats(
         for facts in facts_by_candidate.values()
         for fact in facts
     )
-    # 取证链使用 vs 配方兜底:chain=存在任何非 recipe 状态事实;recipe=事实全为 recipe(零事实候选两者都不计)。
-    chain_used_ids = {
-        cid
-        for cid, facts in facts_by_candidate.items()
-        if any(fact.replay_status != "recipe" for fact in facts)
-    }
-    recipe_fallback_ids = {
-        cid
-        for cid, facts in facts_by_candidate.items()
-        if facts and all(fact.replay_status == "recipe" for fact in facts)
-    }
+    # 取证链使用 vs 配方兜底:按 verifier 的 candidate_evidence_path 事件统计真实规划路径。
+    evidence_paths = [
+        json.loads(trace.detail).get("path")
+        for trace in council_trace
+        if trace.event == "candidate_evidence_path"
+    ]
+    chain_used_count = evidence_paths.count("chain")
+    recipe_fallback_count = evidence_paths.count("recipe")
     relations_by_cid: dict[str, Sequence[FactRelation]] = {
         cid: tuple(rels) for cid, rels in relations_by_candidate.items()
     }
@@ -210,8 +208,8 @@ def compute_council_run_stats(
         replay_verified_count=replay_verified_count,
         replay_unverified_count=replay_unverified_count,
         replay_failed_count=replay_failed_count,
-        chain_used_count=len(chain_used_ids),
-        recipe_fallback_count=len(recipe_fallback_ids),
+        chain_used_count=chain_used_count,
+        recipe_fallback_count=recipe_fallback_count,
     )
 
 

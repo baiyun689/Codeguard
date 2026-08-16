@@ -395,7 +395,6 @@ def test_run_routes_gathered_context_to_trace_sink_and_council_metadata(monkeypa
                 "final_issues": issues,
                 "gathered_context": gc,
                 "council_stats": _Stats(),
-                "council_trace": [object(), object()],
             }
 
     monkeypatch.setattr(
@@ -411,7 +410,7 @@ def test_run_routes_gathered_context_to_trace_sink_and_council_metadata(monkeypa
     assert result.issues == issues
     assert trace == gc
     assert meta["council"]["candidate_count"] == 1
-    assert meta["council_trace_events"] == 2
+    assert "council_trace_events" not in meta
     assert not hasattr(result, "candidate_issues")
 
 
