@@ -291,33 +291,36 @@ def test_threat_knowledge_does_not_recommend_unproven_best_practice_issues() -> 
 
 def test_evidence_and_judge_prompts_describe_wrapper_contracts() -> None:
     analysis = _prompt("evidence-analysis.txt")
+    assert "_RelationBatch" in analysis
     assert all(
-        f"`{field}`" in analysis
-        for field in ("relation", "strength", "observation", "limitation")
+        term in analysis
+        for term in ("fact_id", "relation", "strength", "observation", "limitation")
     )
-    assert "relation 始终相对于当前候选主张" in analysis
-    assert "evidence_goal.proposition" in analysis
-    assert "不是 relation 的参照系" in analysis
-    assert "不得建议 CRITICAL、WARNING 或 INFO" in analysis
-    assert "test_relationships" in analysis
+    assert "relation 相对于候选主张" in analysis
+    assert "source_set=MAIN|GENERATED" in analysis
     assert "不得支持生产可达性" in analysis
+    assert "replay_status=verified" in analysis
+    assert "evidence_goal.proposition" not in analysis  # 旧证据链术语已收敛
 
     judge = _prompt("council-judge.txt")
-    assert "`candidate_id`" in judge
-    assert "`claim_status`" in judge
-    assert "`counter_effect`" in judge
-    assert "`conflicts`" in judge
+    assert "CandidateDirectAssessment" in judge
+    assert all(
+        field in judge
+        for field in ("candidate_id", "action", "severity", "cited_fact_ids", "reason")
+    )
     for forbidden in (
         "needs_more_evidence",
         "merge_target_id",
         "adjusted_severity",
         "requested_purpose",
+        "claim_status",
+        "counter_effect",
+        "conflicts",
+        "task_tags",
     ):
         assert forbidden not in judge
-    assert "不得输出最终 severity" in judge
-    assert "task_tags" not in judge
-    assert "primary/secondary tags 只选择 factor 与 predicate" in judge
-    assert "不能证明 factor" in judge
+    assert "不得请求工具" in judge
+    assert "severity 与 confidence 是两条独立轴" in judge
 
 
 def test_summary_and_classifier_prompts_name_structured_fields() -> None:
@@ -336,13 +339,13 @@ def test_judge_prompt_names_every_synthesis_field() -> None:
     judge = _prompt("council-judge.txt")
     fields = {
         "candidate_id",
-        "claim_status",
-        "counter_effect",
-        "conflicts",
+        "action",
+        "severity",
+        "cited_fact_ids",
         "reason",
     }
-    assert all(f"`{field}`" in judge for field in fields)
-    assert "CandidateEvidenceAssessment" in judge
+    assert all(field in judge for field in fields)
+    assert "CandidateDirectAssessment" in judge
 
 
 def test_eval_judge_prompt_names_case_judgement_fields() -> None:

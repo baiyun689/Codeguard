@@ -387,6 +387,19 @@ def test_analyze_relations_guard_scan_prior_wins():
     assert relations[0].strength == "direct"
 
 
+def test_relation_batch_accepts_stringified_findings():
+    """兼容部分 OpenAI 端点把数组参数序列化为 JSON 字符串(parse_stringified_findings 分支)。"""
+    wrapped = _RelationBatch.model_validate(
+        {"findings": json.dumps({"findings": [{"fact_id": "f1", "relation": "supports"}]})}
+    )
+    assert wrapped.findings == [{"fact_id": "f1", "relation": "supports"}]
+
+    bare = _RelationBatch.model_validate(
+        {"findings": json.dumps([{"fact_id": "f2", "relation": "insufficient"}])}
+    )
+    assert bare.findings == [{"fact_id": "f2", "relation": "insufficient"}]
+
+
 def test_analyze_relations_llm_findings_sanitized():
     """回归:LLM 输出非法 relation/strength/空 observation 时逐项降级,不拖累整批。"""
     analyst = MagicMock()
