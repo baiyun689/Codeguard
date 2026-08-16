@@ -14,6 +14,7 @@ from codeguard_agent.models.tasks import (
     TaskContextBundle,
     TaskRiskPrior,
 )
+from codeguard_agent.pipeline.evidence.verifier import CHAIN_TOOL_NAMES
 from codeguard_agent.pipeline.risk.rules.catalog import RISK_TAG_REVIEWERS
 from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
@@ -334,6 +335,9 @@ def test_base_prompts_carry_evidence_trace_contract() -> None:
         text = _prompt(name)
         assert "## 取证溯源" in text
         assert "宁缺毋滥" in text
+        assert "最多 3 步" in text
+        assert "逐字引用" in text
+        assert all(tool in text for tool in CHAIN_TOOL_NAMES), name
         assert "## 输出" in text
 
 
