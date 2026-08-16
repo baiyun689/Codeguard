@@ -20,7 +20,6 @@ from codeguard_agent.pipeline.council.dedup import (
     _BlockDecisionOutcome,
     deduplicate_candidates,
 )
-from codeguard_agent.pipeline.evidence.rules.classify import CandidateTagResolution
 
 
 def _candidate(
@@ -50,16 +49,8 @@ def _candidate(
 def _resolutions(
     candidates: list[CandidateIssue],
     tag: RiskTag = RiskTag.ERROR_HANDLING,
-) -> dict[str, CandidateTagResolution]:
-    return {
-        candidate.id: CandidateTagResolution(
-            tag=tag,
-            confidence=0.95,
-            source="rule",
-            reason="test",
-        )
-        for candidate in candidates
-    }
+) -> dict[str, RiskTag]:
+    return {candidate.id: tag for candidate in candidates}
 
 
 def _group(
@@ -505,14 +496,7 @@ def test_block_prompt_serializes_dynamic_text_as_json_data():
     prompt = _build_user_prompt(
         _CandidateBlock(id="block-1", candidates=(candidate,)),
         {task.id: task},
-        {
-            candidate.id: CandidateTagResolution(
-                tag=RiskTag.ERROR_HANDLING,
-                confidence=0.85,
-                source="rule",
-                reason="test",
-            )
-        },
+        {candidate.id: RiskTag.ERROR_HANDLING},
     )
     assert prompt.count("</dedup_input>") == 1
     encoded = prompt.split("<dedup_input>\n", 1)[1].split("\n</dedup_input>", 1)[0]
@@ -625,12 +609,7 @@ def test_semantic_group_with_different_risk_tag_is_accepted():
     """不同 reviewer 对同一 bug 可能被分配不同 RiskTag，不应阻断归并。"""
     candidates = [_candidate("a"), _candidate("b")]
     resolutions = _resolutions(candidates)
-    resolutions["b"] = CandidateTagResolution(
-        tag=RiskTag.API_CONTRACT,
-        confidence=0.99,
-        source="rule",
-        reason="test",
-    )
+    resolutions["b"] = RiskTag.API_CONTRACT
 
     result = deduplicate_candidates(
         candidates,
@@ -689,17 +668,12 @@ def test_strictly_equivalent_trace_shape_produces_four_logical_groups():
         ),
     ]
     resolutions = {
-        candidate.id: CandidateTagResolution(
-            tag=(
-                RiskTag.NULL_STATE_SAFETY
-                if candidate.id.startswith("input-")
-                else RiskTag.API_CONTRACT
-                if candidate.id.startswith("api-")
-                else RiskTag.ERROR_HANDLING
-            ),
-            confidence=0.99,
-            source="rule",
-            reason="trace regression",
+        candidate.id: (
+            RiskTag.NULL_STATE_SAFETY
+            if candidate.id.startswith("input-")
+            else RiskTag.API_CONTRACT
+            if candidate.id.startswith("api-")
+            else RiskTag.ERROR_HANDLING
         )
         for candidate in candidates
     }
@@ -753,12 +727,7 @@ def test_latest_trace_metadata_all_groups_accepted_when_tags_differ():
         "standalone": RiskTag.DATA_EXPOSURE,
     }
     resolutions = {
-        candidate.id: CandidateTagResolution(
-            tag=tags[candidate.id],
-            confidence=0.99,
-            source="rule",
-            reason="latest trace metadata",
-        )
+        candidate.id: tags[candidate.id]
         for candidate in candidates
     }
 

@@ -30,7 +30,7 @@ from codeguard_agent.pipeline.evidence.agent import (
     request_strategy_mismatch,
 )
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
-from codeguard_agent.pipeline.evidence.rules import resolve_candidate_evidence_tag
+from codeguard_agent.pipeline.evidence.rules import resolve_candidate_tag
 from codeguard_agent.pipeline.council.impact import (
     assess_impact,
     assess_impact_fallback,
@@ -145,12 +145,7 @@ def _primary_tag(
 ) -> RiskTag:
     if concern is not None and concern.tags.primary_tag is not None:
         return concern.tags.primary_tag
-    resolution = resolve_candidate_evidence_tag(
-        dossier,
-        None,
-        structured_method="function_calling",
-    )
-    return resolution.tag
+    return resolve_candidate_tag(dossier.candidate)
 
 
 def _rubric_tags(

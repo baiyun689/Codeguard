@@ -1549,20 +1549,13 @@ def test_coordinator_batches_tag_resolution_and_emits_complete_trace(monkeypatch
         patch="+ riskyCall();",
         changed_lines=[30, 31],
     )
-    resolution = G.CandidateTagResolution(
-        tag=RiskTag.ERROR_HANDLING,
-        confidence=0.95,
-        source="rule",
-        reason="test",
-    )
-    calls: list[list[str]] = []
+    calls: list[str] = []
 
-    def resolve(dossiers, **kwargs):
-        calls.append([dossier.candidate.id for dossier in dossiers])
-        assert "max_workers" not in kwargs
-        return {dossier.candidate.id: resolution for dossier in dossiers}
+    def resolve(candidate):
+        calls.append(candidate.id)
+        return RiskTag.ERROR_HANDLING
 
-    monkeypatch.setattr(G, "resolve_candidate_tags", resolve)
+    monkeypatch.setattr(G, "resolve_candidate_tag", resolve)
     monkeypatch.setattr(
         G,
         "deduplicate_candidates",
@@ -1601,7 +1594,7 @@ def test_coordinator_batches_tag_resolution_and_emits_complete_trace(monkeypatch
         }
     )
 
-    assert calls == [[first.id, second.id]]
+    assert calls == [first.id, second.id]
     assert output["candidate_issues"] == [first, second]
     assert output["candidate_groups"][0].members == (first, second)
     assert output["candidate_dedup_stats"] == {
@@ -1622,9 +1615,7 @@ def test_coordinator_batches_tag_resolution_and_emits_complete_trace(monkeypatch
     assert "grouped=1" in traces["candidate_dedup_completed"]
 
 
-def test_coordinator_scopes_large_diff_patch_before_classification_and_dedup(
-    monkeypatch,
-):
+def test_coordinator_scopes_large_diff_patch_before_dedup(monkeypatch):
     from codeguard_agent.pipeline.council.dedup import CandidateDedupResult
 
     candidate = _c("behavior", "1", "OrderService.java", 30, "ERROR_HANDLING")
@@ -1637,16 +1628,6 @@ def test_coordinator_scopes_large_diff_patch_before_classification_and_dedup(
         changed_lines=[30],
     )
     captured: dict[str, object] = {}
-    resolution = G.CandidateTagResolution(
-        tag=RiskTag.ERROR_HANDLING,
-        confidence=0.95,
-        source="rule",
-        reason="test",
-    )
-
-    def resolve(dossiers, **kwargs):
-        captured["dossier_task"] = dossiers[0].task
-        return {candidate.id: resolution}
 
     def dedup(candidates, **kwargs):
         captured["dedup_task"] = kwargs["tasks_by_id"][candidate.task_id]
@@ -1661,7 +1642,9 @@ def test_coordinator_scopes_large_diff_patch_before_classification_and_dedup(
             block_failures=(),
         )
 
-    monkeypatch.setattr(G, "resolve_candidate_tags", resolve)
+    monkeypatch.setattr(
+        G, "resolve_candidate_tag", lambda candidate: RiskTag.ERROR_HANDLING
+    )
     monkeypatch.setattr(G, "deduplicate_candidates", dedup)
 
     G._coordinator_node(object())(
@@ -1675,10 +1658,7 @@ def test_coordinator_scopes_large_diff_patch_before_classification_and_dedup(
         }
     )
 
-    for scoped_task in (
-        captured["dossier_task"],
-        captured["dedup_task"],
-    ):
-        assert scoped_task.patch != original_patch
-        assert scoped_task.patch.endswith("...(大 diff 单任务 patch 已截断)")
-        assert scoped_task.patch_complete is False
+    scoped_task = captured["dedup_task"]
+    assert scoped_task.patch != original_patch
+    assert scoped_task.patch.endswith("...(大 diff 单任务 patch 已截断)")
+    assert scoped_task.patch_complete is False

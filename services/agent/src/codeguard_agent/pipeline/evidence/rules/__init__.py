@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-from codeguard_agent.pipeline.evidence.rules.classify import (
-    CandidateTagResolution,
-    resolve_candidate_evidence_tag,
-    resolve_candidate_tags,
-)
+from codeguard_agent.pipeline.evidence.rules.classify import resolve_candidate_tag
 from codeguard_agent.pipeline.evidence.strategy_types import EvidenceStrategy, ToolCallSpec
 
 
@@ -36,10 +32,8 @@ _register_claim_strategies()
 
 
 __all__ = [
-    "CandidateTagResolution",
     "EvidenceStrategy",
     "ToolCallSpec",
     "STRATEGIES_BY_ID",
-    "resolve_candidate_evidence_tag",
-    "resolve_candidate_tags",
+    "resolve_candidate_tag",
 ]

@@ -20,7 +20,6 @@ from pydantic import BaseModel, Field
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import ReviewTask, RiskTag
-from codeguard_agent.pipeline.evidence.rules.classify import CandidateTagResolution
 
 logger = logging.getLogger("codeguard")
 
@@ -232,7 +231,7 @@ def _group_rejection_reason(
     block: _CandidateBlock,
     group: DuplicateGroup,
     overlapping_ids: set[str],
-    tag_resolutions: Mapping[str, CandidateTagResolution] | None,
+    tag_resolutions: Mapping[str, RiskTag] | None,
 ) -> str | None:
     if len(group.member_ids) != len(set(group.member_ids)):
         return "duplicate_member_id"
@@ -285,7 +284,7 @@ def _group_rejection_reason(
 def _apply_decision(
     block: _CandidateBlock,
     decision: CandidateDedupDecision,
-    tag_resolutions: Mapping[str, CandidateTagResolution] | None = None,
+    tag_resolutions: Mapping[str, RiskTag] | None = None,
 ) -> _BlockApplyResult:
     """保守校验每个 group，并始终保留全部原候选供后续独立举证。"""
     accepted: list[CandidateGroup] = []
@@ -322,7 +321,7 @@ def _apply_decision(
                 id=f"candidate-group-{digest}",
                 members=members,
                 primary_risk_tag=(
-                    resolution.tag if resolution is not None else RiskTag.GENERAL_REVIEW
+                    resolution if resolution is not None else RiskTag.GENERAL_REVIEW
                 ),
                 severity_proposal=members[0].severity_proposal,
                 confidence=group.confidence,
@@ -345,7 +344,7 @@ def deduplicate_candidates(
     candidates: Sequence[CandidateIssue],
     *,
     tasks_by_id: Mapping[str, ReviewTask],
-    tag_resolutions: Mapping[str, CandidateTagResolution],
+    tag_resolutions: Mapping[str, RiskTag],
     llm: Any,
     structured_method: str,
     max_workers: int = MAX_DEDUP_WORKERS,
@@ -455,7 +454,7 @@ def _load_prompt(name: str) -> str:
 def _build_user_prompt(
     block: _CandidateBlock,
     tasks_by_id: Mapping[str, ReviewTask],
-    tag_resolutions: Mapping[str, CandidateTagResolution],
+    tag_resolutions: Mapping[str, RiskTag],
 ) -> str:
     """把 block 候选和关联 task 渲染为 JSON 数据，html 转义后嵌入 user prompt。"""
     payload: dict[str, Any] = {
@@ -470,19 +469,9 @@ def _build_user_prompt(
                 "type": candidate.type,
                 "severity_proposal": candidate.severity_proposal.value,
                 "primary_risk_tag": (
-                    resolution.tag.value
+                    resolution.value
                     if (resolution := tag_resolutions.get(candidate.id))
                     else RiskTag.GENERAL_REVIEW.value
-                ),
-                "tag_source": (
-                    resolution.source
-                    if (resolution := tag_resolutions.get(candidate.id))
-                    else "general"
-                ),
-                "tag_confidence": (
-                    resolution.confidence
-                    if (resolution := tag_resolutions.get(candidate.id))
-                    else 0.5
                 ),
                 "claim": candidate.claim,
                 "suggestion": candidate.suggestion,
@@ -511,7 +500,7 @@ def _invoke_block(
     block: _CandidateBlock,
     *,
     tasks_by_id: Mapping[str, ReviewTask],
-    tag_resolutions: Mapping[str, CandidateTagResolution],
+    tag_resolutions: Mapping[str, RiskTag],
     llm: Any,
     structured_method: str,
 ) -> _BlockDecisionOutcome:

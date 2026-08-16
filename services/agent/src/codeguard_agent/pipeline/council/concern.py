@@ -189,8 +189,7 @@ def _extract_tags_from_members(
 
     # 从 member type 字段提取
     for member in members:
-        resolution = (tag_resolutions or {}).get(member.id)
-        resolved_tag = getattr(resolution, "tag", None)
+        resolved_tag = (tag_resolutions or {}).get(member.id)
         if isinstance(resolved_tag, RiskTag) and resolved_tag is not RiskTag.GENERAL_REVIEW:
             all_tags.append(resolved_tag)
         try:
@@ -266,7 +265,7 @@ def _build_singleton_concern(
             candidate.id: tuple(
                 tag
                 for tag in (
-                    getattr((tag_resolutions or {}).get(candidate.id), "tag", None),
+                    (tag_resolutions or {}).get(candidate.id),
                 )
                 if isinstance(tag, RiskTag)
                 and tag is not RiskTag.GENERAL_REVIEW
@@ -331,11 +330,8 @@ def analyze_candidate_groups(
                     m.id: tuple(
                         tag
                         for tag in (
-                            getattr(
-                                (candidate_tag_resolutions or {}).get(m.id),
-                                "tag",
-                                group.primary_risk_tag,
-                            ),
+                            (candidate_tag_resolutions or {}).get(m.id)
+                            or group.primary_risk_tag,
                         )
                         if isinstance(tag, RiskTag)
                         and tag is not RiskTag.GENERAL_REVIEW

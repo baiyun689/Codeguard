@@ -79,10 +79,7 @@ from codeguard_agent.pipeline.engines import (
 )
 from codeguard_agent.pipeline.council.metrics import compute_council_run_stats
 from codeguard_agent.pipeline.evidence.planner import assemble_dossiers
-from codeguard_agent.pipeline.evidence.rules.classify import (
-    CandidateTagResolution,
-    resolve_candidate_tags,
-)
+from codeguard_agent.pipeline.evidence.rules.classify import resolve_candidate_tag
 from codeguard_agent.models.council import ConcernAnalysis
 from codeguard_agent.pipeline.council.concern import (
     analyze_candidate_groups,
@@ -201,7 +198,7 @@ class ReviewState(TypedDict, total=False):
     raw_candidate_issues: Annotated[list[CandidateIssue], collect_candidate_reducer]
     candidate_issues: list[CandidateIssue]
     candidate_groups: list[CandidateGroup]
-    candidate_tag_resolutions: dict[str, CandidateTagResolution]
+    candidate_tag_resolutions: dict[str, RiskTag]
     candidate_dedup_stats: CandidateDedupStats
     concern_analysis: ConcernAnalysis
     investigation_plans: list[CandidateInvestigationPlan]
@@ -1232,24 +1229,18 @@ def _coordinator_node(effective_judge_llm):
             (),
             (),
         )
-        resolutions = resolve_candidate_tags(
-            assembly.dossiers,
-            classifier_llm=effective_judge_llm,
-            structured_method=structured_method,
-        )
+        resolutions = {
+            dossier.candidate.id: resolve_candidate_tag(dossier.candidate)
+            for dossier in assembly.dossiers
+        }
         for failure in assembly.failures:
-            resolutions[failure.candidate.id] = CandidateTagResolution(
-                tag=RiskTag.GENERAL_REVIEW,
-                confidence=0.5,
-                source="general",
-                reason=f"candidate_binding_{failure.reason}",
-            )
+            resolutions[failure.candidate.id] = RiskTag.GENERAL_REVIEW
 
-        source_counts = {"rule": 0, "llm": 0, "general": 0}
-        for resolution in resolutions.values():
-            source_counts[resolution.source] = (
-                source_counts.get(resolution.source, 0) + 1
-            )
+        source_counts = {"rule": 0, "general": 0}
+        for tag in resolutions.values():
+            source_counts[
+                "rule" if tag is not RiskTag.GENERAL_REVIEW else "general"
+            ] += 1
 
         trace.append(
             CouncilTrace(
@@ -1257,7 +1248,7 @@ def _coordinator_node(effective_judge_llm):
                 event="candidate_tags_resolved",
                 detail=(
                     f"resolved={len(resolutions)} "
-                    f"rule={source_counts['rule']} llm={source_counts['llm']} "
+                    f"rule={source_counts['rule']} "
                     f"general={source_counts['general']}"
                 ),
             )
