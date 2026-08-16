@@ -13,6 +13,7 @@ from codeguard_agent.models.tasks import (
 )
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 from codeguard_agent.pipeline.evidence.verifier import (
+    _call_tool,
     _collect_facts,
     _located_match,
     _symbol_id,
@@ -192,3 +193,77 @@ def test_collect_facts_recipe_fallback_when_chain_invalid():
         tag_by_candidate={"c1": RiskTag.GENERAL_REVIEW},
     )
     assert all(f.replay_status == "recipe" for f in facts["c1"])
+
+
+def test_collect_facts_chain_tool_error_marks_failed():
+    """回归:调用失败必须标 failed,不能被 located 分支抢先标 unverified。"""
+    dossier = _dossier(chain=[
+        EvidenceTraceStep(
+            tool="get_file_content",
+            args={"file_path": "src/A.java"},
+            located="int x = 1;",
+        )
+    ])
+    tool_client = MagicMock()
+    tool_client.get_file_content.side_effect = RuntimeError("sandbox denied")
+    facts, _, _ = _collect_facts(
+        [dossier], tool_client=tool_client,
+        tag_by_candidate={"c1": RiskTag.GENERAL_REVIEW},
+    )
+    fact = facts["c1"][0]
+    assert fact.replay_status == "failed"
+    assert fact.limitation.startswith("tool_error:")
+
+
+def test_collect_facts_chain_located_mismatch_marks_unverified():
+    dossier = _dossier(chain=[
+        EvidenceTraceStep(
+            tool="get_file_content",
+            args={"file_path": "src/A.java"},
+            located="int z = 1;",
+        )
+    ])
+    tool_client = _tool_client(get_file_content="int x = 1;")
+    facts, _, _ = _collect_facts(
+        [dossier], tool_client=tool_client,
+        tag_by_candidate={"c1": RiskTag.GENERAL_REVIEW},
+    )
+    assert facts["c1"][0].replay_status == "unverified"
+
+
+def _graph_response(payload: str) -> Mock:
+    return Mock(success=True, result=payload, as_tool_output=Mock())
+
+
+def test_call_tool_graph_subject_mismatch():
+    client = MagicMock()
+    client.inspect_change_impact.return_value = _graph_response(
+        '{"status": "confirmed", "subject_symbol_id": "S9", "relationships": []}'
+    )
+    raw, limitation = _call_tool(
+        client, "inspect_change_impact", {"symbol_id": "S1"}
+    )
+    assert limitation == "graph_subject_mismatch"
+    assert raw  # 原文保留,供分析层判断
+
+
+def test_call_tool_graph_unknown():
+    client = MagicMock()
+    client.inspect_change_impact.return_value = _graph_response(
+        '{"status": "unknown"}'
+    )
+    _, limitation = _call_tool(client, "inspect_change_impact", {"symbol_id": "S1"})
+    assert limitation == "graph_unknown"
+
+
+def test_call_tool_graph_partial_coverage_confirmed_passes():
+    client = MagicMock()
+    client.inspect_change_impact.return_value = _graph_response(
+        '{"status": "confirmed", "subject_symbol_id": "S1",'
+        ' "coverage": "partial", "relationships": []}'
+    )
+    raw, limitation = _call_tool(
+        client, "inspect_change_impact", {"symbol_id": "S1"}
+    )
+    assert limitation == ""
+    assert raw

@@ -219,9 +219,20 @@ def _collect_facts(
                     if step.tool == "get_file_content"
                     else {_SYMBOL_ARG: step.args[_SYMBOL_ARG]}
                 )
-                per_candidate_located.setdefault(cid, {})[
-                    (step.tool, _stable_json(key_args))
-                ] = step.located
+                # setdefault 保留首个 located:重复步骤以第一次引文为准
+                per_candidate_located.setdefault(cid, {}).setdefault(
+                    (step.tool, _stable_json(key_args)), step.located
+                )
+            # 链内去重:相同 (tool, args) 只保留一次,再进全局 unique_calls
+            seen: set[tuple[str, str]] = set()
+            deduped: list[tuple[str, dict[str, str]]] = []
+            for tool, arguments in calls:
+                key = (tool, _stable_json(arguments))
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append((tool, arguments))
+            calls = deduped
         else:
             calls = recipe_calls(dossier, tag)
         per_candidate_calls[cid] = calls
@@ -254,12 +265,11 @@ def _collect_facts(
             key = (tool, _stable_json(arguments))
             raw, limitation = cache[key]
             located = per_candidate_located.get(cid, {}).get(key, "")
-            if located:
-                status: Literal["verified", "unverified", "failed", "recipe"] = (
-                    "verified" if _located_match(raw, located) else "unverified"
-                )
-            elif limitation:
-                status = "failed"
+            status: Literal["verified", "unverified", "failed", "recipe"]
+            if limitation:
+                status = "failed"  # 调用失败优先(沙箱拒绝/符号不存在)
+            elif located:
+                status = "verified" if _located_match(raw, located) else "unverified"
             else:
                 status = "recipe"
             fact = CandidateFact(
@@ -282,7 +292,12 @@ def _collect_facts(
                 )
             )
             if raw:
-                gathered.append({"tool": tool, "arguments": arguments, "result": raw})
+                # 键对齐 GatheredContext 字段(tool/args/content),供 view_model 与误报复核读取
+                gathered.append({
+                    "tool": tool,
+                    "args": _stable_json(arguments),
+                    "content": raw,
+                })
         facts_by_candidate[cid] = facts
 
     return facts_by_candidate, trace, gathered
