@@ -533,6 +533,7 @@ def verify_evidence(
             analyst_llm=analyst_llm,
             structured_method=structured_method,
         ),
+        max_workers=6,
     )
     for (dossier, facts), outcome in zip(analyzable_items, outcomes, strict=True):
         batch.relations[dossier.candidate.id] = (

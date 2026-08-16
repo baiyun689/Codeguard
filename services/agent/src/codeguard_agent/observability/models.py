@@ -71,7 +71,6 @@ class DegradationReport(BaseModel):
     discoverer_failed: int = 0
     task_review_failed: int = 0
     judge_synthesis_failed: int = 0
-    evidence_plan_skipped: int = 0
 
     @property
     def total_degradations(self) -> int:
@@ -81,7 +80,6 @@ class DegradationReport(BaseModel):
             + self.discoverer_failed
             + self.task_review_failed
             + self.judge_synthesis_failed
-            + self.evidence_plan_skipped
         )
 
     @property

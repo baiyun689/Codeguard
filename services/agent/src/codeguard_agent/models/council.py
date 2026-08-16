@@ -255,9 +255,6 @@ class CouncilRunStats(BaseModel):
     judge_synthesis_failed_count: int = Field(
         default=0, description="CouncilJudge LLM synthesis 失败使用默认 severity 的次数"
     )
-    evidence_plan_skipped_count: int = Field(
-        default=0, description="证据规划因超 cap 跳过的请求数"
-    )
     # ── 取证溯源统计(ADR-046) ──
     fact_count: int = Field(default=0, description="取证后按候选累计的事实总数")
     replay_verified_count: int = Field(default=0, description="链引用命中重放的 fact 数")

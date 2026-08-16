@@ -509,7 +509,7 @@ def test_verify_evidence_parallel_failure_marks_insufficient(monkeypatch):
 
     monkeypatch.setattr(
         verifier_module, "run_bounded_parallel",
-        lambda items, fn: [None] * len(items),
+        lambda items, fn, **kwargs: [None] * len(items),
     )
     dossier = _dossier()
     batch = verify_evidence(

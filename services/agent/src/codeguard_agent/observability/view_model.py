@@ -135,7 +135,6 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
                 {"label": "发现者失败", "count": degradation.discoverer_failed},
                 {"label": "Task失败", "count": degradation.task_review_failed},
                 {"label": "Judge失败", "count": degradation.judge_synthesis_failed},
-                {"label": "证据截断", "count": degradation.evidence_plan_skipped},
             ],
         },
     }

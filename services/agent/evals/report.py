@@ -293,8 +293,8 @@ def render_report(
             "",
             "### 降级摘要",
             "",
-            "| 用例 | ReAct→直连(递归) | ReAct→直连(空) | Direct 分派 | 发现者失败 | Task 失败 | Judge 失败 | 证据截断 |",
-            "|---|---|---|---|---|---|---|---|",
+            "| 用例 | ReAct→直连(递归) | ReAct→直连(空) | Direct 分派 | 发现者失败 | Task 失败 | Judge 失败 |",
+            "|---|---|---|---|---|---|---|",
         ]
         for o in council_rows:
             c = o.council_trace
@@ -305,8 +305,7 @@ def render_report(
                 f"{c.direct_tier_task_count} | "
                 f"{c.discoverer_failed_count} | "
                 f"{c.task_review_failed_count} | "
-                f"{c.judge_synthesis_failed_count} | "
-                f"{c.evidence_plan_skipped_count} |"
+                f"{c.judge_synthesis_failed_count} |"
             )
 
     # 规则尺 vs 裁判尺交叉校验:仅当本次确有用例走 LLM 主判时才有意义。

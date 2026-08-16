@@ -1,12 +1,9 @@
 """KnowledgeSelector 单元测试。"""
 from __future__ import annotations
 
-import pytest
 from codeguard_agent.models.knowledge import (
     KnowledgeBudget,
-    KnowledgeFragment,
     KnowledgeKind,
-    SelectedKnowledge,
 )
 from codeguard_agent.models.tasks import (
     ContextFact,

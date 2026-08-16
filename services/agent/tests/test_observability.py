@@ -1824,7 +1824,7 @@ class TestCliTraceConfig:
         assert cli.main(["review", "--repo", "."]) == 0
 
         assert observed["trace_enabled"] is False
-        assert "coordinator → planner → evidence → judge" in caplog.text
+        assert "coordinator → evidence_verifier → council_judge" in caplog.text
 
     def test_review_trace_flag_overrides_environment_setting(
         self,

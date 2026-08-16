@@ -156,9 +156,6 @@ def compute_council_run_stats(
     task_review_failed_count = sum(
         trace.event == "task_review_failed" for trace in council_trace
     )
-    evidence_plan_skipped_count = sum(
-        trace.event == "evidence_plan_skipped" for trace in council_trace
-    )
     return CouncilRunStats(
         candidate_count=candidate_count,
         candidate_count_by_agent=by_agent,
@@ -203,7 +200,6 @@ def compute_council_run_stats(
         discoverer_failed_count=discoverer_failed_count,
         task_review_failed_count=task_review_failed_count,
         judge_synthesis_failed_count=severity_defaulted,
-        evidence_plan_skipped_count=evidence_plan_skipped_count,
         fact_count=fact_count,
         replay_verified_count=replay_verified_count,
         replay_unverified_count=replay_unverified_count,

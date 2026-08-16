@@ -1,7 +1,6 @@
 """Knowledge 集成测试：端到端验证 Knowledge 选择和 Reviewer prompt 组装。"""
 from __future__ import annotations
 
-import pytest
 from codeguard_agent.models.knowledge import KnowledgeBudget
 from codeguard_agent.models.tasks import (
     ReviewTask,
