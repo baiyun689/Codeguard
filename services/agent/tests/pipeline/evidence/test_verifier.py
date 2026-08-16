@@ -1,6 +1,7 @@
 """evidence_verifier 链校验与固定配方测试(ADR-046)。"""
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, Mock
 
 from codeguard_agent.models.council import CandidateFact, CandidateIssue
@@ -16,6 +17,8 @@ from codeguard_agent.pipeline.evidence.verifier import (
     _call_tool,
     _collect_facts,
     _located_match,
+    _RelationBatch,
+    _relation_payload,
     _symbol_id,
     analyze_relations,
     recipe_calls,
@@ -347,3 +350,93 @@ def test_analyze_relations_guard_scan_prior_wins():
     )
     assert relations[0].relation == "contradicts"
     assert relations[0].strength == "direct"
+
+
+def test_analyze_relations_llm_findings_sanitized():
+    """回归:LLM 输出非法 relation/strength/空 observation 时逐项降级,不拖累整批。"""
+    analyst = MagicMock()
+    analyst.with_structured_output.return_value = Mock(
+        invoke=Mock(return_value=_RelationBatch(findings=[
+            {
+                "fact_id": "f1",
+                "relation": "weird",
+                "strength": "absolute",
+                "observation": "",
+            },
+            {
+                "fact_id": "f2",
+                "relation": "supports",
+                "strength": "direct",
+                "observation": "",
+            },
+            {
+                "fact_id": "f3",
+                "relation": ["unhashable"],  # 非 str:isinstance 守卫,不得拖垮整批
+                "strength": "direct",
+                "observation": "y",
+            },
+        ])),
+    )
+    facts = [
+        CandidateFact(fact_id="f1", source="tool:x", raw="a"),
+        CandidateFact(fact_id="f2", source="tool:x", raw="b"),
+        CandidateFact(fact_id="f3", source="tool:x", raw="c"),
+    ]
+    relations = analyze_relations(
+        dossier=_dossier(), facts=facts, tag=RiskTag.GENERAL_REVIEW,
+        analyst_llm=analyst, structured_method="function_calling",
+    )
+    by_id = {r.fact_id: r for r in relations}
+    assert by_id["f1"].relation == "insufficient"
+    assert by_id["f1"].strength == "contextual"
+    assert by_id["f1"].limitation == "analysis_unclear"
+    assert by_id["f2"].relation == "insufficient"
+    assert by_id["f2"].limitation == "observation_missing"
+    assert by_id["f3"].relation == "insufficient"
+    assert by_id["f3"].limitation == "analysis_unclear"
+
+
+def test_analyze_relations_llm_failure_degrades_all_analyzable():
+    """回归:LLM 结构化解码异常时,可分析事实全部降级 insufficient,不误杀。"""
+    analyst = MagicMock()
+    analyst.with_structured_output.side_effect = RuntimeError("structured output down")
+    facts = [
+        CandidateFact(fact_id="f1", source="tool:x", raw="a"),
+        CandidateFact(fact_id="f2", source="tool:x", raw="", limitation="tool_empty"),
+    ]
+    relations = analyze_relations(
+        dossier=_dossier(), facts=facts, tag=RiskTag.GENERAL_REVIEW,
+        analyst_llm=analyst, structured_method="function_calling",
+    )
+    by_id = {r.fact_id: r for r in relations}
+    assert by_id["f1"].relation == "insufficient"
+    assert by_id["f1"].limitation == "analysis_failed_or_missing"
+    assert by_id["f2"].limitation == "tool_empty"  # 带 limitation 不交 LLM
+
+
+def test_verify_evidence_parallel_failure_marks_insufficient(monkeypatch):
+    """回归:并行分析单项返回 None 时按 insufficient 兜底,不炸管线。"""
+    import codeguard_agent.pipeline.evidence.verifier as verifier_module
+
+    monkeypatch.setattr(
+        verifier_module, "run_bounded_parallel",
+        lambda items, fn: [None] * len(items),
+    )
+    dossier = _dossier()
+    batch = verify_evidence(
+        [dossier], tool_client=None, analyst_llm=None,
+        structured_method="function_calling", enabled_tools=None,
+        tag_by_candidate={"c1": RiskTag.GENERAL_REVIEW},
+    )
+    (relation,) = batch.relations["c1"]
+    assert relation.relation == "insufficient"
+    assert relation.limitation == "parallel_analysis_failed"
+
+
+def test_relation_payload_truncates_long_raw():
+    fact = CandidateFact(
+        fact_id="f1", source="tool:x", raw="x" * 3000, replay_status="verified",
+    )
+    payload = json.loads(_relation_payload(_dossier(), [fact]))
+    assert payload["facts"][0]["raw"] == "x" * 2000
+    assert payload["facts"][0]["raw_truncated"] is True

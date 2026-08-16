@@ -391,10 +391,15 @@ def analyze_relations(
                     continue
                 seen.add(fact_id)
                 relation = item.get("relation")
-                if relation not in {"supports", "contradicts", "insufficient"}:
+                # 非 str(不可哈希)视为非法值逐项降级,避免 TypeError 拖垮整批
+                if not isinstance(relation, str) or relation not in {
+                    "supports", "contradicts", "insufficient"
+                }:
                     relation = "insufficient"
                 strength = item.get("strength")
-                if strength not in {"direct", "contextual"}:
+                if not isinstance(strength, str) or strength not in {
+                    "direct", "contextual"
+                }:
                     strength = "contextual"
                 observation = str(item.get("observation", "")).strip()
                 limitation = str(item.get("limitation", ""))
@@ -441,7 +446,8 @@ def _relation_payload(dossier: CandidateDossier, facts: list[CandidateFact]) -> 
             {
                 "fact_id": fact.fact_id,
                 "source": fact.source,
-                "raw": fact.raw,
+                "raw": fact.raw[:2000],
+                "raw_truncated": len(fact.raw) > 2000,
                 "replay_status": fact.replay_status,
                 "limitation": fact.limitation,
             }
