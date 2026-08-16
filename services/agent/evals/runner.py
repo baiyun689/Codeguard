@@ -117,10 +117,7 @@ def run_once(
             outcome.tool_usage = summarize_tool_usage(trace)
         council_meta = (metadata or {}).get("council")
         if council_meta:
-            outcome.council_trace = CouncilTraceStats(
-                **council_meta,
-                trace_events=int((metadata or {}).get("council_trace_events", 0)),
-            )
+            outcome.council_trace = CouncilTraceStats(**council_meta)
         logger.info(
             "[%s] TP=%d FP=%d FN=%d (报告 %d / 标答 %d)",
             case.id,

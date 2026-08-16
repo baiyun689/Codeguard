@@ -195,7 +195,7 @@ class CouncilRunStats(BaseModel):
         default=0, description="缺少 support 证据但仍映射到最终 Issue 的候选数"
     )
     direct_counter_candidate_count: int = Field(
-        default=0, description="具备 counter+direct+contradicts finding 的候选数"
+        default=0, description="具备 contradicts+direct 关系的候选数"
     )
     direct_counter_retained_count: int = Field(
         default=0, description="直接反证候选中仍映射到最终 Issue 的数量"
@@ -205,7 +205,7 @@ class CouncilRunStats(BaseModel):
         description="direct_counter_retained_count/direct_counter_candidate_count；分母为零时 None",
     )
     all_insufficient_candidate_count: int = Field(
-        default=0, description="关联 finding 非空且全部 insufficient 的候选数"
+        default=0, description="关联关系非空且全部 insufficient 的候选数"
     )
     all_insufficient_retained_count: int = Field(
         default=0, description="全 insufficient 候选中仍映射到最终 Issue 的数量"
@@ -223,7 +223,7 @@ class CouncilRunStats(BaseModel):
     )
     final_issue_count: int = Field(default=0, description="最终 Issue 对应的 survivor 候选数")
     final_issue_fact_covered_count: int = Field(
-        default=0, description="survivor 中至少有关联非 insufficient finding 的数量"
+        default=0, description="survivor 中至少有关联非 insufficient 关系的数量"
     )
     final_issue_fact_coverage: float | None = Field(
         default=None,

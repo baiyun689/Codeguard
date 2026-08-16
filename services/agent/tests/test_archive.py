@@ -108,10 +108,11 @@ def test_archive_preserves_phase5_council_metrics():
     outcome.council_trace = CouncilTraceStats(**{
         "candidate_count": 1,
         "final_issue_count": 1,
-        "final_issue_strategy_covered_count": 1,
-        "final_issue_strategy_coverage": 1.0,
         "final_issue_fact_covered_count": 1,
         "final_issue_fact_coverage": 1.0,
+        "fact_count": 2,
+        "chain_used_count": 1,
+        "recipe_fallback_count": 0,
         "actual_evidence_tool_calls": 2,
         "average_evidence_tool_calls": 2.0,
     })
@@ -132,8 +133,9 @@ def test_archive_preserves_phase5_council_metrics():
     )
 
     archived = record["cases"][0]["council_trace"]
-    assert archived["final_issue_strategy_coverage"] == 1.0
     assert archived["final_issue_fact_coverage"] == 1.0
+    assert archived["fact_count"] == 2
+    assert archived["chain_used_count"] == 1
     assert archived["actual_evidence_tool_calls"] == 2
 
 

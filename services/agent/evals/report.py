@@ -200,10 +200,10 @@ def render_report(
             "",
             "## ReviewCouncil 过程统计(最后一次跑测)",
             "",
-            "ADR-032 中间态只用于 trace/eval,不进入最终 ReviewResult。",
+            "ADR-046 中间态只用于 trace/eval,不进入最终 ReviewResult。",
             "",
-            "| 用例 | 原始→逻辑组/举证成员 | 角色候选分布 | 候选归并 | 证据请求 | Judge 裁决 | 移除 | 候选截断 | Trace 事件 |",
-            "|---|---|---|---|---|---|---|---|---|",
+            "| 用例 | 原始→逻辑组/举证成员 | 角色候选分布 | 候选归并 | 事实 | Judge 裁决 | 移除 | 候选截断 |",
+            "|---|---|---|---|---|---|---|---|",
         ]
         for o in council_rows:
             c = o.council_trace
@@ -218,15 +218,6 @@ def render_report(
                 if name not in seen
             )
             agent_detail = ", ".join(agent_parts) if agent_parts else "—"
-            removed = (
-                c.removed_by_judge
-                + c.removed_by_fp_rules
-                + c.removed_by_fp_llm
-            )
-            detail = (
-                f"judge={c.removed_by_judge}, "
-                f"fp_rules={c.removed_by_fp_rules}, fp_llm={c.removed_by_fp_llm}"
-            )
             dedup_detail = (
                 f"逻辑归组={c.candidate_grouped_member_count}, "
                 f"实删={c.candidate_dedup_removed_count}, "
@@ -238,8 +229,8 @@ def render_report(
                 f"{c.raw_candidate_count}->{c.logical_candidate_count}/{c.candidate_count} | "
                 f"{agent_detail} | "
                 f"{dedup_detail} | "
-                f"{c.evidence_request_count} | {c.verdict_count} | "
-                f"{removed} ({detail}) | {c.truncated_candidates} | {c.trace_events} |"
+                f"{c.fact_count} | {c.verdict_count} | "
+                f"{c.removed_by_judge} | {c.truncated_candidates} |"
             )
 
         lines += [
@@ -249,8 +240,8 @@ def render_report(
             "比率均由 Judge 使用的 survivor candidate 映射计算；`—` 表示分母为零。",
             "实际工具调用只统计 EvidenceAgent 新调用，缓存复用不计。",
             "",
-            "| 用例 | 无 support 保留 | direct counter 保留率 | 全 insufficient 保留率 | CRITICAL 命中 | 缺失 factor | 等级转移 |",
-            "|---|---|---|---|---|---|---|",
+            "| 用例 | 无 support 保留 | direct counter 保留率 | 全 insufficient 保留率 | CRITICAL 候选 | 等级转移 |",
+            "|---|---|---|---|---|---|",
         ]
         for o in council_rows:
             c = o.council_trace
@@ -259,8 +250,7 @@ def render_report(
                 f"{c.no_support_retained_count}/{c.no_support_candidate_count} | "
                 f"{c.direct_counter_retained_count}/{c.direct_counter_candidate_count} ({_fmt(c.direct_counter_retained_rate)}) | "
                 f"{c.all_insufficient_retained_count}/{c.all_insufficient_candidate_count} ({_fmt(c.all_insufficient_retained_rate)}) | "
-                f"{c.critical_policy_matched_count}/{c.critical_candidate_count} | "
-                f"{c.critical_missing_factor_count} | "
+                f"{c.critical_candidate_count} | "
                 f"{', '.join(f'{key}={value}' for key, value in sorted(c.severity_transitions.items())) or '—'} |"
             )
 
@@ -268,16 +258,35 @@ def render_report(
             "",
             "### 证据覆盖与成本",
             "",
-            "| 用例 | 最终 Issue 策略覆盖率 | 最终 Issue 有效事实覆盖率 | 平均实际证据工具调用 |",
-            "|---|---|---|---|",
+            "| 用例 | 最终 Issue 有效事实覆盖率 | 平均实际证据工具调用 |",
+            "|---|---|---|",
         ]
         for o in council_rows:
             c = o.council_trace
             lines.append(
                 f"| {o.case_id} | "
-                f"{c.final_issue_strategy_covered_count}/{c.final_issue_count} ({_fmt(c.final_issue_strategy_coverage)}) | "
                 f"{c.final_issue_fact_covered_count}/{c.final_issue_count} ({_fmt(c.final_issue_fact_coverage)}) | "
                 f"{c.actual_evidence_tool_calls}/{c.candidate_count} ({_fmt(c.average_evidence_tool_calls)}) |"
+            )
+
+        lines += [
+            "",
+            "### 取证溯源与重放(ADR-046)",
+            "",
+            "重放状态按事实累计:verified=链引用在重放结果中命中，unverified=未命中，failed=调用失败；",
+            "取证链/配方兜底 = 使用合法取证链的候选数 / 无链废链回退固定配方的候选数。",
+            "",
+            "| 用例 | 重放 verified | 重放 unverified | 重放 failed | 取证链/配方兜底 |",
+            "|---|---|---|---|---|",
+        ]
+        for o in council_rows:
+            c = o.council_trace
+            lines.append(
+                f"| {o.case_id} | "
+                f"{c.replay_verified_count} | "
+                f"{c.replay_unverified_count} | "
+                f"{c.replay_failed_count} | "
+                f"{c.chain_used_count}/{c.recipe_fallback_count} |"
             )
 
         lines += [

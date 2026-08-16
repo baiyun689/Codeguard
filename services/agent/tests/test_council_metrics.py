@@ -211,6 +211,36 @@ def test_replay_stats_are_derived_from_facts():
     assert stats.replay_failed_count == 1
 
 
+def test_chain_used_and_recipe_fallback_are_derived_from_fact_status():
+    chain = _dossier("chain")
+    recipe = _dossier("recipe")
+    mixed = _dossier("mixed")
+    empty = _dossier("empty")
+    facts = {
+        "chain": [
+            CandidateFact(fact_id="f1", source="diff", raw="+a", replay_status="verified")
+        ],
+        "recipe": [
+            CandidateFact(fact_id="f2", source="diff", raw="+b", replay_status="recipe")
+        ],
+        "mixed": [
+            CandidateFact(fact_id="f3", source="diff", raw="+c", replay_status="recipe"),
+            CandidateFact(fact_id="f4", source="diff", raw="+d", replay_status="unverified"),
+        ],
+        "empty": [],
+    }
+
+    stats = _stats(
+        [chain, recipe, mixed, empty],
+        final_ids=[],
+        facts=facts,
+    )
+
+    # chain=存在任何非 recipe 事实;recipe=事实全为 recipe;零事实候选两者都不计
+    assert stats.chain_used_count == 2
+    assert stats.recipe_fallback_count == 1
+
+
 def test_gate_and_severity_metrics_are_derived_from_verdicts():
     candidates = [
         _dossier("no-support"),
