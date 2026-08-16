@@ -172,7 +172,6 @@ class ReviewState(TypedDict, total=False):
     raw_candidate_issues: Annotated[list[CandidateIssue], collect_candidate_reducer]
     candidate_issues: list[CandidateIssue]
     candidate_groups: list[CandidateGroup]
-    candidate_tag_resolutions: dict[str, RiskTag]
     candidate_dedup_stats: CandidateDedupStats
     candidate_facts: dict[str, list[CandidateFact]]
     candidate_relations: dict[str, list[FactRelation]]
@@ -1165,7 +1164,7 @@ def _coordinator_node(effective_judge_llm):
     1. 读 raw_candidate_issues
     2. 组装轻量 dossier → 解析 RiskTag
     3. 调用 deduplicate_candidates 做语义归并
-    4. 产出 candidate_issues（唯一写入者）、candidate_tag_resolutions、stats
+    4. 产出 candidate_issues（唯一写入者）、candidate_dedup_stats、council_trace
     """
 
     def _node(state: ReviewState) -> dict:
@@ -1305,7 +1304,6 @@ def _coordinator_node(effective_judge_llm):
         return {
             "candidate_issues": list(result.candidates),
             "candidate_groups": list(result.accepted_groups),
-            "candidate_tag_resolutions": dict(resolutions),
             "candidate_dedup_stats": {
                 "raw_candidate_count": result.raw_candidate_count,
                 "logical_candidate_count": result.logical_candidate_count,

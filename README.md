@@ -14,7 +14,7 @@ Codeguard 接收 GitHub Pull Request 事件，由 Python 审查委员会分析�
 - 先按风险对变更片段进行路由，再由任务级专业审查员分析。
 - 向审查员显式提供当前任务的摘要、风险画像、AST、敏感 API、调用方和代码指标，并标明来源、范围、截断及不可用原因。
 - 在单个审查员范围内合并并发和重复工具调用，避免重复文件读取和重复上下文注入；不同审查员保持隔离。
-- 在最终裁决前规划并收集支持证据、反证和严重性证据。
+- 对每个候选做确定性取证验证（链校验 → 链重放/配方兜底 → 关系三元），再由三条确定性门控 + LLM 终审裁决。
 - 通过 GitHub Check Run、Diff Annotation 和高置信度严重问题评论反馈结果。
 - 校验 Webhook 签名，并按仓库、PR 和 Commit SHA 对任务去重。
 - 使用 MySQL 持久化任务，进程重启后可恢复未完成任务（测试用 H2 的 MySQL 兼容模式）。
@@ -40,8 +40,9 @@ GitHub pull_request Webhook
         |
         v
 Python Agent
-  PR 规模路由(small/medium/large) -> Diff 任务 -> 风险路由 -> 专业审查
-  -> 证据收集 -> 委员会裁决
+  PR 规模路由(small/medium/large) -> Diff 任务 -> 风险路由
+  -> 三路发现者(并行) -> 归并 -> 取证验证(链校验/重放/配方兜底/关系三元)
+  -> 门控 + 终审裁决(evidence_mode=off 时跳过取证与门控直接终审)
   LLM 调用经 LLM Proxy 或直连提供商
         |
         v
@@ -52,11 +53,11 @@ Python Agent 负责审查推理与编排。Java Gateway 拆为三个独立服务
 
 发现阶段的 system prompt 只定义稳定的上下文语义和工具调用门槛；每个 task 的实际 patch、风险画像、预取事实、缺失状态及标签知识通过 user 消息动态注入。上下文已经回答候选所需事实时，发现者必须略过工具。单个发现者的并发 task 共享一次审查内的工具结果，但不会与另外两个发现者或下一次审查共享。
 
-配置工具服务后，每次审查会按精确 revision 异步构建完整、只读的 Java `ProjectSnapshot`，缓存全部源码、JavaParser AST、符号索引和 Spring 感知语义图。ContextProvider 只注入变更所属的稳定 `symbol_id`；三路审查员分别通过 `inspect_security_path`、`inspect_change_impact`、`inspect_structure` 查询有限局部子图，EvidenceResearcher 复用同一快照。图谱明确区分 `confirmed/not_found/unknown`，并将 `MAIN/TEST/GENERATED` 来源贯穿节点、关系、coverage 和工具结果：生产状态只由非测试事实确定，测试关系作为独立上下文返回，不能单独证明生产可达或提高严重度。静态分析未知不会被解释为不可达。
+配置工具服务后，每次审查会按精确 revision 异步构建完整、只读的 Java `ProjectSnapshot`，缓存全部源码、JavaParser AST、符号索引和 Spring 感知语义图。ContextProvider 只注入变更所属的稳定 `symbol_id`；三路发现者分别通过 `inspect_security_path`、`inspect_change_impact`、`inspect_structure` 查询有限局部子图，取证验证阶段复用同一快照。图谱明确区分 `confirmed/not_found/unknown`，并将 `MAIN/TEST/GENERATED` 来源贯穿节点、关系、coverage 和工具结果：生产状态只由非测试事实确定，测试关系作为独立上下文返回，不能单独证明生产可达或提高严重度。静态分析未知不会被解释为不可达。
 
-EvidenceStrategist 每批最多 6 个候选动态提出少量可判真问题，不再机械生成固定 support/counter/impact 三件套。EvidenceResearcher 先执行快速路径，只对仍缺关键事实且工具能力可用的最多 5 个候选追加一轮受限 ReAct；相同 Gateway 调用跨轮次复用，工具不可用时明确降级而不让整条管线归零。输出仍按稳定 `evidence_id` 对齐。开启本地 HTML Trace 后，主流程会呈现 PR 规模统计、small/medium/large 路由、实际 task builder 和 Direct 降级路径；按模式未执行的阶段标记为“按设计跳过”。审查员和 EvidenceResearcher 的每次工具输入、输出、耗时、复用及失败也会作为独立工具步骤记录。
+取证验证阶段（EvidenceVerifier）全部确定性、零 LLM：先做链校验（工具/参数键白名单、`located` 必填、链长 ≤3），合法链按原参数重放执行并与引文逐字比对，产出四态 `replay_status`——`verified`（引文命中）/ `unverified`（有引用未命中）/ `failed`（调用失败）/ `recipe`（固定配方兜底：文件内容 + 有 symbol 则上游调用方 + 标签开关）；相同 tool+args 全局去重只调一次。随后调 LLM 做关系分析，产出支持/否定/无说明的关系三元（FactRelation）。开启本地 HTML Trace 后，主流程会呈现 PR 规模统计、small/medium/large 路由、实际 task builder 和 Direct 降级路径；按模式未执行的阶段标记为”按设计跳过”。发现者和取证验证的每次工具输入、输出、耗时、复用及失败也会作为独立工具步骤记录。
 
-三路发现者只按 ID 汇集原始候选。CouncilCoordinator 在 fan-in 后批量解析候选 RiskTag，按完整 Git 路径和局部位置构建连通候选块，并以最多 8 个并行结构化 LLM 调用执行保守归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会删除重复候选；非法、低置信或失败结果一律完整保留。EvidencePlanner 直接复用归并阶段已解析的 RiskTag。
+三路发现者只按 ID 汇集原始候选。CouncilCoordinator 在 fan-in 后批量解析候选 RiskTag，按完整 Git 路径和局部位置构建连通候选块，并以最多 8 个并行结构化 LLM 调用执行保守归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会删除重复候选；非法、低置信或失败结果一律完整保留。终审由 CouncilJudge 承担：三条确定性门控（直接反证排除 / 无可用证据 / 无支持证据，零 LLM 成本淘汰）→ LLM 终审（keep/drop 裁决，完整档 severity 必须引用证据）→ 组内合并。`evidence_mode=off` 时跳过取证与门控，候选由 direct_judge 直接终审（无证据链消融基线档）。
 
 ## 使用 Docker Compose 快速开始
 
