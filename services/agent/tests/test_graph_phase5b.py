@@ -45,7 +45,7 @@ def test_main_llm_is_effective_fallback_for_verifier_and_judges(monkeypatch):
         captured["verifier"] = judge_llm
         return lambda state: {}
 
-    def judge_factory(llm, judge_llm=None):
+    def judge_factory(judge_llm=None):
         captured["judge"] = judge_llm
         return lambda state: {}
 

@@ -10,7 +10,11 @@ import json
 from langgraph.graph import END
 
 import codeguard_agent.pipeline.orchestrator as orchestrator_module
-from codeguard_agent.models.council import ContextBundle, ContextFact
+from codeguard_agent.models.council import (
+    CandidateDirectAssessment,
+    ContextBundle,
+    ContextFact,
+)
 from codeguard_agent.models.knowledge import KnowledgeBundle
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
 from codeguard_agent.models.tasks import (
@@ -22,6 +26,7 @@ from codeguard_agent.models.tasks import (
 )
 from codeguard_agent.pipeline import graph as G
 from codeguard_agent.pipeline.engines import GatheredContext, ReviewOutcome
+from codeguard_agent.pipeline.evidence import verifier
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
 from codeguard_agent.pipeline.context.base import PipelineContext
 from codeguard_agent.pipeline.context.provider import ContextProviderStage
@@ -593,9 +598,10 @@ class _CouncilLLM:
     """Return valid relation/verdict structures for graph wiring tests."""
 
     def with_structured_output(self, schema, *args, **kwargs):
-        if schema.__name__ == "_RelationBatch":
+        # 对象同一性比较:接线一旦换了裁决/关系模型,这里 import 期即失败
+        if schema is verifier._RelationBatch:
             return _RelationBatchStub()
-        if schema.__name__ == "CandidateDirectAssessment":
+        if schema is CandidateDirectAssessment:
             return _ValueStub(
                 {
                     "candidate_id": "C001",
@@ -668,7 +674,7 @@ def test_graph_fanin_three_discoverers(monkeypatch):
     assert meta["council"]["severity_transitions"] == {"WARNING->INFO": 3}
 
 
-def test_build_graph_default_nodes_are_adr032():
+def test_build_graph_default_nodes_match_adr046_topology():
     graph = G.build_review_graph(enable_summary=False, llm=None)
     names = set(graph.get_graph().nodes)
     assert "context_provider" in names
@@ -766,7 +772,7 @@ def test_council_judge_node_mock_keeps_supported_candidate_and_builds_stats():
         strength="contextual",
         observation="变更出现在 patch 中",
     )
-    out = G._council_judge_node(llm=None, judge_llm=None)(
+    out = G._council_judge_node(judge_llm=None)(
         _evidence_state(
             candidate,
             candidate_facts={candidate.id: [fact]},
@@ -795,7 +801,7 @@ def test_council_judge_node_gates_candidate_without_supporting_evidence():
         strength="contextual",
         limitation="没有足够上下文",
     )
-    out = G._council_judge_node(llm=None, judge_llm=None)(
+    out = G._council_judge_node(judge_llm=None)(
         _evidence_state(
             candidate,
             candidate_facts={candidate.id: [fact]},

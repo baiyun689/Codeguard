@@ -93,6 +93,9 @@ def dedup_gathered_reducer(existing: list | None, new: list | None) -> list:
     """`gathered_context` reducer:按规范化工具参数去重,保留首次出现顺序。
 
     兼容两种元素:GatheredContext 对象与 verifier 产出的 {"tool","args","content"} dict。
+    跨形态去重假设:dict 形态的 args 是 verifier 的 `_stable_json` 稳定串、
+    GatheredContext.args 由 engines 构造——两者都必须是 JSON 对象字符串且经
+    canonical_tool_key 规范化后语义一致,否则同一次工具调用会漏去重。
     """
     merged = list(existing or []) + list(new or [])
     seen: set[tuple[str, str]] = set()
@@ -1363,7 +1366,7 @@ def _evidence_verifier_node(tool_client=None, judge_llm=None):
     return _node
 
 
-def _council_judge_node(llm=None, judge_llm=None):
+def _council_judge_node(judge_llm=None):
     """裁决节点:确定性门控 → LLM 终审 → 组内合并(ADR-046)。"""
 
     def _node(state: ReviewState) -> dict:
@@ -1532,7 +1535,7 @@ def build_review_graph(
         )
         g.add_node(
             "council_judge",
-            _council_judge_node(llm, judge_llm=effective_judge_llm),
+            _council_judge_node(judge_llm=effective_judge_llm),
         )
 
     # ── 边：START → classify_mode（不预建 task）──
