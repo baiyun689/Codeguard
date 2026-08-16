@@ -13,27 +13,27 @@ from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 from codeguard_agent.pipeline.evidence.verifier import (
     _symbol_id,
     recipe_calls,
+    replay_calls,
     validate_chain,
 )
 
 
-def _dossier(line=10, symbol="S1", task_file="src/A.java") -> CandidateDossier:
+def _dossier(line=10, symbol="S1", task_file="src/A.java", facts=None) -> CandidateDossier:
     candidate = CandidateIssue(
         id="c1", task_id="t1", source_agent="threat_model",
         file=task_file, line=line, type="t",
         severity_proposal=Severity.WARNING, claim="claim", confidence=0.8,
     )
     task = ReviewTask(id="t1", file=task_file, patch="+x", changed_lines=[line])
-    bundle = TaskContextBundle(
-        task_id="t1",
-        facts=[
+    if facts is None:
+        facts = [
             ContextFact(
                 source="tool:resolve_change_context",
                 kind="symbol_context",
                 content='{"symbol_id": "%s", "start_line": 5, "end_line": 20}' % symbol,
             )
-        ],
-    )
+        ]
+    bundle = TaskContextBundle(task_id="t1", facts=facts)
     return CandidateDossier(candidate=candidate, task=task, context_bundle=bundle,
                             requests=(), notes=())
 
@@ -80,3 +80,52 @@ def test_recipe_calls_no_symbol_file_only():
 def test_symbol_id_matches_line_range_and_falls_back():
     assert _symbol_id(_dossier(line=7)) == "S1"
     assert _symbol_id(_dossier(line=999)) == "S1"  # 未命中回退首个 symbol
+
+
+def test_replay_calls_maps_steps_to_call_tuples():
+    steps = (
+        EvidenceTraceStep(tool="get_file_content", args={"file_path": "A.java"}, located="x"),
+        EvidenceTraceStep(tool="inspect_change_impact", args={"symbol_id": "S1"}, located="y"),
+    )
+    assert replay_calls(steps) == [
+        ("get_file_content", {"file_path": "A.java"}),
+        ("inspect_change_impact", {"symbol_id": "S1"}),
+    ]
+
+
+def test_symbol_id_none_bundle_returns_empty():
+    base = _dossier()
+    dossier = CandidateDossier(
+        candidate=base.candidate, task=base.task,
+        context_bundle=None, requests=(), notes=(),
+    )
+    assert _symbol_id(dossier) == ""
+
+
+def test_symbol_id_skips_truncated_fact_and_falls_back():
+    dossier = _dossier(line=10, facts=[
+        ContextFact(
+            source="tool:resolve_change_context", kind="symbol_context",
+            content='{"symbol_id": "S1", "start_line": 5, "end_line": 20}',
+            truncated=True,
+        ),
+        ContextFact(
+            source="tool:resolve_change_context", kind="symbol_context",
+            content='{"symbol_id": "S2", "start_line": 1, "end_line": 2}',
+        ),
+    ])
+    assert _symbol_id(dossier) == "S2"  # 截断事实跳过,回退首个完整 symbol
+
+
+def test_symbol_id_skips_bad_json_and_falls_back():
+    dossier = _dossier(line=10, facts=[
+        ContextFact(
+            source="tool:resolve_change_context", kind="symbol_context",
+            content="{not valid json",
+        ),
+        ContextFact(
+            source="tool:resolve_change_context", kind="symbol_context",
+            content='{"symbol_id": "S2", "start_line": 1, "end_line": 2}',
+        ),
+    ])
+    assert _symbol_id(dossier) == "S2"  # 坏 JSON 跳过,回退首个可解析 symbol

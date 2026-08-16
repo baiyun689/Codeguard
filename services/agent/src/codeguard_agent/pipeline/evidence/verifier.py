@@ -48,7 +48,10 @@ def validate_chain(
         if step.tool not in CHAIN_TOOL_NAMES:
             continue
         expected = _FILE_ARG if step.tool == "get_file_content" else _SYMBOL_ARG
-        if not step.args.get(expected) or not step.located.strip():
+        args = step.args or {}
+        located = step.located or ""
+        # model_construct 可产出 None 的 args/located;参数键白名单(多余键视为非法)
+        if not args.get(expected) or set(args) != {expected} or not located.strip():
             continue
         valid.append(step)
     return tuple(valid)
