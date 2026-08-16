@@ -99,6 +99,17 @@ class FactRelation(BaseModel):
     observation: str = ""
     limitation: str = ""
 
+    @model_validator(mode="after")
+    def validate_safe_relation(self) -> "FactRelation":
+        if self.relation in {"supports", "contradicts"} and not self.observation.strip():
+            raise ValueError("supports/contradicts relation requires observation")
+        if self.relation == "insufficient":
+            if self.strength != "contextual":
+                raise ValueError("insufficient relation must be contextual")
+            if not self.limitation.strip():
+                raise ValueError("insufficient relation requires limitation")
+        return self
+
 
 class ContextFact(BaseModel):
     """ContextProvider 收集到的一段事实。"""
