@@ -57,17 +57,47 @@ class CandidateEvidenceAssessment(BaseModel):
 
 
 class CandidateDirectAssessment(BaseModel):
-    """DirectJudge(无证据链消融档)对单个候选的直接终审。
+    """统一裁决模型(ADR-046):完整档终审与无证据链消融档共用。
 
-    evidence_mode=off 时取代 CandidateEvidenceAssessment:LLM 基于候选主张
-    与 patch/上下文直接裁决,severity 由终审自选(与 rubric 定级机制不同,
-    评测报告需如实标注)。
+    完整档的 severity 必须引用证据(cited_fact_ids 非空);
+    消融档无证据输入,cited_fact_ids 恒为空——两档唯一差异是输入里有没有证据。
     """
 
     candidate_id: NonBlankStr
     action: Literal["keep", "drop"]
     severity: Severity
     reason: str = ""
+    cited_fact_ids: tuple[str, ...] = ()
+
+
+class CandidateFact(BaseModel):
+    """一条已取得的原始事实及其重放验证状态。
+
+    replay_status:
+    - verified:   链引用原文在重放结果中命中(规范化子串匹配)
+    - unverified: 链有引用但重放结果中找不到
+    - failed:     工具调用本身失败(符号不存在/沙箱拒绝/参数非法)
+    - recipe:     固定配方来源(非重放),无引用可验证
+    """
+
+    fact_id: NonBlankStr
+    source: NonBlankStr
+    raw: str = ""
+    replay_status: Literal["verified", "unverified", "failed", "recipe"] = "unverified"
+    limitation: str = ""
+
+
+class FactRelation(BaseModel):
+    """一条事实与候选主张之间的受约束关系(ADR-046 关系三元主轴)。
+
+    一条事实对一条主张只有三种可能:支持它、否定它、说明不了什么——完备划分。
+    """
+
+    fact_id: NonBlankStr
+    relation: Literal["supports", "contradicts", "insufficient"]
+    strength: Literal["direct", "contextual"] = "contextual"
+    observation: str = ""
+    limitation: str = ""
 
 
 class ContextFact(BaseModel):
