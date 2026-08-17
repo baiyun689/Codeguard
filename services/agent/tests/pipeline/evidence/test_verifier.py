@@ -18,9 +18,13 @@ from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 from codeguard_agent.pipeline.evidence.verifier import (
     _call_tool,
     _collect_facts,
+    _graph_assertions_match,
+    _graph_summary,
     _located_match,
+    _parse_assertions,
     _RelationBatch,
     _relation_payload,
+    _side_match,
     _symbol_id,
     analyze_relations,
     recipe_calls,
@@ -602,3 +606,357 @@ def test_relation_payload_truncates_long_raw():
     payload = json.loads(_relation_payload(_dossier(), [fact]))
     assert payload["facts"][0]["raw"] == "x" * 2000
     assert payload["facts"][0]["raw_truncated"] is True
+
+
+# ────────────────────────────────────────────────────────────────
+# 图工具关系断言匹配与图响应压缩(2026-08-17 单 case 评测 TP=0 修复)
+# ────────────────────────────────────────────────────────────────
+
+_GRAPH_SUBJECT = (
+    "java:org.codehaus.plexus.util.cli.shell.Shell#getRawCommandLine"
+    "(java.lang.String, java.lang.String[])"
+)
+_GRAPH_GET_CMD_ID = (
+    "java:org.codehaus.plexus.util.cli.shell.Shell#getCommandLine"
+    "(java.lang.String, java.lang.String[])"
+)
+_GRAPH_CMDSHELL_GET_CMD_ID = (
+    "java:org.codehaus.plexus.util.cli.shell.CmdShell#getCommandLine"
+    "(java.lang.String, java.lang.String[])"
+)
+_GRAPH_GET_SHELL_CMD_ID = (
+    "java:org.codehaus.plexus.util.cli.shell.Shell#getShellCommandLine"
+    "(java.lang.String[])"
+)
+_GRAPH_CMDLINE_GET_SHELL_ID = (
+    "java:org.codehaus.plexus.util.cli.Commandline#getShellCommandline()"
+)
+
+_GRAPH_RAW = json.dumps(
+    {
+        "status": "confirmed",
+        "coverage": "partial",
+        "source_scope": "MAIN",
+        "subject_symbol_id": _GRAPH_SUBJECT,
+        "symbols": [
+            {
+                "id": _GRAPH_SUBJECT, "kind": "METHOD",
+                "file": "src/main/java/org/codehaus/plexus/util/cli/shell/Shell.java",
+                "startLine": 132, "endLine": 178,
+                "signature": "List<String> getRawCommandLine(String executable, String[] arguments)",
+                "ownerId": "java:org.codehaus.plexus.util.cli.shell.Shell",
+                "annotations": [], "source_set": "MAIN",
+            },
+            {
+                "id": _GRAPH_GET_CMD_ID, "kind": "METHOD",
+                "file": "src/main/java/org/codehaus/plexus/util/cli/shell/Shell.java",
+                "startLine": 127, "endLine": 130,
+                "signature": "List<String> getCommandLine(String executable, String[] arguments)",
+                "ownerId": "java:org.codehaus.plexus.util.cli.shell.Shell",
+                "annotations": [], "source_set": "MAIN",
+            },
+            {
+                "id": _GRAPH_CMDSHELL_GET_CMD_ID, "kind": "METHOD",
+                "file": "src/main/java/org/codehaus/plexus/util/cli/shell/CmdShell.java",
+                "startLine": 80, "endLine": 88,
+                "signature": "List<String> getCommandLine(String executable, String[] arguments)",
+                "ownerId": "java:org.codehaus.plexus.util.cli.shell.CmdShell",
+                "annotations": [], "source_set": "MAIN",
+            },
+            {
+                "id": _GRAPH_GET_SHELL_CMD_ID, "kind": "METHOD",
+                "file": "src/main/java/org/codehaus/plexus/util/cli/shell/Shell.java",
+                "startLine": 266, "endLine": 285,
+                "signature": "List<String> getShellCommandLine(String[] arguments)",
+                "ownerId": "java:org.codehaus.plexus.util.cli.shell.Shell",
+                "annotations": [], "source_set": "MAIN",
+            },
+            {
+                "id": _GRAPH_CMDLINE_GET_SHELL_ID, "kind": "METHOD",
+                "file": "src/main/java/org/codehaus/plexus/util/cli/Commandline.java",
+                "startLine": 501, "endLine": 520,
+                "signature": "String getShellCommandline()",
+                "ownerId": "java:org.codehaus.plexus.util.cli.Commandline",
+                "annotations": [], "source_set": "MAIN",
+            },
+        ],
+        "relationships": [
+            {
+                "sourceId": _GRAPH_GET_CMD_ID, "targetId": _GRAPH_SUBJECT,
+                "kind": "CALLS",
+                "file": "src/main/java/org/codehaus/plexus/util/cli/shell/Shell.java",
+                "line": 129, "resolution": "RESOLVED",
+                "extractor": "javaparser", "source_set": "MAIN",
+            },
+            {
+                "sourceId": _GRAPH_CMDSHELL_GET_CMD_ID, "targetId": _GRAPH_GET_CMD_ID,
+                "kind": "CALLS",
+                "file": "src/main/java/org/codehaus/plexus/util/cli/shell/CmdShell.java",
+                "line": 84, "resolution": "RESOLVED",
+                "extractor": "javaparser", "source_set": "MAIN",
+            },
+            {
+                "sourceId": _GRAPH_GET_SHELL_CMD_ID, "targetId": _GRAPH_GET_CMD_ID,
+                "kind": "CALLS",
+                "file": "src/main/java/org/codehaus/plexus/util/cli/shell/Shell.java",
+                "line": 281, "resolution": "RESOLVED",
+                "extractor": "javaparser", "source_set": "MAIN",
+            },
+            {
+                "sourceId": _GRAPH_CMDLINE_GET_SHELL_ID, "targetId": _GRAPH_GET_SHELL_CMD_ID,
+                "kind": "CALLS",
+                "file": "src/main/java/org/codehaus/plexus/util/cli/Commandline.java",
+                "line": 506, "resolution": "RESOLVED",
+                "extractor": "javaparser", "source_set": "MAIN",
+            },
+        ],
+        "main_relationships": [],
+        "test_relationships": [
+            {
+                "sourceId": "java:org.codehaus.plexus.util.cli.TestRunner#run()",
+                "targetId": _GRAPH_GET_CMD_ID,
+                "kind": "CALLS",
+                "file": "src/test/java/org/codehaus/plexus/util/cli/TestRunner.java",
+                "line": 10, "resolution": "RESOLVED",
+                "extractor": "javaparser", "source_set": "TEST",
+            },
+        ],
+        "generated_relationships": [],
+        "limitations": [],
+    }
+)
+
+# 实测 trace 中审查员输出的 located 原文(人话转述,内容 100% 真实)
+_GRAPH_PARAPHRASE = (
+    "relationships: getCommandLine -> getRawCommandLine (line 129), "
+    "CmdShell.getCommandLine -> Shell.getCommandLine (CmdShell.java:84), "
+    "getShellCommandLine -> getCommandLine (Shell.java:281), "
+    "Commandline.getShellCommandline -> getShellCommandLine (Commandline.java:506)"
+)
+
+
+class TestGraphAssertionParsing:
+    def test_parse_assertions_extracts_pairs_line_and_file(self):
+        assertions = _parse_assertions(_GRAPH_PARAPHRASE)
+        assert len(assertions) == 4
+        a0, a1, a2, a3 = assertions
+        assert (a0.source, a0.target, a0.line) == (
+            "getCommandLine", "getRawCommandLine", 129,
+        )
+        assert a0.file == ""
+        assert (a1.source, a1.target) == (
+            "CmdShell.getCommandLine", "Shell.getCommandLine",
+        )
+        assert (a1.file, a1.line) == ("CmdShell.java", 84)
+        assert (a2.file, a2.line) == ("Shell.java", 281)
+        assert (a3.file, a3.line) == ("Commandline.java", 506)
+
+    def test_parse_assertions_accepts_hash_separator(self):
+        located = "Shell#getCommandLine -> Shell#getRawCommandLine (line 129)"
+        assertions = _parse_assertions(located)
+        assert len(assertions) == 1
+        assert (assertions[0].source, assertions[0].target) == (
+            "Shell.getCommandLine", "Shell.getRawCommandLine",
+        )
+
+    def test_parse_assertions_empty_for_verbatim(self):
+        assert _parse_assertions('"targetId": "java:org.codehaus"') == []
+
+
+class TestGraphAssertionsMatch:
+    def test_real_human_paraphrase_hits(self):
+        """核心回归:实测 trace 的人话转述必须命中(TP=0 的直接修复)。"""
+        assert _graph_assertions_match(_GRAPH_PARAPHRASE, _GRAPH_RAW) is True
+
+    def test_line_tolerance_within_and_beyond(self):
+        assert _graph_assertions_match(
+            "getCommandLine -> getRawCommandLine (line 130)", _GRAPH_RAW,
+        ) is True
+        assert _graph_assertions_match(
+            "getCommandLine -> getRawCommandLine (line 131)", _GRAPH_RAW,
+        ) is True
+        assert _graph_assertions_match(
+            "getCommandLine -> getRawCommandLine (line 133)", _GRAPH_RAW,
+        ) is False
+
+    def test_fabricated_edge_unverified(self):
+        """幻觉内核:编造的调用边核对不上。"""
+        assert _graph_assertions_match(
+            "FakeFactory.build -> getRawCommandLine (line 129)", _GRAPH_RAW,
+        ) is False
+
+    def test_assertion_without_line_hits(self):
+        assert _graph_assertions_match(
+            "CmdShell.getCommandLine -> Shell.getCommandLine", _GRAPH_RAW,
+        ) is True
+
+    def test_partial_hit_is_verified(self):
+        """裁决决策:至少一条断言命中即 verified。"""
+        located = (
+            "getCommandLine -> getRawCommandLine (line 129), "
+            "FakeFoo.run -> Shell.getCommandLine, "
+            "getShellCommandLine -> NoSuchMethod (line 999)"
+        )
+        assert _graph_assertions_match(located, _GRAPH_RAW) is True
+
+    def test_reversed_direction_unverified(self):
+        assert _graph_assertions_match(
+            "getRawCommandLine -> getCommandLine", _GRAPH_RAW,
+        ) is False
+
+    def test_file_qualifier_hit_and_mismatch(self):
+        assert _graph_assertions_match(
+            "CmdShell.getCommandLine -> Shell.getCommandLine (CmdShell.java:84)",
+            _GRAPH_RAW,
+        ) is True
+        assert _graph_assertions_match(
+            "CmdShell.getCommandLine -> Shell.getCommandLine (Other.java:84)",
+            _GRAPH_RAW,
+        ) is False
+
+    def test_verbatim_fragment_falls_back_to_substring(self):
+        located = '"targetId": "java:org.codehaus.plexus.util.cli.shell.Shell#getRawCommandLine(java.lang.String, java.lang.String[])"'
+        assert _graph_assertions_match(located, _GRAPH_RAW) is True
+        assert _graph_assertions_match(
+            '"targetId": "java:com.example.NotInGraph#x()"', _GRAPH_RAW,
+        ) is False
+
+    def test_mixed_verbatim_fragment_falls_back(self):
+        located = (
+            "FakeFoo.run -> NoSuch.method (line 999), "
+            '"targetId": "java:org.codehaus.plexus.util.cli.shell.Shell#getRawCommandLine(java.lang.String, java.lang.String[])"'
+        )
+        assert _graph_assertions_match(located, _GRAPH_RAW) is True
+
+    def test_non_json_raw_unverified(self):
+        assert _graph_assertions_match(
+            "getCommandLine -> getRawCommandLine (line 129)", "not a json",
+        ) is False
+
+    def test_empty_located_unverified(self):
+        assert _graph_assertions_match("   ", _GRAPH_RAW) is False
+
+    def test_edge_in_test_relationships_hits(self):
+        assert _graph_assertions_match(
+            "TestRunner.run -> Shell.getCommandLine", _GRAPH_RAW,
+        ) is True
+
+
+class TestSideMatch:
+    def test_nested_class_and_constructor(self):
+        nested_id = (
+            "java:org.codehaus.plexus.util.cli.Commandline.Argument"
+            "#setLine(java.lang.String)"
+        )
+        assert _side_match("Commandline.Argument.setLine", nested_id) is True
+        assert _side_match("Argument.setLine", nested_id) is True
+        assert _side_match("OtherClass.setLine", nested_id) is False
+        constructor_id = (
+            "java:org.codehaus.plexus.util.cli.Commandline"
+            "#<init>Commandline(java.lang.String)"
+        )
+        assert _side_match("Commandline", constructor_id) is True
+        type_node_id = "java:org.codehaus.plexus.util.cli.Commandline"
+        assert _side_match("Commandline", type_node_id) is True
+
+    def test_method_only_token(self):
+        assert _side_match("getCommandLine", _GRAPH_GET_CMD_ID) is True
+        assert _side_match("getCommandline", _GRAPH_GET_CMD_ID) is False
+
+
+class TestGraphAssertionsIntegration:
+    def test_collect_facts_graph_assertion_marks_verified(self):
+        dossier = _dossier(chain=[
+            EvidenceTraceStep(
+                tool="inspect_change_impact",
+                args={"symbol_id": _GRAPH_SUBJECT},
+                located=_GRAPH_PARAPHRASE,
+            )
+        ])
+        tool_client = Mock()
+        tool_client.inspect_change_impact.return_value = Mock(
+            success=True, result=_GRAPH_RAW,
+        )
+        facts, _, _ = _collect_facts(
+            [dossier], tool_client=tool_client,
+            tag_by_candidate={"c1": RiskTag.GENERAL_REVIEW},
+        )
+        (fact,) = facts["c1"]
+        assert fact.replay_status == "verified"
+
+    def test_collect_facts_graph_fabricated_assertion_marks_unverified(self):
+        dossier = _dossier(chain=[
+            EvidenceTraceStep(
+                tool="inspect_change_impact",
+                args={"symbol_id": _GRAPH_SUBJECT},
+                located="FakeFactory.build -> getRawCommandLine (line 129)",
+            )
+        ])
+        tool_client = Mock()
+        tool_client.inspect_change_impact.return_value = Mock(
+            success=True, result=_GRAPH_RAW,
+        )
+        facts, _, _ = _collect_facts(
+            [dossier], tool_client=tool_client,
+            tag_by_candidate={"c1": RiskTag.GENERAL_REVIEW},
+        )
+        (fact,) = facts["c1"]
+        assert fact.replay_status == "unverified"
+
+
+class TestGraphSummary:
+    def test_keeps_header_and_filters_fields(self):
+        summary = json.loads(_graph_summary(_GRAPH_RAW))
+        for key in (
+            "status", "coverage", "source_scope",
+            "subject_symbol_id", "limitations",
+        ):
+            assert key in summary
+        assert set(summary["symbols"][0].keys()) == {
+            "id", "kind", "file", "startLine", "endLine",
+        }
+        assert set(summary["relationships"][0].keys()) == {
+            "sourceId", "targetId", "kind", "file", "line",
+        }
+        for dropped in (
+            '"signature"', '"annotations"', '"ownerId"',
+            '"source_set"', '"resolution"', '"extractor"',
+            '"main_relationships"', '"test_relationships"',
+            '"generated_relationships"',
+        ):
+            assert dropped not in _graph_summary(_GRAPH_RAW)
+
+    def test_caps_length_and_deterministic(self):
+        big = json.loads(_GRAPH_RAW)
+        big["symbols"] = [dict(big["symbols"][0]) for _ in range(60)]
+        big["relationships"] = [dict(big["relationships"][0]) for _ in range(200)]
+        big_raw = json.dumps(big)
+        summary = _graph_summary(big_raw)
+        assert len(summary) <= 8000
+        assert _graph_summary(big_raw) == summary  # 确定性
+        parsed = json.loads(summary)
+        assert "symbols" not in parsed          # 超限时符号先让位
+        assert parsed["relationships"]          # 关系是本次修复的核心,保留
+
+    def test_non_json_falls_back_to_slice(self):
+        assert _graph_summary("not a json") == "not a json"
+        assert len(_graph_summary("x" * 9000)) == 8000
+
+    def test_empty_primary_includes_fallback_arrays(self):
+        bare = json.loads(_GRAPH_RAW)
+        bare["relationships"] = []
+        summary = json.loads(_graph_summary(json.dumps(bare)))
+        assert summary["relationships"] == []
+        assert summary["test_relationships"]  # not_found 透传路径保护
+
+    def test_relation_payload_graph_fact_gets_summary(self):
+        fact = CandidateFact(
+            fact_id="f1", source="tool:inspect_change_impact",
+            raw=_GRAPH_RAW, replay_status="unverified",
+        )
+        payload = json.loads(_relation_payload(_dossier(), [fact]))
+        entry = payload["facts"][0]
+        summary = json.loads(entry["raw"])
+        assert "signature" not in json.dumps(summary)
+        assert entry["raw_truncated"] is True
+        assert entry["replay_status"] == "unverified"
