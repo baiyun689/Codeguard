@@ -70,6 +70,11 @@ from codeguard_agent.pipeline.engines import (
     ReviewOutcome,
     ToolAgentEngine,
 )
+from codeguard_agent.models.evidence import (
+    EvidenceArtifact,
+    merge_evidence_artifacts,
+)
+from codeguard_agent.pipeline.evidence.ledger import EvidenceCatalogBuilder
 from codeguard_agent.pipeline.evidence.planner import assemble_dossiers
 from codeguard_agent.pipeline.evidence.rules.classify import resolve_candidate_tag
 from codeguard_agent.pipeline.context.base import PipelineContext
@@ -176,6 +181,7 @@ class ReviewState(TypedDict, total=False):
     candidate_dedup_stats: CandidateDedupStats
     candidate_facts: dict[str, list[CandidateFact]]
     candidate_relations: dict[str, list[FactRelation]]
+    evidence_artifacts: Annotated[dict[str, EvidenceArtifact], merge_evidence_artifacts]
     council_trace: Annotated[list[CouncilTrace], operator.add]
     truncated_candidates: Annotated[int, operator.add]
 
@@ -206,6 +212,9 @@ class ReviewerState(TypedDict, total=False):
     task_scope: str  # "current_hunk" | "current_file"
     review_tool_client: Any
 
+    evidence_revision: str
+    evidence_catalog: Any
+
     issues: list
     gathered_context: list
     tool_trace_records: list
@@ -225,6 +234,14 @@ def _make_engine(state: ReviewState | ReviewerState, tool_client=None) -> Review
             allow_direct_fallback=state.get("allow_direct_fallback", True),
         )
     return DirectEngine()
+
+
+def _extend_catalog_from_client(catalog: Any, coordinated_client: Any) -> Any:
+    """ReAct 失败降级直连时,把已捕获的工具记录并入目录(不丢已取得的工具事实)。"""
+    records = list(getattr(coordinated_client, "trace_records", ()))
+    if catalog is None or not records:
+        return catalog
+    return EvidenceCatalogBuilder().append_tool_records(catalog, records)
 
 
 def _state_to_context(state: ReviewState, llm=None, fp_verify_llm=None, tool_client=None) -> PipelineContext:
@@ -734,6 +751,13 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
         review_task = state.get("review_task")
         if review_task is None:
             raise ValueError("review_task is required for task-scoped discovery")
+        # 注册 P01/Cxx:patch 与预取上下文成为一等证据(Evidence Ledger)。
+        catalog = EvidenceCatalogBuilder().build_initial(
+            task=review_task,
+            context_bundle=state.get("task_context_bundle"),
+            reviewer=reviewer.source_agent,
+            revision=state.get("evidence_revision", ""),
+        )
         return {
             "user_prompt": build_reviewer_user_prompt(
                 task=review_task,
@@ -742,7 +766,9 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                 context_bundle=state.get("task_context_bundle"),
                 task_knowledge=state.get("task_knowledge", ""),
                 task_scope=state.get("task_scope", "current_hunk"),
-            )
+                catalog=catalog,
+            ),
+            "evidence_catalog": catalog,
         }
 
     def _review(state: ReviewerState) -> dict:
@@ -775,6 +801,7 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                 max_retries=state.get("max_retries", 3),
                 structured_method=state.get("structured_method", "function_calling"),
                 enable_hitl=False,
+                evidence_catalog=state.get("evidence_catalog"),
             )
         except Exception as exc:  # noqa: BLE001 单发现者失败不拖垮 council
             from langgraph.errors import GraphRecursionError
@@ -794,6 +821,9 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                         "council_trace": review_traces,
                     }
                 outcome = _direct_fallback(state)
+                outcome.evidence_catalog = _extend_catalog_from_client(
+                    outcome.evidence_catalog, effective_tool_client
+                )
                 degraded_to_direct = True
             else:
                 if (
@@ -813,6 +843,9 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                         )
                     )
                     outcome = _direct_fallback(state)
+                    outcome.evidence_catalog = _extend_catalog_from_client(
+                        outcome.evidence_catalog, effective_tool_client
+                    )
                     degraded_to_direct = True
                 else:
                     logger.warning("[%s] 发现者失败,跳过: %s", reviewer.name, exc)
@@ -849,6 +882,8 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
             outcome = _direct_fallback(state)
             outcome.gathered_context.extend(react_outcome.gathered_context)
             outcome.tool_trace_records.extend(react_outcome.tool_trace_records)
+            # ReAct 空结果降级直连时,保留已捕获目录(含 Txx),禁止丢失已取得的工具事实。
+            outcome.evidence_catalog = react_outcome.evidence_catalog
 
         for event in outcome.execution_events:
             review_traces.append(
@@ -878,6 +913,8 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
             out["gathered_context"] = list(outcome.gathered_context)
         if outcome.tool_trace_records:
             out["tool_trace_records"] = list(outcome.tool_trace_records)
+        if outcome.evidence_catalog is not None:
+            out["evidence_catalog"] = outcome.evidence_catalog
         if outcome.result.summary:
             out["review_summaries"] = (
                 [outcome.result.summary]
@@ -1009,6 +1046,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     "tier": tier,
                     "task_scope": task_scope,
                     "review_tool_client": _task_tool_client(scoped_task),
+                    "evidence_revision": state.get("evidence_revision", ""),
                 },
             )
             if task_id not in priors:
@@ -1037,6 +1075,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         gathered_context: list = []
         tool_trace_records: list = []
         review_summaries: list = []
+        evidence_artifacts: dict[str, EvidenceArtifact] = {}
         for task_id, result in zip(ordered_ids, task_results):
             if result is None:
                 trace.append(
@@ -1056,6 +1095,9 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 tool_trace_records.extend(result["tool_trace_records"])
             if result.get("review_summaries"):
                 review_summaries.extend(result["review_summaries"])
+            catalog = result.get("evidence_catalog")
+            if catalog is not None:
+                evidence_artifacts.update(dict(catalog.artifacts))
 
         kept_pairs = per_task_issues[:MAX_CANDIDATES_PER_AGENT]
         truncated_candidates = max(0, len(per_task_issues) - len(kept_pairs))
@@ -1110,6 +1152,8 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             routed_out["gathered_context"] = gathered_context
         if tool_trace_records:
             routed_out["tool_trace_records"] = tool_trace_records
+        if evidence_artifacts:
+            routed_out["evidence_artifacts"] = evidence_artifacts
         if review_summaries:
             routed_out["review_summaries"] = review_summaries
         return routed_out

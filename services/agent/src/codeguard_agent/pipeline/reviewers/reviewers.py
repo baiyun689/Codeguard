@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
+from typing import Any
 
 from codeguard_agent.models.tasks import ReviewTask, TaskContextBundle, TaskRiskPrior
 
@@ -97,11 +98,16 @@ def build_reviewer_user_prompt(
     context_bundle: TaskContextBundle | None = None,
     task_knowledge: str = "",
     task_scope: str = "current_hunk",
+    catalog: Any = None,
 ) -> str:
     """把本次 task 的动态值统一渲染进 user 消息。
 
     task_scope: "current_hunk"（hunk 级审查）或 "current_file"（文件级审查）。
+    catalog:证据目录(EvidenceCatalog);非 None 时给 task_patch/上下文 fact
+    渲染 evidence_id 短别名,供审查员按编号引用证据(Evidence Ledger)。
     """
+    patch_alias = catalog.patch_alias() if catalog is not None else ""
+    fact_aliases = catalog.context_aliases() if catalog is not None else []
     coverage = (
         "full_new_file"
         if task.patch_complete
@@ -122,7 +128,9 @@ def build_reviewer_user_prompt(
     parts.extend([
         (
             f'  <task_patch scope="{_attr(task_scope)}" coverage="{_attr(coverage)}" '
-            f'task_id="{_attr(task.id)}" file="{_attr(task.file)}">'
+            f'task_id="{_attr(task.id)}" file="{_attr(task.file)}"'
+            + (f' evidence_id="{_attr(patch_alias)}"' if patch_alias else "")
+            + ">"
         ),
         _text(task.patch),
         "  </task_patch>",
@@ -148,13 +156,16 @@ def build_reviewer_user_prompt(
             "  <prefetched_context "
             f'bundle_truncated="{str(context_bundle.truncated).lower()}">'
         )
-        for fact in context_bundle.facts:
+        for idx, fact in enumerate(context_bundle.facts):
             scope = _FACT_SCOPES.get(fact.kind, "task_scoped")
+            fact_alias = fact_aliases[idx] if idx < len(fact_aliases) else ""
             parts.extend([
                 (
                     f'    <fact kind="{_attr(fact.kind)}" '
                     f'source="{_attr(fact.source)}" scope="{_attr(scope)}" '
-                    f'truncated="{str(fact.truncated).lower()}">'
+                    f'truncated="{str(fact.truncated).lower()}"'
+                    + (f' evidence_id="{_attr(fact_alias)}"' if fact_alias else "")
+                    + ">"
                 ),
                 _text(fact.content),
                 "    </fact>",

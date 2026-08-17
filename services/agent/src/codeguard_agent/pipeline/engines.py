@@ -55,6 +55,7 @@ class ReviewOutcome:
     gathered_context: list[GatheredContext] = field(default_factory=list)
     tool_trace_records: list[Any] = field(default_factory=list)
     execution_events: list[str] = field(default_factory=list)
+    evidence_catalog: Any = None  # 本次发现的证据目录(P01/Cxx/Txx);Direct 档仅 P/C
 
 
 class ReviewEngine(ABC):
@@ -71,10 +72,12 @@ class ReviewEngine(ABC):
         max_retries: int,
         structured_method: str,
         enable_hitl: bool = False,
+        evidence_catalog: Any = None,
     ) -> ReviewOutcome:
         """执行一次领域审查,返回产出信封(结构化结果 + 获取的上下文)。
 
         假定 llm 非 None、diff 非空(由 stage 统一处理边界)。
+        evidence_catalog:初始证据目录(Direct 档透传;ReAct 档追加工具记录)。
         """
 
 
@@ -91,6 +94,7 @@ class DirectEngine(ReviewEngine):
         max_retries: int,
         structured_method: str,
         enable_hitl: bool = False,
+        evidence_catalog: Any = None,
     ) -> ReviewOutcome:
         structured_llm = llm.with_structured_output(ReviewResult, method=structured_method)
         # 结构化输出可能返回 None(模型没正确发起工具调用):invoke_with_retry 只重试抛异常路径,
@@ -114,9 +118,10 @@ class DirectEngine(ReviewEngine):
             return ReviewOutcome(
                 ReviewResult(summary=""),
                 execution_events=["structured_output_missing"],
+                evidence_catalog=evidence_catalog,
             )
-        # 直连无工具:gathered_context 恒空。
-        return ReviewOutcome(result)
+        # 直连无工具:gathered_context 恒空;目录透传(仅 P/C)。
+        return ReviewOutcome(result, evidence_catalog=evidence_catalog)
 
 
 class ToolAgentEngine(ReviewEngine):
@@ -155,6 +160,7 @@ class ToolAgentEngine(ReviewEngine):
         max_retries: int,
         structured_method: str,
         enable_hitl: bool = False,
+        evidence_catalog: Any = None,
     ) -> ReviewOutcome:
         # GraphRecursionError 延迟导入(mock/无工具路径不需要 langgraph)。
         from langgraph.errors import GraphRecursionError
@@ -188,6 +194,7 @@ class ToolAgentEngine(ReviewEngine):
                 synthesis.tool_trace_records.extend(tool_records)
                 synthesis.gathered_context.extend(gathered)
                 synthesis.execution_events.append("react_bounded_synthesis")
+                synthesis.evidence_catalog = _extend_catalog(evidence_catalog, tool_records)
                 return synthesis
             # ReAct 在 recursion_limit 步内没收敛(绕的难例 / 工具反复绕)。不让该域被静默丢弃
             # (那会直接丢失这一维度的发现、压低 recall),而是降级为无工具直连复审一次,至少
@@ -210,6 +217,8 @@ class ToolAgentEngine(ReviewEngine):
             fallback.gathered_context.extend(
                 _gathered_context_from_records(tool_records)
             )
+            # ReAct 异常降级 Direct 时保留已捕获目录,不丢已取得的工具事实。
+            fallback.evidence_catalog = _extend_catalog(evidence_catalog, tool_records)
             return fallback
         # 两阶段收束:ReAct 探索工具收集上下文 → DirectEngine 结构化合成。
         # create_agent 不再传 response_format(deepseek 不兼容 LangChain 隐式 Respond 工具),
@@ -232,6 +241,7 @@ class ToolAgentEngine(ReviewEngine):
         synthesis.tool_trace_records.extend(tool_records)
         synthesis.gathered_context.extend(gathered)
         synthesis.execution_events.append("react_two_phase_synthesis")
+        synthesis.evidence_catalog = _extend_catalog(evidence_catalog, tool_records)
         return synthesis
 
     def _run_agent(self, llm: Any, system_prompt: str, user_prompt: str) -> Any:
@@ -348,6 +358,18 @@ def _extract_gathered_context(
         return []
 
 
+def _extend_catalog(catalog: Any, tool_records: Any) -> Any:
+    """把工具记录追加进证据目录;无初始目录时返回 None(目录非必需)。
+
+    延迟导入避免无工具路径携带 ledger 依赖。
+    """
+    if catalog is None:
+        return None
+    from codeguard_agent.pipeline.evidence.ledger import EvidenceCatalogBuilder
+
+    return EvidenceCatalogBuilder().append_tool_records(catalog, tool_records)
+
+
 def _gathered_context_from_records(tool_records: Any) -> list[GatheredContext]:
     gathered: list[GatheredContext] = []
     seen: set[ToolKey] = set()
@@ -358,7 +380,12 @@ def _gathered_context_from_records(tool_records: Any) -> list[GatheredContext]:
         if not isinstance(arguments, dict) or tool_name not in DISCOVERY_GATEWAY_TOOLS:
             continue
         if output in {COMPLETE_PATCH_RESULT, REPEATED_TOOL_RESULT}:
-            continue
+            # 短标记记录:优先用运行时解析出的首次真实 payload(resolved_output),
+            # 让复用方 conversation 也能拿到真实事实(源文档 §5.5)。
+            resolved = str(getattr(record, "resolved_output", "") or "")
+            if not resolved:
+                continue
+            output = resolved
         key = canonical_tool_key(tool_name, arguments)
         if key in seen:
             continue

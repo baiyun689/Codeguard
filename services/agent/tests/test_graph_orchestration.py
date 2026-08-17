@@ -184,6 +184,7 @@ def test_reviewer_prompt_contains_summary_once(monkeypatch):
             max_retries,
             structured_method,
             enable_hitl=False,
+            evidence_catalog=None,
         ):
             captured["prompt"] = user_prompt
             return ReviewOutcome(ReviewResult(summary="", issues=[]))
@@ -234,13 +235,13 @@ def test_review_tier_direct_empty_result_does_not_retry(monkeypatch):
 
     class _EmptyEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                    max_retries, structured_method, enable_hitl=False):
+                    max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
             calls["engine"] += 1
             return ReviewOutcome(ReviewResult(summary="", issues=[]))
 
     class _FallbackDirectEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                    max_retries, structured_method, enable_hitl=False):
+                    max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
             calls["fallback"] += 1
             return ReviewOutcome(ReviewResult(summary="", issues=[]))
 
@@ -264,13 +265,13 @@ def test_review_tier_react_empty_result_still_retries_direct_fallback(monkeypatc
 
     class _EmptyEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                    max_retries, structured_method, enable_hitl=False):
+                    max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
             calls["engine"] += 1
             return ReviewOutcome(ReviewResult(summary="", issues=[]))
 
     class _FallbackDirectEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                    max_retries, structured_method, enable_hitl=False):
+                    max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
             calls["fallback"] += 1
             return ReviewOutcome(ReviewResult(summary="fallback-summary", issues=[]))
 
@@ -611,7 +612,7 @@ _FANIN_DIFF = "".join(
 
 
 class _FakeEngine:
-    def review(self, llm, *, system_prompt, user_prompt, reviewer_name, max_retries, structured_method, enable_hitl=False):
+    def review(self, llm, *, system_prompt, user_prompt, reviewer_name, max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
         file, line = _FAKE_TARGET.get(reviewer_name, ("A.java", 1))
         issue = Issue(
             severity=Severity.WARNING,
@@ -1027,7 +1028,7 @@ def test_make_reviewer_node_rejects_task_mismatch_candidate(monkeypatch):
 
     class _OutOfDiffEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                   max_retries, structured_method, enable_hitl=False):
+                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
             issue = Issue(
                 severity=Severity.WARNING,
                 file="NotInDiff.java",
@@ -1061,7 +1062,7 @@ def test_make_reviewer_node_only_invokes_routed_and_selected_tasks(monkeypatch):
 
     class _RecordingEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                   max_retries, structured_method, enable_hitl=False):
+                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
             invoked_task_files.append(user_prompt)
             return ReviewOutcome(ReviewResult(summary="s"))
 
@@ -1118,7 +1119,7 @@ def test_make_reviewer_node_rejects_candidate_with_mismatched_file(monkeypatch):
 
     class _WrongFileEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                   max_retries, structured_method, enable_hitl=False):
+                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
             issue = Issue(
                 severity=Severity.WARNING, file="Unrelated.java", line=1,
                 type="t", message="m",
@@ -1230,7 +1231,7 @@ def test_make_reviewer_node_injects_selected_knowledge_bundle_into_user_prompt(m
 
     class _CapturingEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                   max_retries, structured_method, enable_hitl=False):
+                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
             captured["system_prompt"] = system_prompt
             captured["user_prompt"] = user_prompt
             return ReviewOutcome(ReviewResult(summary="s"))
@@ -1285,7 +1286,7 @@ def test_make_reviewer_node_fanout_survives_real_memory_checkpointer(monkeypatch
 
     class _RecordingEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                   max_retries, structured_method, enable_hitl=False):
+                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
             import re
 
             match = re.search(r'file="([^"]+)"', user_prompt)

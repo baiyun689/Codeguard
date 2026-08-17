@@ -37,6 +37,7 @@ class DiscoveryToolRecord:
     status: str
     reuse_key: str
     reused_from_call_id: str = ""
+    resolved_output: str = ""  # 运行时真实原始结果;reused 记录 output 是短标记,真实 payload 在此
 
 
 def _normalize_path(value: str) -> str:
@@ -86,6 +87,18 @@ class DiscoveryToolCoordinator:
         self._lock = Lock()
         self._completed: dict[ToolKey, tuple[ToolResponse, str]] = {}
         self._in_flight: dict[ToolKey, Future[tuple[ToolResponse, str]]] = {}
+
+    def first_payload_for(self, key: ToolKey) -> str:
+        """reused 记录解析:首次真实调用的原始 payload(无则空串)。
+
+        让复用方总能取到真实内容——ToolMessage 可继续返回短标记避免
+        重复大文本,但证据账本与 gathered context 不丢事实。
+        """
+        with self._lock:
+            entry = self._completed.get(key)
+            if entry is None:
+                return ""
+            return entry[0].as_tool_output()
 
     def execute(
         self,
@@ -269,6 +282,11 @@ class CoordinatedDiscoveryToolClient:
                     first_call_id
                     if effective_status == "reused"
                     else ""
+                ),
+                resolved_output=(
+                    self._coordinator.first_payload_for(key)
+                    if effective_status == "reused"
+                    else response.as_tool_output()
                 ),
             )
             self._records.append(record)

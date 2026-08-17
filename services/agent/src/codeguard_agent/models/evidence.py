@@ -155,3 +155,38 @@ def merge_evidence_artifacts(
     merged: dict[str, EvidenceArtifact] = dict(left or {})
     merged.update(right or {})
     return merged
+
+
+class EvidenceCatalog(BaseModel):
+    """一次 reviewer task 的证据目录:短别名 ↔ 内容寻址 Artifact。
+
+    短别名(P01/Cxx/Txx)只在一次结构化合成内有效,LLM 输出完成后
+    立即绑定为内部 artifact ID;外层图 State 不依赖别名。
+    """
+
+    task_id: str
+    reviewer: str
+    revision: str
+    artifacts: dict[str, EvidenceArtifact] = Field(default_factory=dict)
+    alias_to_artifact_id: dict[str, str] = Field(default_factory=dict)
+
+    def _aliases_of(self, source_kind: EvidenceSourceKind) -> list[str]:
+        return [
+            alias
+            for alias, artifact_id in self.alias_to_artifact_id.items()
+            if self.artifacts.get(artifact_id) is not None
+            and self.artifacts[artifact_id].source_kind is source_kind
+        ]
+
+    def patch_alias(self) -> str:
+        """patch Artifact 的别名(每 task 恰一个 P01);无则空串。"""
+        aliases = self._aliases_of(EvidenceSourceKind.TASK_PATCH)
+        return aliases[0] if aliases else ""
+
+    def context_aliases(self) -> list[str]:
+        """上下文 Artifact 的别名(C01...),保持注册顺序。"""
+        return self._aliases_of(EvidenceSourceKind.PREFETCHED_CONTEXT)
+
+    def tool_aliases(self) -> list[str]:
+        """工具 Artifact 的别名(T01...),保持首次出现顺序。"""
+        return self._aliases_of(EvidenceSourceKind.TOOL_CALL)
