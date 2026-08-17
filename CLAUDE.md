@@ -32,13 +32,14 @@ START → classify_mode ─┬─ small  → direct_review
                     ┌──────────────────────────────┴──────────────────────────────┐
                     ▼ (evidence_mode=off)                                          ▼ (evidence_mode=full)
             direct_judge ★                                                evidence_verifier ★
-            (消融档:跳过取证/门控,                                          (链校验 → 链重放|配方兜底
-             候选无证据直接终审)                                             → 去重执行 → 引用匹配 → 关系三元)
+            (消融档:跳过取证,                                              (账本健康检查 → 图护栏 →
+             候选无证据直接终审)                                             guard 扫描 → 异常重放,零 LLM)
                                                                                        │
                                                                                        ▼
                                                                                council_judge ★
-                                                                               (三条确定性门控 → LLM 终审
-                                                                                severity 引用证据 → 组内合并)
+                                                                               (批量 EvidenceJudge:支持/反驳/
+                                                                                去留/定级,合同校验 fail-closed
+                                                                                → 组内合并)
                     └───────────────────────────────┬────────────────────────────────┘
                                                     ▼
                                                    END
@@ -48,7 +49,7 @@ START → classify_mode ─┬─ small  → direct_review
 
 三个发现者 Agent（ThreatModel / Behavior / Maintainability）并行运行，各自配备专属语义图工具 + 共享 `get_file_content`，走 ReAct 引擎：威胁建模用 `inspect_security_path`、行为审查用 `inspect_change_impact`、可维护性用 `inspect_structure`。每个 Agent 的 prompt = 45 行 base 领域知识 + 按 RiskTag 注入的知识文件（`prompts/knowledge/`，37 个），拆分是为分摊上下文压力，重叠是多角度验证。
 
-三路输出在 `council_coordinator` 处 fan-in：解析 RiskTag → 按文件路径和局部位置构建连通候选块 → 最多 8 个并行 LLM 调用做保守语义归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会去重；非法、低置信或失败结果一律完整保留。审查员的每个候选输出都带 `evidence_chain` 取证溯源（引文不是日志），`evidence_verifier` 先做确定性链校验——合法链按原参数重放执行并与引文逐字比对（verified/unverified），无链/废链回退固定配方（recipe：文件内容 + 上游调用方 + 标签开关），调用失败记 failed；随后对每条事实做关系分析，产出支持/否定/无说明的关系三元（FactRelation）。最后由 `council_judge` 终审：三条确定性门控（零 LLM 成本淘汰）→ LLM 语义综合（统一裁决模型，完整档 severity 必须引用证据）→ 组内合并。`evidence_mode=off` 时跳过取证与门控，候选由 `direct_judge` 直接终审（无证据链消融基线档）。
+三路输出在 `council_coordinator` 处 fan-in：解析 RiskTag → 按文件路径和局部位置构建连通候选块 → 最多 8 个并行 LLM 调用做保守语义归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会去重；非法、低置信或失败结果一律完整保留。证据采用 **Evidence Ledger**（取代 ADR-046 的 evidence_chain 重放验证）：patch(P01)、预取上下文(Cxx)、真实工具结果(Txx)由运行时代码捕获为内容寻址 Artifact，审查员只输出短编号引用（`evidence_refs`），不生产任何证据文本；`evidence_verifier` 零 LLM 证明 Artifact 真实可用（健康检查 + 图护栏 + guard 扫描 + 异常重放白名单）；`council_judge` 用批量 EvidenceJudge 一次完成支持/反驳/去留/定级，输出经确定性合同校验、失败 fail-closed。`evidence_mode=off` 时跳过取证，候选由 `direct_judge` 直接终审（无证据链消融基线档）。
 
 旧 supervisor 调度图及 SelfChecker/FP/聚合 stages 的归档目录
 `services/agent/legacy/` 已于 2026-08 删除（git 历史可回溯），不再随 Python wheel 打包。
@@ -92,10 +93,10 @@ LLM 调用路径:Python → LLM Proxy(:9091) → 按 model 路由 → DeepSeek/C
 
 当前审查核心是 ReviewCouncil 多 Agent 编排：
 
-- **发现者 Agent ×3（并行）**:ThreatModelAgent（安全）/ BehaviorAgent（行为逻辑）/ MaintainabilityAgent（维护质量）。每个 Agent 配备专属语义图工具（`inspect_security_path` / `inspect_change_impact` / `inspect_structure`）+ 共享 `get_file_content`，走 ReAct 引擎。prompt = 45 行 base + 按 RiskTag 注入的 `prompts/knowledge/` 知识文件——拆分是为分摊上下文压力。重叠不叫重复，叫多角度验证。每个候选输出带 `evidence_chain` 取证溯源——它是"引文"不是日志：只记录直接支撑结论的工具调用（工具四选一 + `file_path`/`symbol_id` 参数）与逐字引用代码段（`located`）。
+- **发现者 Agent ×3（并行）**:ThreatModelAgent（安全）/ BehaviorAgent（行为逻辑）/ MaintainabilityAgent（维护质量）。每个 Agent 配备专属语义图工具（`inspect_security_path` / `inspect_change_impact` / `inspect_structure`）+ 共享 `get_file_content`，走 ReAct 引擎。prompt = base 领域知识 + 按 RiskTag 注入的 `prompts/knowledge/` 知识文件——拆分是为分摊上下文压力。重叠不叫重复，叫多角度验证。每个候选输出带 `evidence_refs` 证据编号引用——审查员只从运行时捕获的 `<evidence_catalog>`（patch=P01 / 预取上下文=Cxx / 工具结果=Txx）里挑编号，不得重新填写工具参数、代码片段或工具原文；工具返回会回显编号（[证据编号 T0n]），离开发现子图即绑定为内容寻址 artifact ID。
 - **CouncilCoordinator（fan-in 归并）**:三路发现者输出的显式汇聚屏障——批量解析 RiskTag → 按同文件/邻行构建连通候选块 → 每块并行 LLM 保守语义归并（同根因+同影响+单一修复，最多 8 路）→ 产出严格等价逻辑组；非法/低置信/失败结果一律完整保留。
-- **EvidenceVerifier（确定性取证 + LLM 关系分析）**:取证层全部确定性、零 LLM——① 链校验（工具白名单/参数键白名单/`located` 必填/链长 ≤3）；② 合法链重放执行并与引文逐字比对，产出四态 `replay_status`：`verified`（引文命中）/ `unverified`（有引用未命中）/ `failed`（调用失败）/ `recipe`（固定配方兜底：文件内容 + 有 symbol 则上游调用方 + 标签开关）；③ 相同 tool+args 全局去重只调一次；④ guard 注解扫描器（确定性：@PreAuthorize/@Transactional 命中直接产出 direct 反证先验，供门控①零成本淘汰）。最后调 LLM 做关系分析，产出关系三元 `FactRelation`（supports / contradicts / insufficient × direct / contextual）。
-- **CouncilJudge（证据驱动裁决）**:三条确定性证据门控（`direct_counter_evidence` 直接反证排除 / `evidence_insufficient` 无可用证据 / `no_supporting_evidence` 无支持证据，零 LLM 成本淘汰）→ LLM 终审（基于关系三元输出统一裁决模型 `CandidateDirectAssessment`：keep/drop + severity，完整档 severity 必须引用证据 `cited_fact_ids`；裁决 LLM 优先异源 + temperature=0，见 ADR-008）→ 组内合并（严格等价组收敛，组内形状不一致安全拆回）。`evidence_mode=off` 时走 `direct_judge` 消融档：与完整档共用同一裁决模型，唯一差异是无证据输入、跳过取证与门控。
+- **EvidenceVerifier（确定性验证，零 LLM、正常路径零重放）**:只证明 Artifact 真实、可用、属于候选范围——① Artifact 健康检查（patch 摘要一致；图响应 subject/scope/status/coverage 护栏；TEST 关系不能证明生产可达）；② guard 注解扫描器（确定性：@PreAuthorize/@Transactional 命中直接产出 direct 反证，Judge 前淘汰）；③ 引用范围核对（跨 task/缺失/失败 Artifact 留痕）。仅异常 Artifact（失败/未知/revision 不一致/响应不可解析）进入重放队列，受 `enabled_evidence_tools` 白名单约束，重放失败只产生限制、不作反证。
+- **CouncilJudge（批量证据裁决）**:每批 ≤8 候选、最多 4 批并行，一次完成支持/反驳/去留/定级（`EvidenceJudgeBatch`）——keep 必须引用 ≥1 支持事实、引用 ID 必须属于候选可见范围、supporting/counter 不得重叠、维护性候选不得 CRITICAL、LOCATION 角色不能单独支持 keep；输出合同违约重试/二分拆批，单候选最终失败 fail-closed 不输出。之后组内合并（严格等价组收敛，组内形状不一致安全拆回）。`evidence_mode=off` 时走 `direct_judge` 消融档：无证据输入、跳过取证，输出 keep/drop/severity 同构。
 
 ### CI 集成
 
@@ -142,7 +143,7 @@ docker compose up -d
 - **CI Webhook (:8080)**:GitHub PR 自动审查链路——验签、幂等调度、git clone、Python 子进程调用、Check Runs 回写。
 四条不变量:Python 调 Java 单向;代码探索只走 Java 沙箱;不确定性只在 Python;Java 不判断"是不是问题"(LLM Proxy 仅协议转发,不做语义判断)。
 
-误报过滤由裁决阶段承担:三条确定性门控(零成本淘汰)+ LLM 终审(keep/drop 裁决;评判环节遵循异源 + temperature=0,见 ADR-008)。
+误报过滤由裁决阶段承担:Verifier 的 guard 反证与引用范围核对(零成本淘汰)+ 批量 EvidenceJudge 终审(keep/drop 裁决、合同校验 fail-closed;评判环节遵循异源 + temperature=0,见 ADR-008)。
 
 `services/gateway`(Java)提供工具服务 + 护栏。**只放"事实与护栏"(工具执行 / 沙箱 / 重计算),绝不在 gateway 里调 LLM 或做"是不是问题"的判断**(那是 Python 的事,见职责边界)。
 
@@ -164,9 +165,11 @@ Codeguard/
     │   │   ├── __main__.py        # python -m codeguard_agent 入口
     │   │   ├── cli.py             # 命令行:review 子命令、结果打印、退出码、工具会话建/销
     │   │   ├── config.py          # Settings:从环境变量/.env 读配置(含 CODEGUARD_TOOL_SERVER_URL)
-    │   │   ├── models/            # ★数据结构:schemas.py(Issue/Severity/ReviewResult)
-    │   │   │   └──               #   tasks.py(任务/PR 规模路由阈值) council.py(裁决模型:
-    │   │   │                     #     关系三元 FactRelation/重放四态/统一裁决/统计) knowledge.py
+    │   │   ├── models/            # ★数据结构:schemas.py(Issue/Severity/ReviewResult/
+    │   │   │   └──               #   DiscoveredIssue/evidence_refs) evidence.py(证据账本:
+    │   │   │                     #     Artifact/Catalog/Ref/Verifier/Judge 模型)
+    │   │   │                     #   tasks.py(任务/PR 规模路由阈值) council.py(候选/
+    │   │   │                     #     裁决/统计) knowledge.py
     │   │   ├── git/diff_collector.py  # 调系统 git 采集 diff + parse_changed_files(派生 allowed_files)
     │   │   ├── llm/client.py      # LLM 工厂(openai/claude/mock)+ 重试 + mock 假数据
     │   │   ├── observability/     # HTML Trace:审查过程视图/统计(collector/dashboard/view_model)
@@ -176,13 +179,15 @@ Codeguard/
     │   │   ├── pipeline/risk/             # 任务、风险规则、路由与排序(classify_diff/diff_metrics)
     │   │   ├── pipeline/context/          # 图谱符号上下文与事实预算
     │   │   ├── pipeline/reviewers/        # 三路发现者与工具协调
-    │   │   ├── pipeline/evidence/         # 取证验证(verifier 链校验/重放/配方兜底+关系分析,
-    │   │   │                             #   guard_scan 注解扫描, tags 标签开关, planner,
-    │   │   │                             #   rules/classify+terms)
+    │   │   ├── pipeline/evidence/         # 证据账本(ledger 注册/绑定/目录渲染,
+    │   │   │                             #   verifier 健康检查/图护栏/异常重放,
+    │   │   │                             #   graph_response 图摘要与护栏, guard_scan 注解扫描,
+    │   │   │                             #   tags 标签开关, planner, rules/classify+terms)
     │   │   ├── pipeline/council/          # 裁决与指标(verdict 门控+终审+组内合并, dedup 归并, metrics)
     │   │   ├── pipeline/knowledge/        # RiskTag 知识目录与选择器
     │   │   ├── pipeline/summary/          # 可选变更摘要阶段
-    │   │   └── prompts/                   # 发现者 base×3、evidence-analysis(关系分析)、council-judge(终审)、
+    │   │   └── prompts/                   # 发现者 base×3、discovery-evidence-contract(证据引用契约)、
+    │   │                                 #   evidence-judge(批量终审)、direct-judge(消融档)、
     │   │                                 #   candidate-dedup-*(归并)、summary-*(摘要)、eval-direct-reviewer、
     │   │                                 #   discovery-context-contract + knowledge/(按 RiskTag 注入)
     │   ├── tests/                 # pytest:测工程正确性
@@ -234,7 +239,7 @@ Codeguard/
 4. **`llm/client.py:build_llm`** 按 provider 造 LangChain Chat 模型;`provider=mock` 返回 `None`(下游走假数据)。
 5. **`pipeline/graph.py` 的 ReviewCouncil 状态图**是核心:
    - `classify_mode` 按 diff 体量路由(small→`direct_review` 单次直审 / medium→`file_task_builder` 按文件 / large→`diff_task_builder` 按 hunk)。
-   - medium/large 走完整管线:`risk_triage` 标风险标签 → `task_rank` 排序限流 → 可选 `summary` → `context_provider` 预取符号上下文 → 三路发现者并行(ReAct,输出带 `evidence_chain` 取证溯源)→ `council_coordinator` 归并 → `evidence_verifier` 取证验证(链校验/重放验证/配方兜底 → 关系三元)→ `council_judge` 门控+终审裁决出 `Issue`(`evidence_mode=off` 时经 `direct_judge` 直接终审)。
+   - medium/large 走完整管线:`risk_triage` 标风险标签 → `task_rank` 排序限流 → 可选 `summary` → `context_provider` 预取符号上下文 → 三路发现者并行(ReAct,输出带 `evidence_refs` 证据编号引用)→ `council_coordinator` 归并 → `evidence_verifier` 证据验证(Artifact 健康检查/图护栏/异常重放,零 LLM)→ `council_judge` 批量 EvidenceJudge 裁决出 `Issue`(`evidence_mode=off` 时经 `direct_judge` 直接终审)。
    - `llm is None`(mock)→ 各阶段返回 mock 假数据(如 `direct_review` 返回 `mock_review_result()`)。
    - 工具服务不可用时显式降级(ReAct 退直连 / 空证据不炸管线)。
 6. **`cli.py:_print_result`** 打印;**退出码**:发现任一 `CRITICAL` 返回 1,否则 0(方便接 CI 门禁)。
@@ -332,7 +337,7 @@ python -m evals.runner --runs 3 --judge  # 额外开 LLM-as-judge
 | `CODEGUARD_DISABLE_THINKING` | `false` | 用 DeepSeek 推理模型时设 `true` |
 | `CODEGUARD_MAX_RETRIES` | `3` | LLM 调用重试次数 |
 | `CODEGUARD_ENABLE_SUMMARY` | `true` | 前置摘要/软分派阶段开关;关闭则审查员吃整份 diff(仅 pipeline) |
-| `CODEGUARD_EVIDENCE_MODE` | `full` | 证据链开关;`off` 跳过取证/门控,候选由 DirectJudge 直接终审(无证据链消融基线档) |
+| `CODEGUARD_EVIDENCE_MODE` | `full` | 证据开关;`off` 跳过取证,候选由 DirectJudge 直接终审(无证据链消融基线档) |
 
 > **Windows/PowerShell 注意**:bash 的 `VAR=value cmd` 内联写法在 PowerShell 不生效,要先 `$env:VAR="value"` 再跑命令;或直接写 `.env`(推荐)。
 
