@@ -40,14 +40,26 @@ class ToolClient:
     (httpx.Client 线程安全,工具均为只读,共享安全)。
     """
 
-    def __init__(self, base_url: str, session_id: str, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        session_id: str,
+        timeout: float = 30.0,
+        revision: str = "",
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._session_id = session_id
+        self._revision = revision
         self._client = httpx.Client(timeout=timeout)
 
     @property
     def session_id(self) -> str:
         return self._session_id
+
+    @property
+    def revision(self) -> str:
+        """本会话绑定的仓库 revision(证据账本据此做内容寻址,见 Evidence Ledger 设计)。"""
+        return self._revision
 
     def _post_tool(self, name: str, payload: dict) -> ToolResponse:
         """调用某个工具:POST /api/v1/tools/{name},带 X-Session-Id。"""
@@ -122,7 +134,7 @@ def create_tool_session(
     session_id = data.get("session_id")
     if not session_id:
         raise RuntimeError("创建工具会话失败:返回缺少 session_id")
-    return ToolClient(normalized, str(session_id), timeout=timeout)
+    return ToolClient(normalized, str(session_id), timeout=timeout, revision=revision)
 
 
 def destroy_tool_session(client: ToolClient) -> None:

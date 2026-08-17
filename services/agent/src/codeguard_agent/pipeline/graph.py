@@ -148,6 +148,7 @@ class ReviewState(TypedDict, total=False):
     """审查图共享状态。"""
 
     diff_text: str
+    evidence_revision: str
     enabled_tools: Any
     enabled_evidence_tools: Any
     context_diagnostics: dict[str, str]

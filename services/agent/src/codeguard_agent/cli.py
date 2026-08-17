@@ -115,16 +115,18 @@ def main(argv: list[str] | None = None) -> int:
         tool_client = None
         repo_abspath = os.path.abspath(args.repo)
         allowed_files = parse_changed_files(diff_text)
+        evidence_revision = ""
         if settings.tool_server_url and llm is not None:
             try:
                 head_revision = collect_head_revision(repo_abspath)
                 working_tree_digest = sha256(diff_text.encode("utf-8")).hexdigest()
+                evidence_revision = f"{head_revision}:{working_tree_digest}"
                 tool_client = create_tool_session(
                     settings.tool_server_url,
                     repo_abspath,
                     allowed_files,
                     timeout=settings.graph_build_timeout_seconds + 15,
-                    revision=f"{head_revision}:{working_tree_digest}",
+                    revision=evidence_revision,
                 )
                 logger.info(
                     "已创建工具会话(%s),审查员走 ReAct;允许文件 %d 个",
@@ -162,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
                 allowed_files=allowed_files,
                 tool_client=tool_client,
                 evidence_mode=settings.evidence_mode,
+                evidence_revision=evidence_revision,
                 thread_id=effective_thread_id,
                 trace_enabled=trace_enabled,
                 trace_dir=settings.trace_dir,

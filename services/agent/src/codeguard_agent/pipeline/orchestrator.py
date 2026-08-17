@@ -7,6 +7,7 @@ summary? → context_provider → review_council → council_judge → END。
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 import uuid
@@ -21,6 +22,24 @@ from codeguard_agent.pipeline.graph import (
 )
 
 logger = logging.getLogger("codeguard")
+
+
+def resolve_evidence_revision(
+    evidence_revision: str,
+    tool_client,
+    diff_text: str,
+) -> str:
+    """计算本次审查的有效证据 revision(证据账本内容寻址的锚)。
+
+    优先级:显式传入 > 工具会话 revision > diff 内容摘要兜底。
+    Artifact 与 Gateway session 身份由此保持一致。
+    """
+    if evidence_revision:
+        return evidence_revision
+    tool_revision = getattr(tool_client, "revision", "")
+    if tool_revision:
+        return tool_revision
+    return "diff:" + hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
 
 
 def _create_checkpointer(backend: str, db_path: str):
@@ -96,6 +115,7 @@ class PipelineOrchestrator:
         trace_sink: list | None = None,
         metadata_sink: dict[str, Any] | None = None,
         thread_id: str | None = None,
+        evidence_revision: str = "",
     ) -> ReviewResult:
         """跑完整条管线,返回结构化的 ReviewResult。
 
@@ -123,6 +143,9 @@ class PipelineOrchestrator:
         )
         initial: ReviewState = {
             "diff_text": diff_text,
+            "evidence_revision": resolve_evidence_revision(
+                evidence_revision, tool_client, diff_text
+            ),
             "enabled_tools": enabled_tools,
             "max_retries": max_retries,
             "structured_method": structured_method,

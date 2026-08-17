@@ -53,11 +53,23 @@ from evals.matcher import evaluate_case
 from evals.metrics import aggregate, aggregate_by_capability
 from evals.profiles import case_repo_root, resolve_profile, tools_effective
 from evals.report import render_history_views, render_report
-from evals.schema import CouncilTraceStats, MatchOutcome
+from evals.schema import CouncilTraceStats, EvalCase, MatchOutcome
 from evals.tool_usage import summarize_tool_usage
 
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s", stream=sys.stderr)
 logger = logging.getLogger("codeguard.evals")
+
+
+def case_evidence_revision(case: EvalCase) -> str:
+    """repo-backed 用例的证据 revision:head_revision + diff 内容摘要。
+
+    证据账本内容寻址锚点(源文档 §5.1):Artifact 与 Gateway session 身份一致。
+    合成用例无 head_revision 时返回空串,由编排器按 diff 摘要兜底。
+    """
+    if case.provenance and case.provenance.head_revision:
+        digest = hashlib.sha256(case.diff.encode("utf-8")).hexdigest()
+        return f"{case.provenance.head_revision}:{digest}"
+    return ""
 
 
 @dataclass(frozen=True)
@@ -469,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
         repo_root = case_repo_root(case.repo_path, args.repo_base) if use_tools else None
         if profile.strict_tools and not repo_root:
             raise RuntimeError(f"[{case.id}] 严格工具 profile 要求 repo-backed 快照")
+        case_revision = case_evidence_revision(case)
         tool_client = None
         if repo_root:
             try:
@@ -477,6 +490,7 @@ def main(argv: list[str] | None = None) -> int:
                     repo_root,
                     parse_changed_files(diff),
                     timeout=settings.graph_build_timeout_seconds + 15,
+                    revision=case_revision,
                 )
             except Exception as exc:  # noqa: BLE001 工具服务不可用则降级无工具,不中断评测
                 if profile.strict_tools:
@@ -502,6 +516,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 allow_direct_fallback=not profile.strict_tools,
                 evidence_mode=profile.evidence_mode,
+                evidence_revision=case_revision,
                 trace_enabled=settings.trace_enabled,
                 trace_dir=settings.trace_dir,
                 trace_max_llm_content=settings.trace_max_llm_content,
