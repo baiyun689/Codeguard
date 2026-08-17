@@ -233,27 +233,44 @@ def _step_from_pair(
     if node_summary:
         summary = node_summary
     if metrics:
-        parts = [
-            f"{metrics.get('request_count', 0)} 个请求 · "
-            f"{metrics.get('fact_count', 0)} 条事实",
-        ]
-        # 重放四态仅新 payload 携带;旧 trace 报告缺键时不渲染,避免显示误导性全零
-        if "replay_verified_count" in metrics:
+        if "candidates" in metrics and "artifacts_patch" in metrics:
+            # Evidence Ledger 验证指标(源文档 §10.4 新摘要)。
+            parts = [
+                f"artifacts p{metrics.get('artifacts_patch', 0)}/"
+                f"c{metrics.get('artifacts_context', 0)}/"
+                f"t{metrics.get('artifacts_tool', 0)} · "
+                f"refs {metrics.get('refs_selected', 0)}"
+                f"(v{metrics.get('refs_valid', 0)}/"
+                f"l{metrics.get('refs_limited', 0)}/"
+                f"i{metrics.get('refs_invalid', 0)}) · "
+                f"replay {metrics.get('replay_requested', 0)}"
+                f"(cf{metrics.get('replay_confirmed', 0)}/"
+                f"fl{metrics.get('replay_failed', 0)}) · "
+                f"judge {metrics.get('judge_eligible', 0)}/"
+                f"{metrics.get('judge_rejected', 0)}",
+            ]
+        else:
+            parts = [
+                f"{metrics.get('request_count', 0)} 个请求 · "
+                f"{metrics.get('fact_count', 0)} 条事实",
+            ]
+            # 重放四态仅新 payload 携带;旧 trace 报告缺键时不渲染,避免显示误导性全零
+            if "replay_verified_count" in metrics:
+                parts.append(
+                    "(verified "
+                    f"{metrics.get('replay_verified_count', 0)} / unverified "
+                    f"{metrics.get('replay_unverified_count', 0)} / failed "
+                    f"{metrics.get('replay_failed_count', 0)} / recipe "
+                    f"{metrics.get('recipe_fact_count', 0)})"
+                )
             parts.append(
-                "(verified "
-                f"{metrics.get('replay_verified_count', 0)} / unverified "
-                f"{metrics.get('replay_unverified_count', 0)} / failed "
-                f"{metrics.get('replay_failed_count', 0)} / recipe "
-                f"{metrics.get('recipe_fact_count', 0)})"
+                f" · {metrics.get('llm_analysis_calls', 0)} 次 LLM · "
+                f"分析 {float(metrics.get('fact_analysis_ms', 0.0)) / 1000:.3f}s"
             )
-        parts.append(
-            f" · {metrics.get('llm_analysis_calls', 0)} 次 LLM · "
-            f"分析 {float(metrics.get('fact_analysis_ms', 0.0)) / 1000:.3f}s"
-        )
-        if "chain_used" in metrics:
-            parts.append(
-                f" · 链 {metrics.get('chain_used', 0)} / 配方 {metrics.get('recipe_fallback', 0)}"
-            )
+            if "chain_used" in metrics:
+                parts.append(
+                    f" · 链 {metrics.get('chain_used', 0)} / 配方 {metrics.get('recipe_fallback', 0)}"
+                )
         summary = "".join(parts)
     return {
         "id": step_id,
@@ -316,6 +333,10 @@ def _node_state_summary(code_name: str, event: TraceEvent | None) -> str:
 
 
 def _evidence_batch_metrics(event: TraceEvent | None) -> dict[str, Any]:
+    """evidence_verifier 节点摘要:Evidence Ledger 验证指标事件。
+
+    兼容旧 trace 的 evidence_batch_metrics(键不同,由渲染侧条件分支处理)。
+    """
     if event is None:
         return {}
     output = event.detail.get("output")
@@ -325,10 +346,10 @@ def _evidence_batch_metrics(event: TraceEvent | None) -> dict[str, Any]:
     if not isinstance(traces, list):
         return {}
     for trace in traces:
-        if (
-            not isinstance(trace, dict)
-            or trace.get("event") != "evidence_batch_metrics"
-        ):
+        if not isinstance(trace, dict) or trace.get("event") not in {
+            "evidence_verification_metrics",
+            "evidence_batch_metrics",
+        }:
             continue
         try:
             detail = json.loads(str(trace.get("detail") or "{}"))

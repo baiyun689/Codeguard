@@ -185,15 +185,22 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
                 "critical_candidate_count": 1,
                 "severity_transitions": {"WARNING->CRITICAL": 1},
                 "final_issue_count": 2,
-                "final_issue_fact_covered_count": 1,
-                "final_issue_fact_coverage": 0.5,
-                "actual_evidence_tool_calls": 1,
-                "average_evidence_tool_calls": 0.2,
-                "replay_verified_count": 1,
-                "replay_unverified_count": 0,
-                "replay_failed_count": 1,
-                "chain_used_count": 1,
-                "recipe_fallback_count": 1,
+                "final_issue_supported_count": 1,
+                "final_issue_support_coverage": 0.5,
+                "artifact_count": 3,
+                "patch_artifact_count": 1,
+                "context_artifact_count": 1,
+                "tool_artifact_count": 1,
+                "candidate_patch_only_count": 1,
+                "candidate_tool_backed_count": 2,
+                "candidate_ungrounded_count": 1,
+                "valid_reference_count": 2,
+                "limited_reference_count": 1,
+                "invalid_reference_count": 1,
+                "replay_requested_count": 1,
+                "replay_confirmed_count": 1,
+                "judge_batch_call_count": 1,
+                "judge_no_support_drop_count": 1,
             },
         )
     ]
@@ -206,23 +213,17 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
     assert "实删=0" in out
     assert "角色候选分布" in out
     assert "threat_model=1, behavior=1, maintainability=1" in out
-    assert "| 候选归并 | 事实 | Judge 裁决 |" in out
+    assert "| 候选归并 | Artifact | Judge 裁决 |" in out
     assert "Judge 裁决" in out
-    assert "无 support 保留" in out
-    assert "0/1" in out
-    assert "direct counter 保留率" in out
-    assert "0/1 (0.000)" in out
-    assert "全 insufficient 保留率" in out
-    assert "1/1 (1.000)" in out
+    assert "无支持 drop" in out
+    assert "| 1 | 0 | 1 | WARNING->CRITICAL=1 |" in out
+    assert "最终 Issue 支持覆盖率" in out
     assert "1/2 (0.500)" in out
-    assert "最终 Issue 有效事实覆盖率" in out
     assert "RiskTag 策略覆盖率" not in out
-    assert "平均实际证据工具调用" in out
-    assert "1/5 (0.200)" in out
     assert "WARNING->CRITICAL=1" in out
     assert "证据请求" not in out
-    assert "取证溯源与重放" in out
-    assert "| 1 | 0 | 1 | 1/1 |" in out
+    assert "证据账本" in out
+    assert "| 1/1/1/0 | 2/1/1 | 1/1/0 |" in out
 
 
 def test_旧归档缺少Phase5字段时使用默认值而不报错():
@@ -232,7 +233,7 @@ def test_旧归档缺少Phase5字段时使用默认值而不报错():
 
     assert stats.candidate_count == 2
     assert stats.verdict_count == 0
-    assert stats.direct_counter_retained_rate is None
-    assert stats.average_evidence_tool_calls == 0.0
-    assert stats.chain_used_count == 0
-    assert stats.recipe_fallback_count == 0
+    assert stats.final_issue_support_coverage is None
+    assert stats.artifact_count == 0
+    assert stats.replay_requested_count == 0
+    assert stats.judge_batch_call_count == 0

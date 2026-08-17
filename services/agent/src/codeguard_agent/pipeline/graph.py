@@ -50,7 +50,6 @@ from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.risk.discovery import (
     CoordinatedDiscoveryToolClient,
     DiscoveryToolCoordinator,
-    canonical_tool_key,
 )
 from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
 from codeguard_agent.pipeline.knowledge.selector import select_knowledge
@@ -93,41 +92,6 @@ logger = logging.getLogger("codeguard")
 DEFAULT_RECURSION_LIMIT = 50
 
 _ALL_REVIEWER_NAMES = [r.source_agent for r in DEFAULT_REVIEWERS]
-
-
-def dedup_gathered_reducer(existing: list | None, new: list | None) -> list:
-    """`gathered_context` reducer:按规范化工具参数去重,保留首次出现顺序。
-
-    兼容两种元素:GatheredContext 对象与 verifier 产出的 {"tool","args","content"} dict。
-    跨形态去重假设:dict 形态的 args 是 verifier 的 `_stable_json` 稳定串、
-    GatheredContext.args 由 engines 构造——两者都必须是 JSON 对象字符串且经
-    canonical_tool_key 规范化后语义一致,否则同一次工具调用会漏去重。
-    """
-    merged = list(existing or []) + list(new or [])
-    seen: set[tuple[str, str]] = set()
-    out: list = []
-    for it in merged:
-        if isinstance(it, dict):
-            tool = str(it.get("tool", ""))
-            args = str(it.get("args", ""))
-        else:
-            tool = getattr(it, "tool", "")
-            args = getattr(it, "args", "")
-        try:
-            structured_args = json.loads(args)
-        except (TypeError, json.JSONDecodeError):
-            structured_args = None
-        key = (
-            canonical_tool_key(tool, structured_args)
-            if isinstance(structured_args, dict)
-            else (tool, args)
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(it)
-
-    return out
 
 
 def collect_candidate_reducer(existing: list | None, new: list | None) -> list:
@@ -185,7 +149,6 @@ class ReviewState(TypedDict, total=False):
     council_trace: Annotated[list[CouncilTrace], operator.add]
     truncated_candidates: Annotated[int, operator.add]
 
-    gathered_context: Annotated[list, dedup_gathered_reducer]
     tool_trace_records: Annotated[list, operator.add]
     review_summaries: Annotated[list, operator.add]
 
@@ -254,7 +217,6 @@ def _state_to_context(state: ReviewState, llm=None, fp_verify_llm=None, tool_cli
         tool_client=tool_client,
         enabled_tools=state.get("enabled_tools"),
         diff_summary=state.get("diff_summary", ""),
-        gathered_context=list(state.get("gathered_context") or []),
     )
     ctx.context_bundle = state.get("context_bundle")
     return ctx
@@ -642,7 +604,6 @@ def _context_provider_node(tool_client):
         bundle = ctx.context_bundle
 
         budget = scope.effective_budget
-        gathered = list(ctx.gathered_context)
         symbol_facts: list[tuple[ContextFact, dict[str, Any]]] = []
         for fact in bundle.facts:
             if fact.kind != "symbol_context":
@@ -719,7 +680,6 @@ def _context_provider_node(tool_client):
         return {
             "context_bundle": bundle,
             "context_diagnostics": dict(ctx.context_diagnostics),
-            "gathered_context": gathered,
             "task_context_bundles": task_bundles,
 
             "council_trace": trace,
@@ -1078,7 +1038,6 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             )
             for task_id in ordered_ids
         ]
-        gathered_context: list = []
         tool_trace_records: list = []
         review_summaries: list = []
         evidence_artifacts: dict[str, EvidenceArtifact] = {}
@@ -1096,8 +1055,6 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             for issue in result.get("issues") or []:
                 per_task_issues.append((task_id, issue))
             trace.extend(result.get("council_trace") or [])
-            if result.get("gathered_context"):
-                gathered_context.extend(result["gathered_context"])
             if result.get("tool_trace_records"):
                 tool_trace_records.extend(result["tool_trace_records"])
             if result.get("review_summaries"):
@@ -1171,8 +1128,6 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             "truncated_candidates": truncated_candidates,
             "council_trace": trace,
         }
-        if gathered_context:
-            routed_out["gathered_context"] = gathered_context
         if tool_trace_records:
             routed_out["tool_trace_records"] = tool_trace_records
         if evidence_artifacts:
@@ -1457,6 +1412,8 @@ def _council_judge_node(judge_llm=None):
             truncated_candidates=state.get("truncated_candidates", 0),
             council_trace=[*(state.get("council_trace") or []), *judge_trace],
             candidate_dedup_stats=state.get("candidate_dedup_stats"),
+            artifacts=state.get("evidence_artifacts") or {},
+            verifications=state.get("candidate_verifications") or {},
         )
         summaries = list(state.get("review_summaries") or [])
         selection = state.get("task_selection")
@@ -1501,6 +1458,8 @@ def _direct_judge_node(judge_llm=None):
             truncated_candidates=state.get("truncated_candidates", 0),
             council_trace=[*(state.get("council_trace") or []), *judge_trace],
             candidate_dedup_stats=state.get("candidate_dedup_stats"),
+            artifacts=state.get("evidence_artifacts") or {},
+            verifications=state.get("candidate_verifications") or {},
         )
         summaries = list(state.get("review_summaries") or [])
         selection = state.get("task_selection")

@@ -415,15 +415,21 @@ def _finalize_assessment(
         })
         return verdict, None
     if assessment.action == "drop":
-        verdict = Verdict(candidate.id, "drop", "synthesized_evidence_drop", assessment.reason)
+        reason_code = (
+            "no_supporting_evidence"
+            if not assessment.supporting_evidence_ids
+            else "synthesized_evidence_drop"
+        )
+        verdict = Verdict(candidate.id, "drop", reason_code, assessment.reason)
         _trace(batch, event, {
             "candidate_id": candidate.id, "action": "drop",
-            "reason_code": "synthesized_evidence_drop",
+            "reason_code": reason_code,
         })
         return verdict, None
     verdict = Verdict(
         candidate.id, "keep", verdict_reason, assessment.reason,
         resolved_severity=assessment.severity,
+        supported=bool(assessment.supporting_evidence_ids),
     )
     issue = candidate.to_issue().model_copy(update={"severity": assessment.severity})
     _trace(batch, event, {

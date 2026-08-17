@@ -183,8 +183,11 @@ class PipelineOrchestrator:
             final_state = graph.invoke(initial, config=invoke_config)
 
         # 侧信道：把工具上下文交给评测层（不进入 ReviewResult 对外接口）。
+        # Evidence Ledger 后从最终 Artifact 集派生工具画像,不再读 gathered_context。
         if trace_sink is not None:
-            trace_sink.extend(final_state.get("gathered_context") or [])
+            trace_sink.extend(
+                _artifact_tool_profile(final_state.get("evidence_artifacts") or {})
+            )
         if metadata_sink is not None:
             stats = final_state.get("council_stats")
             if stats is None:
@@ -201,6 +204,46 @@ class PipelineOrchestrator:
             summary=final_state.get("summary", ""),
             issues=list(final_state.get("final_issues") or []),
         )
+
+
+def _artifact_tool_profile(artifacts: dict) -> list:
+    """从最终 Artifact 集派生评测工具画像(源文档 §10.7)。
+
+    只含 TOOL_CALL 且首次真实执行(EXECUTED)的 Artifact:reused 不重复计算
+    实际调用,patch/context 不计 tool_calls。条目形状对齐 GatheredContext
+    (tool/args/content/status),供 eval 的 tools_used/files_read/tool_calls
+    与严格工具降级检测读取。
+    """
+    from codeguard_agent.models.evidence import EvidenceCaptureMode, EvidenceSourceKind
+    from codeguard_agent.pipeline.engines import GatheredContext
+
+    items: list[GatheredContext] = []
+    seen: set[tuple[str, str]] = set()
+    for artifact in artifacts.values():
+        if (
+            artifact.source_kind is not EvidenceSourceKind.TOOL_CALL
+            or artifact.capture_mode is not EvidenceCaptureMode.EXECUTED
+        ):
+            continue
+        key = (artifact.tool, _summarize_artifact_args(artifact.arguments))
+        if key in seen:
+            continue  # 跨任务重复调用按规范化 (tool, args) 去重
+        seen.add(key)
+        items.append(
+            GatheredContext(
+                tool=artifact.tool,
+                args=key[1],
+                content=artifact.payload,
+                status=artifact.status.value,
+            )
+        )
+    return items
+
+
+def _summarize_artifact_args(arguments: dict[str, str]) -> str:
+    import json
+
+    return json.dumps(arguments, ensure_ascii=False, sort_keys=True)
 
 
 def _inject_degradation(report: Any, final_state: dict) -> None:

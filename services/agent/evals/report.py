@@ -200,9 +200,9 @@ def render_report(
             "",
             "## ReviewCouncil 过程统计(最后一次跑测)",
             "",
-            "ADR-046 中间态只用于 trace/eval,不进入最终 ReviewResult。",
+            "Evidence Ledger 中间态只用于 trace/eval,不进入最终 ReviewResult。",
             "",
-            "| 用例 | 原始→逻辑组/举证成员 | 角色候选分布 | 候选归并 | 事实 | Judge 裁决 | 移除 | 候选截断 |",
+            "| 用例 | 原始→逻辑组/举证成员 | 角色候选分布 | 候选归并 | Artifact | Judge 裁决 | 移除 | 候选截断 |",
             "|---|---|---|---|---|---|---|---|",
         ]
         for o in council_rows:
@@ -229,27 +229,25 @@ def render_report(
                 f"{c.raw_candidate_count}->{c.logical_candidate_count}/{c.candidate_count} | "
                 f"{agent_detail} | "
                 f"{dedup_detail} | "
-                f"{c.fact_count} | {c.verdict_count} | "
+                f"{c.artifact_count} | {c.verdict_count} | "
                 f"{c.removed_by_judge} | {c.truncated_candidates} |"
             )
 
         lines += [
             "",
-            "### Phase 5 证据链指标",
+            "### 裁决指标",
             "",
-            "比率均由 Judge 使用的 survivor candidate 映射计算；`—` 表示分母为零。",
-            "实际工具调用只统计 evidence_verifier 新调用，缓存复用不计。",
+            "无支持 drop = Judge 因候选无支持事实而 drop;Judge 失败 = 合同违约 fail-closed。",
             "",
-            "| 用例 | 无 support 保留 | direct counter 保留率 | 全 insufficient 保留率 | CRITICAL 候选 | 等级转移 |",
-            "|---|---|---|---|---|---|",
+            "| 用例 | 无支持 drop | Judge 失败 | CRITICAL 候选 | 等级转移 |",
+            "|---|---|---|---|---|",
         ]
         for o in council_rows:
             c = o.council_trace
             lines.append(
                 f"| {o.case_id} | "
-                f"{c.no_support_retained_count}/{c.no_support_candidate_count} | "
-                f"{c.direct_counter_retained_count}/{c.direct_counter_candidate_count} ({_fmt(c.direct_counter_retained_rate)}) | "
-                f"{c.all_insufficient_retained_count}/{c.all_insufficient_candidate_count} ({_fmt(c.all_insufficient_retained_rate)}) | "
+                f"{c.judge_no_support_drop_count} | "
+                f"{c.judge_failed_candidate_count} | "
                 f"{c.critical_candidate_count} | "
                 f"{', '.join(f'{key}={value}' for key, value in sorted(c.severity_transitions.items())) or '—'} |"
             )
@@ -258,35 +256,39 @@ def render_report(
             "",
             "### 证据覆盖与成本",
             "",
-            "| 用例 | 最终 Issue 有效事实覆盖率 | 平均实际证据工具调用 |",
+            "| 用例 | 最终 Issue 支持覆盖率 | 候选画像(patch/context/tool/ungrounded) |",
             "|---|---|---|",
         ]
         for o in council_rows:
             c = o.council_trace
             lines.append(
                 f"| {o.case_id} | "
-                f"{c.final_issue_fact_covered_count}/{c.final_issue_count} ({_fmt(c.final_issue_fact_coverage)}) | "
-                f"{c.actual_evidence_tool_calls}/{c.candidate_count} ({_fmt(c.average_evidence_tool_calls)}) |"
+                f"{c.final_issue_supported_count}/{c.final_issue_count} ({_fmt(c.final_issue_support_coverage)}) | "
+                f"{c.candidate_patch_only_count}/{c.candidate_context_backed_count}/"
+                f"{c.candidate_tool_backed_count}/{c.candidate_ungrounded_count} |"
             )
 
         lines += [
             "",
-            "### 取证溯源与重放(ADR-046)",
+            "### 证据账本(Evidence Ledger)",
             "",
-            "重放状态按事实累计:verified=链引用在重放结果中命中，unverified=未命中，failed=调用失败；",
-            "取证链/配方兜底 = 使用合法取证链的候选数 / 无链废链回退固定配方的候选数。",
+            "Artifact = 运行时捕获的证据(patch P01 / 预取上下文 Cxx / 工具 Txx,reused 为跨任务复用)；",
+            "引用 = 候选引用经验证后的 valid/limited/invalid 数；重放 = 异常 Artifact 的重放请求/确认/失败数。",
             "",
-            "| 用例 | 重放 verified | 重放 unverified | 重放 failed | 取证链/配方兜底 |",
+            "| 用例 | Artifact(p/c/t/reused) | 引用(v/l/i) | 重放(rq/cf/fl) | Judge(批/失败/无支持drop) |",
             "|---|---|---|---|---|",
         ]
         for o in council_rows:
             c = o.council_trace
             lines.append(
                 f"| {o.case_id} | "
-                f"{c.replay_verified_count} | "
-                f"{c.replay_unverified_count} | "
-                f"{c.replay_failed_count} | "
-                f"{c.chain_used_count}/{c.recipe_fallback_count} |"
+                f"{c.patch_artifact_count}/{c.context_artifact_count}/"
+                f"{c.tool_artifact_count}/{c.reused_artifact_count} | "
+                f"{c.valid_reference_count}/{c.limited_reference_count}/{c.invalid_reference_count} | "
+                f"{c.replay_requested_count}/{c.replay_confirmed_count}/"
+                f"{c.replay_requested_count - c.replay_confirmed_count} | "
+                f"{c.judge_batch_call_count}/{c.judge_failed_candidate_count}/"
+                f"{c.judge_no_support_drop_count} |"
             )
 
         lines += [

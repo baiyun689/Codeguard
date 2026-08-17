@@ -34,7 +34,8 @@ from codeguard_agent.models.tasks import (
 )
 from codeguard_agent.pipeline import graph as G
 from codeguard_agent.pipeline.engines import GatheredContext, ReviewOutcome
-from codeguard_agent.pipeline.evidence import verifier
+from codeguard_agent.pipeline.evidence.ledger import EvidenceCatalogBuilder
+from codeguard_agent.pipeline.risk.discovery import DiscoveryToolRecord
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
 from codeguard_agent.pipeline.context.base import PipelineContext
 from codeguard_agent.pipeline.context.provider import ContextProviderStage
@@ -61,41 +62,6 @@ def _prior(task_id: str, tag: RiskTag | None = None, priority: int = 2) -> TaskR
             RiskCoverage.CONFIDENT if hypotheses else RiskCoverage.UNCLASSIFIED
         ),
     )
-
-
-def test_dedup_gathered_reducer_dedups_by_tool_args_keep_order():
-    a = GatheredContext("get_file_content", "A.java", "x")
-    b = GatheredContext("get_file_content", "B.java", "y")
-    a_dup = GatheredContext("get_file_content", "A.java", "x-again")
-    out = G.dedup_gathered_reducer([a], [b, a_dup])
-    assert [g.args for g in out] == ["A.java", "B.java"]
-
-
-def test_dedup_gathered_reducer_canonicalizes_path_variants():
-    first = GatheredContext(
-        "get_file_content",
-        json.dumps({"file_path": r"src\.\A.java"}),
-        "first",
-    )
-    duplicate = GatheredContext(
-        "get_file_content",
-        json.dumps({"file_path": "src/A.java"}),
-        "duplicate",
-    )
-
-    out = G.dedup_gathered_reducer([first], [duplicate])
-
-    assert out == [first]
-
-
-def test_dedup_gathered_reducer_handles_verifier_dict_entries():
-    first = {"tool": "get_file_content", "args": '{"file_path": "A.java"}', "content": "x"}
-    duplicate = {"tool": "get_file_content", "args": '{"file_path": "A.java"}', "content": "y"}
-    distinct = {"tool": "get_file_content", "args": '{"file_path": "B.java"}', "content": "z"}
-
-    out = G.dedup_gathered_reducer([first], [duplicate, distinct])
-
-    assert out == [first, distinct]
 
 
 def test_context_provider_keeps_summary_and_files_out_of_facts():
@@ -408,8 +374,23 @@ def test_reviewer_subgraph_mock_only_threat_model_returns_issues():
     assert other.invoke({}).get("issues", []) == []
 
 
-def test_run_routes_gathered_context_to_trace_sink_and_council_metadata(monkeypatch):
-    gc = [GatheredContext("get_file_content", "X.java", "body")]
+def test_run_derives_tool_profile_from_artifacts_to_trace_sink(monkeypatch):
+    # Evidence Ledger 后 trace_sink 从最终 Artifact 集派生工具画像
+    # (只含 TOOL_CALL 且首次真实执行的 Artifact)。
+    tool_artifact = EvidenceArtifact.build(
+        task_id="t", reviewer="threat_model", revision="rev",
+        source_kind=EvidenceSourceKind.TOOL_CALL, tool="get_file_content",
+        arguments={"file_path": "X.java"}, payload="body",
+        status=EvidenceArtifactStatus.COMPLETE,
+        capture_mode=EvidenceCaptureMode.EXECUTED,
+    )
+    patch_artifact = EvidenceArtifact.build(
+        task_id="t", reviewer="threat_model", revision="rev",
+        source_kind=EvidenceSourceKind.TASK_PATCH, payload="+x",
+        status=EvidenceArtifactStatus.COMPLETE,
+        capture_mode=EvidenceCaptureMode.GENERATED,
+        arguments={"file_path": "X.java"},
+    )
     issues = [Issue(severity=Severity.WARNING, file="X.java", line=1, type="t", message="m")]
 
     class _Stats:
@@ -421,7 +402,7 @@ def test_run_routes_gathered_context_to_trace_sink_and_council_metadata(monkeypa
             return {
                 "summary": "s",
                 "final_issues": issues,
-                "gathered_context": gc,
+                "evidence_artifacts": {tool_artifact.id: tool_artifact, patch_artifact.id: patch_artifact},
                 "council_stats": _Stats(),
             }
 
@@ -436,7 +417,10 @@ def test_run_routes_gathered_context_to_trace_sink_and_council_metadata(monkeypa
 
     assert isinstance(result, ReviewResult)
     assert result.issues == issues
-    assert trace == gc
+    # 只派生工具 Artifact,patch 不计 tool_calls。
+    assert len(trace) == 1
+    assert trace[0].tool == "get_file_content"
+    assert trace[0].content == "body"
     assert meta["council"]["candidate_count"] == 1
     assert "council_trace_events" not in meta
     assert not hasattr(result, "candidate_issues")
@@ -649,7 +633,24 @@ class _FakeEngine:
             message="m",
         )
         gc = [GatheredContext("get_file_content", f"{reviewer_name}.java", "x")]
-        return ReviewOutcome(ReviewResult(summary=f"sum-{reviewer_name}", issues=[issue]), gc)
+        # 目录追加一条工具 Artifact,供 trace_sink 的工具画像派生。
+        catalog = evidence_catalog
+        if catalog is not None:
+            record = DiscoveryToolRecord(
+                call_id=f"call-{reviewer_name}",
+                tool="get_file_content",
+                arguments={"file_path": f"{reviewer_name}.java"},
+                output="x",
+                duration_ms=0.0,
+                status="complete",
+                reuse_key="get_file_content:x",
+            )
+            catalog = EvidenceCatalogBuilder().append_tool_records(catalog, [record])
+        return ReviewOutcome(
+            ReviewResult(summary=f"sum-{reviewer_name}", issues=[issue]),
+            gc,
+            evidence_catalog=catalog,
+        )
 
 
 def test_graph_fanin_three_discoverers(monkeypatch):

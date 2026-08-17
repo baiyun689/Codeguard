@@ -103,18 +103,21 @@ def test_archive_record_has_all_fields():
     assert {c["case_id"] for c in rec["cases"]} == {"rb_file", "clean1"}
 
 
-def test_archive_preserves_phase5_council_metrics():
+def test_archive_preserves_evidence_ledger_council_metrics():
     outcome = _outcome("phase5", reported=1)
     outcome.council_trace = CouncilTraceStats(**{
         "candidate_count": 1,
         "final_issue_count": 1,
-        "final_issue_fact_covered_count": 1,
-        "final_issue_fact_coverage": 1.0,
-        "fact_count": 2,
-        "chain_used_count": 1,
-        "recipe_fallback_count": 0,
-        "actual_evidence_tool_calls": 2,
-        "average_evidence_tool_calls": 2.0,
+        "final_issue_supported_count": 1,
+        "final_issue_support_coverage": 1.0,
+        "artifact_count": 3,
+        "patch_artifact_count": 1,
+        "context_artifact_count": 1,
+        "tool_artifact_count": 1,
+        "candidate_tool_backed_count": 1,
+        "valid_reference_count": 2,
+        "replay_confirmed_count": 1,
+        "judge_batch_call_count": 1,
     })
 
     record = build_archive_record(
@@ -133,10 +136,10 @@ def test_archive_preserves_phase5_council_metrics():
     )
 
     archived = record["cases"][0]["council_trace"]
-    assert archived["final_issue_fact_coverage"] == 1.0
-    assert archived["fact_count"] == 2
-    assert archived["chain_used_count"] == 1
-    assert archived["actual_evidence_tool_calls"] == 2
+    assert archived["final_issue_support_coverage"] == 1.0
+    assert archived["artifact_count"] == 3
+    assert archived["tool_artifact_count"] == 1
+    assert archived["replay_confirmed_count"] == 1
 
 
 def test_write_archive_filename_and_roundtrip(tmp_path):

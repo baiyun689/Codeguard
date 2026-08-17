@@ -26,13 +26,14 @@ NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length
 
 @dataclass
 class Verdict:
-    """Evidence-gate + synthesis adjudication outcome."""
+    """Evidence-gate + synthesis adjudication outcome。"""
 
     candidate_id: str
     action: Literal["keep", "drop"]
     reason_code: str
     reason: str = ""
     resolved_severity: Severity | None = None
+    supported: bool = False  # keep 且引用 ≥1 支持事实(Evidence Ledger 支持覆盖口径)
 
 
 class ContextFact(BaseModel):
@@ -116,32 +117,6 @@ class CouncilRunStats(BaseModel):
     truncated_candidates: int = Field(default=0, description="发现阶段因候选上限被截断的数量")
     verdict_count: int = Field(default=0, description="Judge 产生的候选裁决总数")
     removed_by_judge: int = Field(default=0, description="Judge 裁决为 drop 的候选数")
-    no_support_candidate_count: int = Field(
-        default=0, description="因缺少 support 证据而被 gate 拒绝的候选数"
-    )
-    no_support_retained_count: int = Field(
-        default=0, description="缺少 support 证据但仍映射到最终 Issue 的候选数"
-    )
-    direct_counter_candidate_count: int = Field(
-        default=0, description="具备 contradicts+direct 关系的候选数"
-    )
-    direct_counter_retained_count: int = Field(
-        default=0, description="直接反证候选中仍映射到最终 Issue 的数量"
-    )
-    direct_counter_retained_rate: float | None = Field(
-        default=None,
-        description="direct_counter_retained_count/direct_counter_candidate_count；分母为零时 None",
-    )
-    all_insufficient_candidate_count: int = Field(
-        default=0, description="关联关系非空且全部 insufficient 的候选数"
-    )
-    all_insufficient_retained_count: int = Field(
-        default=0, description="全 insufficient 候选中仍映射到最终 Issue 的数量"
-    )
-    all_insufficient_retained_rate: float | None = Field(
-        default=None,
-        description="all_insufficient_retained_count/all_insufficient_candidate_count；分母为零时 None",
-    )
     critical_candidate_count: int = Field(
         default=0, description="keep 且解析为 CRITICAL 的候选数"
     )
@@ -150,19 +125,36 @@ class CouncilRunStats(BaseModel):
         description="severity_proposal 到 resolved_severity 的转移计数",
     )
     final_issue_count: int = Field(default=0, description="最终 Issue 对应的 survivor 候选数")
-    final_issue_fact_covered_count: int = Field(
-        default=0, description="survivor 中至少有关联非 insufficient 关系的数量"
+    final_issue_supported_count: int = Field(
+        default=0, description="survivor 中 Judge keep 且引用 ≥1 支持事实的数量"
     )
-    final_issue_fact_coverage: float | None = Field(
+    final_issue_support_coverage: float | None = Field(
         default=None,
-        description="final_issue_fact_covered_count/final_issue_count；分母为零时 None",
+        description="final_issue_supported_count/final_issue_count；分母为零时 None",
     )
-    actual_evidence_tool_calls: int = Field(
-        default=0, description="EvidenceAgent 实际新工具调用数；缓存复用不计"
+    # ── Evidence Ledger 统计 ──
+    artifact_count: int = Field(default=0, description="运行时捕获的 Artifact 总数")
+    patch_artifact_count: int = Field(default=0, description="patch Artifact 数(P01)")
+    context_artifact_count: int = Field(default=0, description="预取上下文 Artifact 数(Cxx)")
+    tool_artifact_count: int = Field(default=0, description="工具 Artifact 数(Txx)")
+    reused_artifact_count: int = Field(default=0, description="跨任务复用捕获的 Artifact 数")
+    candidate_patch_only_count: int = Field(default=0, description="仅 patch 证据的候选数")
+    candidate_context_backed_count: int = Field(default=0, description="patch+context 的候选数")
+    candidate_tool_backed_count: int = Field(default=0, description="引用工具事实的候选数")
+    candidate_ungrounded_count: int = Field(default=0, description="ungrounded(无有效 patch)候选数")
+    selected_reference_count: int = Field(default=0, description="候选引用总数(含自动 patch)")
+    valid_reference_count: int = Field(default=0, description="验证为 valid/replay_confirmed 的引用数")
+    limited_reference_count: int = Field(default=0, description="验证为 limited 的引用数")
+    invalid_reference_count: int = Field(default=0, description="无效引用数")
+    replay_requested_count: int = Field(default=0, description="进入重放队列的 Artifact 数")
+    replay_confirmed_count: int = Field(default=0, description="重放确认的 Artifact 数")
+    replay_failed_count: int = Field(default=0, description="重放失败的 Artifact 数")
+    judge_batch_call_count: int = Field(default=0, description="批量 Judge LLM 调用次数")
+    judge_failed_candidate_count: int = Field(
+        default=0, description="Judge 失败/合同违约 fail-closed 的候选数"
     )
-    average_evidence_tool_calls: float = Field(
-        default=0.0,
-        description="actual_evidence_tool_calls/candidate_count；无候选时固定为 0.0",
+    judge_no_support_drop_count: int = Field(
+        default=0, description="Judge 因无支持事实而 drop 的候选数"
     )
     # ── 降级指标 ──
     react_degraded_recursion_count: int = Field(
@@ -183,10 +175,3 @@ class CouncilRunStats(BaseModel):
     judge_synthesis_failed_count: int = Field(
         default=0, description="CouncilJudge LLM synthesis 失败使用默认 severity 的次数"
     )
-    # ── 取证溯源统计(ADR-046) ──
-    fact_count: int = Field(default=0, description="取证后按候选累计的事实总数")
-    replay_verified_count: int = Field(default=0, description="链引用命中重放的 fact 数")
-    replay_unverified_count: int = Field(default=0, description="链引用未命中重放的 fact 数")
-    replay_failed_count: int = Field(default=0, description="重放调用失败的 fact 数")
-    chain_used_count: int = Field(default=0, description="使用合法取证链的候选数")
-    recipe_fallback_count: int = Field(default=0, description="无链/废链回退固定配方的候选数")

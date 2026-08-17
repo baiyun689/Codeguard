@@ -293,13 +293,35 @@ class CouncilTraceStats(BaseModel):
     judge_synthesis_failed_count: int = Field(
         default=0, description="CouncilJudge LLM synthesis 失败使用默认 severity 的次数"
     )
-    # ── 取证溯源统计(ADR-046) ──
-    fact_count: int = Field(default=0, description="取证后按候选累计的事实总数")
-    replay_verified_count: int = Field(default=0, description="链引用命中重放的 fact 数")
-    replay_unverified_count: int = Field(default=0, description="链引用未命中重放的 fact 数")
-    replay_failed_count: int = Field(default=0, description="重放调用失败的 fact 数")
-    chain_used_count: int = Field(default=0, description="使用合法取证链的候选数")
-    recipe_fallback_count: int = Field(default=0, description="无链/废链回退固定配方的候选数")
+    # ── Evidence Ledger 统计(与 CouncilRunStats 镜像) ──
+    final_issue_supported_count: int = Field(
+        default=0, description="survivor 中 Judge keep 且引用 ≥1 支持事实的数量"
+    )
+    final_issue_support_coverage: float | None = Field(
+        default=None, description="final_issue_supported_count/final_issue_count"
+    )
+    artifact_count: int = Field(default=0, description="运行时捕获的 Artifact 总数")
+    patch_artifact_count: int = Field(default=0, description="patch Artifact 数(P01)")
+    context_artifact_count: int = Field(default=0, description="预取上下文 Artifact 数(Cxx)")
+    tool_artifact_count: int = Field(default=0, description="工具 Artifact 数(Txx)")
+    reused_artifact_count: int = Field(default=0, description="跨任务复用捕获的 Artifact 数")
+    candidate_patch_only_count: int = Field(default=0, description="仅 patch 证据的候选数")
+    candidate_context_backed_count: int = Field(default=0, description="patch+context 的候选数")
+    candidate_tool_backed_count: int = Field(default=0, description="引用工具事实的候选数")
+    candidate_ungrounded_count: int = Field(default=0, description="ungrounded 候选数")
+    selected_reference_count: int = Field(default=0, description="候选引用总数(含自动 patch)")
+    valid_reference_count: int = Field(default=0, description="验证为 valid/replay_confirmed 的引用数")
+    limited_reference_count: int = Field(default=0, description="验证为 limited 的引用数")
+    invalid_reference_count: int = Field(default=0, description="无效引用数")
+    replay_requested_count: int = Field(default=0, description="进入重放队列的 Artifact 数")
+    replay_confirmed_count: int = Field(default=0, description="重放确认的 Artifact 数")
+    judge_batch_call_count: int = Field(default=0, description="批量 Judge LLM 调用次数")
+    judge_failed_candidate_count: int = Field(
+        default=0, description="Judge 失败/合同违约 fail-closed 的候选数"
+    )
+    judge_no_support_drop_count: int = Field(
+        default=0, description="Judge 因无支持事实而 drop 的候选数"
+    )
 
 
 class MatchOutcome(BaseModel):
