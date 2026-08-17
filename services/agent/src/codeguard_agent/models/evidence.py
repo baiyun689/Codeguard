@@ -12,8 +12,11 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from codeguard_agent.models.schemas import EvidenceRole, Severity
 
 
 class EvidenceSourceKind(str, Enum):
@@ -190,3 +193,82 @@ class EvidenceCatalog(BaseModel):
     def tool_aliases(self) -> list[str]:
         """工具 Artifact 的别名(T01...),保持首次出现顺序。"""
         return self._aliases_of(EvidenceSourceKind.TOOL_CALL)
+
+
+# ── Candidate 引用模型(源文档 §4.5) ──
+
+
+class EvidenceRef(BaseModel):
+    """候选对一条已绑定 Artifact 的引用。"""
+
+    artifact_id: str
+    declared_role: EvidenceRole
+    auto_bound: bool = False  # 系统自动绑定的 patch 引用
+
+
+class EvidenceRefErrorReason(str, Enum):
+    UNKNOWN_ALIAS = "unknown_alias"
+    CROSS_TASK_REFERENCE = "cross_task_reference"
+    CROSS_REVISION_REFERENCE = "cross_revision_reference"
+    ARTIFACT_FAILED = "artifact_failed"
+    ARTIFACT_UNAVAILABLE = "artifact_unavailable"
+
+
+class EvidenceRefError(BaseModel):
+    alias: str
+    reason: EvidenceRefErrorReason
+    detail: str = ""
+
+
+# ── Verifier 输出模型(源文档 §4.6) ──
+
+
+class EvidenceValidationStatus(str, Enum):
+    VALID = "valid"
+    LIMITED = "limited"
+    REPLAY_CONFIRMED = "replay_confirmed"
+    INVALID = "invalid"
+
+
+class VerifiedEvidence(BaseModel):
+    """一条经确定性验证、可供 Judge 引用的事实。"""
+
+    artifact_id: str
+    source_kind: EvidenceSourceKind
+    tool: str = ""
+    arguments: dict[str, str] = Field(default_factory=dict)
+    content: str
+    validation_status: EvidenceValidationStatus
+    limitations: tuple[str, ...] = ()
+
+
+class CandidateVerification(BaseModel):
+    candidate_id: str
+    source_kinds: set[EvidenceSourceKind] = Field(default_factory=set)
+    valid_evidence: list[VerifiedEvidence] = Field(default_factory=list)
+    invalid_references: list[EvidenceRefError] = Field(default_factory=list)
+    grounding_status: Literal["grounded", "partially_grounded", "ungrounded"]
+    eligible_for_judge: bool
+    rejection_reason: str = ""
+
+
+class VerificationBatch(BaseModel):
+    candidates: dict[str, CandidateVerification] = Field(default_factory=dict)
+    replayed_artifact_ids: list[str] = Field(default_factory=list)
+    trace: list[tuple[str, str]] = Field(default_factory=list)
+
+
+# ── Judge 输出模型(源文档 §4.7) ──
+
+
+class EvidenceJudgeAssessment(BaseModel):
+    candidate_id: str
+    action: Literal["keep", "drop"]
+    severity: Severity | None = None
+    supporting_evidence_ids: list[str] = Field(default_factory=list)
+    counter_evidence_ids: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class EvidenceJudgeBatch(BaseModel):
+    assessments: list[EvidenceJudgeAssessment] = Field(default_factory=list)

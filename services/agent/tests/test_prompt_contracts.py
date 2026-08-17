@@ -14,7 +14,6 @@ from codeguard_agent.models.tasks import (
     TaskContextBundle,
     TaskRiskPrior,
 )
-from codeguard_agent.pipeline.evidence.verifier import CHAIN_TOOL_NAMES
 from codeguard_agent.pipeline.risk.rules.catalog import RISK_TAG_REVIEWERS
 from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
@@ -291,37 +290,37 @@ def test_threat_knowledge_does_not_recommend_unproven_best_practice_issues() -> 
 
 
 def test_evidence_and_judge_prompts_describe_wrapper_contracts() -> None:
-    analysis = _prompt("evidence-analysis.txt")
-    assert "_RelationBatch" in analysis
-    assert all(
-        term in analysis
-        for term in ("fact_id", "relation", "strength", "observation", "limitation")
-    )
-    assert "relation 相对于候选主张" in analysis
-    assert "source_set=MAIN|GENERATED" in analysis
-    assert "不得支持生产可达性" in analysis
-    assert "replay_status=verified" in analysis
-    assert "evidence_goal.proposition" not in analysis  # 旧证据链术语已收敛
+    contract = _prompt("discovery-evidence-contract.txt")
+    assert "证据引用契约" in contract
+    assert all(term in contract for term in ("alias", "role", "evidence_refs"))
+    assert "最多选择 3 条" in contract
+    assert "location 只说明如何找到位置" in contract
+    assert "不得猜测、构造或修改编号" in contract
+    assert "evidence_chain" not in contract  # 旧证据链术语已移除
+    assert "located" not in contract
 
-    judge = _prompt("council-judge.txt")
-    assert "CandidateDirectAssessment" in judge
+    judge = _prompt("evidence-judge.txt")
+    assert "EvidenceJudgeBatch" in judge
     assert all(
         field in judge
-        for field in ("candidate_id", "action", "severity", "cited_fact_ids", "reason")
+        for field in (
+            "candidate_id",
+            "action",
+            "severity",
+            "supporting_evidence_ids",
+            "counter_evidence_ids",
+            "reason",
+        )
     )
-    for forbidden in (
-        "needs_more_evidence",
-        "merge_target_id",
-        "adjusted_severity",
-        "requested_purpose",
-        "claim_status",
-        "counter_effect",
-        "conflicts",
-        "task_tags",
-    ):
-        assert forbidden not in judge
     assert "不得请求工具" in judge
-    assert "severity 与 confidence 是两条独立轴" in judge
+    assert "未找到保护不等于证明保护不存在" in judge
+    assert "keep 必须至少引用一个 supporting_evidence_id" in judge
+    assert "maintainability" in judge
+    assert "location" in judge
+
+    direct = _prompt("direct-judge.txt")
+    assert "EvidenceJudgeAssessment" in direct
+    assert "supporting_evidence_ids / counter_evidence_ids" in direct
 
 
 def test_summary_prompt_names_structured_fields() -> None:
@@ -330,28 +329,29 @@ def test_summary_prompt_names_structured_fields() -> None:
     assert "唯一字段" in summary
 
 
-def test_base_prompts_carry_evidence_trace_contract() -> None:
+def test_base_prompts_carry_evidence_ref_contract() -> None:
     for name in ("threat-model-base.txt", "behavior-base.txt", "maintainability-base.txt"):
         text = _prompt(name)
-        assert "## 取证溯源" in text
-        assert "宁缺毋滥" in text
-        assert "最多 3 步" in text
-        assert "逐字引用" in text
-        assert all(tool in text for tool in CHAIN_TOOL_NAMES), name
+        assert "DiscoveryReviewResult" in text
+        assert "evidence_refs" in text
+        assert "证据引用契约" in text
         assert "## 输出" in text
+        assert "evidence_chain" not in text
+        assert "located" not in text
 
 
 def test_judge_prompt_names_every_synthesis_field() -> None:
-    judge = _prompt("council-judge.txt")
+    judge = _prompt("evidence-judge.txt")
     fields = {
         "candidate_id",
         "action",
         "severity",
-        "cited_fact_ids",
+        "supporting_evidence_ids",
+        "counter_evidence_ids",
         "reason",
     }
     assert all(field in judge for field in fields)
-    assert "CandidateDirectAssessment" in judge
+    assert "EvidenceJudgeBatch" in judge
 
 
 def test_eval_judge_prompt_names_case_judgement_fields() -> None:

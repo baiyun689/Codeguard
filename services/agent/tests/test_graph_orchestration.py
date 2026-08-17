@@ -10,11 +10,21 @@ import json
 from langgraph.graph import END
 
 import codeguard_agent.pipeline.orchestrator as orchestrator_module
-from codeguard_agent.models.council import (
-    CandidateDirectAssessment,
+from codeguard_agent.models.council import CandidateIssue
+from codeguard_agent.models.evidence import (
+    CandidateVerification,
+    EvidenceArtifact,
+    EvidenceArtifactStatus,
+    EvidenceCaptureMode,
+    EvidenceJudgeAssessment,
+    EvidenceJudgeBatch,
+    EvidenceRef,
+    EvidenceSourceKind,
+    EvidenceValidationStatus,
+    VerifiedEvidence,
 )
 from codeguard_agent.models.knowledge import KnowledgeBundle
-from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
+from codeguard_agent.models.schemas import EvidenceRole, Issue, ReviewResult, Severity
 from codeguard_agent.models.tasks import (
     ReviewBudget,
     RiskCoverage,
@@ -135,21 +145,37 @@ def test_summary_prompts_only_request_summary():
     assert "summary" in combined
 
 
+_REV = "test-rev:test-digest"
+
+
+def _patch_artifact(task_id: str = "A.java#h0") -> EvidenceArtifact:
+    return EvidenceArtifact.build(
+        task_id=task_id, reviewer="threat_model", revision=_REV,
+        source_kind=EvidenceSourceKind.TASK_PATCH, payload="+x",
+        status=EvidenceArtifactStatus.COMPLETE,
+        capture_mode=EvidenceCaptureMode.GENERATED,
+        arguments={"file_path": "A.java"},
+    )
+
+
 def _candidate(*, confidence=0.9):
-    issue = Issue(
-        severity=Severity.WARNING,
+    patch = _patch_artifact()
+    return CandidateIssue(
+        id="threat_model-1-A.java:1:t",
+        task_id="A.java#h0",
+        source_agent="threat_model",
         file="A.java",
         line=1,
-
         type="t",
-        message="m",
+        severity_proposal=Severity.WARNING,
+        claim="m",
         confidence=confidence,
-    )
-    return G.CandidateIssue.from_issue(
-        issue,
-        source_agent="threat_model",
-        index=1,
-        task_id="A.java#h0",
+        evidence_refs=[
+            EvidenceRef(
+                artifact_id=patch.id, declared_role=EvidenceRole.MECHANISM,
+                auto_bound=True,
+            )
+        ],
     )
 
 
@@ -185,6 +211,7 @@ def test_reviewer_prompt_contains_summary_once(monkeypatch):
             structured_method,
             enable_hitl=False,
             evidence_catalog=None,
+            result_schema=None,
         ):
             captured["prompt"] = user_prompt
             return ReviewOutcome(ReviewResult(summary="", issues=[]))
@@ -235,13 +262,13 @@ def test_review_tier_direct_empty_result_does_not_retry(monkeypatch):
 
     class _EmptyEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                    max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
+                    max_retries, structured_method, enable_hitl=False, evidence_catalog=None, result_schema=None):
             calls["engine"] += 1
             return ReviewOutcome(ReviewResult(summary="", issues=[]))
 
     class _FallbackDirectEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                    max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
+                    max_retries, structured_method, enable_hitl=False, evidence_catalog=None, result_schema=None):
             calls["fallback"] += 1
             return ReviewOutcome(ReviewResult(summary="", issues=[]))
 
@@ -265,13 +292,13 @@ def test_review_tier_react_empty_result_still_retries_direct_fallback(monkeypatc
 
     class _EmptyEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                    max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
+                    max_retries, structured_method, enable_hitl=False, evidence_catalog=None, result_schema=None):
             calls["engine"] += 1
             return ReviewOutcome(ReviewResult(summary="", issues=[]))
 
     class _FallbackDirectEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                    max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
+                    max_retries, structured_method, enable_hitl=False, evidence_catalog=None, result_schema=None):
             calls["fallback"] += 1
             return ReviewOutcome(ReviewResult(summary="fallback-summary", issues=[]))
 
@@ -561,31 +588,31 @@ def test_small_direct_review_success_ends_without_risk_pipeline_state():
     assert "risk_priors" not in output
 
 
-class _RelationBatchStub:
+class _JudgeBatchStub:
     def invoke(self, messages):
         payload = json.loads(messages[-1][1])
-        return {
-            "findings": [
-                {
-                    "fact_id": fact["fact_id"],
-                    "relation": "supports",
-                    "strength": "contextual",
-                    "observation": "the changed task patch supports the candidate",
-                    "limitation": "",
-                }
-                for fact in payload["facts"]
-            ]
-        }
+        assessments = []
+        for cand in payload["candidates"]:
+            evidence_ids = [item["evidence_id"] for item in cand["evidence"]]
+            assessments.append({
+                "candidate_id": cand["candidate_id"],
+                "action": "keep",
+                "severity": "INFO",
+                "supporting_evidence_ids": evidence_ids[:1],
+                "counter_evidence_ids": [],
+                "reason": "supported for graph wiring test",
+            })
+        return {"assessments": assessments}
 
 
 class _CouncilLLM:
-    """Return valid relation/verdict structures for graph wiring tests."""
+    """Return valid judge structures for graph wiring tests."""
 
     def with_structured_output(self, schema, *args, **kwargs):
-        # 对象同一性比较:接线一旦换了裁决/关系模型,这里 import 期即失败
-        if schema is verifier._RelationBatch:
-            return _RelationBatchStub()
-        if schema is CandidateDirectAssessment:
+        # 对象同一性比较:接线一旦换了裁决模型,这里 import 期即失败
+        if schema is EvidenceJudgeBatch:
+            return _JudgeBatchStub()
+        if schema is EvidenceJudgeAssessment:
             return _ValueStub(
                 {
                     "candidate_id": "C001",
@@ -612,7 +639,7 @@ _FANIN_DIFF = "".join(
 
 
 class _FakeEngine:
-    def review(self, llm, *, system_prompt, user_prompt, reviewer_name, max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
+    def review(self, llm, *, system_prompt, user_prompt, reviewer_name, max_retries, structured_method, enable_hitl=False, evidence_catalog=None, result_schema=None):
         file, line = _FAKE_TARGET.get(reviewer_name, ("A.java", 1))
         issue = Issue(
             severity=Severity.WARNING,
@@ -716,50 +743,60 @@ def _evidence_state(candidate=None, **over):
         patch="+x",
         changed_lines=[candidate.line or 1],
     )
+    patch = _patch_artifact(candidate.task_id)
     state = {
         "candidate_issues": [candidate],
         "review_tasks": [task],
         "task_context_bundles": {},
         "structured_method": "function_calling",
+        "evidence_revision": _REV,
+        "evidence_artifacts": {patch.id: patch},
     }
     state.update(over)
     return state
 
 
-def test_evidence_verifier_node_populates_facts_and_relations():
+def _grounded_verification(candidate: CandidateIssue, *, eligible: bool = True,
+                           rejection_reason: str = "") -> CandidateVerification:
+    return CandidateVerification(
+        candidate_id=candidate.id,
+        source_kinds={EvidenceSourceKind.TASK_PATCH},
+        valid_evidence=[
+            VerifiedEvidence(
+                artifact_id=candidate.evidence_refs[0].artifact_id,
+                source_kind=EvidenceSourceKind.TASK_PATCH,
+                content="+x",
+                validation_status=EvidenceValidationStatus.VALID,
+            )
+        ],
+        grounding_status="grounded",
+        eligible_for_judge=eligible,
+        rejection_reason=rejection_reason,
+    )
+
+
+def test_evidence_verifier_node_populates_verifications():
     candidate = _candidate()
     out = G._evidence_verifier_node(tool_client=None, judge_llm=None)(
         _evidence_state(candidate)
     )
 
-    assert list(out["candidate_facts"]) == [candidate.id]
-    assert list(out["candidate_relations"]) == [candidate.id]
-    fact = out["candidate_facts"][candidate.id][0]
-    assert fact.source == "diff"
-    assert fact.replay_status == "recipe"
-    relation = out["candidate_relations"][candidate.id][0]
-    assert relation.relation in {"supports", "insufficient", "contradicts"}
+    verification = out["candidate_verifications"][candidate.id]
+    assert verification.grounding_status == "grounded"
+    assert verification.eligible_for_judge is True
     assert any(
         trace.node == "evidence_verifier" for trace in out["council_trace"]
     )
 
 
-def test_council_judge_node_mock_keeps_supported_candidate_and_builds_stats():
+def test_council_judge_node_mock_keeps_grounded_candidate_and_builds_stats():
     candidate = _candidate()
-    fact = G.CandidateFact(
-        fact_id="fact-1", source="diff", raw="+x", replay_status="recipe"
-    )
-    relation = G.FactRelation(
-        fact_id="fact-1",
-        relation="supports",
-        strength="contextual",
-        observation="变更出现在 patch 中",
-    )
     out = G._council_judge_node(judge_llm=None)(
         _evidence_state(
             candidate,
-            candidate_facts={candidate.id: [fact]},
-            candidate_relations={candidate.id: [relation]},
+            candidate_verifications={
+                candidate.id: _grounded_verification(candidate)
+            },
         )
     )
 
@@ -767,34 +804,26 @@ def test_council_judge_node_mock_keeps_supported_candidate_and_builds_stats():
     assert out["final_issues"][0].severity == candidate.severity_proposal
     assert out["council_stats"].verdict_count == 1
     assert out["council_stats"].candidate_count == 1
-    assert out["council_stats"].final_issue_fact_covered_count == 1
     assert any(
         trace.node == "council_judge" for trace in out["council_trace"]
     )
 
 
-def test_council_judge_node_gates_candidate_without_supporting_evidence():
+def test_council_judge_node_drops_ineligible_candidate():
     candidate = _candidate()
-    fact = G.CandidateFact(
-        fact_id="fact-1", source="diff", raw="+x", replay_status="recipe"
-    )
-    relation = G.FactRelation(
-        fact_id="fact-1",
-        relation="insufficient",
-        strength="contextual",
-        limitation="没有足够上下文",
-    )
     out = G._council_judge_node(judge_llm=None)(
         _evidence_state(
             candidate,
-            candidate_facts={candidate.id: [fact]},
-            candidate_relations={candidate.id: [relation]},
+            candidate_verifications={
+                candidate.id: _grounded_verification(
+                    candidate, eligible=False, rejection_reason="direct_counter_guard"
+                )
+            },
         )
     )
 
     assert out["final_issues"] == []
-    assert out["council_stats"].all_insufficient_candidate_count == 1
-    assert out["council_stats"].no_support_candidate_count == 0
+    assert out["council_stats"].removed_by_judge == 1
 
 
 def test_direct_judge_node_mock_keeps_candidate_without_evidence():
@@ -1028,7 +1057,7 @@ def test_make_reviewer_node_rejects_task_mismatch_candidate(monkeypatch):
 
     class _OutOfDiffEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
+                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None, result_schema=None):
             issue = Issue(
                 severity=Severity.WARNING,
                 file="NotInDiff.java",
@@ -1062,7 +1091,7 @@ def test_make_reviewer_node_only_invokes_routed_and_selected_tasks(monkeypatch):
 
     class _RecordingEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
+                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None, result_schema=None):
             invoked_task_files.append(user_prompt)
             return ReviewOutcome(ReviewResult(summary="s"))
 
@@ -1119,7 +1148,7 @@ def test_make_reviewer_node_rejects_candidate_with_mismatched_file(monkeypatch):
 
     class _WrongFileEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
+                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None, result_schema=None):
             issue = Issue(
                 severity=Severity.WARNING, file="Unrelated.java", line=1,
                 type="t", message="m",
@@ -1231,7 +1260,7 @@ def test_make_reviewer_node_injects_selected_knowledge_bundle_into_user_prompt(m
 
     class _CapturingEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
+                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None, result_schema=None):
             captured["system_prompt"] = system_prompt
             captured["user_prompt"] = user_prompt
             return ReviewOutcome(ReviewResult(summary="s"))
@@ -1286,7 +1315,7 @@ def test_make_reviewer_node_fanout_survives_real_memory_checkpointer(monkeypatch
 
     class _RecordingEngine:
         def review(self, llm, *, system_prompt, user_prompt, reviewer_name,
-                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None):
+                   max_retries, structured_method, enable_hitl=False, evidence_catalog=None, result_schema=None):
             import re
 
             match = re.search(r'file="([^"]+)"', user_prompt)
@@ -1524,7 +1553,8 @@ def test_make_reviewer_node_shares_tool_coordinator_between_its_tasks(monkeypatc
     node(_two_behavior_task_state())
 
     assert raw_client.calls == 1
-    assert sorted(returned_bodies) == ["FULL BODY", "FULL BODY"]
+    # 首发回显编号,复用方收到原始内容。
+    assert sorted(returned_bodies) == ["FULL BODY", "FULL BODY\n\n[证据编号 T01]"]
 
 
 def test_make_reviewer_node_does_not_cache_across_reviews(monkeypatch):
@@ -1594,8 +1624,9 @@ def test_make_reviewer_node_blocks_current_file_read_for_complete_new_file(monke
     )
 
     assert raw_client.calls == 0
+    # 完整新文件读取解析到 P01,并回显证据编号。
     assert returned == [
-        "当前 task patch 已包含该新增文件的完整内容；请直接复用 patch，不要重复读取。"
+        "当前 task patch 已包含该新增文件的完整内容；请直接复用 patch，不要重复读取。\n\n[证据编号 P01]"
     ]
 
 

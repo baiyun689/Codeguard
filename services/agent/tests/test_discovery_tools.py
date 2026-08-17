@@ -39,7 +39,8 @@ def test_same_conversation_repeated_read_returns_short_marker() -> None:
     client = CoordinatedDiscoveryToolClient(raw, DiscoveryToolCoordinator())
     first = client.get_file_content("src/A.java")
     second = client.get_file_content("src/A.java")
-    assert first.result == "FULL BODY"
+    # 首次真实结果回显证据编号(Evidence Ledger 修正④),重复调用仍是短标记。
+    assert first.result == "FULL BODY\n\n[证据编号 T01]"
     assert second.result == REPEATED_TOOL_RESULT
     assert raw.calls == 1
     records = client.trace_records
@@ -59,7 +60,7 @@ def test_complete_patch_file_read_returns_marker_without_delegate_call() -> None
     response = client.get_file_content("src\\.\\A.java")
 
     assert response.success is True
-    assert response.result == COMPLETE_PATCH_RESULT
+    assert response.result == COMPLETE_PATCH_RESULT + "\n\n[证据编号 P01]"
     assert raw.calls == 0
 
 
@@ -69,7 +70,10 @@ def test_parallel_task_clients_share_single_flight_but_both_receive_full_result(
     clients = [CoordinatedDiscoveryToolClient(raw, coordinator) for _ in range(2)]
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda c: c.get_file_content("src/A.java"), clients))
-    assert [result.result for result in results] == ["FULL BODY", "FULL BODY"]
+    # 首发客户端回显编号;复用方(协调器缓存命中)收到原始内容。
+    assert {result.result for result in results} == {
+        "FULL BODY\n\n[证据编号 T01]", "FULL BODY",
+    }
     assert raw.calls == 1
     records = [record for client in clients for record in client.trace_records]
     assert sorted(record.status for record in records) == ["complete", "reused"]
@@ -103,7 +107,9 @@ def test_same_conversation_parallel_duplicate_returns_one_short_marker() -> None
         results = [first.result(timeout=2), second.result(timeout=2)]
 
     assert raw.calls == 1
-    assert [result.result for result in results].count("FULL BODY") == 1
+    assert sum(
+        result.result.startswith("FULL BODY") for result in results
+    ) == 1
     assert [result.result for result in results].count(REPEATED_TOOL_RESULT) == 1
 
 
@@ -112,8 +118,9 @@ def test_empty_success_is_not_cached() -> None:
     coordinator = DiscoveryToolCoordinator()
     first = CoordinatedDiscoveryToolClient(raw, coordinator)
     second = CoordinatedDiscoveryToolClient(raw, coordinator)
-    assert first.get_file_content("src/A.java").result == ""
-    assert second.get_file_content("src/A.java").result == "RECOVERED"
+    assert first.get_file_content("src/A.java").result == ""  # 空结果不附加编号
+    # 第二个客户端各自的记录独立编号(T01),与 per-task 目录一致。
+    assert second.get_file_content("src/A.java").result == "RECOVERED\n\n[证据编号 T01]"
     assert raw.calls == 2
 
 
@@ -202,7 +209,7 @@ def test_parallel_failure_is_shared_then_later_call_retries(monkeypatch) -> None
     assert raw.calls == 1
 
     retry = CoordinatedDiscoveryToolClient(raw, coordinator)
-    assert retry.get_file_content("src/A.java").result == "RECOVERED"
+    assert retry.get_file_content("src/A.java").result == "RECOVERED\n\n[证据编号 T01]"
     assert raw.calls == 2
 
 
@@ -254,7 +261,7 @@ def test_failure_remains_in_flight_until_waiters_receive_it(monkeypatch) -> None
     assert all(result.success is False for result in results)
     assert raw.calls == 1
     retry = CoordinatedDiscoveryToolClient(raw, coordinator)
-    assert retry.get_file_content("src/A.java").result == "RECOVERED"
+    assert retry.get_file_content("src/A.java").result == "RECOVERED\n\n[证据编号 T01]"
     assert raw.calls == 2
 
 

@@ -1,9 +1,9 @@
-"""guard_scan 确定性反证扫描测试(ADR-046)。"""
+"""guard_scan 确定性反证扫描测试(Evidence Ledger 保留的确定性反证)。"""
 from __future__ import annotations
 
 import json
 
-from codeguard_agent.models.council import CandidateFact, CandidateIssue
+from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import (
     ContextFact,
@@ -11,9 +11,7 @@ from codeguard_agent.models.tasks import (
     RiskTag,
     TaskContextBundle,
 )
-# 模块级导入冒烟:guard_scan 与 verifier 可同时导入(标签常量抽叶子模块后防循环导入)。
-from codeguard_agent.pipeline.evidence import guard_scan, verifier  # noqa: F401
-from codeguard_agent.pipeline.evidence.guard_scan import scan_guard_fact
+from codeguard_agent.pipeline.evidence.guard_scan import scan_guard_content
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 
 
@@ -68,12 +66,6 @@ def _dossier_for_method(
     )
     return CandidateDossier(
         candidate=candidate, task=task, context_bundle=bundle
-    )
-
-
-def _fact(raw: str) -> CandidateFact:
-    return CandidateFact(
-        fact_id="f1", source="tool:get_file_content", raw=raw, replay_status="verified"
     )
 
 
@@ -134,43 +126,43 @@ _METHOD_GUARD_FILE = (
 )
 
 
-def test_scan_guard_detects_preauthorize_as_direct_contradicts():
+def test_scan_guard_detects_preauthorize():
     dossier = _dossier_for_method(annotations=["PreAuthorize"])
-    fact = _fact('@PreAuthorize("hasRole(\'ADMIN\')")\npublic void update() {}')
-    relation = scan_guard_fact(dossier, fact, RiskTag.AUTHORIZATION)
-    assert relation is not None
-    assert relation.relation == "contradicts"
-    assert relation.strength == "direct"
-    assert relation.observation.strip()
+    observation = scan_guard_content(
+        dossier, '@PreAuthorize("hasRole(\'ADMIN\')")\npublic void update() {}',
+        RiskTag.AUTHORIZATION,
+    )
+    assert observation is not None
+    assert observation.strip()
 
 
 def test_scan_guard_detects_transactional_for_transaction_tag():
     dossier = _dossier_for_method(method="placeOrder")
-    fact = _fact("@Transactional\npublic void placeOrder() {}")
-    relation = scan_guard_fact(dossier, fact, RiskTag.TRANSACTION_ATOMICITY)
-    assert relation is not None
-    assert relation.relation == "contradicts"
-    assert relation.strength == "direct"
-    assert "Transactional" in relation.observation
+    observation = scan_guard_content(
+        dossier, "@Transactional\npublic void placeOrder() {}",
+        RiskTag.TRANSACTION_ATOMICITY,
+    )
+    assert observation is not None
+    assert "Transactional" in observation
 
 
 def test_scan_guard_silent_for_guard_on_other_method():
     # 多方法文件:guard 在 admin() 上,候选锚定 update()——不得误报为直接反证。
     dossier = _dossier_for_method(start_line=4, end_line=4)
-    fact = _fact(
+    content = (
         "public class Service {\n"
         "    @PreAuthorize(\"hasRole('ADMIN')\")\n"
         "    public void admin() { }\n"
         "    public void update() { save(); }\n"
         "}"
     )
-    assert scan_guard_fact(dossier, fact, RiskTag.AUTHORIZATION) is None
+    assert scan_guard_content(dossier, content, RiskTag.AUTHORIZATION) is None
 
 
 def test_scan_guard_detects_guard_on_candidate_method():
-    # 多方法文件:guard 在候选锚定的 update() 声明块上——命中 direct contradicts。
+    # 多方法文件:guard 在候选锚定的 update() 声明块上——命中。
     dossier = _dossier_for_method(start_line=4, end_line=5)
-    fact = _fact(
+    content = (
         "public class Service {\n"
         "    public void admin() { }\n"
         "\n"
@@ -178,17 +170,14 @@ def test_scan_guard_detects_guard_on_candidate_method():
         "    public void update() { save(); }\n"
         "}"
     )
-    relation = scan_guard_fact(dossier, fact, RiskTag.AUTHORIZATION)
-    assert relation is not None
-    assert relation.relation == "contradicts"
-    assert relation.strength == "direct"
+    assert scan_guard_content(dossier, content, RiskTag.AUTHORIZATION) is not None
 
 
 def test_scan_guard_field_initializer_does_not_hijack_anchor():
     # 方法声明前的字段初始化器带括号调用,不得劫持方法锚点;
     # 候选方法上的 guard 仍应被命中(锚定来自 symbol_context 而非首个括号)。
     dossier = _dossier_for_method(start_line=4, end_line=5)
-    fact = _fact(
+    content = (
         "public class Service {\n"
         "    private final ThreadLocal<Context> t = ThreadLocal.withInitial(() -> new Context());\n"
         "\n"
@@ -196,60 +185,49 @@ def test_scan_guard_field_initializer_does_not_hijack_anchor():
         "    public void update() { save(); }\n"
         "}"
     )
-    relation = scan_guard_fact(dossier, fact, RiskTag.AUTHORIZATION)
-    assert relation is not None
-    assert relation.relation == "contradicts"
-    assert relation.strength == "direct"
-    assert "PreAuthorize" in relation.observation
+    observation = scan_guard_content(dossier, content, RiskTag.AUTHORIZATION)
+    assert observation is not None
+    assert "PreAuthorize" in observation
 
 
 def test_scan_guard_silent_for_non_security_tags():
     dossier = _dossier_for_method()
-    fact = _fact("@PreAuthorize(...)\nvoid f() {}")
-    assert scan_guard_fact(dossier, fact, RiskTag.PERFORMANCE) is None
+    assert scan_guard_content(dossier, "@PreAuthorize(...)\nvoid f() {}", RiskTag.PERFORMANCE) is None
 
 
 def test_scan_guard_silent_without_annotation():
     dossier = _dossier_for_method(method="f")
-    fact = _fact("public void f() {}")
-    assert scan_guard_fact(dossier, fact, RiskTag.AUTHORIZATION) is None
+    assert scan_guard_content(dossier, "public void f() {}", RiskTag.AUTHORIZATION) is None
 
 
 def test_scan_guard_silent_for_empty_raw():
     dossier = _dossier_for_method()
-    fact = _fact("")
-    assert scan_guard_fact(dossier, fact, RiskTag.AUTHORIZATION) is None
+    assert scan_guard_content(dossier, "", RiskTag.AUTHORIZATION) is None
 
 
 def test_scan_guard_detects_class_level_guard():
     # 类声明块分支:guard 在类声明上、被审方法本体无注解 → 命中所属类声明文案。
     dossier = _dossier_for_method(start_line=3, end_line=4)
-    fact = _fact(
+    content = (
         "@PreAuthorize(\"hasRole('ADMIN')\")\n"
         "public class Service {\n"
         "    public void update() { save(); }\n"
         "}"
     )
-    relation = scan_guard_fact(dossier, fact, RiskTag.AUTHORIZATION)
-    assert relation is not None
-    assert relation.relation == "contradicts"
-    assert relation.strength == "direct"
-    assert "所属类声明" in relation.observation
+    observation = scan_guard_content(dossier, content, RiskTag.AUTHORIZATION)
+    assert observation is not None
+    assert "所属类声明" in observation
 
 
 def test_scan_guard_legacy_ast_structure_fallback_resolves_candidate_method():
     # 无 method 类 symbol_context,只有 ast_structure fact:
     # _resolved_method 走 _METHOD_RANGE 匹配 + task_span 过滤兜底,命中方法声明块 guard。
     dossier = _ast_fallback_dossier("@@ -9,3 +9,3 @@")
-    fact = _fact(_METHOD_GUARD_FILE)
-    relation = scan_guard_fact(dossier, fact, RiskTag.AUTHORIZATION)
-    assert relation is not None
-    assert relation.relation == "contradicts"
-    assert relation.strength == "direct"
+    observation = scan_guard_content(dossier, _METHOD_GUARD_FILE, RiskTag.AUTHORIZATION)
+    assert observation is not None
 
 
 def test_scan_guard_legacy_ast_structure_fallback_filters_outside_task_span():
     # task_span 不覆盖 ast 声明的 [L9-L12] 区间时兜底不命中 → 不产出。
     dossier = _ast_fallback_dossier("@@ -50,3 +50,3 @@")
-    fact = _fact(_METHOD_GUARD_FILE)
-    assert scan_guard_fact(dossier, fact, RiskTag.AUTHORIZATION) is None
+    assert scan_guard_content(dossier, _METHOD_GUARD_FILE, RiskTag.AUTHORIZATION) is None

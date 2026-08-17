@@ -73,11 +73,13 @@ class ReviewEngine(ABC):
         structured_method: str,
         enable_hitl: bool = False,
         evidence_catalog: Any = None,
+        result_schema: Any = ReviewResult,
     ) -> ReviewOutcome:
         """执行一次领域审查,返回产出信封(结构化结果 + 获取的上下文)。
 
         假定 llm 非 None、diff 非空(由 stage 统一处理边界)。
         evidence_catalog:初始证据目录(Direct 档透传;ReAct 档追加工具记录)。
+        result_schema:结构化输出模型(发现者用 DiscoveryReviewResult,直审用 ReviewResult)。
         """
 
 
@@ -95,8 +97,9 @@ class DirectEngine(ReviewEngine):
         structured_method: str,
         enable_hitl: bool = False,
         evidence_catalog: Any = None,
+        result_schema: Any = ReviewResult,
     ) -> ReviewOutcome:
-        structured_llm = llm.with_structured_output(ReviewResult, method=structured_method)
+        structured_llm = llm.with_structured_output(result_schema, method=structured_method)
         # 结构化输出可能返回 None(模型没正确发起工具调用):invoke_with_retry 只重试抛异常路径,
         # None 需要单独重试(deepseek 对结构化收口偶发 None,重试有概率拿到合规输出),耗尽才兜底为空。
         result = None
@@ -161,6 +164,7 @@ class ToolAgentEngine(ReviewEngine):
         structured_method: str,
         enable_hitl: bool = False,
         evidence_catalog: Any = None,
+        result_schema: Any = ReviewResult,
     ) -> ReviewOutcome:
         # GraphRecursionError 延迟导入(mock/无工具路径不需要 langgraph)。
         from langgraph.errors import GraphRecursionError
@@ -183,18 +187,20 @@ class ToolAgentEngine(ReviewEngine):
                     self._recursion_limit,
                     len(gathered),
                 )
+                catalog = _extend_catalog(evidence_catalog, tool_records)
                 synthesis = DirectEngine().review(
                     llm,
                     system_prompt=system_prompt,
-                    user_prompt=_bounded_synthesis_prompt(user_prompt, gathered),
+                    user_prompt=_synthesis_prompt(user_prompt, catalog, gathered),
                     reviewer_name=reviewer_name,
                     max_retries=max_retries,
                     structured_method=structured_method,
+                    result_schema=result_schema,
                 )
                 synthesis.tool_trace_records.extend(tool_records)
                 synthesis.gathered_context.extend(gathered)
                 synthesis.execution_events.append("react_bounded_synthesis")
-                synthesis.evidence_catalog = _extend_catalog(evidence_catalog, tool_records)
+                synthesis.evidence_catalog = catalog
                 return synthesis
             # ReAct 在 recursion_limit 步内没收敛(绕的难例 / 工具反复绕)。不让该域被静默丢弃
             # (那会直接丢失这一维度的发现、压低 recall),而是降级为无工具直连复审一次,至少
@@ -213,35 +219,33 @@ class ToolAgentEngine(ReviewEngine):
                 structured_method=structured_method,
             )
             tool_records = list(getattr(self._tool_client, "trace_records", ()))
+            catalog = _extend_catalog(evidence_catalog, tool_records)
             fallback.tool_trace_records.extend(tool_records)
             fallback.gathered_context.extend(
                 _gathered_context_from_records(tool_records)
             )
             # ReAct 异常降级 Direct 时保留已捕获目录,不丢已取得的工具事实。
-            fallback.evidence_catalog = _extend_catalog(evidence_catalog, tool_records)
+            fallback.evidence_catalog = catalog
             return fallback
         # 两阶段收束:ReAct 探索工具收集上下文 → DirectEngine 结构化合成。
         # create_agent 不再传 response_format(deepseek 不兼容 LangChain 隐式 Respond 工具),
         # 改为主动用 DirectEngine.with_structured_output 做最终收口。
         tool_records = list(getattr(self._tool_client, "trace_records", ()))
         gathered = _extract_gathered_context(raw, tool_records=tool_records)
-        synthesis_prompt = (
-            _bounded_synthesis_prompt(user_prompt, gathered)
-            if gathered
-            else user_prompt
-        )
+        catalog = _extend_catalog(evidence_catalog, tool_records)
         synthesis = DirectEngine().review(
             llm,
             system_prompt=system_prompt,
-            user_prompt=synthesis_prompt,
+            user_prompt=_synthesis_prompt(user_prompt, catalog, gathered),
             reviewer_name=reviewer_name,
             max_retries=max_retries,
             structured_method=structured_method,
+            result_schema=result_schema,
         )
         synthesis.tool_trace_records.extend(tool_records)
         synthesis.gathered_context.extend(gathered)
         synthesis.execution_events.append("react_two_phase_synthesis")
-        synthesis.evidence_catalog = _extend_catalog(evidence_catalog, tool_records)
+        synthesis.evidence_catalog = catalog
         return synthesis
 
     def _run_agent(self, llm: Any, system_prompt: str, user_prompt: str) -> Any:
@@ -356,6 +360,25 @@ def _extract_gathered_context(
     except Exception as exc:  # noqa: BLE001 上下文捕获失败不应影响审查
         logger.warning("[engines] 抽取工具上下文失败,本次按空处理: %s", exc)
         return []
+
+
+def _synthesis_prompt(user_prompt: str, catalog: Any, gathered: list[GatheredContext]) -> str:
+    """合成期提示词:优先渲染证据目录(编号+摘要内容),无目录时回退有界事实。"""
+    if catalog is not None:
+        from codeguard_agent.pipeline.evidence.ledger import render_evidence_catalog
+
+        rendered = render_evidence_catalog(catalog)
+        if rendered:
+            return (
+                f"{user_prompt}\n\n"
+                "以下是本次探索经运行时登记的 <evidence_catalog>。"
+                "引用证据时只能使用其中存在的编号,不得猜测、构造或修改编号;"
+                "目录外的内容不得作为证据引用。\n\n"
+                f"{rendered}"
+            )
+    if gathered:
+        return _bounded_synthesis_prompt(user_prompt, gathered)
+    return user_prompt
 
 
 def _extend_catalog(catalog: Any, tool_records: Any) -> Any:

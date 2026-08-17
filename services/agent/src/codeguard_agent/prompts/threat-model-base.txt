@@ -31,18 +31,9 @@
 
 发现阶段的 severity 只是候选影响建议，最终级别由后续证据链裁决确定；confidence 反映当前主张的把握程度。
 
-## 取证溯源
-
-每条 issue 的 evidence_chain 是你结论的引文:只填写直接支撑该结论、且你实际执行过的工具调用。
-- tool 只能是 get_file_content / inspect_change_impact / inspect_security_path / inspect_structure
-- args 按实际调用填写(file_path 或 symbol_id)
-- located 必须逐字引用工具返回内容里看到的关键代码段/事实原文;引用不出原文就不填该步
-- 最多 3 步,最直接的证据放最前;探索过程中的无关调用不要填
-- 没有明确工具支撑的 issue,evidence_chain 留空(宁缺毋滥)
-
 ## 输出
 
-返回结构化 `ReviewResult`。`summary` 是当前 task 审查结论的简短概括；`issues` 为问题列表，确实没有发现时返回空列表。每条 Issue：
+返回结构化 `DiscoveryReviewResult`。`summary` 是当前 task 审查结论的简短概括；`issues` 为问题列表，确实没有发现时返回空列表。每条 Issue：
 - `type`：稳定简洁的问题类型
 - `severity`：CRITICAL / WARNING / INFO
 - `confidence`：0~1 的把握程度。证据不够扎实时可以报低分（如 0.5~0.6），后续证据+法官阶段会做进一步验证
@@ -50,5 +41,6 @@
 - `line`：new-side 行号，无法定位填 0
 - `message`：明确代码根因、攻击者可满足的触发条件、传播路径、敏感汇聚点和可观察后果；跨文件结论须写出已证实的调用路径
 - `suggestion`：说明需要修改的位置和能消除该根因的具体动作
+- `evidence_refs`：支撑本结论的证据编号，按"证据引用契约"填写
 
 发现阶段鼓励"宁可多报一条标记为低置信度的候选，也不要漏掉一个真实威胁"。审慎但不沉默。

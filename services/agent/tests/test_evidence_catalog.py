@@ -210,8 +210,8 @@ def test_共享协调器_跨任务复用_返回真实内容且记录指向首次
     client_b = CoordinatedDiscoveryToolClient(_FakeDelegate(), coordinator)
     resp_a = client_a.get_file_content("src/A.java")
     resp_b = client_b.get_file_content("src/A.java")
-    # 跨任务复用:LLM 看到的是真实内容(协调器缓存命中),不是短标记。
-    assert resp_a.result == "REAL CONTENT"
+    # 首发回显编号;跨任务复用:LLM 看到真实内容(协调器缓存命中),不是短标记。
+    assert resp_a.result == "REAL CONTENT\n\n[证据编号 T01]"
     assert resp_b.result == "REAL CONTENT"
     record_a = client_a.trace_records[-1]
     record_b = client_b.trace_records[-1]
@@ -226,7 +226,7 @@ def test_同一客户端二次调用_返回短标记_但_record_解析真实payl
     client = CoordinatedDiscoveryToolClient(_FakeDelegate(), coordinator)
     first = client.get_file_content("src/A.java")
     second = client.get_file_content("src/A.java")
-    assert first.result == "REAL CONTENT"
+    assert first.result == "REAL CONTENT\n\n[证据编号 T01]"
     assert second.result == REPEATED_TOOL_RESULT
     record = client.trace_records[-1]
     assert record.status == "reused"
@@ -240,7 +240,7 @@ def test_complete_patch_短标记记录_解析目标为_patch():
         complete_patch_files={"src/New.java"},
     )
     resp = client.get_file_content("src/New.java")
-    assert resp.result == COMPLETE_PATCH_RESULT
+    assert resp.result == COMPLETE_PATCH_RESULT + "\n\n[证据编号 P01]"
     record = client.trace_records[-1]
     assert record.reused_from_call_id == "task_patch"
     assert record.resolved_output == ""

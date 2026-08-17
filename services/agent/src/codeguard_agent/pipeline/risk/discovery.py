@@ -24,7 +24,20 @@ REPEATED_TOOL_RESULT = (
 COMPLETE_PATCH_RESULT = (
     "当前 task patch 已包含该新增文件的完整内容；请直接复用 patch，不要重复读取。"
 )
+ALIAS_TAG = "[证据编号 {alias}]"  # 证据目录短别名回显(Evidence Ledger 修正④)
 ToolKey = tuple[str, str]
+
+
+def _alias_echo(response: ToolResponse, alias: str) -> ToolResponse:
+    """把证据编号回显进返回给 LLM 的文本;record 保留原始 payload 不污染。
+
+    空结果不附加编号(无内容可引用,不占 T 编号语义)。"""
+    if not response.success:
+        return response
+    text = (response.result or "").strip()
+    if not text:
+        return response
+    return ToolResponse(success=True, result=f"{text}\n\n{ALIAS_TAG.format(alias=alias)}")
 
 
 @dataclass(frozen=True)
@@ -214,7 +227,7 @@ class CoordinatedDiscoveryToolClient:
                 )
                 return repeated
             self._record(tool_name, arguments, response, started)
-            return response
+            return _alias_echo(response, self._next_t_alias())
 
         try:
             assert future is not None
@@ -237,6 +250,8 @@ class CoordinatedDiscoveryToolClient:
             future.set_result(response)
             with self._lock:
                 self._in_flight.pop(key, None)
+            if not coordinator_reused:
+                return _alias_echo(response, self._next_t_alias())
             return response
         except BaseException as exc:
             if future is not None and not future.done():
@@ -296,6 +311,21 @@ class CoordinatedDiscoveryToolClient:
         with self._lock:
             return tuple(self._records)
 
+    def _next_t_alias(self) -> str:
+        """本客户端目录的下一个 T 编号(与 ledger 的 append_tool_records 同序)。
+
+        编号 = 非短标记记录数(短标记不建 Artifact,跨任务复用建 REUSED
+        Artifact),与目录追加顺序一致,保证回显编号可被合成期引用。
+        """
+        with self._lock:
+            count = sum(
+                1
+                for record in self._records
+                if record.output
+                not in {COMPLETE_PATCH_RESULT, REPEATED_TOOL_RESULT}
+            )
+        return f"T{count:02d}"
+
     def get_file_content(self, file_path: str) -> ToolResponse:
         key = canonical_tool_key("get_file_content", {"file_path": file_path})
         if key in self._complete_patch_keys:
@@ -308,7 +338,7 @@ class CoordinatedDiscoveryToolClient:
                 "reused",
                 reused_from_call_id="task_patch",
             )
-            return response
+            return _alias_echo(response, "P01")
         return self._invoke(
             "get_file_content",
             {"file_path": file_path},

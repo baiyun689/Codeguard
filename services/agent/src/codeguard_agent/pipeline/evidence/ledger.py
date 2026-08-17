@@ -1,22 +1,29 @@
-"""证据目录构建器(Evidence Ledger 的运行时注册入口)。
+"""证据目录构建与候选引用绑定(Evidence Ledger 的运行时注册入口)。
 
 把 patch(P01)、预取上下文(Cxx)、真实工具结果(Txx)注册为内容寻址
-Artifact 并分配短别名。LLM 只选择编号,不生产证据内容。
+Artifact 并分配短别名;发现者输出短编号后,在离开发现子图前绑定为
+内部稳定 artifact ID。LLM 只选择编号,不生产证据内容。
 
-设计依据:docs/superpowers/plans/2026-08-17-evidence-ledger-refactor.md §5。
+设计依据:docs/superpowers/plans/2026-08-17-evidence-ledger-refactor.md §5/§6。
 """
 
 from __future__ import annotations
 
 from typing import Any, Sequence
 
+from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.evidence import (
     EvidenceArtifact,
     EvidenceArtifactStatus,
     EvidenceCaptureMode,
     EvidenceCatalog,
+    EvidenceRef,
+    EvidenceRefError,
+    EvidenceRefErrorReason,
     EvidenceSourceKind,
 )
+from codeguard_agent.models.schemas import EvidenceRole
+from codeguard_agent.pipeline.evidence.graph_response import summarize_graph
 from codeguard_agent.pipeline.risk.discovery import (
     COMPLETE_PATCH_RESULT,
     REPEATED_TOOL_RESULT,
@@ -28,6 +35,10 @@ _TOOL_STATUS_MAP = {
     "rejected": EvidenceArtifactStatus.REJECTED,
     "not_found": EvidenceArtifactStatus.NOT_FOUND,
 }
+
+_GRAPH_TOOLS = ("inspect_change_impact", "inspect_security_path", "inspect_structure")
+_CATALOG_MAX_CHARS = 12000
+_CATALOG_PAYLOAD_MAX_CHARS = 2000
 
 
 class EvidenceCatalogBuilder:
@@ -129,3 +140,169 @@ class EvidenceCatalogBuilder:
             catalog.artifacts[artifact.id] = artifact
             catalog.alias_to_artifact_id[f"T{tool_count + 1:02d}"] = artifact.id
         return catalog
+
+
+def bind_discovered_issue(
+    issue: Any,
+    *,
+    task: Any,
+    reviewer: str,
+    catalog: EvidenceCatalog,
+    candidate_index: int,
+) -> CandidateIssue:
+    """把发现者输出(DiscoveredIssue 或 mock 的 Issue)绑定为内部候选(源文档 §6)。
+
+    步骤:稳定候选 ID → 自动绑定 P01 → 按 LLM 原顺序解析外部 refs
+    (未知别名/跨任务/跨 revision/失败 Artifact 留痕) → 同 Artifact 去重、
+    最多 3 条外部引用。工具引用全无效时候选退化为 patch-only,仍正常进入
+    Verifier/Judge——LLM 无法通过编造编号获得证据。
+    """
+    cid = f"{reviewer}-{candidate_index}-{issue.file}:{issue.line}:{issue.type}"
+    refs: list[EvidenceRef] = []
+    errors: list[EvidenceRefError] = []
+    patch_alias = catalog.patch_alias()
+    patch_artifact_id = catalog.alias_to_artifact_id.get(patch_alias, "")
+    if patch_artifact_id and patch_artifact_id in catalog.artifacts:
+        refs.append(
+            EvidenceRef(
+                artifact_id=patch_artifact_id,
+                declared_role=EvidenceRole.MECHANISM,
+                auto_bound=True,
+            )
+        )
+    seen_ids = {patch_artifact_id}
+    external_count = 0
+    for selection in getattr(issue, "evidence_refs", []) or []:
+        alias = str(getattr(selection, "alias", "") or "").strip()
+        if not alias:
+            continue
+        if external_count >= 3:
+            break  # 最多 3 条外部引用(不含自动 patch)
+        artifact_id = catalog.alias_to_artifact_id.get(alias, "")
+        if not artifact_id or artifact_id not in catalog.artifacts:
+            errors.append(
+                EvidenceRefError(
+                    alias=alias,
+                    reason=EvidenceRefErrorReason.UNKNOWN_ALIAS,
+                    detail="目录中不存在该编号",
+                )
+            )
+            continue
+        artifact = catalog.artifacts[artifact_id]
+        if artifact.task_id != task.id:
+            errors.append(
+                EvidenceRefError(
+                    alias=alias,
+                    reason=EvidenceRefErrorReason.CROSS_TASK_REFERENCE,
+                    detail=f"artifact 属于 task {artifact.task_id}",
+                )
+            )
+            continue
+        if artifact.revision != catalog.revision:
+            errors.append(
+                EvidenceRefError(
+                    alias=alias,
+                    reason=EvidenceRefErrorReason.CROSS_REVISION_REFERENCE,
+                    detail="artifact revision 与当前审查不一致",
+                )
+            )
+            continue
+        if artifact.status in {
+            EvidenceArtifactStatus.FAILED,
+            EvidenceArtifactStatus.REJECTED,
+            EvidenceArtifactStatus.NOT_FOUND,
+        }:
+            errors.append(
+                EvidenceRefError(
+                    alias=alias,
+                    reason=EvidenceRefErrorReason.ARTIFACT_FAILED,
+                    detail=f"artifact 状态 {artifact.status.value}",
+                )
+            )
+            continue
+        if artifact_id in seen_ids:
+            continue
+        seen_ids.add(artifact_id)
+        external_count += 1
+        refs.append(
+            EvidenceRef(
+                artifact_id=artifact_id,
+                declared_role=EvidenceRole(
+                    str(getattr(selection, "role", "mechanism"))
+                ),
+            )
+        )
+    return CandidateIssue(
+        id=cid,
+        task_id=task.id,
+        source_agent=reviewer,
+        file=issue.file,
+        line=issue.line,
+        type=issue.type,
+        severity_proposal=issue.severity,
+        claim=issue.message,
+        suggestion=issue.suggestion,
+        confidence=issue.confidence,
+        evidence_refs=refs,
+        evidence_ref_errors=errors,
+    )
+
+
+def _citeable(artifact: EvidenceArtifact) -> bool:
+    return artifact.status in {
+        EvidenceArtifactStatus.COMPLETE,
+        EvidenceArtifactStatus.PARTIAL,
+        EvidenceArtifactStatus.UNKNOWN,
+    }
+
+
+def _catalog_payload(artifact: EvidenceArtifact) -> str:
+    """Catalog 内单条 payload 预算:图摘要化、文件截 2000 字符(修正③)。"""
+    if artifact.tool in _GRAPH_TOOLS:
+        return summarize_graph(artifact.payload)
+    truncated = len(artifact.payload) > _CATALOG_PAYLOAD_MAX_CHARS
+    return (
+        artifact.payload[:_CATALOG_PAYLOAD_MAX_CHARS]
+        + ("\n...[truncated]" if truncated else "")
+    )
+
+
+def render_evidence_catalog(
+    catalog: EvidenceCatalog,
+    *,
+    max_chars: int = _CATALOG_MAX_CHARS,
+) -> str:
+    """把证据目录渲染为合成提示词的 <evidence_catalog> 段(修正③)。
+
+    patch 已在原 <task_patch> 标签带 evidence_id="P01",不重复全文;
+    渲染顺序 P 指针 → Cxx → Txx;总硬上限按顺序逐条截断(渲染发生在
+    引用已知前,截断规则只能是"顺序+长度"式,不依赖引用)。
+    """
+    blocks: list[str] = []
+    used = 0
+    if catalog.patch_alias():
+        blocks.append(
+            '<artifact id="P01" source="task_patch" citeable="true" '
+            'ref="task_patch_tag"/>'
+        )
+    for alias in (*catalog.context_aliases(), *catalog.tool_aliases()):
+        artifact = catalog.artifacts[catalog.alias_to_artifact_id[alias]]
+        block = (
+            f'<artifact id="{alias}" source="{artifact.source_kind.value}" '
+            f'status="{artifact.status.value}" tool="{artifact.tool}" '
+            f'args="{_args_text(artifact.arguments)}" '
+            f'citeable="{str(_citeable(artifact)).lower()}" '
+            f'capture_mode="{artifact.capture_mode.value}">\n'
+            f"{_catalog_payload(artifact)}\n"
+            f"</artifact>"
+        )
+        remaining = max_chars - used
+        if remaining <= 0:
+            break
+        blocks.append(block[:remaining])
+        used += min(len(block), remaining)
+    return "\n".join(blocks)
+
+
+def _args_text(arguments: dict[str, str]) -> str:
+    return ", ".join(f"{k}={v}" for k, v in arguments.items())

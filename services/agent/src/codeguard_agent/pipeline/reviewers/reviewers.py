@@ -66,13 +66,15 @@ def _load_prompt(name: str) -> str:
 
 
 _DISCOVERY_CONTEXT_CONTRACT = "discovery-context-contract.txt"
+_DISCOVERY_EVIDENCE_CONTRACT = "discovery-evidence-contract.txt"
 
 
 def build_reviewer_system_prompt(reviewer: Reviewer) -> str:
-    """组合角色方法论和稳定的共享上下文契约。"""
+    """组合角色方法论、共享上下文契约与证据引用契约。"""
     return "\n\n".join([
         _load_prompt(reviewer.prompt_file).strip(),
         _load_prompt(_DISCOVERY_CONTEXT_CONTRACT).strip(),
+        _load_prompt(_DISCOVERY_EVIDENCE_CONTRACT).strip(),
     ])
 
 

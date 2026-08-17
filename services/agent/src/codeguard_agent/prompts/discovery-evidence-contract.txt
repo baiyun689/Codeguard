@@ -1,0 +1,18 @@
+## 证据引用契约
+
+当前 task patch 由系统自动作为每个候选的基础证据(编号 P01),你不需要为 patch 填写编号。
+
+如果你在判断候选时使用了 <evidence_catalog> 或 <prefetched_context> 中带 evidence_id 的事实,请在 evidence_refs 中引用对应的 Cxx/Txx 编号。你只负责选择编号,不得重新填写工具参数、代码片段或工具原文。
+
+每条引用包含:
+- alias: 必须逐字复制当前 Evidence Catalog 中存在的编号;
+- role: location / mechanism / reachability / impact / counter。
+
+规则:
+- 最多选择 3 条与候选直接相关的外部事实;
+- 多个工具共同发现问题时,同时引用各自编号;
+- 仅用于探索但与最终主张无关的调用不要引用;
+- location 只说明如何找到位置,不能单独证明问题成立;
+- 没有使用外部事实时返回空 evidence_refs,系统会使用当前 task patch;
+- 不得猜测、构造或修改编号;
+- 不得把 summary、risk prior 或 knowledge bundle 当仓库证据。

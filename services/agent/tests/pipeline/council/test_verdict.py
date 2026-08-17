@@ -1,392 +1,432 @@
-"""verdict 门控、终审与批量裁决测试(ADR-046)。"""
+"""批量 EvidenceJudge 与消融档裁决测试(Evidence Ledger)。"""
+from __future__ import annotations
+
 import json
 
-from codeguard_agent.models.council import (
-    CandidateDirectAssessment,
-    CandidateFact,
-    CandidateIssue,
-    FactRelation,
+from codeguard_agent.models.council import CandidateIssue
+from codeguard_agent.models.evidence import (
+    CandidateVerification,
+    EvidenceArtifact,
+    EvidenceArtifactStatus,
+    EvidenceCaptureMode,
+    EvidenceJudgeAssessment,
+    EvidenceJudgeBatch,
+    EvidenceRef,
+    EvidenceSourceKind,
+    EvidenceValidationStatus,
+    VerifiedEvidence,
 )
-from codeguard_agent.models.schemas import Severity
-from codeguard_agent.models.tasks import ReviewTask, RiskTag
+from codeguard_agent.models.schemas import EvidenceRole, Severity
+from codeguard_agent.models.tasks import ReviewTask
 from codeguard_agent.pipeline.council.dedup import CandidateGroup
-from codeguard_agent.pipeline.council.verdict import (
-    VerdictBatch,
-    _verdict_payload,
-    consolidate_groups,
-    gate_candidate,
-    judge_direct,
-    judge_with_evidence,
-    synthesize_verdict,
-)
+from codeguard_agent.pipeline.council.verdict import judge_direct, judge_with_evidence
 from codeguard_agent.pipeline.evidence.planner import (
-    CandidateBindingFailure,
     CandidateDossier,
     DossierAssembly,
 )
 
+REV = "abc123:deadbeef"
+TASK_ID = "task-1"
 
-def _relation(relation, strength="contextual"):
-    return FactRelation(
-        fact_id="f1", relation=relation, strength=strength,
-        observation="obs" if relation in {"supports", "contradicts"} else "",
-        limitation="" if relation in {"supports", "contradicts"} else "lim",
+
+def _task() -> ReviewTask:
+    return ReviewTask(
+        id=TASK_ID, file="src/A.java", patch="+    exec(cmd);\n", changed_lines=[1]
     )
 
 
-def test_gate_direct_counter_drops():
-    code, _ = gate_candidate([
-        _relation("supports"), _relation("contradicts", strength="direct"),
-    ])
-    assert code == "direct_counter_evidence"
+def _candidate(cid: str, source_agent: str = "threat_model", role: EvidenceRole = EvidenceRole.MECHANISM) -> CandidateIssue:
+    return CandidateIssue(
+        id=cid,
+        task_id=TASK_ID,
+        source_agent=source_agent,
+        file="src/A.java",
+        line=1,
+        type="command-injection",
+        severity_proposal=Severity.WARNING,
+        claim="未转义参数进入命令构造",
+        confidence=0.8,
+        evidence_refs=[
+            EvidenceRef(artifact_id="ev-patch", declared_role=EvidenceRole.MECHANISM, auto_bound=True),
+            EvidenceRef(artifact_id="ev-tool", declared_role=role),
+        ],
+    )
 
 
-def test_gate_no_facts_drops():
-    code, _ = gate_candidate([])
-    assert code == "evidence_insufficient"
+def _patch_artifact() -> EvidenceArtifact:
+    return EvidenceArtifact.build(
+        task_id=TASK_ID, reviewer="threat_model", revision=REV,
+        source_kind=EvidenceSourceKind.TASK_PATCH, payload="+    exec(cmd);\n",
+        status=EvidenceArtifactStatus.COMPLETE,
+        capture_mode=EvidenceCaptureMode.GENERATED,
+        arguments={"file_path": "src/A.java"},
+    )
 
 
-def test_gate_all_insufficient_drops():
-    code, _ = gate_candidate([_relation("insufficient")])
-    assert code == "evidence_insufficient"
+def _tool_artifact() -> EvidenceArtifact:
+    return EvidenceArtifact.build(
+        task_id=TASK_ID, reviewer="threat_model", revision=REV,
+        source_kind=EvidenceSourceKind.TOOL_CALL, tool="get_file_content",
+        arguments={"file_path": "src/A.java"},
+        payload="class A { void m() { exec(cmd); } }",
+        status=EvidenceArtifactStatus.COMPLETE,
+        capture_mode=EvidenceCaptureMode.EXECUTED,
+    )
 
 
-def test_gate_no_support_drops():
-    code, _ = gate_candidate([_relation("contradicts")])  # contextual 反证不构成直接反证
-    assert code == "no_supporting_evidence"
+def _verification(cid: str, eligible: bool = True, role: EvidenceRole = EvidenceRole.MECHANISM) -> CandidateVerification:
+    candidate = _candidate(cid, role=role)
+    return CandidateVerification(
+        candidate_id=cid,
+        source_kinds={EvidenceSourceKind.TASK_PATCH, EvidenceSourceKind.TOOL_CALL},
+        valid_evidence=[
+            VerifiedEvidence(
+                artifact_id="ev-patch", source_kind=EvidenceSourceKind.TASK_PATCH,
+                content="+    exec(cmd);\n",
+                validation_status=EvidenceValidationStatus.VALID,
+            ),
+            VerifiedEvidence(
+                artifact_id="ev-tool", source_kind=EvidenceSourceKind.TOOL_CALL,
+                tool="get_file_content", arguments={"file_path": "src/A.java"},
+                content="class A { void m() { exec(cmd); } }",
+                validation_status=EvidenceValidationStatus.VALID,
+            ),
+        ],
+        grounding_status="grounded",
+        eligible_for_judge=eligible,
+    )
 
 
-def test_gate_supported_passes():
-    assert gate_candidate([_relation("supports")]) is None
+def _assembly(candidates: list[CandidateIssue]) -> DossierAssembly:
+    dossiers = [
+        CandidateDossier(candidate=candidate, task=_task(), context_bundle=None)
+        for candidate in candidates
+    ]
+    return DossierAssembly(tuple(dossiers), (), ())
 
 
-def test_gate_supported_with_contextual_counter_passes():
-    # supports + contextual contradicts 放行给终审,不触发 no_supporting_evidence
-    assert gate_candidate([
-        _relation("supports"), _relation("contradicts"),
-    ]) is None
+def _artifacts() -> dict[str, EvidenceArtifact]:
+    patch = _patch_artifact()
+    tool_artifact = _tool_artifact()
+    return {"ev-patch": patch, "ev-tool": tool_artifact}
 
 
-class _FakeStructured:
+class _FakeJudgeLLM:
+    """按输入候选数分派的伪 Judge LLM:批>1 返回 None(触发二分),单候选返回裁决。"""
+
     def __init__(self, result):
         self._result = result
+        self.calls = 0
 
-    def invoke(self, _messages):
+    def with_structured_output(self, _schema, method=None):
+        return self
+
+    def invoke(self, messages):
+        self.calls += 1
+        user = messages[1][1]
+        payload = json.loads(user)
+        candidates = payload.get("candidates") if isinstance(payload, dict) else None
+        count = len(candidates) if isinstance(candidates, list) else 1
+        if count > 1:
+            return None
+        if isinstance(self._result, Exception):
+            raise self._result
         return self._result
 
 
-class _FakeLLM:
-    def __init__(self, result):
-        self._result = result
-
-    def with_structured_output(self, _schema, method=None):
-        return _FakeStructured(self._result)
-
-
-class _RaisingLLM:
-    def with_structured_output(self, _schema, method=None):
-        raise RuntimeError("structured output unavailable")
-
-
-def _verdict_dossier() -> CandidateDossier:
-    candidate = CandidateIssue(
-        id="c1", task_id="t1", source_agent="threat_model",
-        file="A.java", line=10, type="t", severity_proposal=Severity.WARNING,
-        claim="claim", confidence=0.8,
-    )
-    task = ReviewTask(id="t1", file="A.java", patch="+x")
-    return CandidateDossier(
-        candidate=candidate, task=task, context_bundle=None
+def _assessment(cid: str, action: str = "keep", severity: Severity | None = Severity.WARNING,
+                supporting: list[str] | None = None, counter: list[str] | None = None) -> EvidenceJudgeAssessment:
+    return EvidenceJudgeAssessment(
+        candidate_id=cid,
+        action=action,  # type: ignore[arg-type]
+        severity=severity,
+        supporting_evidence_ids=supporting if supporting is not None else ["F001", "F002"],
+        counter_evidence_ids=counter or [],
+        reason="patch 与文件事实均支持",
     )
 
 
-def test_verdict_payload_carries_replay_status_and_omits_when_missing():
-    """终审 payload 的每条 relation 附带事实 replay_status;facts_by_id 缺失/未命中时省略键。"""
-    relations = [
-        FactRelation(fact_id="f1", relation="supports", observation="可达"),
-        FactRelation(fact_id="f2", relation="insufficient", limitation="lim"),
-    ]
-    facts_by_id = {
-        "f1": CandidateFact(
-            fact_id="f1", source="tool:get_file_content",
-            raw="x", replay_status="verified",
-        ),
-        "f2": CandidateFact(
-            fact_id="f2", source="tool:inspect_change_impact",
-            raw="", replay_status="failed", limitation="tool_empty",
-        ),
-    }
-
-    payload = json.loads(_verdict_payload(_verdict_dossier(), relations, facts_by_id))
-    by_id = {item["fact_id"]: item for item in payload["relations"]}
-    assert by_id["f1"]["replay_status"] == "verified"
-    assert by_id["f2"]["replay_status"] == "failed"
-
-    without = json.loads(_verdict_payload(_verdict_dossier(), relations, None))
-    assert "replay_status" not in without["relations"][0]
-    assert "replay_status" not in without["relations"][1]
-
-    partial = json.loads(_verdict_payload(_verdict_dossier(), relations, {}))
-    assert "replay_status" not in partial["relations"][0]
+# ── 批量裁决基本路径 ───────────────────────────────────────────────────
 
 
-def test_synthesize_returns_unified_assessment():
-    raw = CandidateDirectAssessment(
-        candidate_id="C001", action="keep", severity=Severity.WARNING,
-        cited_fact_ids=("f1",), reason="有支持证据",
-    )
-    result = synthesize_verdict(
-        _verdict_dossier(),
-        [FactRelation(fact_id="f1", relation="supports", observation="上游可达")],
-        judge_llm=_FakeLLM(raw), structured_method="function_calling", max_retries=1,
-    )
-    expected = raw.model_copy(update={"candidate_id": "c1"})
-    assert result == expected
-    assert result.cited_fact_ids == ("f1",)
-
-
-def test_synthesize_none_falls_back_to_none():
-    assert synthesize_verdict(
-        _verdict_dossier(), [], judge_llm=_FakeLLM(None),
-        structured_method="function_calling", max_retries=1,
-    ) is None
-
-
-def test_synthesize_wrong_candidate_id_returns_none():
-    wrong = CandidateDirectAssessment(
-        candidate_id="C002", action="keep", severity=Severity.WARNING, reason="x",
-    )
-    assert synthesize_verdict(
-        _verdict_dossier(), [], judge_llm=_FakeLLM(wrong),
-        structured_method="function_calling", max_retries=1,
-    ) is None
-
-
-def test_synthesize_no_llm_returns_none():
-    assert synthesize_verdict(
-        _verdict_dossier(), [], judge_llm=None,
-        structured_method="function_calling", max_retries=1,
-    ) is None
-
-
-def test_synthesize_structured_failure_returns_none():
-    assert synthesize_verdict(
-        _verdict_dossier(), [], judge_llm=_RaisingLLM(),
-        structured_method="function_calling", max_retries=1,
-    ) is None
-
-
-def _group_with(candidates) -> CandidateGroup:
-    first = candidates[0]
-    return CandidateGroup(
-        id="g1", members=tuple(candidates), primary_risk_tag=RiskTag.GENERAL_REVIEW,
-        severity_proposal=first.severity_proposal, confidence=0.8,
-        shared_root_cause="shared", shared_behavior="shared", shared_fix="shared",
-    )
-
-
-def _assembly(*dossiers) -> DossierAssembly:
-    return DossierAssembly(dossiers=tuple(dossiers), failures=(), trace=())
-
-
-def test_judge_with_evidence_invalid_binding_drops():
-    candidate = _verdict_dossier().candidate
-    assembly = DossierAssembly(
-        dossiers=(), failures=(CandidateBindingFailure(candidate, "no task match"),),
-        trace=(),
-    )
+def test_mock模式_确定性keep_提案严重度():
+    candidate = _candidate("c1")
     batch = judge_with_evidence(
-        assembly, {}, judge_llm=None,
-        structured_method="function_calling", max_retries=1,
+        _assembly([candidate]),
+        {"c1": _verification("c1")},
+        _artifacts(),
+        judge_llm=None,
+        structured_method="function_calling",
+        max_retries=1,
     )
-    assert [v.action for v in batch.verdicts] == ["drop"]
-    assert batch.verdicts[0].reason_code == "invalid_candidate_binding"
+    assert len(batch.verdicts) == 1
+    assert batch.verdicts[0].action == "keep"
+    assert batch.verdicts[0].reason_code == "mock_deterministic_keep"
+    assert len(batch.final_issues) == 1
+    assert batch.final_issues[0].severity is Severity.WARNING
+
+
+def test_keep裁决_产出issue():
+    candidate = _candidate("c1")
+    llm = _FakeJudgeLLM(EvidenceJudgeBatch(
+        assessments=[_assessment("c1", severity=Severity.CRITICAL)]
+    ))
+    batch = judge_with_evidence(
+        _assembly([candidate]),
+        {"c1": _verification("c1")},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+    assert batch.verdicts[0].action == "keep"
+    assert batch.final_issues[0].severity is Severity.CRITICAL
+
+
+def test_drop裁决_不产出issue():
+    candidate = _candidate("c1")
+    llm = _FakeJudgeLLM(EvidenceJudgeBatch(
+        assessments=[_assessment("c1", action="drop", severity=None, supporting=[])]
+    ))
+    batch = judge_with_evidence(
+        _assembly([candidate]),
+        {"c1": _verification("c1")},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+    assert batch.verdicts[0].action == "drop"
     assert batch.final_issues == []
 
 
-def test_judge_direct_invalid_binding_drops():
-    candidate = _verdict_dossier().candidate
-    assembly = DossierAssembly(
-        dossiers=(), failures=(CandidateBindingFailure(candidate, "no task match"),),
-        trace=(),
-    )
-    batch = judge_direct(
-        assembly, judge_llm=None,
-        structured_method="function_calling", max_retries=1,
-    )
-    assert [v.action for v in batch.verdicts] == ["drop"]
-    assert batch.verdicts[0].reason_code == "invalid_candidate_binding"
-
-
-def test_judge_with_evidence_gate_drops_without_llm():
-    dossier = _verdict_dossier()
+def test_不可裁决候选_按验证淘汰原因drop():
+    candidate = _candidate("c1")
     batch = judge_with_evidence(
-        _assembly(dossier),
-        {"c1": []},  # 无任何关系 → gate ②
-        judge_llm=_FakeLLM(None), structured_method="function_calling", max_retries=1,
+        _assembly([candidate]),
+        {"c1": _verification("c1", eligible=False).model_copy(
+            update={"rejection_reason": "direct_counter_guard"}
+        )},
+        _artifacts(),
+        judge_llm=None,
+        structured_method="function_calling",
+        max_retries=1,
     )
-    assert [v.action for v in batch.verdicts] == ["drop"]
-    assert batch.verdicts[0].reason_code == "evidence_insufficient"
-
-
-def test_judge_with_evidence_analysis_failure_skips_gate():
-    """关系分析层整体失败(ADR-046 §7):跳过门控②直接终审,不被误杀。"""
-    dossier = _verdict_dossier()
-    assessment = CandidateDirectAssessment(
-        candidate_id="C001", action="keep", severity=Severity.WARNING,
-        reason="终审兜底保留", cited_fact_ids=(),
-    )
-    batch = judge_with_evidence(
-        _assembly(dossier),
-        {"c1": [
-            FactRelation(
-                fact_id="f1", relation="insufficient",
-                limitation="analysis_failed_or_missing",
-            ),
-        ]},
-        judge_llm=_FakeLLM(assessment), structured_method="function_calling", max_retries=1,
-    )
-    assert [v.action for v in batch.verdicts] == ["keep"]
-    assert batch.verdicts[0].reason_code == "severity_resolved"
-    assert batch.final_issues == [dossier.candidate.to_issue()]
-
-
-def test_judge_with_evidence_normal_insufficient_still_gated():
-    """对照:正常 insufficient(非分析失败标记)仍被门控② drop,修复不过宽。"""
-    dossier = _verdict_dossier()
-    batch = judge_with_evidence(
-        _assembly(dossier),
-        {"c1": [
-            FactRelation(
-                fact_id="f1", relation="insufficient",
-                limitation="fact_empty",
-            ),
-        ]},
-        judge_llm=_FakeLLM(None), structured_method="function_calling", max_retries=1,
-    )
-    assert [v.action for v in batch.verdicts] == ["drop"]
-    assert batch.verdicts[0].reason_code == "evidence_insufficient"
-
-
-def test_judge_with_evidence_llm_failure_keeps_proposal_severity():
-    dossier = _verdict_dossier()
-    batch = judge_with_evidence(
-        _assembly(dossier),
-        {"c1": [FactRelation(fact_id="f1", relation="supports", observation="可达")]},
-        judge_llm=_FakeLLM(None), structured_method="function_calling", max_retries=1,
-    )
-    assert batch.verdicts[0].action == "keep"
-    assert batch.verdicts[0].resolved_severity == Severity.WARNING
-    assert batch.final_issues[0].severity == Severity.WARNING
-
-
-def test_judge_with_evidence_llm_drop_rejects_candidate():
-    """终审 LLM 主动否决(门控放行后 action=drop):verdict=drop + synthesized_evidence_drop。
-
-    锁定 ADR-046 终审路径:LLM 有支持证据仍可否决候选,产出 drop 且不落最终 Issue。
-    """
-    dossier = _verdict_dossier()
-    assessment = CandidateDirectAssessment(
-        candidate_id="C001", action="drop", severity=Severity.WARNING,
-        reason="证据不支持该主张", cited_fact_ids=(),
-    )
-    batch = judge_with_evidence(
-        _assembly(dossier),
-        {"c1": [FactRelation(fact_id="f1", relation="supports", observation="可达")]},
-        judge_llm=_FakeLLM(assessment), structured_method="function_calling", max_retries=1,
-    )
-    assert [v.action for v in batch.verdicts] == ["drop"]
-    assert batch.verdicts[0].reason_code == "synthesized_evidence_drop"
+    assert batch.verdicts[0].reason_code == "direct_counter_guard"
     assert batch.final_issues == []
-    assert batch.final_candidate_ids == []
-    assert any(
-        event == "judge_verdict"
-        and json.loads(detail)["reason_code"] == "synthesized_evidence_drop"
-        for event, detail in batch.trace
-    )
 
 
-def test_judge_direct_keeps_and_uses_assessment_severity():
-    dossier = _verdict_dossier()
-    assessment = CandidateDirectAssessment(
-        candidate_id="C001", action="keep", severity=Severity.CRITICAL,
-        reason="直接可见", cited_fact_ids=(),
+# ── 输出合同校验 ───────────────────────────────────────────────────────
+
+
+def test_keep无supporting_合同违约_fail_closed():
+    candidate = _candidate("c1")
+    llm = _FakeJudgeLLM(EvidenceJudgeBatch(
+        assessments=[_assessment("c1", supporting=[])]
+    ))
+    batch = judge_with_evidence(
+        _assembly([candidate]),
+        {"c1": _verification("c1")},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
     )
+    assert batch.verdicts[0].reason_code == "verification_failed"
+    assert batch.final_issues == []
+
+
+def test_keep缺severity_合同违约():
+    candidate = _candidate("c1")
+    llm = _FakeJudgeLLM(EvidenceJudgeBatch(
+        assessments=[_assessment("c1", severity=None)]
+    ))
+    batch = judge_with_evidence(
+        _assembly([candidate]),
+        {"c1": _verification("c1")},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+    assert batch.verdicts[0].reason_code == "verification_failed"
+
+
+def test_maintainability_候选_CRITICAL_违约():
+    candidate = _candidate("c1", source_agent="maintainability")
+    llm = _FakeJudgeLLM(EvidenceJudgeBatch(
+        assessments=[_assessment("c1", severity=Severity.CRITICAL)]
+    ))
+    batch = judge_with_evidence(
+        _assembly([candidate]),
+        {"c1": _verification("c1")},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+    assert batch.verdicts[0].reason_code == "verification_failed"
+
+
+def test_supporting全为LOCATION_违约():
+    candidate = _candidate("c1", role=EvidenceRole.LOCATION)
+    # 只引用 LOCATION 角色的工具事实(不含自动 patch)时违约。
+    llm = _FakeJudgeLLM(EvidenceJudgeBatch(
+        assessments=[_assessment("c1", supporting=["F002"])]
+    ))
+    batch = judge_with_evidence(
+        _assembly([candidate]),
+        {"c1": _verification("c1", role=EvidenceRole.LOCATION)},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+    assert batch.verdicts[0].reason_code == "verification_failed"
+
+
+def test_supporting引用未知ID_违约():
+    candidate = _candidate("c1")
+    llm = _FakeJudgeLLM(EvidenceJudgeBatch(
+        assessments=[_assessment("c1", supporting=["F999"])]
+    ))
+    batch = judge_with_evidence(
+        _assembly([candidate]),
+        {"c1": _verification("c1")},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+    assert batch.verdicts[0].reason_code == "verification_failed"
+
+
+def test_drop带severity_违约():
+    candidate = _candidate("c1")
+    llm = _FakeJudgeLLM(EvidenceJudgeBatch(
+        assessments=[_assessment("c1", action="drop", severity=Severity.WARNING)]
+    ))
+    batch = judge_with_evidence(
+        _assembly([candidate]),
+        {"c1": _verification("c1")},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+    assert batch.verdicts[0].reason_code == "verification_failed"
+
+
+def test_supporting_counter重叠_违约():
+    candidate = _candidate("c1")
+    llm = _FakeJudgeLLM(EvidenceJudgeBatch(
+        assessments=[_assessment("c1", supporting=["F001"], counter=["F001"])]
+    ))
+    batch = judge_with_evidence(
+        _assembly([candidate]),
+        {"c1": _verification("c1")},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+    assert batch.verdicts[0].reason_code == "verification_failed"
+
+
+# ── 失败策略:二分拆批 / fail-closed ────────────────────────────────────
+
+
+def test_批失败_二分为单候选_仍能裁决():
+    candidates = [_candidate("c1"), _candidate("c2")]
+    llm = _FakeJudgeLLM(None)
+    batch = judge_with_evidence(
+        _assembly(candidates),
+        {"c1": _verification("c1"), "c2": _verification("c2")},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+    # 批(2 候选)返回 None → 二分;单候选也返回 None → fail-closed。
+    assert all(v.reason_code == "verification_failed" for v in batch.verdicts)
+    assert llm.calls >= 3  # 1 次整批 + 2 次单候选
+
+
+def test_单候选批失败_fail_closed_留痕():
+    candidate = _candidate("c1")
+    llm = _FakeJudgeLLM(RuntimeError("boom"))
+    batch = judge_with_evidence(
+        _assembly([candidate]),
+        {"c1": _verification("c1")},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+    assert batch.verdicts[0].reason_code == "verification_failed"
+    assert batch.final_issues == []
+    assert any(event == "evidence_judge_batch_failed" for event, _ in batch.trace)
+
+
+def test_输出未知候选ID_该候选fail_closed():
+    candidates = [_candidate("c1"), _candidate("c2")]
+    llm = _FakeJudgeLLM(EvidenceJudgeBatch(
+        assessments=[
+            _assessment("c1"),
+            _assessment("c-unknown"),
+        ]
+    ))
+    batch = judge_with_evidence(
+        _assembly(candidates),
+        {"c1": _verification("c1"), "c2": _verification("c2")},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+    by_id = {v.candidate_id: v for v in batch.verdicts}
+    assert by_id["c1"].action == "keep"
+    assert by_id["c2"].reason_code == "verification_failed"
+
+
+# ── 消融档 ─────────────────────────────────────────────────────────────
+
+
+def test_direct_mock模式_keep提案严重度():
+    candidate = _candidate("c1")
     batch = judge_direct(
-        _assembly(dossier),
-        judge_llm=_FakeLLM(assessment), structured_method="function_calling", max_retries=1,
+        _assembly([candidate]),
+        judge_llm=None,
+        structured_method="function_calling",
+        max_retries=1,
     )
     assert batch.verdicts[0].action == "keep"
-    assert batch.final_issues[0].severity == Severity.CRITICAL
+    assert batch.final_issues[0].severity is Severity.WARNING
 
 
-def test_judge_direct_llm_unavailable_keeps_proposal():
-    dossier = _verdict_dossier()
+def test_direct_LLM不可用_保留提案严重度_基线语义():
+    candidate = _candidate("c1")
+    llm = _FakeJudgeLLM(RuntimeError("boom"))
     batch = judge_direct(
-        _assembly(dossier),
-        judge_llm=_FakeLLM(None), structured_method="function_calling", max_retries=1,
+        _assembly([candidate]),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
     )
-    assert batch.verdicts[0].action == "keep"
-    assert batch.final_issues[0].severity == Severity.WARNING
+    assert batch.verdicts[0].reason_code == "direct_assessment_missing"
+    assert batch.final_issues[0].severity is Severity.WARNING
 
 
-def test_consolidate_ungrouped_passes_through():
-    candidate = _verdict_dossier().candidate
-    issue = candidate.to_issue()
-    batch = VerdictBatch()
-    consolidate_groups(batch, [(candidate.id, issue)], ())
-    assert batch.final_candidate_ids == [candidate.id]
-    assert batch.final_issues == [issue]
-
-
-def test_consolidate_shape_mismatch_splits_back():
-    candidate = _verdict_dossier().candidate
-    other = candidate.model_copy(update={"id": "c2", "line": 12})
-    group = _group_with([candidate, other])
-    batch = VerdictBatch()
-    consolidate_groups(
-        batch,
-        [
-            (candidate.id, candidate.to_issue()),
-            (other.id, other.to_issue().model_copy(update={"severity": Severity.CRITICAL})),
-        ],
-        [group],
+def test_direct_drop裁决_不产出():
+    candidate = _candidate("c1")
+    llm = _FakeJudgeLLM(EvidenceJudgeAssessment(
+        candidate_id="C001", action="drop", severity=None, reason="patch 不足以成立"
+    ))
+    batch = judge_direct(
+        _assembly([candidate]),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
     )
-    assert batch.final_candidate_ids == [candidate.id, other.id]
-    assert len(batch.final_issues) == 2
-    assert any(event == "candidate_group_split" for event, _ in batch.trace)
-
-
-def test_consolidate_shape_match_merges_semantics():
-    candidate = _verdict_dossier().candidate  # line=10, type="t", claim="claim", conf=0.8
-    other = candidate.model_copy(update={
-        "id": "c2", "line": 12, "claim": "claim2", "confidence": 0.6,
-        "suggestion": "建议",
-    })
-    group = _group_with([candidate, other])
-    batch = VerdictBatch()
-    consolidate_groups(
-        batch,
-        [(candidate.id, candidate.to_issue()), (other.id, other.to_issue())],
-        [group],
-    )
-    assert batch.final_candidate_ids == ["c1"]
-    assert len(batch.final_issues) == 1
-    merged = batch.final_issues[0]
-    assert merged.line == 10  # 最小正行号
-    assert merged.type == "t"  # 相同类型去重
-    assert merged.message == "claim；claim2"  # 消息去重拼接
-    assert merged.suggestion == "建议"  # 空建议被过滤
-    assert merged.confidence == 0.6  # 置信度取 min
-    assert any(event == "candidate_group_consolidated" for event, _ in batch.trace)
-
-
-def test_consolidate_partial_support_keeps_only_kept_member():
-    candidate = _verdict_dossier().candidate
-    other = candidate.model_copy(update={"id": "c2", "line": 12})
-    group = _group_with([candidate, other])
-    batch = VerdictBatch()
-    consolidate_groups(batch, [(other.id, other.to_issue())], [group])
-    assert batch.final_candidate_ids == [other.id]
-    assert len(batch.final_issues) == 1
-    assert batch.final_issues[0].line == 12
+    assert batch.verdicts[0].action == "drop"
+    assert batch.final_issues == []

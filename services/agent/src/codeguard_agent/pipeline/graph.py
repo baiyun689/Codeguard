@@ -16,16 +16,14 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from codeguard_agent.llm.client import mock_review_result
 from codeguard_agent.models.council import (
-    CandidateFact,
     CandidateIssue,
     ContextBundle,
     ContextFact,
     CouncilRunStats,
     CouncilTrace,
-    FactRelation,
     MAX_CANDIDATES_PER_AGENT,
 )
-from codeguard_agent.models.schemas import ReviewResult
+from codeguard_agent.models.schemas import DiscoveryReviewResult, ReviewResult
 from codeguard_agent.models.tasks import (
     ContextStatus,
     ReviewBudget,
@@ -74,7 +72,10 @@ from codeguard_agent.models.evidence import (
     EvidenceArtifact,
     merge_evidence_artifacts,
 )
-from codeguard_agent.pipeline.evidence.ledger import EvidenceCatalogBuilder
+from codeguard_agent.pipeline.evidence.ledger import (
+    EvidenceCatalogBuilder,
+    bind_discovered_issue,
+)
 from codeguard_agent.pipeline.evidence.planner import assemble_dossiers
 from codeguard_agent.pipeline.evidence.rules.classify import resolve_candidate_tag
 from codeguard_agent.pipeline.context.base import PipelineContext
@@ -179,8 +180,7 @@ class ReviewState(TypedDict, total=False):
     candidate_issues: list[CandidateIssue]
     candidate_groups: list[CandidateGroup]
     candidate_dedup_stats: CandidateDedupStats
-    candidate_facts: dict[str, list[CandidateFact]]
-    candidate_relations: dict[str, list[FactRelation]]
+    candidate_verifications: dict[str, Any]
     evidence_artifacts: Annotated[dict[str, EvidenceArtifact], merge_evidence_artifacts]
     council_trace: Annotated[list[CouncilTrace], operator.add]
     truncated_candidates: Annotated[int, operator.add]
@@ -743,10 +743,14 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
             reviewer_name=reviewer.name,
             max_retries=state.get("max_retries", 3),
             structured_method=state.get("structured_method", "function_calling"),
+            evidence_catalog=state.get("evidence_catalog"),
+            result_schema=DiscoveryReviewResult,
         )
 
     def _prepare(state: ReviewerState) -> dict:
         if llm is None:
+            # mock 模式:无需 task 也可运行(原有语义);真实管线中候选绑定
+            # 由 make_reviewer_node 侧构建目录兜底。
             return {}
         review_task = state.get("review_task")
         if review_task is None:
@@ -802,6 +806,7 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                 structured_method=state.get("structured_method", "function_calling"),
                 enable_hitl=False,
                 evidence_catalog=state.get("evidence_catalog"),
+                result_schema=DiscoveryReviewResult,
             )
         except Exception as exc:  # noqa: BLE001 单发现者失败不拖垮 council
             from langgraph.errors import GraphRecursionError
@@ -913,8 +918,9 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
             out["gathered_context"] = list(outcome.gathered_context)
         if outcome.tool_trace_records:
             out["tool_trace_records"] = list(outcome.tool_trace_records)
-        if outcome.evidence_catalog is not None:
-            out["evidence_catalog"] = outcome.evidence_catalog
+        catalog = outcome.evidence_catalog or state.get("evidence_catalog")
+        if catalog is not None:
+            out["evidence_catalog"] = catalog
         if outcome.result.summary:
             out["review_summaries"] = (
                 [outcome.result.summary]
@@ -1076,6 +1082,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         tool_trace_records: list = []
         review_summaries: list = []
         evidence_artifacts: dict[str, EvidenceArtifact] = {}
+        catalog_by_task: dict[str, Any] = {}
         for task_id, result in zip(ordered_ids, task_results):
             if result is None:
                 trace.append(
@@ -1097,6 +1104,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 review_summaries.extend(result["review_summaries"])
             catalog = result.get("evidence_catalog")
             if catalog is not None:
+                catalog_by_task[task_id] = catalog
                 evidence_artifacts.update(dict(catalog.artifacts))
 
         kept_pairs = per_task_issues[:MAX_CANDIDATES_PER_AGENT]
@@ -1116,10 +1124,25 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 continue
 
             accepted_count += 1
+            # 短别名引用绑定为内部 artifact ID;无效引用留痕并退化 patch-only。
+            catalog = catalog_by_task.get(task_id)
+            if catalog is None:
+                catalog = EvidenceCatalogBuilder().build_initial(
+                    task=task,
+                    context_bundle=task_context_bundles.get(task_id),
+                    reviewer=reviewer.source_agent,
+                    revision=state.get("evidence_revision", ""),
+                )
+                catalog_by_task[task_id] = catalog
+                # 兜底目录同样汇入 Artifact 归并,保证 patch 证据对下游可见。
+                evidence_artifacts.update(dict(catalog.artifacts))
             candidates.append(
-                CandidateIssue.from_issue(
-                    issue, source_agent=reviewer.source_agent,
-                    index=accepted_count, task_id=task_id,
+                bind_discovered_issue(
+                    issue,
+                    task=task,
+                    reviewer=reviewer.source_agent,
+                    catalog=catalog,
+                    candidate_index=accepted_count,
                 )
             )
 
@@ -1373,7 +1396,7 @@ def _assemble_state_dossiers(state: ReviewState):
 
 
 def _evidence_verifier_node(tool_client=None, judge_llm=None):
-    """取证验证节点:链校验→(链重放|配方兜底)→去重执行→引用匹配→关系分析。"""
+    """证据验证节点:Artifact 健康检查 + 图护栏 + guard 扫描 + 异常重放(零 LLM)。"""
 
     def _node(state: ReviewState) -> dict:
         from codeguard_agent.pipeline.evidence.verifier import verify_evidence
@@ -1386,16 +1409,16 @@ def _evidence_verifier_node(tool_client=None, judge_llm=None):
         }
         batch = verify_evidence(
             assembly.dossiers,
+            artifacts=state.get("evidence_artifacts") or {},
             tool_client=tool_client,
-            analyst_llm=judge_llm,
-            structured_method=state.get("structured_method", "function_calling"),
-            enabled_tools=state.get("enabled_evidence_tools", state.get("enabled_tools")),
+            revision=state.get("evidence_revision", ""),
+            enabled_replay_tools=state.get(
+                "enabled_evidence_tools", state.get("enabled_tools")
+            ),
             tag_by_candidate=tag_by_candidate,
         )
         return {
-            "candidate_facts": batch.facts,
-            "candidate_relations": batch.relations,
-            "gathered_context": batch.gathered_context,
+            "candidate_verifications": batch.candidates,
             "council_trace": [
                 CouncilTrace(node="evidence_verifier", event=event, detail=detail)
                 for event, detail in batch.trace
@@ -1406,7 +1429,7 @@ def _evidence_verifier_node(tool_client=None, judge_llm=None):
 
 
 def _council_judge_node(judge_llm=None):
-    """裁决节点:确定性门控 → LLM 终审 → 组内合并(ADR-046)。"""
+    """裁决节点:验证淘汰 → 批量 EvidenceJudge → 组内合并(Evidence Ledger)。"""
 
     def _node(state: ReviewState) -> dict:
         from codeguard_agent.pipeline.council.metrics import compute_council_run_stats
@@ -1415,12 +1438,12 @@ def _council_judge_node(judge_llm=None):
         assembly = _assemble_state_dossiers(state)
         batch = judge_with_evidence(
             assembly,
-            state.get("candidate_relations") or {},
+            state.get("candidate_verifications") or {},
+            state.get("evidence_artifacts") or {},
             judge_llm=judge_llm,
             structured_method=state.get("structured_method", "function_calling"),
             max_retries=state.get("max_retries", 2),
             candidate_groups=state.get("candidate_groups") or [],
-            facts_by_candidate=state.get("candidate_facts") or {},
         )
         judge_trace = [
             CouncilTrace(node="council_judge", event=event, detail=detail)
@@ -1431,8 +1454,6 @@ def _council_judge_node(judge_llm=None):
             assembly=assembly,
             verdicts=batch.verdicts,
             final_candidate_ids=batch.final_candidate_ids,
-            facts_by_candidate=state.get("candidate_facts") or {},
-            relations_by_candidate=state.get("candidate_relations") or {},
             truncated_candidates=state.get("truncated_candidates", 0),
             council_trace=[*(state.get("council_trace") or []), *judge_trace],
             candidate_dedup_stats=state.get("candidate_dedup_stats"),
@@ -1477,8 +1498,6 @@ def _direct_judge_node(judge_llm=None):
             assembly=assembly,
             verdicts=batch.verdicts,
             final_candidate_ids=batch.final_candidate_ids,
-            facts_by_candidate=state.get("candidate_facts") or {},
-            relations_by_candidate=state.get("candidate_relations") or {},
             truncated_candidates=state.get("truncated_candidates", 0),
             council_trace=[*(state.get("council_trace") or []), *judge_trace],
             candidate_dedup_stats=state.get("candidate_dedup_stats"),

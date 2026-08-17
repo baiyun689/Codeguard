@@ -12,10 +12,10 @@ from pydantic import (
     BaseModel,
     Field,
     StringConstraints,
-    model_validator,
 )
 
-from codeguard_agent.models.schemas import EvidenceTraceStep, Issue, Severity
+from codeguard_agent.models.evidence import EvidenceRef, EvidenceRefError
+from codeguard_agent.models.schemas import Issue, Severity
 
 MAX_CANDIDATES_PER_AGENT = 10
 NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -35,61 +35,6 @@ class Verdict:
     resolved_severity: Severity | None = None
 
 
-class CandidateDirectAssessment(BaseModel):
-    """统一裁决模型(ADR-046):完整档终审与无证据链消融档共用。
-
-    完整档的 severity 必须引用证据(cited_fact_ids 非空);
-    消融档无证据输入,cited_fact_ids 恒为空——两档唯一差异是输入里有没有证据。
-    """
-
-    candidate_id: NonBlankStr
-    action: Literal["keep", "drop"]
-    severity: Severity
-    reason: str = ""
-    cited_fact_ids: tuple[str, ...] = ()
-
-
-class CandidateFact(BaseModel):
-    """一条已取得的原始事实及其重放验证状态。
-
-    replay_status:
-    - verified:   链引用原文在重放结果中命中(规范化子串匹配)
-    - unverified: 链有引用但重放结果中找不到
-    - failed:     工具调用失败或图响应无效(沙箱拒绝/符号不存在/参数非法,详见 limitation)
-    - recipe:     固定配方来源(非重放),无引用可验证
-    """
-
-    fact_id: NonBlankStr
-    source: NonBlankStr
-    raw: str = ""
-    replay_status: Literal["verified", "unverified", "failed", "recipe"] = "unverified"
-    limitation: str = ""
-
-
-class FactRelation(BaseModel):
-    """一条事实与候选主张之间的受约束关系(ADR-046 关系三元主轴)。
-
-    一条事实对一条主张只有三种可能:支持它、否定它、说明不了什么——完备划分。
-    """
-
-    fact_id: NonBlankStr
-    relation: Literal["supports", "contradicts", "insufficient"]
-    strength: Literal["direct", "contextual"] = "contextual"
-    observation: str = ""
-    limitation: str = ""
-
-    @model_validator(mode="after")
-    def validate_safe_relation(self) -> "FactRelation":
-        if self.relation in {"supports", "contradicts"} and not self.observation.strip():
-            raise ValueError("supports/contradicts relation requires observation")
-        if self.relation == "insufficient":
-            if self.strength != "contextual":
-                raise ValueError("insufficient relation must be contextual")
-            if not self.limitation.strip():
-                raise ValueError("insufficient relation requires limitation")
-        return self
-
-
 class ContextFact(BaseModel):
     """ContextProvider 收集到的一段事实。"""
 
@@ -107,7 +52,12 @@ class ContextBundle(BaseModel):
 
 
 class CandidateIssue(BaseModel):
-    """发现者 Agent 写入共享黑板的候选问题。"""
+    """发现者 Agent 写入共享黑板的候选问题。
+
+    证据以引用形式携带:evidence_refs 是已绑定为内容寻址 artifact ID 的
+    引用(含系统自动绑定的 patch 引用);无效引用留痕于 evidence_ref_errors,
+    候选退化为 patch-only 继续走 Verifier/Judge(Evidence Ledger 设计)。
+    """
 
     id: str
     task_id: str
@@ -119,38 +69,17 @@ class CandidateIssue(BaseModel):
     claim: str
     suggestion: str = ""
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    evidence_chain: list[EvidenceTraceStep] = Field(
+    evidence_refs: list[EvidenceRef] = Field(
         default_factory=list,
-        description="取证溯源:直接支撑该候选的工具调用与引文(ADR-046)",
+        description="已绑定的证据引用(含自动 patch 引用,见 pipeline/evidence/ledger.bind_discovered_issue)",
+    )
+    evidence_ref_errors: list[EvidenceRefError] = Field(
+        default_factory=list,
+        description="无效引用的留痕(unknown alias 等);不阻止候选进入后续阶段",
     )
 
-    @classmethod
-    def from_issue(
-        cls,
-        issue: Issue,
-        *,
-        index: int,
-        source_agent: str,
-        task_id: str,
-    ) -> "CandidateIssue":
-        """把现有 reviewer 输出转换为内部候选结构。task_id 必填（spec §3.2）。"""
-        cid = f"{source_agent}-{index}-{issue.file}:{issue.line}:{issue.type}"
-        return cls(
-            id=cid,
-            task_id=task_id,
-            source_agent=source_agent,
-            file=issue.file,
-            line=issue.line,
-            type=issue.type,
-            severity_proposal=issue.severity,
-            claim=issue.message,
-            suggestion=issue.suggestion,
-            confidence=issue.confidence,
-            evidence_chain=list(issue.evidence_chain),
-        )
-
     def to_issue(self) -> Issue:
-        """裁决后转换回产品输出 Issue。"""
+        """裁决后转换回产品输出 Issue(产品 Issue 不含证据字段)。"""
         return Issue(
             severity=self.severity_proposal,
             file=self.file,
@@ -159,7 +88,6 @@ class CandidateIssue(BaseModel):
             message=self.claim,
             suggestion=self.suggestion,
             confidence=self.confidence,
-            evidence_chain=list(self.evidence_chain),
         )
 
 

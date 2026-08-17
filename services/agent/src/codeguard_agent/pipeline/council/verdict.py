@@ -1,7 +1,9 @@
-"""裁决模块:确定性门控 + LLM 终审 + 组内合并(ADR-046)。
+"""裁决模块:批量 EvidenceJudge + 组内合并(Evidence Ledger)。
 
-门控依赖关系分析产出;门控本身零 LLM;终审基于关系三元输出统一裁决;
-批量裁决入口(judge_with_evidence/judge_direct)按严格等价组收敛最终 Issue。
+Verifier 只证明证据真实可用,支持/反驳/去留/定级合并为一次批量
+EvidenceJudge:每批 ≤8 候选、最多 4 批并行;输出经确定性合同校验,
+违规重试/二分拆批,单候选最终失败 fail-closed(不输出 Issue,完整留痕)。
+`evidence_mode=off` 消融档走 judge_direct:输入无证据 ID,输出同构。
 """
 
 from __future__ import annotations
@@ -13,131 +15,33 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from codeguard_agent.llm.client import invoke_with_retry
-from codeguard_agent.models.council import (
-    CandidateDirectAssessment,
-    CandidateFact,
-    FactRelation,
-    Verdict,
+from codeguard_agent.models.council import Verdict
+from codeguard_agent.models.evidence import (
+    CandidateVerification,
+    EvidenceArtifact,
+    EvidenceJudgeAssessment,
+    EvidenceJudgeBatch,
+    EvidenceRole,
+    EvidenceSourceKind,
 )
-from codeguard_agent.models.schemas import Issue
+from codeguard_agent.models.schemas import Issue, Severity
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.council.dedup import CandidateGroup
+from codeguard_agent.pipeline.evidence.graph_response import summarize_graph
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
 
 logger = logging.getLogger("codeguard")
 
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
 
-
-def gate_candidate(relations: Sequence[FactRelation]) -> tuple[str, str] | None:
-    """三条确定性证据门控(零 LLM 成本淘汰)。返回 (reason_code, reason) 表示应 drop。"""
-    if any(
-        item.relation == "contradicts" and item.strength == "direct"
-        for item in relations
-    ):
-        return "direct_counter_evidence", "直接反证足以排除候选"
-    if not relations or all(
-        item.relation == "insufficient" for item in relations
-    ):
-        return "evidence_insufficient", "候选没有可用证据"
-    if not any(item.relation == "supports" for item in relations):
-        return "no_supporting_evidence", "没有 support 证据支持候选主张"
-    return None
+_JUDGE_BATCH_SIZE = 8
+_JUDGE_MAX_PARALLEL_BATCHES = 4
+_FILE_PAYLOAD_MAX_CHARS = 2000
+_GRAPH_TOOLS = ("inspect_change_impact", "inspect_security_path", "inspect_structure")
 
 
-_ANALYSIS_FAILURE_LIMITATIONS = frozenset({
-    "analysis_failed_or_missing",
-    "parallel_analysis_failed",
-})
-
-
-def _analysis_failed(relations: Sequence[FactRelation]) -> bool:
-    """关系分析层整体失败(所有关系均为分析失败降级产物)时,门控不得误杀。"""
-    if not relations:
-        return False
-    return all(
-        rel.relation == "insufficient"
-        and rel.limitation in _ANALYSIS_FAILURE_LIMITATIONS
-        for rel in relations
-    )
-
-
-def synthesize_verdict(
-    dossier: CandidateDossier,
-    relations: Sequence[FactRelation],
-    *,
-    judge_llm: Any,
-    structured_method: str,
-    max_retries: int,
-    facts_by_id: dict[str, CandidateFact] | None = None,
-) -> CandidateDirectAssessment | None:
-    """终审:基于关系三元输出统一裁决。失败/None 返回 None,由调用方确定性保留。
-
-    裁决模型固定用别名 C001 指向候选;校验通过后重映射回 dossier 真实候选 id,
-    调用方拿到的结果可直接落 State。facts_by_id 非 None 时,每条 relation
-    附带对应事实的 replay_status,供裁决员区分可复现引用与未复现引用。
-    """
-    if judge_llm is None:
-        return None
-    try:
-        structured = judge_llm.with_structured_output(
-            CandidateDirectAssessment,
-            method=structured_method,
-        )
-        system_prompt = (_PROMPT_DIR / "council-judge.txt").read_text(encoding="utf-8")
-        result = invoke_with_retry(
-            structured,
-            [
-                ("system", system_prompt),
-                ("user", _verdict_payload(dossier, relations, facts_by_id)),
-            ],
-            max_retries=max_retries,
-        )
-        if result is None:
-            return None
-        if not isinstance(result, CandidateDirectAssessment):
-            result = CandidateDirectAssessment.model_validate(result)
-        if result.candidate_id != "C001":
-            logger.warning("verdict returned unexpected candidate_id: %s", result.candidate_id)
-            return None
-        return result.model_copy(update={"candidate_id": dossier.candidate.id})
-    except Exception:
-        logger.warning("verdict LLM synthesis failed", exc_info=True)
-        return None
-
-
-def _verdict_payload(
-    dossier: CandidateDossier,
-    relations: Sequence[FactRelation],
-    facts_by_id: dict[str, CandidateFact] | None = None,
-) -> str:
-    relation_items: list[dict[str, Any]] = []
-    for item in relations:
-        dumped = item.model_dump(mode="json")
-        if facts_by_id is not None:
-            fact = facts_by_id.get(item.fact_id)
-            if fact is not None:
-                dumped["replay_status"] = fact.replay_status
-        relation_items.append(dumped)
-    return json.dumps(
-        {
-            "candidate_alias": "C001",
-            "candidate": {
-                "type": dossier.candidate.type,
-                "claim": dossier.candidate.claim,
-                "file": dossier.candidate.file,
-                "line": dossier.candidate.line,
-                "severity_proposal": dossier.candidate.severity_proposal.value,
-                "suggestion": dossier.candidate.suggestion,
-                "confidence": dossier.candidate.confidence,
-            },
-            "task_patch": dossier.task.patch,
-            "relations": relation_items,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+def _stable_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 @dataclass
@@ -148,10 +52,6 @@ class VerdictBatch:
     final_issues: list[Issue] = field(default_factory=list)
     final_candidate_ids: list[str] = field(default_factory=list)
     trace: list[tuple[str, str]] = field(default_factory=list)
-
-
-def _stable_json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _trace(batch: VerdictBatch, event: str, detail: dict[str, object]) -> None:
@@ -167,10 +67,10 @@ def consolidate_groups(
     supported: Sequence[tuple[str, Issue]],
     candidate_groups: Sequence[CandidateGroup],
 ) -> None:
-    """按严格等价组汇总已支持成员；任何未获支持成员都不影响其兄弟。
+    """按严格等价组汇总已支持成员;任何未获支持成员都不影响其兄弟。
 
     组内形状不一致(文件/类型/裁决后严重度)安全拆回多条;合并取最小正行号,
-    类型/消息/建议去重拼接、置信度取 min——逐行对齐 judge.py 的 _emit_supported_issues。
+    类型/消息/建议去重拼接、置信度取 min。
     """
     issue_by_id = dict(supported)
     group_by_member = {
@@ -197,7 +97,7 @@ def consolidate_groups(
         if not kept:
             continue
 
-        # 类型、裁决后严重度或文件不同，说明实际影响并不等价，安全拆回多条。
+        # 类型、裁决后严重度或文件不同,说明实际影响并不等价,安全拆回多条。
         output_shapes = {
             (
                 member_issue.file,
@@ -237,151 +137,315 @@ def consolidate_groups(
         )
 
 
-def _invoke_with_evidence(
+# ── Judge 载荷与输出合同 ────────────────────────────────────────────────
+
+
+def _evidence_item_payload(
     dossier: CandidateDossier,
-    relations_by_candidate: dict[str, list[FactRelation]],
-    facts_by_candidate: dict[str, list[CandidateFact]] | None,
+    verification: CandidateVerification,
+) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
+    """把候选可见的已验证证据渲染为 Judge 输入条目。
+
+    返回 (条目列表, [(批内 F 编号, artifact_id) 映射])。patch 用 candidate
+    line 所在 hunk(line 不在 changed lines 时带 candidate_line_unknown
+    限制);图 payload 摘要化、文件 payload 截 2000 字符(源文档 §8.2)。
+    """
+    items: list[dict[str, Any]] = []
+    mapping: list[tuple[str, str]] = []
+    for evidence in verification.valid_evidence:
+        limitations = list(evidence.limitations)
+        if evidence.source_kind is EvidenceSourceKind.TASK_PATCH:
+            if (
+                dossier.candidate.line > 0
+                and dossier.candidate.line not in dossier.task.changed_lines
+            ):
+                limitations.append("candidate_line_unknown")
+            content = evidence.content
+        elif evidence.tool in _GRAPH_TOOLS:
+            content = summarize_graph(evidence.content)
+        else:
+            content = evidence.content[:_FILE_PAYLOAD_MAX_CHARS]
+            if len(evidence.content) > _FILE_PAYLOAD_MAX_CHARS:
+                limitations.append("payload_truncated")
+        fact_id = f"F{len(items) + 1:03d}"
+        mapping.append((fact_id, evidence.artifact_id))
+        items.append({
+            "evidence_id": fact_id,
+            "source_kind": evidence.source_kind.value,
+            "tool": evidence.tool,
+            "arguments": evidence.arguments,
+            "content": content,
+            "limitations": limitations,
+        })
+    return items, mapping
+
+
+def _judge_payload(
+    dossiers: list[CandidateDossier],
+    verifications: dict[str, CandidateVerification],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]]]:
+    """整批 Judge 输入:候选 + grounding + 证据条目;维护 F 编号→artifact_id 映射。"""
+    candidates: list[dict[str, Any]] = []
+    fact_map: dict[str, dict[str, str]] = {}
+    for dossier in dossiers:
+        verification = verifications[dossier.candidate.id]
+        items, mapping = _evidence_item_payload(dossier, verification)
+        candidate_entry = {
+            "candidate_id": dossier.candidate.id,
+            "candidate": {
+                "file": dossier.candidate.file,
+                "line": dossier.candidate.line,
+                "type": dossier.candidate.type,
+                "claim": dossier.candidate.claim,
+                "severity_proposal": dossier.candidate.severity_proposal.value,
+                "confidence": dossier.candidate.confidence,
+                "suggestion": dossier.candidate.suggestion,
+                "source_agent": dossier.candidate.source_agent,
+            },
+            "grounding_status": verification.grounding_status,
+            "evidence": items,
+        }
+        candidates.append(candidate_entry)
+        fact_map[dossier.candidate.id] = dict(mapping)
+    return candidates, fact_map
+
+
+# ── 输出确定性校验(源文档 §8.4 + 修正⑤) ───────────────────────────────
+
+
+def _role_of(artifact_id: str, dossier: CandidateDossier) -> EvidenceRole:
+    for ref in dossier.candidate.evidence_refs:
+        if ref.artifact_id == artifact_id:
+            return ref.declared_role
+    return EvidenceRole.MECHANISM  # 自动 patch 引用
+
+
+def _validate_assessment(
+    item: EvidenceJudgeAssessment,
+    *,
+    dossier: CandidateDossier,
+    fact_map: dict[str, str],
+    violations: list[str],
+) -> EvidenceJudgeAssessment | None:
+    """单候选裁决合同校验;违约返回 None(该候选 fail-closed)。"""
+    visible = set(fact_map.keys())  # 批内 F 编号
+    supporting = [fid for fid in item.supporting_evidence_ids]
+    counter = [fid for fid in item.counter_evidence_ids]
+    if item.action == "keep":
+        if not supporting:
+            violations.append("keep_without_supporting")
+            return None
+        if item.severity is None:
+            violations.append("keep_without_severity")
+            return None
+        if item.severity in {Severity.WARNING, Severity.CRITICAL} and not supporting:
+            violations.append("severity_without_supporting")
+            return None
+        if dossier.candidate.source_agent == "maintainability" and item.severity is Severity.CRITICAL:
+            violations.append("maintainability_critical")
+            return None
+        # 修正⑤:LOCATION 只说明位置,不能单独满足 keep 的支持要求。
+        artifact_ids = [fact_map.get(fid, "") for fid in supporting]
+        if artifact_ids and all(
+            _role_of(artifact_id, dossier) is EvidenceRole.LOCATION
+            for artifact_id in artifact_ids
+        ):
+            violations.append("supporting_all_location")
+            return None
+    else:
+        if item.severity is not None:
+            violations.append("drop_with_severity")
+            return None
+    if supporting:
+        unknown = [fid for fid in supporting if fid not in visible]
+        if unknown:
+            violations.append(f"supporting_unknown_id:{','.join(unknown)}")
+            return None
+    if counter:
+        unknown = [fid for fid in counter if fid not in visible]
+        if unknown:
+            violations.append(f"counter_unknown_id:{','.join(unknown)}")
+            return None
+    if set(supporting) & set(counter):
+        violations.append("supporting_counter_overlap")
+        return None
+    return item
+
+
+def _invoke_batch(
+    payload: list[dict[str, Any]],
     *,
     judge_llm: Any,
     structured_method: str,
     max_retries: int,
-) -> tuple[Verdict, Issue | None, str, list[tuple[str, str]]]:
-    """单个候选的完整档裁决:门控 → 终审 → (Issue, candidate_id, traces)。"""
-    relations = relations_by_candidate.get(dossier.candidate.id, [])
-    facts_by_id: dict[str, CandidateFact] | None = None
-    if facts_by_candidate is not None:
-        facts_by_id = {
-            fact.fact_id: fact
-            for fact in facts_by_candidate.get(dossier.candidate.id, [])
-        }
-    # 防误杀(ADR-046 §7):关系分析层整体失败(LLM 瞬时故障)时跳过门控直接终审,
-    # 否则 gate ② 会把全部候选确定性 drop,整轮 Recall 全崩;终审再失败走 keep+提案兜底。
-    gate = None if _analysis_failed(relations) else gate_candidate(relations)
-    if gate is not None:
-        reason_code, reason = gate
-        verdict = Verdict(dossier.candidate.id, "drop", reason_code, reason)
-        return verdict, None, "", [
-            ("judge_verdict", _stable_json({
-                "candidate_id": verdict.candidate_id, "action": "drop",
-                "reason_code": reason_code,
-            }))
-        ]
-    assessment = synthesize_verdict(
-        dossier, relations, judge_llm=judge_llm,
-        structured_method=structured_method, max_retries=max_retries,
-        facts_by_id=facts_by_id,
+    prompt_file: str,
+) -> EvidenceJudgeBatch | None:
+    """调用批量 Judge;None/异常重试一次,再失败返回 None(由调用方二分)。"""
+    structured = judge_llm.with_structured_output(
+        EvidenceJudgeBatch, method=structured_method
     )
+    system_prompt = (_PROMPT_DIR / prompt_file).read_text(encoding="utf-8")
+    for attempt in range(2):
+        try:
+            result = invoke_with_retry(
+                structured,
+                [
+                    ("system", system_prompt),
+                    ("user", _stable_json({"candidates": payload})),
+                ],
+                max_retries=max_retries,
+            )
+            if result is None:
+                continue
+            if not isinstance(result, EvidenceJudgeBatch):
+                result = EvidenceJudgeBatch.model_validate(result)
+            return result
+        except Exception as exc:  # noqa: BLE001 Judge 失败走 fail-closed,不抛断
+            logger.warning("evidence judge batch invoke failed (attempt %d): %s", attempt + 1, exc)
+    return None
+
+
+def _judge_chunk(
+    chunk: list[CandidateDossier],
+    *,
+    verifications: dict[str, CandidateVerification],
+    artifacts: dict[str, EvidenceArtifact],
+    judge_llm: Any,
+    structured_method: str,
+    max_retries: int,
+    prompt_file: str,
+    batch: VerdictBatch,
+) -> list[tuple[CandidateDossier, EvidenceJudgeAssessment | None, str]]:
+    """批内裁决:整批 → 输出合同校验 → 失败二分;单候选失败 fail-closed。"""
+    if judge_llm is None:
+        # mock 模式:确定性 keep + 提案严重度(真实 LLM 故障绝不走此路径)。
+        return [
+            (
+                dossier,
+                EvidenceJudgeAssessment(
+                    candidate_id=dossier.candidate.id,
+                    action="keep",
+                    severity=dossier.candidate.severity_proposal,
+                    reason="mock_deterministic_keep",
+                ),
+                "mock_deterministic_keep",
+            )
+            for dossier in chunk
+        ]
+    payload, fact_map = _judge_payload(chunk, verifications)
+    result = _invoke_batch(
+        payload,
+        judge_llm=judge_llm,
+        structured_method=structured_method,
+        max_retries=max_retries,
+        prompt_file=prompt_file,
+    )
+    _trace(batch, "evidence_judge_batch_started", {
+        "candidate_ids": [dossier.candidate.id for dossier in chunk],
+    })
+    if result is None:
+        if len(chunk) == 1:
+            _trace(batch, "evidence_judge_batch_failed", {
+                "candidate_ids": [chunk[0].candidate.id],
+            })
+            return [(chunk[0], None, "verification_failed")]
+        mid = len(chunk) // 2
+        return _judge_chunk(
+            chunk[:mid],
+            verifications=verifications, artifacts=artifacts,
+            judge_llm=judge_llm, structured_method=structured_method,
+            max_retries=max_retries, prompt_file=prompt_file, batch=batch,
+        ) + _judge_chunk(
+            chunk[mid:],
+            verifications=verifications, artifacts=artifacts,
+            judge_llm=judge_llm, structured_method=structured_method,
+            max_retries=max_retries, prompt_file=prompt_file, batch=batch,
+        )
+    # 批级合同:每个输入候选必须且只能返回一次,不接受未知候选 ID。
+    by_id = {dossier.candidate.id: dossier for dossier in chunk}
+    assessments: dict[str, EvidenceJudgeAssessment] = {}
+    violations: list[str] = []
+    seen: set[str] = set()
+    for raw_item in result.assessments:
+        if raw_item.candidate_id not in by_id or raw_item.candidate_id in seen:
+            violations.append(f"invalid_candidate_id:{raw_item.candidate_id}")
+            continue
+        seen.add(raw_item.candidate_id)
+        assessments[raw_item.candidate_id] = raw_item
+    outcomes: list[tuple[CandidateDossier, EvidenceJudgeAssessment | None, str]] = []
+    for dossier in chunk:
+        item = assessments.get(dossier.candidate.id)
+        if item is None:
+            violations.append(f"missing_assessment:{dossier.candidate.id}")
+            outcomes.append((dossier, None, "verification_failed"))
+            continue
+        validated = _validate_assessment(
+            item,
+            dossier=dossier,
+            fact_map=fact_map[dossier.candidate.id],
+            violations=violations,
+        )
+        outcomes.append(
+            (dossier, validated, "contract_violation" if validated is None else "ok")
+        )
+    if violations:
+        _trace(batch, "evidence_judge_contract_violations", {
+            "violations": violations,
+        })
+    return outcomes
+
+
+def _finalize_assessment(
+    dossier: CandidateDossier,
+    assessment: EvidenceJudgeAssessment | None,
+    verdict_reason: str,
+    batch: VerdictBatch,
+    *,
+    event: str,
+) -> tuple[Verdict, Issue | None]:
     candidate = dossier.candidate
     if assessment is None:
-        severity = candidate.severity_proposal
         verdict = Verdict(
-            candidate.id, "keep", "severity_evidence_incomplete",
-            "verdict LLM unavailable; kept with proposed severity",
-            resolved_severity=severity,
+            candidate.id, "drop", "verification_failed",
+            "Judge 失败或输出合同违约,按 fail-closed 不输出",
         )
-        return verdict, candidate.to_issue().model_copy(
-            update={"severity": severity}
-        ), candidate.id, [
-            ("judge_verdict", _stable_json({
-                "candidate_id": candidate.id, "action": "keep",
-                "reason_code": "severity_evidence_incomplete",
-                "resolved_severity": severity.value,
-            }))
-        ]
+        _trace(batch, event, {
+            "candidate_id": candidate.id, "action": "drop",
+            "reason_code": "verification_failed",
+        })
+        return verdict, None
     if assessment.action == "drop":
         verdict = Verdict(candidate.id, "drop", "synthesized_evidence_drop", assessment.reason)
-        return verdict, None, "", [
-            ("judge_verdict", _stable_json({
-                "candidate_id": candidate.id, "action": "drop",
-                "reason_code": "synthesized_evidence_drop",
-            }))
-        ]
+        _trace(batch, event, {
+            "candidate_id": candidate.id, "action": "drop",
+            "reason_code": "synthesized_evidence_drop",
+        })
+        return verdict, None
     verdict = Verdict(
-        candidate.id, "keep", "severity_resolved", assessment.reason,
+        candidate.id, "keep", verdict_reason, assessment.reason,
         resolved_severity=assessment.severity,
     )
     issue = candidate.to_issue().model_copy(update={"severity": assessment.severity})
-    return verdict, issue, candidate.id, [
-        ("judge_verdict", _stable_json({
-            "candidate_id": candidate.id, "action": "keep",
-            "reason_code": "severity_resolved",
-            "resolved_severity": assessment.severity.value,
-        })),
-        ("severity_resolved", _stable_json({
-            "candidate_id": candidate.id,
-            "severity": assessment.severity.value,
-            "cited_fact_ids": list(assessment.cited_fact_ids),
-        })),
-    ]
-
-
-def _invoke_direct(
-    dossier: CandidateDossier,
-    *,
-    judge_llm: Any,
-    structured_method: str,
-    max_retries: int,
-) -> tuple[Verdict, Issue | None, str, list[tuple[str, str]]]:
-    """单个候选的消融档裁决:无门控、终审输入无关系。"""
-    assessment = synthesize_verdict(
-        dossier, [], judge_llm=judge_llm,
-        structured_method=structured_method, max_retries=max_retries,
-    )
-    candidate = dossier.candidate
-    if assessment is None:
-        severity = candidate.severity_proposal
-        verdict = Verdict(
-            candidate.id, "keep", "direct_assessment_missing",
-            "DirectJudge LLM assessment unavailable; kept with proposed severity",
-            resolved_severity=severity,
-        )
-        return verdict, candidate.to_issue().model_copy(
-            update={"severity": severity}
-        ), candidate.id, [
-            ("direct_judge_verdict", _stable_json({
-                "candidate_id": candidate.id, "action": "keep",
-                "reason_code": "direct_assessment_missing",
-                "resolved_severity": severity.value,
-            }))
-        ]
-    if assessment.action == "drop":
-        verdict = Verdict(candidate.id, "drop", "direct_judge_drop", assessment.reason)
-        return verdict, None, "", [
-            ("direct_judge_verdict", _stable_json({
-                "candidate_id": candidate.id, "action": "drop",
-                "reason_code": "direct_judge_drop",
-            }))
-        ]
-    verdict = Verdict(
-        candidate.id, "keep", "direct_judge_keep", assessment.reason,
-        resolved_severity=assessment.severity,
-    )
-    issue = candidate.to_issue().model_copy(update={"severity": assessment.severity})
-    return verdict, issue, candidate.id, [
-        ("direct_judge_verdict", _stable_json({
-            "candidate_id": candidate.id, "action": "keep",
-            "reason_code": "direct_judge_keep",
-            "resolved_severity": assessment.severity.value,
-        }))
-    ]
+    _trace(batch, event, {
+        "candidate_id": candidate.id, "action": "keep",
+        "reason_code": verdict_reason,
+        "resolved_severity": assessment.severity.value if assessment.severity else None,
+        "supporting_evidence_ids": list(assessment.supporting_evidence_ids),
+    })
+    return verdict, issue
 
 
 def judge_with_evidence(
     assembly: DossierAssembly,
-    relations_by_candidate: dict[str, list[FactRelation]],
+    verifications: dict[str, CandidateVerification],
+    artifacts: dict[str, EvidenceArtifact],
     *,
     judge_llm: Any,
     structured_method: str,
     max_retries: int,
     candidate_groups: Sequence[CandidateGroup] = (),
-    facts_by_candidate: dict[str, list[CandidateFact]] | None = None,
 ) -> VerdictBatch:
-    """完整档裁决:门控 → 终审 → 组内合并。
-
-    facts_by_candidate 非 None 时,终审 payload 的每条 relation 附带对应事实
-    的 replay_status(消融档无事实输入,不传)。两入口刻意同构——ADR-046 §5.6
-    要求消融档与完整档唯一差异是输入里有没有证据,勿合并重构。
-    """
+    """完整档裁决:绑定失败/验证淘汰 → 批量 EvidenceJudge → 组内合并。"""
     batch = VerdictBatch()
     for failure in assembly.failures:
         verdict = Verdict(failure.candidate.id, "drop", "invalid_candidate_binding", failure.reason)
@@ -390,27 +454,114 @@ def judge_with_evidence(
             "candidate_id": verdict.candidate_id, "action": "drop",
             "reason_code": verdict.reason_code,
         })
-    if assembly.dossiers:
-        results = run_bounded_parallel(
-            assembly.dossiers,
-            lambda dossier: _invoke_with_evidence(
-                dossier, relations_by_candidate, facts_by_candidate,
-                judge_llm=judge_llm,
-                structured_method=structured_method, max_retries=max_retries,
-            ),
-            max_workers=6,
+    eligible = [
+        dossier
+        for dossier in assembly.dossiers
+        if verifications.get(dossier.candidate.id) is not None
+        and verifications[dossier.candidate.id].eligible_for_judge
+    ]
+    for dossier in assembly.dossiers:
+        verification = verifications.get(dossier.candidate.id)
+        if verification is None or verification.eligible_for_judge:
+            continue
+        verdict = Verdict(
+            dossier.candidate.id, "drop",
+            verification.rejection_reason or "ineligible",
+            verification.rejection_reason or "",
         )
-        supported: list[tuple[str, Issue]] = []
-        for result in results:
-            if result is None:
-                continue
-            verdict, issue, candidate_id, traces = result
+        batch.verdicts.append(verdict)
+        _trace(batch, "judge_verdict", {
+            "candidate_id": verdict.candidate_id, "action": "drop",
+            "reason_code": verdict.reason_code,
+        })
+    if not eligible:
+        return batch
+
+    chunks = [
+        eligible[index:index + _JUDGE_BATCH_SIZE]
+        for index in range(0, len(eligible), _JUDGE_BATCH_SIZE)
+    ]
+    outcomes = run_bounded_parallel(
+        chunks,
+        lambda chunk: _judge_chunk(
+            chunk,
+            verifications=verifications, artifacts=artifacts,
+            judge_llm=judge_llm, structured_method=structured_method,
+            max_retries=max_retries, prompt_file="evidence-judge.txt",
+            batch=batch,
+        ),
+        max_workers=_JUDGE_MAX_PARALLEL_BATCHES,
+    )
+    supported: list[tuple[str, Issue]] = []
+    for chunk_outcomes in outcomes:
+        if chunk_outcomes is None:
+            continue
+        for dossier, assessment, verdict_reason in chunk_outcomes:
+            verdict, issue = _finalize_assessment(
+                dossier, assessment, verdict_reason, batch, event="judge_verdict"
+            )
             batch.verdicts.append(verdict)
-            if issue is not None and candidate_id:
-                supported.append((candidate_id, issue))
-            batch.trace.extend(traces)
-        consolidate_groups(batch, supported, candidate_groups)
+            if issue is not None:
+                supported.append((dossier.candidate.id, issue))
+    consolidate_groups(batch, supported, candidate_groups)
     return batch
+
+
+def _direct_payload(dossier: CandidateDossier) -> dict[str, Any]:
+    return {
+        "candidate_alias": "C001",
+        "candidate": {
+            "type": dossier.candidate.type,
+            "claim": dossier.candidate.claim,
+            "file": dossier.candidate.file,
+            "line": dossier.candidate.line,
+            "severity_proposal": dossier.candidate.severity_proposal.value,
+            "suggestion": dossier.candidate.suggestion,
+            "confidence": dossier.candidate.confidence,
+        },
+        "task_patch": dossier.task.patch,
+    }
+
+
+def _invoke_direct(
+    dossier: CandidateDossier,
+    *,
+    judge_llm: Any,
+    structured_method: str,
+    max_retries: int,
+) -> EvidenceJudgeAssessment | None:
+    """消融档单个候选裁决:输入无证据 ID,输出同构(EvidenceJudgeAssessment,ID 空)。"""
+    if judge_llm is None:
+        return EvidenceJudgeAssessment(
+            candidate_id=dossier.candidate.id,
+            action="keep",
+            severity=dossier.candidate.severity_proposal,
+            reason="mock_deterministic_keep",
+        )
+    try:
+        structured = judge_llm.with_structured_output(
+            EvidenceJudgeAssessment, method=structured_method
+        )
+        system_prompt = (_PROMPT_DIR / "direct-judge.txt").read_text(encoding="utf-8")
+        result = invoke_with_retry(
+            structured,
+            [
+                ("system", system_prompt),
+                ("user", _stable_json(_direct_payload(dossier))),
+            ],
+            max_retries=max_retries,
+        )
+        if result is None:
+            return None
+        if not isinstance(result, EvidenceJudgeAssessment):
+            result = EvidenceJudgeAssessment.model_validate(result)
+        if result.candidate_id != "C001":
+            logger.warning("direct judge returned unexpected candidate_id: %s", result.candidate_id)
+            return None
+        return result.model_copy(update={"candidate_id": dossier.candidate.id})
+    except Exception:  # noqa: BLE001
+        logger.warning("direct judge LLM synthesis failed", exc_info=True)
+        return None
 
 
 def judge_direct(
@@ -421,10 +572,7 @@ def judge_direct(
     max_retries: int,
     candidate_groups: Sequence[CandidateGroup] = (),
 ) -> VerdictBatch:
-    """无证据链消融档:与 judge_with_evidence 同构,唯一差异是无门控、终审输入无关系。
-
-    两入口刻意同构——ADR-046 §5.6 要求消融档与完整档唯一差异是输入里有没有证据,勿合并重构。
-    """
+    """无证据链消融档:输入无证据 ID、无门控,输出 keep/drop/severity 同构。"""
     batch = VerdictBatch()
     for failure in assembly.failures:
         verdict = Verdict(failure.candidate.id, "drop", "invalid_candidate_binding", failure.reason)
@@ -443,13 +591,30 @@ def judge_direct(
             max_workers=6,
         )
         supported: list[tuple[str, Issue]] = []
-        for result in results:
-            if result is None:
+        for dossier, assessment in zip(assembly.dossiers, results, strict=True):
+            if assessment is None:
+                # 消融档基线语义:LLM 不可用时保留提案严重度(与完整档 fail-closed 不同)。
+                severity = dossier.candidate.severity_proposal
+                verdict = Verdict(
+                    dossier.candidate.id, "keep", "direct_assessment_missing",
+                    "DirectJudge LLM assessment unavailable; kept with proposed severity",
+                    resolved_severity=severity,
+                )
+                issue = dossier.candidate.to_issue().model_copy(
+                    update={"severity": severity}
+                )
+                batch.verdicts.append(verdict)
+                supported.append((dossier.candidate.id, issue))
+                _trace(batch, "direct_judge_verdict", {
+                    "candidate_id": dossier.candidate.id, "action": "keep",
+                    "reason_code": "direct_assessment_missing",
+                })
                 continue
-            verdict, issue, candidate_id, traces = result
+            verdict, final_issue = _finalize_assessment(
+                dossier, assessment, "direct_judge_keep", batch, event="direct_judge_verdict"
+            )
             batch.verdicts.append(verdict)
-            if issue is not None and candidate_id:
-                supported.append((candidate_id, issue))
-            batch.trace.extend(traces)
+            if final_issue is not None:
+                supported.append((dossier.candidate.id, final_issue))
         consolidate_groups(batch, supported, candidate_groups)
     return batch

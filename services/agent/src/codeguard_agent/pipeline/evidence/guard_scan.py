@@ -1,7 +1,8 @@
-"""确定性 guard 注解扫描:把文件内容事实转成 direct contradicts 先验(ADR-046)。
+"""确定性 guard 注解扫描(Evidence Ledger 保留的确定性反证)。
 
 只覆盖两个确定场景:@PreAuthorize 等鉴权注解、@Transactional 事务边界。
-命中产出 direct 反证,供门控①零成本淘汰;未命中不产出(不抢关系分析的活)。
+命中产出 direct 反证供 Judge 前零成本淘汰;未命中不产出
+(不替代 Judge 的支持/反驳判定)。
 """
 
 from __future__ import annotations
@@ -9,7 +10,6 @@ from __future__ import annotations
 import json
 import re
 
-from codeguard_agent.models.council import CandidateFact, FactRelation
 from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.context import rules as context_rules
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
@@ -212,28 +212,18 @@ def _scoped_annotation(
     return None
 
 
-def scan_guard_fact(
+def scan_guard_content(
     dossier: CandidateDossier,
-    fact: CandidateFact,
+    content: str,
     tag: RiskTag,
-) -> FactRelation | None:
-    """在文件内容事实中确定性扫描 guard 注解;命中返回 direct contradicts,否则 None。"""
-    if fact.raw.strip() and tag in SECURITY_TAGS:
-        observation = _scoped_annotation(dossier, fact.raw, _AUTHZ_ANNOTATIONS)
+) -> str | None:
+    """在证据内容(patch/文件)中确定性扫描 guard 注解;命中返回观察说明,否则 None。"""
+    if content.strip() and tag in SECURITY_TAGS:
+        observation = _scoped_annotation(dossier, content, _AUTHZ_ANNOTATIONS)
         if observation and observation.strip():
-            return FactRelation(
-                fact_id=fact.fact_id,
-                relation="contradicts",
-                strength="direct",
-                observation=observation,
-            )
-    if fact.raw.strip() and tag is RiskTag.TRANSACTION_ATOMICITY:
-        observation = _scoped_annotation(dossier, fact.raw, ("Transactional",))
+            return observation
+    if content.strip() and tag is RiskTag.TRANSACTION_ATOMICITY:
+        observation = _scoped_annotation(dossier, content, ("Transactional",))
         if observation and observation.strip():
-            return FactRelation(
-                fact_id=fact.fact_id,
-                relation="contradicts",
-                strength="direct",
-                observation=observation,
-            )
+            return observation
     return None
