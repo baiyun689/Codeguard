@@ -61,6 +61,7 @@ def test_runner_wires_runtime_identity_to_archive_and_report(monkeypatch, tmp_pa
         tool_server_url="",
         max_retries=3,
         structured_method="function_calling",
+        force_react=False,
     )
     profile = SimpleNamespace(
         name="pipeline-notools",

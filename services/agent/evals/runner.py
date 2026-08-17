@@ -36,6 +36,7 @@ from typing import Any, Callable
 from codeguard_agent.config import Settings
 from codeguard_agent.git.diff_collector import parse_changed_files
 from codeguard_agent.llm.client import build_llm
+from codeguard_agent.models.tasks import ReviewBudget
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
 from codeguard_agent.pipeline.engines import DirectEngine
 from codeguard_agent.models.schemas import ReviewResult
@@ -446,7 +447,10 @@ def main(argv: list[str] | None = None) -> int:
     # 以便工具会话用该用例自带的 repo_path。
     # enable_supervisor 由 profile 控制(默认关):受控对照档保持确定性全派、不引入路由
     # 非确定性;仅 pipeline-supervisor 观测档置开(见 design D9)。
-    orchestrator = PipelineOrchestrator()
+    # CODEGUARD_FORCE_REACT 与 CLI 同语义:诊断/验证时强制 ReAct(仍受预算约束)。
+    orchestrator = PipelineOrchestrator(
+        review_budget=ReviewBudget(force_react=settings.force_react)
+    )
     direct_prompt_path = (
         Path(__file__).resolve().parents[1]
         / "src"
