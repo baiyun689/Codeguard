@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -195,6 +196,301 @@ def _located_match(raw: str, located: str) -> bool:
     return located_norm in _normalized(raw)
 
 
+# ────────────────────────────────────────────────────────────────
+# 图工具关系断言匹配(2026-08-17 单 case 评测 TP=0 修复)
+#
+# 审查员对图工具的 located 引文多为"人话转述"("getCommandLine ->
+# getRawCommandLine (line 129)"),与 JSON 原文做子串匹配必然全灭。
+# 改为从 located 解析"调用关系断言",与 relationships 数组结构化核对:
+# 符号双侧短名匹配 + 行号容差 ±2 + 文件名后缀限定。编造的边依旧
+# 核对不上,幻觉检测内核保留。
+# ────────────────────────────────────────────────────────────────
+
+_GRAPH_TOOLS = ("inspect_change_impact", "inspect_security_path", "inspect_structure")
+_GRAPH_LINE_TOLERANCE = 2
+
+
+@dataclass(frozen=True)
+class _GraphAssertion:
+    """located 中一条 'A -> B' 调用关系断言(可带行号/文件名限定)。"""
+
+    source: str
+    target: str
+    file: str = ""
+    line: int = 0
+
+
+_EDGE_RE = re.compile(
+    r"(?P<source>[A-Za-z_$][\w$]*(?:[.#][A-Za-z_$][\w$]*)*)"
+    r"\s*->\s*"
+    r"(?P<target>[A-Za-z_$][\w$]*(?:[.#][A-Za-z_$][\w$]*)*)"
+    r"(?:\s*\(\s*(?P<loc>[^()]*)\s*\))?"
+)
+_LINE_RE = re.compile(r"\bline\s*(\d+)", re.IGNORECASE)
+_FILE_LINE_RE = re.compile(r"([\w$./\\-]+\.\w+)\s*:\s*(\d+)")
+
+
+def _parse_assertions(located: str) -> list[_GraphAssertion]:
+    """全局扫描 located 中的 'A -> B' 断言,其余文本(前缀、混入的代码原文)自然忽略。
+
+    括号内支持两种定位形态:'(line 129)' 与 '(CmdShell.java:84)'。
+    """
+    assertions: list[_GraphAssertion] = []
+    for match in _EDGE_RE.finditer(located):
+        loc = match.group("loc") or ""
+        line = 0
+        file_name = ""
+        line_match = _LINE_RE.search(loc)
+        if line_match:
+            line = int(line_match.group(1))
+        file_match = _FILE_LINE_RE.search(loc)
+        if file_match:
+            file_name = file_match.group(1)
+            if not line:
+                line = int(file_match.group(2))
+        assertions.append(
+            _GraphAssertion(
+                source=match.group("source").replace("#", "."),
+                target=match.group("target").replace("#", "."),
+                file=file_name,
+                line=line,
+            )
+        )
+    return assertions
+
+
+def _split_symbol_id(side_id: str) -> tuple[str, str]:
+    """拆图符号 id 为 (类全名, 方法名)。
+
+    'java:...Shell#getCommandLine(...)' → ('org...Shell', 'getCommandLine');
+    类型节点无 '#' → (类全名, '');构造器方法名保留 '<init>Commandline' 形态。
+    """
+    body = side_id.split(":", 1)[-1]
+    if "#" not in body:
+        return body, ""
+    class_part, _, rest = body.partition("#")
+    return class_part, rest.partition("(")[0]
+
+
+def _side_match(token: str, side_id: str) -> bool:
+    """located 一侧的符号 token 与边条目 sourceId/targetId 的匹配。
+
+    规则:类名逐段后缀匹配(容忍无限定短名)、方法名精确相等;
+    构造器特例('<init>Commandline' 与裸类名 'Commandline' 匹配);
+    类型节点按类短名匹配。
+    """
+    parts = [p for p in re.split(r"[.#]", token) if p]
+    if not parts:
+        return False
+    class_full, method = _split_symbol_id(side_id)
+    method_token = parts[-1]
+    qualifiers = parts[:-1]
+    if method:
+        if (
+            not qualifiers
+            and method.startswith("<init>")
+            and method[len("<init>"):] == method_token
+        ):
+            return True
+        if method_token != method:
+            return False
+    else:
+        if qualifiers:
+            return False
+        return class_full.split(".")[-1] == method_token
+    if qualifiers:
+        class_segments = class_full.split(".")
+        return class_segments[-len(qualifiers):] == qualifiers
+    return True
+
+
+def _graph_edges(raw: str) -> list[dict[str, Any]]:
+    """汇总图响应四个关系数组里 sourceId/targetId 齐全的边;非 JSON 返回空。"""
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    edges: list[dict[str, Any]] = []
+    for key in (
+        "relationships",
+        "main_relationships",
+        "test_relationships",
+        "generated_relationships",
+    ):
+        for item in payload.get(key) or []:
+            if isinstance(item, dict) and item.get("sourceId") and item.get("targetId"):
+                edges.append(item)
+    return edges
+
+
+def _assertion_hit(assertion: _GraphAssertion, edges: list[dict[str, Any]]) -> bool:
+    for edge in edges:
+        if not _side_match(assertion.source, str(edge.get("sourceId", ""))):
+            continue
+        if not _side_match(assertion.target, str(edge.get("targetId", ""))):
+            continue
+        if (
+            assertion.line
+            and abs(int(edge.get("line", 0) or 0) - assertion.line)
+            > _GRAPH_LINE_TOLERANCE
+        ):
+            continue
+        if assertion.file and not str(edge.get("file", "")).replace("\\", "/").endswith(
+            "/" + assertion.file
+        ):
+            continue
+        return True
+    return False
+
+
+def _non_assertion_remnants(located: str) -> list[str]:
+    """切除断言片段后的余料(前缀/分隔符/混入的原文引用),供兜底子串核对。"""
+    remnants: list[str] = []
+    last_end = 0
+    for match in _EDGE_RE.finditer(located):
+        if match.start() > last_end:
+            remnants.append(located[last_end:match.start()])
+        last_end = match.end()
+    if last_end < len(located):
+        remnants.append(located[last_end:])
+    return [r for r in remnants if r.strip()]
+
+
+def _graph_assertions_match(located: str, raw: str) -> bool:
+    """图工具 located 核对:解析 'A -> B' 断言与 relationships 结构化核对。
+
+    裁决决策:至少一条断言命中即 verified——一条 'A->B+行号+文件' 全吻合的边
+    不可能"蒙对",即构成诚实性证明;unverified 只是降权不击杀,未命中的其余
+    断言仍留在事实原文里由关系分析与终审把关。无断言可提取时回退逐字子串
+    核对(兼容纯原文引用形态);断言全部未命中时,用切除断言后的余料做子串
+    兜底(兼容"断言 + 原文片段"混合引用)。
+    """
+    located = located.strip()
+    if not located:
+        return False
+    assertions = _parse_assertions(located)
+    if not assertions:
+        return _located_match(raw, located)
+    edges = _graph_edges(raw)
+    if any(_assertion_hit(assertion, edges) for assertion in assertions):
+        return True
+    return any(
+        _located_match(raw, remnant)
+        for remnant in _non_assertion_remnants(located)
+    )
+
+
+def _replay_hit(tool: str, raw: str, located: str) -> bool:
+    """重放命中分派:图工具走断言核对,文件工具保持逐字子串核对。"""
+    if tool in _GRAPH_TOOLS:
+        return _graph_assertions_match(located, raw)
+    return _located_match(raw, located)
+
+
+# ────────────────────────────────────────────────────────────────
+# 图响应确定性压缩(2026-08-17 单 case 评测 TP=0 修复之二)
+#
+# 14KB 图 JSON 被 raw[:2000] 截断在 symbols 数组中间,关系分析 LLM
+# 看不到 relationships 内容,叠加 unverified 判全 insufficient。
+# 改为进分析前确定性结构化压缩:保留头部/符号核心字段/全部调用边,
+# 丢低信息字段与冗余 fallback 数组。CandidateFact.raw 与
+# gathered_context 保持全量原文,只压缩发给关系分析 LLM 的载荷。
+# ────────────────────────────────────────────────────────────────
+
+_GRAPH_SUMMARY_MAX_CHARS = 8000
+_GRAPH_HEADER_KEYS = (
+    "status", "coverage", "source_scope", "subject_symbol_id", "limitations",
+)
+_GRAPH_SYMBOL_KEYS = ("id", "kind", "file", "startLine", "endLine")
+_GRAPH_RELATION_KEYS = ("sourceId", "targetId", "kind", "file", "line")
+_GRAPH_FALLBACK_KEYS = (
+    "main_relationships", "test_relationships", "generated_relationships",
+)
+_FILE_RAW_MAX_CHARS = 2000
+
+
+def _graph_summary(raw: str) -> str:
+    """对 inspect_* 图响应做确定性结构化压缩(零 LLM)。
+
+    主 relationships 非空时丢弃四个 fallback 数组(体积减半以上);
+    主数组为空(not_found + test 边透传场景)时补 fallback 数组,
+    分析层才能判断不足而不是瞎判。非 JSON 按上限截断兜底。
+    """
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return raw[:_GRAPH_SUMMARY_MAX_CHARS]
+    if not isinstance(payload, dict):
+        return raw[:_GRAPH_SUMMARY_MAX_CHARS]
+    summary: dict[str, Any] = {
+        key: payload.get(key) for key in _GRAPH_HEADER_KEYS if key in payload
+    }
+    symbols = [
+        {key: symbol.get(key) for key in _GRAPH_SYMBOL_KEYS if key in symbol}
+        for symbol in payload.get("symbols") or []
+        if isinstance(symbol, dict)
+    ]
+    relations = [
+        {key: rel.get(key) for key in _GRAPH_RELATION_KEYS if key in rel}
+        for rel in payload.get("relationships") or []
+        if isinstance(rel, dict)
+    ]
+    if not relations:
+        for key in _GRAPH_FALLBACK_KEYS:
+            extra = [
+                {k: rel.get(k) for k in _GRAPH_RELATION_KEYS if k in rel}
+                for rel in payload.get(key) or []
+                if isinstance(rel, dict)
+            ]
+            if extra:
+                summary[key] = extra
+    summary["symbols"] = symbols
+    summary["relationships"] = relations
+    return _fit_graph_summary(json.dumps(summary, ensure_ascii=False))
+
+
+def _fit_graph_summary(text: str, *, max_chars: int = _GRAPH_SUMMARY_MAX_CHARS) -> str:
+    """长度阶梯(信息牺牲从小到大):删 symbols → 边截 60/30/10 → 硬截断。
+
+    删符号先于截边:调用关系是本次修复的核心,符号先让位;每级截断后
+    都是合法 JSON(硬截断是极端图的最后防线,现实中边截 10 已足够)。
+    """
+    if len(text) <= max_chars:
+        return text
+    payload: Any = json.loads(text)
+    if isinstance(payload, dict) and payload.get("symbols"):
+        del payload["symbols"]
+        text = json.dumps(payload, ensure_ascii=False)
+    if len(text) <= max_chars:
+        return text
+    if isinstance(payload, dict):
+        for limit in (60, 30, 10):
+            relations = payload.get("relationships") or []
+            if len(relations) > limit:
+                payload["relationships"] = relations[:limit]
+                text = json.dumps(payload, ensure_ascii=False)
+            if len(text) <= max_chars:
+                return text
+    return text[:max_chars]
+
+
+def _relation_raw(fact: CandidateFact) -> tuple[str, bool]:
+    """图事实确定性压缩、文件事实维持 2000 字符截断;返回 (载荷文本, 是否压缩)。
+
+    文件事实的 located 已逐字 verified,LLM 对内容已有信心,维持 2000 旋钮。
+    """
+    if fact.source in {
+        "tool:inspect_change_impact",
+        "tool:inspect_security_path",
+        "tool:inspect_structure",
+    }:
+        summary = _graph_summary(fact.raw)
+        return summary, len(summary) < len(fact.raw)
+    return fact.raw[:_FILE_RAW_MAX_CHARS], len(fact.raw) > _FILE_RAW_MAX_CHARS
+
+
 def _collect_facts(
     dossiers: list[CandidateDossier],
     *,
@@ -276,7 +572,7 @@ def _collect_facts(
             if limitation:
                 status = "failed"  # 调用失败优先(沙箱拒绝/符号不存在)
             elif located:
-                status = "verified" if _located_match(raw, located) else "unverified"
+                status = "verified" if _replay_hit(tool, raw, located) else "unverified"
             else:
                 status = "recipe"
             fact = CandidateFact(
@@ -464,6 +760,17 @@ def analyze_relations(
 
 
 def _relation_payload(dossier: CandidateDossier, facts: list[CandidateFact]) -> str:
+    fact_entries: list[dict[str, Any]] = []
+    for fact in facts:
+        raw_text, raw_truncated = _relation_raw(fact)
+        fact_entries.append({
+            "fact_id": fact.fact_id,
+            "source": fact.source,
+            "raw": raw_text,
+            "raw_truncated": raw_truncated,
+            "replay_status": fact.replay_status,
+            "limitation": fact.limitation,
+        })
     return _stable_json({
         "candidate_alias": "C001",
         "candidate": {
@@ -473,17 +780,7 @@ def _relation_payload(dossier: CandidateDossier, facts: list[CandidateFact]) -> 
             "line": dossier.candidate.line,
         },
         "task_patch": dossier.task.patch,
-        "facts": [
-            {
-                "fact_id": fact.fact_id,
-                "source": fact.source,
-                "raw": fact.raw[:2000],
-                "raw_truncated": len(fact.raw) > 2000,
-                "replay_status": fact.replay_status,
-                "limitation": fact.limitation,
-            }
-            for fact in facts
-        ],
+        "facts": fact_entries,
     })
 
 
