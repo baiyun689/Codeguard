@@ -12,7 +12,7 @@ from codeguard_agent.models.evidence import (
     EvidenceCaptureMode,
     EvidenceSourceKind,
 )
-from codeguard_agent.models.schemas import ReviewResult
+from codeguard_agent.models.schemas import EvidenceRole, ReviewResult, Severity
 from codeguard_agent.models.tasks import ReviewTask, TaskContextBundle
 from codeguard_agent.pipeline.engines import (
     DirectEngine,
@@ -261,6 +261,36 @@ def test_用户提示词_带目录时渲染_evidence_id():
     prompt = build_reviewer_user_prompt(task=_task(), context_bundle=bundle, catalog=catalog)
     assert 'evidence_id="P01"' in prompt
     assert 'evidence_id="C01"' in prompt
+
+
+def test_绑定器_role为枚举成员时不抛():
+    # str-Enum 成员在 3.11+ 下 str() 返回限定名,绑定器必须取 .value(回归)。
+    from codeguard_agent.models.schemas import (
+        DiscoveredIssue,
+        EvidenceRefSelection,
+    )
+    from codeguard_agent.pipeline.evidence.ledger import bind_discovered_issue
+
+    catalog = _Builder().build(_bundle(_fact("resolve_change_context", "symbol A")))
+    issue = DiscoveredIssue(
+        severity=Severity.WARNING,
+        file="src/A.java",
+        line=1,
+        type="t",
+        message="m",
+        evidence_refs=[
+            EvidenceRefSelection(alias="C01", role=EvidenceRole.REACHABILITY)
+        ],
+    )
+    candidate = bind_discovered_issue(
+        issue, task=_task(), reviewer="threat_model",
+        catalog=catalog, candidate_index=1,
+    )
+    assert candidate.evidence_ref_errors == []
+    assert [ref.declared_role for ref in candidate.evidence_refs] == [
+        EvidenceRole.MECHANISM,  # 自动 patch
+        EvidenceRole.REACHABILITY,
+    ]
 
 
 def test_用户提示词_无目录时不含_evidence_id():

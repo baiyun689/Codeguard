@@ -224,13 +224,16 @@ def bind_discovered_issue(
             continue
         seen_ids.add(artifact_id)
         external_count += 1
+        role_raw = getattr(selection, "role", EvidenceRole.MECHANISM)
+        # str-Enum 成员在 3.11+ 下 str() 返回限定名("EvidenceRole.REACHABILITY"),
+        # 必须取 .value 再构造,否则绑定器抛 ValueError 拖垮发现者节点。
+        role = (
+            role_raw
+            if isinstance(role_raw, EvidenceRole)
+            else EvidenceRole(str(role_raw))
+        )
         refs.append(
-            EvidenceRef(
-                artifact_id=artifact_id,
-                declared_role=EvidenceRole(
-                    str(getattr(selection, "role", "mechanism"))
-                ),
-            )
+            EvidenceRef(artifact_id=artifact_id, declared_role=role)
         )
     return CandidateIssue(
         id=cid,
