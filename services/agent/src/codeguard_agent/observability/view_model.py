@@ -233,12 +233,28 @@ def _step_from_pair(
     if node_summary:
         summary = node_summary
     if metrics:
-        summary = (
+        parts = [
             f"{metrics.get('request_count', 0)} 个请求 · "
-            f"{metrics.get('fact_count', 0)} 条事实 · "
-            f"{metrics.get('llm_analysis_calls', 0)} 次 LLM · "
+            f"{metrics.get('fact_count', 0)} 条事实",
+        ]
+        # 重放四态仅新 payload 携带;旧 trace 报告缺键时不渲染,避免显示误导性全零
+        if "replay_verified_count" in metrics:
+            parts.append(
+                "(verified "
+                f"{metrics.get('replay_verified_count', 0)} / unverified "
+                f"{metrics.get('replay_unverified_count', 0)} / failed "
+                f"{metrics.get('replay_failed_count', 0)} / recipe "
+                f"{metrics.get('recipe_fact_count', 0)})"
+            )
+        parts.append(
+            f" · {metrics.get('llm_analysis_calls', 0)} 次 LLM · "
             f"分析 {float(metrics.get('fact_analysis_ms', 0.0)) / 1000:.3f}s"
         )
+        if "chain_used" in metrics:
+            parts.append(
+                f" · 链 {metrics.get('chain_used', 0)} / 配方 {metrics.get('recipe_fallback', 0)}"
+            )
+        summary = "".join(parts)
     return {
         "id": step_id,
         "sequence": sequence,

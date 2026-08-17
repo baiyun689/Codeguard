@@ -53,6 +53,13 @@ def _dossier(line=10, symbol="S1", task_file="src/A.java",
     )
 
 
+def _batch_metrics_payload(batch) -> dict:
+    for event, detail in batch.trace:
+        if event == "evidence_batch_metrics":
+            return json.loads(detail)
+    pytest.fail("evidence_batch_metrics 事件缺失")
+
+
 def test_validate_chain_drops_unknown_tool_and_missing_located():
     steps = [
         # tool 是 Literal,非法工具名需 model_construct 绕过校验构造
@@ -383,6 +390,72 @@ def test_verify_evidence_routes_chain_and_recipe():
     )
     assert set(batch.facts) == {"c1"}
     assert set(batch.relations) == {"c1"}
+
+
+def test_verify_evidence_batch_metrics_payload_carries_replay_and_path_stats():
+    """回归:evidence_batch_metrics 携带重放四态/链配方路径/工具调用计数,供 trace 仪表盘渲染。"""
+    chain = EvidenceTraceStep(
+        tool="get_file_content", args={"file_path": "src/A.java"}, located="int x = 1;",
+    )
+    dossier_chain = _dossier(chain=[chain])
+    dossier_recipe = _dossier(line=30)
+    dossier_recipe.candidate.id = "c2"
+    tool_client = Mock()
+    tool_client.get_file_content.return_value = Mock(
+        success=True, result=None, as_tool_output=lambda: "int x = 1;\nvoid f() {}",
+    )
+    tool_client.inspect_change_impact.return_value = Mock(
+        success=True,
+        result=(
+            '{"status": "confirmed", "subject_symbol_id": "S1",'
+            ' "source_scope": "MAIN", "coverage": "complete",'
+            ' "relationships": [], "test_relationships": []}'
+        ),
+    )
+    batch = verify_evidence(
+        [dossier_chain, dossier_recipe], tool_client=tool_client, analyst_llm=None,
+        structured_method="function_calling", enabled_tools=None,
+        tag_by_candidate={"c1": RiskTag.GENERAL_REVIEW, "c2": RiskTag.GENERAL_REVIEW},
+    )
+    payload = _batch_metrics_payload(batch)
+    assert payload["candidates"] == 2
+    assert payload["request_count"] == 2  # 跨候选去重后仅 2 次真实工具调用
+    assert payload["fact_count"] == 3
+    assert payload["replay_verified_count"] == 1   # 链重放引用命中
+    assert payload["replay_unverified_count"] == 0
+    assert payload["replay_failed_count"] == 0
+    assert payload["recipe_fact_count"] == 2       # 配方兜底两条事实
+    assert payload["chain_used"] == 1
+    assert payload["recipe_fallback"] == 1
+    assert payload["llm_analysis_calls"] == 0      # mock 档不调 LLM
+    assert payload["fact_analysis_ms"] >= 0
+
+
+def test_verify_evidence_batch_metrics_counts_llm_analysis_calls():
+    """回归:关系分析真实发起 LLM 调用的候选数计入 llm_analysis_calls。"""
+    dossier = _dossier()
+    tool_client = Mock()
+    tool_client.get_file_content.return_value = Mock(
+        success=True, result=None, as_tool_output=lambda: "int x = 1;",
+    )
+    tool_client.inspect_change_impact.return_value = Mock(
+        success=True,
+        result=(
+            '{"status": "confirmed", "subject_symbol_id": "S1",'
+            ' "source_scope": "MAIN", "coverage": "complete",'
+            ' "relationships": [], "test_relationships": []}'
+        ),
+    )
+    analyst = MagicMock()
+    analyst.with_structured_output.return_value = Mock(
+        invoke=Mock(return_value=_RelationBatch(findings=[])),
+    )
+    batch = verify_evidence(
+        [dossier], tool_client=tool_client, analyst_llm=analyst,
+        structured_method="function_calling", enabled_tools=None,
+        tag_by_candidate={"c1": RiskTag.GENERAL_REVIEW},
+    )
+    assert _batch_metrics_payload(batch)["llm_analysis_calls"] == 1
 
 
 def test_verify_evidence_without_tool_client_uses_patch_facts():

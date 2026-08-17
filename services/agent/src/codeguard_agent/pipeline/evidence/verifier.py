@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -358,6 +359,7 @@ def analyze_relations(
     tag: RiskTag,
     analyst_llm: Any,
     structured_method: str,
+    llm_calls: list[int] | None = None,
 ) -> list[FactRelation]:
     """对单个候选的全部事实做一次关系分析(ADR-046:每候选 1 次 LLM)。
 
@@ -398,6 +400,8 @@ def analyze_relations(
             )
             from codeguard_agent.llm.client import invoke_with_retry
 
+            if llm_calls is not None:
+                llm_calls.append(1)
             raw_result = invoke_with_retry(
                 structured,
                 [
@@ -525,6 +529,8 @@ def verify_evidence(
         for dossier in dossiers
         if facts_by_candidate.get(dossier.candidate.id)
     ]
+    llm_calls: list[int] = []
+    analysis_start = time.monotonic()
     outcomes = run_bounded_parallel(
         analyzable_items,
         lambda item: analyze_relations(
@@ -532,9 +538,11 @@ def verify_evidence(
             tag=tag_by_candidate.get(item[0].candidate.id, RiskTag.GENERAL_REVIEW),
             analyst_llm=analyst_llm,
             structured_method=structured_method,
+            llm_calls=llm_calls,
         ),
         max_workers=6,
     )
+    fact_analysis_ms = (time.monotonic() - analysis_start) * 1000
     for (dossier, facts), outcome in zip(analyzable_items, outcomes, strict=True):
         batch.relations[dossier.candidate.id] = (
             outcome if outcome is not None else [
@@ -543,10 +551,35 @@ def verify_evidence(
                 for fact in facts
             ]
         )
+    # 重放四态与路径规划统计,供 trace 仪表盘 evidence_verifier 节点摘要渲染。
+    replay_counts = {"verified": 0, "unverified": 0, "failed": 0, "recipe": 0}
+    for facts in facts_by_candidate.values():
+        for fact in facts:
+            replay_counts[fact.replay_status] += 1
+    request_count = len({
+        (event_detail["tool"], _stable_json(event_detail["arguments"]))
+        for event, detail in trace
+        if event == "evidence_tool_called"
+        for event_detail in [json.loads(detail)]
+    })
+    path_counts = [
+        json.loads(detail).get("path")
+        for event, detail in trace
+        if event == "candidate_evidence_path"
+    ]
     batch.trace.append(
         ("evidence_batch_metrics", _stable_json({
             "candidates": len(dossiers),
+            "request_count": request_count,
             "fact_count": sum(len(v) for v in facts_by_candidate.values()),
+            "replay_verified_count": replay_counts["verified"],
+            "replay_unverified_count": replay_counts["unverified"],
+            "replay_failed_count": replay_counts["failed"],
+            "recipe_fact_count": replay_counts["recipe"],
+            "chain_used": path_counts.count("chain"),
+            "recipe_fallback": path_counts.count("recipe"),
+            "llm_analysis_calls": len(llm_calls),
+            "fact_analysis_ms": round(fact_analysis_ms, 3),
         }))
     )
     return batch

@@ -1034,6 +1034,68 @@ def test_trace_view_exposes_evidence_batch_phase_metrics():
     assert "32.000s" in step["summary"]
 
 
+def test_trace_view_evidence_summary_renders_replay_and_chain_recipe():
+    """回归:新 payload 的重放四态与链/配方计数渲染进 evidence_verifier 节点摘要。"""
+    metrics = {
+        "candidates": 3,
+        "request_count": 5,
+        "fact_count": 8,
+        "replay_verified_count": 4,
+        "replay_unverified_count": 1,
+        "replay_failed_count": 1,
+        "recipe_fact_count": 2,
+        "chain_used": 2,
+        "recipe_fallback": 1,
+        "llm_analysis_calls": 3,
+        "fact_analysis_ms": 2100.0,
+    }
+    report = TraceReport(
+        run_id="evidence-metrics-new",
+        timestamp="2026-07-26T00:00:00",
+        events=[
+            _flow_event(
+                1,
+                "node_start",
+                "evidence_verifier",
+                "evidence_verifier",
+                "evidence-run",
+            ),
+            _flow_event(
+                2,
+                "node_end",
+                "evidence_verifier",
+                "evidence_verifier",
+                "evidence-run",
+                detail={
+                    "output": {
+                        "council_trace": [
+                            {
+                                "node": "evidence_verifier",
+                                "event": "evidence_batch_metrics",
+                                "detail": json.dumps(metrics),
+                            }
+                        ]
+                    }
+                },
+            ),
+        ],
+    )
+
+    view = build_trace_view(report)
+    step = next(
+        item
+        for item in view["steps"].values()
+        if item["code_name"] == "evidence_verifier"
+    )
+
+    assert step["metrics"] == metrics
+    assert "5 个请求" in step["summary"]
+    assert "8 条事实(verified 4 / unverified 1 / failed 1 / recipe 2)" in step["summary"]
+    assert "链 2 / 配方 1" in step["summary"]
+    assert "3 次 LLM" in step["summary"]
+    assert "2.100s" in step["summary"]
+
+
 def test_dashboard_payload_keeps_raw_report_and_adds_flow_view():
     report = _flow_report_fixture()
 
