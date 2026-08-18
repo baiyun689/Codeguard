@@ -18,7 +18,6 @@ from codeguard_agent.models.evidence import (
 )
 from codeguard_agent.models.schemas import EvidenceRole, Severity
 from codeguard_agent.models.tasks import ReviewTask
-from codeguard_agent.pipeline.council.dedup import CandidateGroup
 from codeguard_agent.pipeline.council.verdict import judge_direct, judge_with_evidence
 from codeguard_agent.pipeline.evidence.planner import (
     CandidateDossier,
@@ -74,8 +73,7 @@ def _tool_artifact() -> EvidenceArtifact:
     )
 
 
-def _verification(cid: str, eligible: bool = True, role: EvidenceRole = EvidenceRole.MECHANISM) -> CandidateVerification:
-    candidate = _candidate(cid, role=role)
+def _verification(cid: str, eligible: bool = True) -> CandidateVerification:
     return CandidateVerification(
         candidate_id=cid,
         source_kinds={EvidenceSourceKind.TASK_PATCH, EvidenceSourceKind.TOOL_CALL},
@@ -276,7 +274,7 @@ def test_supporting全为LOCATION_违约():
     ))
     batch = judge_with_evidence(
         _assembly([candidate]),
-        {"c1": _verification("c1", role=EvidenceRole.LOCATION)},
+        {"c1": _verification("c1")},
         _artifacts(),
         judge_llm=llm,
         structured_method="function_calling",
