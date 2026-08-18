@@ -395,7 +395,7 @@ def _application_tool_steps(
     """从节点输出恢复未进入 LangChain 事件流的真实工具调用。
 
     同步嵌套 ReAct 和 EvidenceAgent 直接 HTTP 调用不会总是产生外层
-    ``tool_start/tool_end``。它们仍会把规范化的 ``GatheredContext`` 写入
+    ``tool_start/tool_end``。它们会把 ``tool_trace_records`` 写入
     节点 output；这里将其提升为与原生工具步骤同构的只读视图记录。
     """
     event_list = list(events)
@@ -426,35 +426,6 @@ def _application_tool_steps(
             continue
         reviewer_root = _reviewer_root_for_event(event)
         council_trace = output.get("council_trace")
-        evidence_called_by_key: dict[tuple[str, str], dict[str, Any]] = {}
-        if isinstance(council_trace, list):
-            for trace_item in council_trace:
-                if (
-                    not isinstance(trace_item, dict)
-                    or trace_item.get("event") != "evidence_tool_called"
-                ):
-                    continue
-                try:
-                    trace_detail = json.loads(
-                        str(trace_item.get("detail") or "{}")
-                    )
-                except (TypeError, json.JSONDecodeError):
-                    continue
-                if not isinstance(trace_detail, dict):
-                    continue
-                trace_tool = str(trace_detail.get("tool") or "")
-                trace_arguments = trace_detail.get("arguments", {})
-                evidence_called_by_key[
-                    (
-                        trace_tool,
-                        json.dumps(
-                            trace_arguments,
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ),
-                    )
-                ] = trace_detail
         records = output.get("tool_trace_records")
         if isinstance(records, list):
             for index, item in enumerate(records):
@@ -509,73 +480,6 @@ def _application_tool_steps(
                         ),
                     }
                 )
-        gathered = output.get("gathered_context")
-        if not isinstance(gathered, list):
-            continue
-        for index, item in enumerate(gathered):
-            if not isinstance(item, dict):
-                continue
-            tool_name = str(item.get("tool") or "")
-            if not tool_name:
-                continue
-            raw_args = item.get("args", "")
-            try:
-                arguments = (
-                    json.loads(raw_args)
-                    if isinstance(raw_args, str)
-                    else raw_args
-                )
-            except (TypeError, json.JSONDecodeError):
-                arguments = raw_args
-            called_detail = evidence_called_by_key.get(
-                (
-                    tool_name,
-                    json.dumps(
-                        arguments,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                ),
-                {},
-            )
-            call_id = str(called_detail.get("call_id") or "")
-            if call_id and call_id in seen_application_call_ids:
-                continue
-            if call_id:
-                seen_application_call_ids.add(call_id)
-            dedup_key = (
-                reviewer_root,
-                tool_name,
-                json.dumps(arguments, ensure_ascii=False, sort_keys=True),
-            )
-            if dedup_key in native_keys:
-                continue
-            native_keys.add(dedup_key)
-            duration_ms = float(item.get("duration_ms") or 0.0)
-            status = str(item.get("status") or "complete")
-            result.append(
-                {
-                    "id": f"application-tool:{event.sequence}:{index}",
-                    "sequence": event.sequence,
-                    "kind": "tool",
-                    "title": "工具调用",
-                    "code_name": tool_name,
-                    "node_path": f"{event.node_path or event.node_name}/{tool_name}",
-                    "reviewer_root": reviewer_root,
-                    "invocation_id": event.invocation_id,
-                    "pair_id": call_id,
-                    "start_sequence": None,
-                    "end_sequence": None,
-                    "duration_ms": max(0.0, duration_ms),
-                    "status": status,
-                    "summary": f"应用级工具记录 · {status}",
-                    "input": arguments,
-                    "output": item.get("content"),
-                    "reuse_key": str(called_detail.get("reuse_key") or ""),
-                    "reused_from_call_id": "",
-                }
-            )
         if not isinstance(council_trace, list):
             continue
         for index, item in enumerate(council_trace):

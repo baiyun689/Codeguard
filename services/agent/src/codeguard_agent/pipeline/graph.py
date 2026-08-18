@@ -179,7 +179,6 @@ class ReviewerState(TypedDict, total=False):
     evidence_catalog: Any
 
     issues: list
-    gathered_context: list
     tool_trace_records: list
     review_summaries: list
     council_trace: Annotated[list[CouncilTrace], operator.add]
@@ -845,7 +844,6 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
             )
             react_outcome = outcome
             outcome = _direct_fallback(state)
-            outcome.gathered_context.extend(react_outcome.gathered_context)
             outcome.tool_trace_records.extend(react_outcome.tool_trace_records)
             # ReAct 空结果降级直连时,保留已捕获目录(含 Txx),禁止丢失已取得的工具事实。
             outcome.evidence_catalog = react_outcome.evidence_catalog
@@ -874,8 +872,6 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
 
             return out
         out["issues"] = list(outcome.result.issues)
-        if outcome.gathered_context:
-            out["gathered_context"] = list(outcome.gathered_context)
         if outcome.tool_trace_records:
             out["tool_trace_records"] = list(outcome.tool_trace_records)
         catalog = outcome.evidence_catalog or state.get("evidence_catalog")

@@ -211,8 +211,8 @@ class JudgeScore(BaseModel):
 class ToolUsage(BaseModel):
     """一条用例一次审查里,审查员实际发起的工具调用画像(可观测性,不参与判分)。
 
-    源数据是管线汇总**去重后**的 gathered_context(按(工具,参数)去重、且仅含有返回内容的调用),
-    故 tool_calls 是"去重后取得有效上下文的调用条数",不是原始调用次数。
+    源数据是编排器从证据 Artifact 派生的工具画像(仅首次真实执行的 TOOL_CALL、
+    按(工具,参数)去重),故 tool_calls 是"去重后取得有效上下文的调用条数",不是原始调用次数。
 
     存在意义(ADR-022):before/after 都 3/3 时,要能分辨审查员是**真调工具导航**、
     还是**纯靠 diff 推理蒙对**(是否有 diff 之外的文件被实际读取)。

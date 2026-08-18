@@ -11,7 +11,6 @@ import logging
 
 from codeguard_agent.git.diff_collector import parse_changed_files
 from codeguard_agent.models.council import ContextBundle, ContextFact
-from codeguard_agent.pipeline.engines import GatheredContext
 from codeguard_agent.pipeline.context.base import PipelineContext, PipelineStage
 from codeguard_agent.pipeline.risk.task_prep import build_tasks
 
@@ -51,7 +50,6 @@ class ContextProviderStage(PipelineStage):
         facts: list[ContextFact] = []
         diagnostics: dict[str, str] = {}
 
-        gathered: list[GatheredContext] = []
         if context.tool_client is not None:
             changes = context.change_locations or _changed_locations(context.diff_text)
             resp = context.tool_client.resolve_change_context(changes)
@@ -84,13 +82,6 @@ class ContextProviderStage(PipelineStage):
                         diagnostics["symbol_context"] = "; ".join(
                             str(value) for value in payload.get("limitations", [])
                         ) or f"graph_coverage_{payload.get('status')}"
-                    gathered.append(
-                        GatheredContext(
-                            "resolve_change_context",
-                            json.dumps(changes, ensure_ascii=False),
-                            content,
-                        )
-                    )
                 except (TypeError, ValueError, json.JSONDecodeError) as exc:
                     diagnostics["symbol_context"] = f"invalid_graph_response: {exc}"
 
@@ -100,7 +91,6 @@ class ContextProviderStage(PipelineStage):
         )
         context.context_bundle = bundle
         context.context_diagnostics = diagnostics
-        context.gathered_context.extend(gathered)
         fact_sources = sorted({fact.source for fact in facts} | {"diff"})
         logger.info(
             "[context_provider] %d 个文件，%d 条事实，来源=%s",

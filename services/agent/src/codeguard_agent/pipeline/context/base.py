@@ -54,10 +54,6 @@ class PipelineContext:
     # --- 输出(stage 累积写入)---
     issues: list[Issue] = field(default_factory=list)
     summary: str = ""
-    # ReviewerStage 写入:审查员经工具获取的 diff 外上下文(跨审查员并集去重),
-    # 供误报过滤第二段复核做实证判定(查而非猜,见 fp-verify-reviewer-context)。
-    # 元素为 engines.GatheredContext;用 Any 避免 base 反向依赖 engines。无工具档恒为空。
-    gathered_context: list[Any] = field(default_factory=list)
     # ContextProvider 写入的共享事实包。用 Any 避免 base 反向依赖 council 模型。
     context_bundle: Any = None
     # ContextProvider 工具失败/不可用诊断；失败信封不得伪装成 ContextFact。

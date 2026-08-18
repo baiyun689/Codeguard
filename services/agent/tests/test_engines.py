@@ -56,7 +56,7 @@ class _FakeLLM:
         return _FakeStructured(self._result)
 
 
-def test_direct_engine_返回空_gathered_context():
+def test_direct_engine_返回评审信封():
     rr = ReviewResult(summary="x", issues=[])
     outcome = DirectEngine().review(
         _FakeLLM(rr), system_prompt="s", user_prompt="u",
@@ -64,7 +64,7 @@ def test_direct_engine_返回空_gathered_context():
     )
     assert isinstance(outcome, ReviewOutcome)
     assert outcome.result is rr
-    assert outcome.gathered_context == []
+    assert outcome.tool_trace_records == []
 
 
 def test_direct_engine_none_结果兜底空信封():
@@ -73,7 +73,7 @@ def test_direct_engine_none_结果兜底空信封():
         reviewer_name="logic", max_retries=1, structured_method="function_calling",
     )
     assert outcome.result.issues == []
-    assert outcome.gathered_context == []
+    assert outcome.tool_trace_records == []
 
 
 def test_抽取_toolmessage_为_gathered_context():
@@ -262,7 +262,7 @@ class _SuccessfulAgentEngine(ToolAgentEngine):
         }
 
 
-def test_react_success_uses_direct_structured_synthesis_with_gathered_context():
+def test_react_成功_两阶段结构化收束():
     engine = _SuccessfulAgentEngine(
         tool_client=type("Client", (), {"trace_records": []})(),
     )
@@ -278,7 +278,6 @@ def test_react_success_uses_direct_structured_synthesis_with_gathered_context():
 
     assert outcome.result.summary == "基于工具事实收束"
     assert outcome.execution_events == ["react_two_phase_synthesis"]
-    assert [fact.content for fact in outcome.gathered_context] == ["class A {}"]
 
 
 def test_撞递归上限降级为无工具直连_不静默丢弃该域产出():
@@ -295,8 +294,8 @@ def test_撞递归上限降级为无工具直连_不静默丢弃该域产出():
     )
     assert isinstance(out, ReviewOutcome)
     assert out.result.summary == "降级直连产出"
-    # 降级走的是 DirectEngine(无工具),故 gathered_context 恒空。
-    assert out.gathered_context == []
+    # 降级走的是 DirectEngine(无工具),工具记录恒空。
+    assert out.tool_trace_records == []
 
 
 def test_严格工具档递归失败不混入无工具直连结果():
@@ -334,7 +333,7 @@ def test_严格工具档递归失败不混入无工具直连结果():
 
     assert outcome.result.summary == "基于图谱事实收束"
     assert outcome.execution_events == ["react_bounded_synthesis"]
-    assert outcome.gathered_context[0].content == "A#m() 被 Controller 调用"
+    assert outcome.tool_trace_records[0].output == "A#m() 被 Controller 调用"
 
 
 def test_严格工具档递归且无事实时仍失败():

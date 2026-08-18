@@ -500,7 +500,7 @@ def main(argv: list[str] | None = None) -> int:
                 if profile.strict_tools:
                     raise RuntimeError(f"[{case.id}] 创建严格工具会话失败") from exc
                 logger.warning("[%s] 创建工具会话失败,本条按无工具跑: %s", case.id, exc)
-        trace: list = []  # 工具调用侧信道:管线把 gathered_context 追加进来供算画像。
+        trace: list = []  # 工具调用侧信道:编排器从证据 Artifact 派生工具画像追加进来。
         metadata: dict = {}
         try:
             result = orchestrator.run(

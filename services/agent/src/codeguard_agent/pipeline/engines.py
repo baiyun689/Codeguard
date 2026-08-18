@@ -46,13 +46,9 @@ class GatheredContext:
 
 @dataclass
 class ReviewOutcome:
-    """单个领域审查员的产出信封:结构化结果 + 本次经工具获取的上下文。
-
-    gathered_context 仅 ToolAgentEngine 可能非空;DirectEngine(无工具)恒为空。
-    """
+    """单个领域审查员的产出信封:结构化结果 + 本次工具调用记录与证据目录。"""
 
     result: ReviewResult
-    gathered_context: list[GatheredContext] = field(default_factory=list)
     tool_trace_records: list[Any] = field(default_factory=list)
     execution_events: list[str] = field(default_factory=list)
     evidence_catalog: Any = None  # 本次发现的证据目录(P01/Cxx/Txx);Direct 档仅 P/C
@@ -123,7 +119,7 @@ class DirectEngine(ReviewEngine):
                 execution_events=["structured_output_missing"],
                 evidence_catalog=evidence_catalog,
             )
-        # 直连无工具:gathered_context 恒空;目录透传(仅 P/C)。
+        # 直连无工具:目录透传(仅 P/C)。
         return ReviewOutcome(result, evidence_catalog=evidence_catalog)
 
 
@@ -198,7 +194,6 @@ class ToolAgentEngine(ReviewEngine):
                     result_schema=result_schema,
                 )
                 synthesis.tool_trace_records.extend(tool_records)
-                synthesis.gathered_context.extend(gathered)
                 synthesis.execution_events.append("react_bounded_synthesis")
                 synthesis.evidence_catalog = catalog
                 return synthesis
@@ -221,9 +216,6 @@ class ToolAgentEngine(ReviewEngine):
             tool_records = list(getattr(self._tool_client, "trace_records", ()))
             catalog = _extend_catalog(evidence_catalog, tool_records)
             fallback.tool_trace_records.extend(tool_records)
-            fallback.gathered_context.extend(
-                _gathered_context_from_records(tool_records)
-            )
             # ReAct 异常降级 Direct 时保留已捕获目录,不丢已取得的工具事实。
             fallback.evidence_catalog = catalog
             return fallback
@@ -243,7 +235,6 @@ class ToolAgentEngine(ReviewEngine):
             result_schema=result_schema,
         )
         synthesis.tool_trace_records.extend(tool_records)
-        synthesis.gathered_context.extend(gathered)
         synthesis.execution_events.append("react_two_phase_synthesis")
         synthesis.evidence_catalog = catalog
         return synthesis

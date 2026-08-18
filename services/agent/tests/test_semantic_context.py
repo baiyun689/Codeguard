@@ -59,4 +59,3 @@ def test_context_provider_prefetches_structured_symbol_context():
     assert client.changes == [{"file": "src/A.java", "lines": [3]}]
     assert [fact.kind for fact in context.context_bundle.facts] == ["symbol_context"]
     assert "java:A#run()" in context.context_bundle.facts[0].content
-    assert context.gathered_context[0].tool == "resolve_change_context"

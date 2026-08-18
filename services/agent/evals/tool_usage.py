@@ -1,11 +1,12 @@
 """从管线工具上下文 trace 提炼"工具使用画像"(评测可观测性)。
 
 回答 ADR-022 没答上的问题:审查员到底有没有调工具、有没有真读到 diff 之外的上下文——
-还是纯靠 diff 推理蒙对。纯函数,吃 GatheredContext 列表
-(或任何带 ``.tool`` / ``.args`` / ``.content`` 属性的对象),与管线/网络解耦,可独立单测。
+还是纯靠 diff 推理蒙对。纯函数,吃 GatheredContext 形状的对象
+(带 ``.tool`` / ``.args`` / ``.content`` 属性),与管线/网络解耦,可独立单测。
 
-注意:输入是管线**去重后**的 gathered_context(见 ReviewerStage._dedup_context),
-故 tool_calls 是"去重后取得有效上下文的调用条数",非原始调用次数(见 ToolUsage 文档)。
+注意:输入是编排器从证据 Artifact 派生的画像(见 orchestrator._artifact_tool_profile,
+仅首次真实执行 EXECUTED 的 TOOL_CALL、按 (tool, args) 去重),故 tool_calls 是
+"去重后取得有效上下文的调用条数",非原始调用次数(见 ToolUsage 文档)。
 """
 
 from __future__ import annotations
@@ -13,14 +14,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from codeguard_agent.models.schemas import ReviewResult
-
 from evals.schema import ToolUsage
-
-# create_agent(response_format=ReviewResult) 把"产出结构化结果"实现为一次同名工具调用,
-# 它会以 ToolMessage 形式混进 gathered_context。那不是真去取外部上下文的工具,
-# 统计画像时必须剔除(否则虚高 tool_calls、污染 tools_used)。用类名保持与 response_format 同步。
-_STRUCTURED_SENTINELS = {ReviewResult.__name__}
 
 
 def _file_from_args(args: Any) -> str:
@@ -44,9 +38,7 @@ def summarize_tool_usage(trace: list[Any]) -> ToolUsage:
     """把一条用例的工具上下文 trace 汇成 ToolUsage 画像。
 
     空 trace 返回全空画像(tool_calls=0);调用方(run_once)据此决定是否落 None。
-    先剔除结构化输出伪工具(ReviewResult),只在"真去取上下文的工具"上统计。
     """
-    trace = [t for t in trace if getattr(t, "tool", "") not in _STRUCTURED_SENTINELS]
     tools = sorted({t.tool for t in trace if getattr(t, "tool", "")})
     files = sorted(
         {

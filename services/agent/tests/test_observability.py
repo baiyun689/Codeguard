@@ -803,11 +803,16 @@ def test_trace_view_builds_reviewer_tool_steps_from_node_output_without_native_e
                 "discover-run",
                 detail={
                     "output": {
-                        "gathered_context": [
+                        "tool_trace_records": [
                             {
                                 "tool": "inspect_change_impact",
-                                "args": '{"symbol_id":"java:demo.OrderService"}',
-                                "content": '{"status":"confirmed"}',
+                                "arguments": {"symbol_id": "java:demo.OrderService"},
+                                "output": '{"status":"confirmed"}',
+                                "call_id": "app-call-1",
+                                "duration_ms": 3.0,
+                                "status": "complete",
+                                "reuse_key": "",
+                                "reused_from_call_id": "",
                             }
                         ]
                     }
@@ -915,30 +920,19 @@ def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
                 "evidence-run",
                 detail={
                     "output": {
-                        "gathered_context": [
+                        "tool_trace_records": [
                             {
                                 "tool": "inspect_security_path",
-                                "args": '{"symbol_id":"java:demo.Service"}',
-                                "content": '{"status":"confirmed"}',
+                                "arguments": {"symbol_id": "java:demo.Service"},
+                                "output": '{"status":"confirmed"}',
+                                "call_id": "evidence-call-1",
                                 "duration_ms": 4.5,
                                 "status": "complete",
+                                "reuse_key": "security:service",
+                                "reused_from_call_id": "",
                             }
                         ],
                         "council_trace": [
-                            {
-                                "node": "evidence_verifier",
-                                "event": "evidence_tool_called",
-                                "detail": json.dumps(
-                                    {
-                                        "call_id": "evidence-call-1",
-                                        "tool": "inspect_security_path",
-                                        "arguments": {
-                                            "symbol_id": "java:demo.Service"
-                                        },
-                                        "reuse_key": "security:service",
-                                    }
-                                ),
-                            },
                             {
                                 "node": "evidence_verifier",
                                 "event": "evidence_tool_reused",

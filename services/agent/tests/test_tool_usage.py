@@ -42,14 +42,3 @@ def test_malformed_args_falls_back_to_raw_string():
     trace = [_FakeCtx(tool="get_file_content", args="not-json", content="x")]
     u = summarize_tool_usage(trace)
     assert u.files_read == ["not-json"]
-
-
-def test_structured_response_sentinel_excluded():
-    trace = [
-        _FakeCtx(tool="inspect_structure", args='{"symbol_id": "java:demo.Service#run()"}', content="符号事实"),
-        _FakeCtx(tool="ReviewResult", args='{"issues": []}', content="结构化结果,非工具上下文"),
-        _FakeCtx(tool="ReviewResult", args='{"issues": [1]}', content="另一审查员的结构化结果"),
-    ]
-    u = summarize_tool_usage(trace)
-    assert "inspect_structure" in u.tools_used
-    assert u.tool_calls == 1  # 只数真工具
