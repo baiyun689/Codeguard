@@ -163,7 +163,7 @@ Codeguard/
     │   ├── pyproject.toml         # 依赖与打包(打包仅含 src/codeguard_agent)
     │   ├── src/codeguard_agent/
     │   │   ├── __main__.py        # python -m codeguard_agent 入口
-    │   │   ├── cli.py             # 命令行:review 子命令、结果打印、退出码、工具会话建/销
+    │   │   ├── cli.py             # 命令行:review 子命令、结果打印、退出码、工具会话建/销、--report 报告落盘
     │   │   ├── config.py          # Settings:从环境变量/.env 读配置(含 CODEGUARD_TOOL_SERVER_URL)
     │   │   ├── models/            # ★数据结构:schemas.py(Issue/Severity/ReviewResult/
     │   │   │   └──               #   DiscoveredIssue/evidence_refs) evidence.py(证据账本:
@@ -173,6 +173,7 @@ Codeguard/
     │   │   ├── git/diff_collector.py  # 调系统 git 采集 diff + parse_changed_files(派生 allowed_files)
     │   │   ├── llm/client.py      # LLM 工厂(openai/claude/mock)+ 重试 + mock 假数据
     │   │   ├── observability/     # HTML Trace:审查过程视图/统计(collector/dashboard/view_model)
+    │   │   ├── report.py          # 本地审查报告渲染(Markdown)+ diff 代码片段提取(CLI --report)
     │   │   ├── pipeline/graph.py          # ★ReviewCouncil 状态图、节点与条件边(含 classify_mode 规模路由)
     │   │   ├── pipeline/orchestrator.py   # PipelineOrchestrator 门面
     │   │   ├── pipeline/engines.py        # DirectEngine / ToolAgentEngine
@@ -242,7 +243,7 @@ Codeguard/
    - medium/large 走完整管线:`risk_triage` 标风险标签 → `task_rank` 排序限流 → 可选 `summary` → `context_provider` 预取符号上下文 → 三路发现者并行(ReAct,输出带 `evidence_refs` 证据编号引用)→ `council_coordinator` 归并 → `evidence_verifier` 证据验证(Artifact 健康检查/图护栏/异常重放,零 LLM)→ `council_judge` 批量 EvidenceJudge 裁决出 `Issue`(`evidence_mode=off` 时经 `direct_judge` 直接终审)。
    - `llm is None`(mock)→ 各阶段返回 mock 假数据(如 `direct_review` 返回 `mock_review_result()`)。
    - 工具服务不可用时显式降级(ReAct 退直连 / 空证据不炸管线)。
-6. **`cli.py:_print_result`** 打印;**退出码**:发现任一 `CRITICAL` 返回 1,否则 0(方便接 CI 门禁)。
+6. **`cli.py:_print_result`** 打印;加 `--report` 时渲染 Markdown 报告写入 `<repo>/reports/`(仅本地 CLI 路径,CI 链路不生成)。**退出码**:发现任一 `CRITICAL` 返回 1,否则 0(方便接 CI 门禁)。
 
 核心数据单元是 `models/schemas.py` 里的 **`Issue`**:`severity / file / line / type / message / suggestion / confidence`。前五个必需(定位 + 是什么),后两个可选。整个项目所有阶段都围绕它流转——**改它的字段要极其谨慎**(见 ADR-001)。
 
@@ -274,6 +275,7 @@ java -jar target/codeguard-gateway.jar    # 启动工具服务(默认 9090,CODEG
 # —— 真实 ReAct 审查(工具开档:先起 Java 工具服务,再设 URL)——
 $env:CODEGUARD_TOOL_SERVER_URL="http://localhost:9090"
 conda run -n codeguard python -m codeguard_agent review --repo <repo> --trace
+conda run -n codeguard python -m codeguard_agent review --repo <repo> --report   # 生成 Markdown 报告到 <repo>/reports/
 ```
 
 ### CI 模式（GitHub PR 自动审查）

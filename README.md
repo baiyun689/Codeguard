@@ -254,6 +254,8 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 
 设置 `CODEGUARD_PROVIDER=mock` 可进行零成本管线冒烟测试。如果本地 Agent 需要通过独立运行的 Gateway 获取仓库上下文工具，请设置 `CODEGUARD_TOOL_SERVER_URL=http://localhost:9090`。
 
+加 `--report` 参数可在审查结束后于 `<repo>/reports/` 生成带时间戳的 Markdown 报告（severity 统计 + 按严重级分组的问题列表 + diff 代码片段）。GitHub App 的 CI 模式结果走 Check Runs，不生成本地报告。
+
 ## 配置项
 
 部署配置：
