@@ -26,8 +26,8 @@ START → classify_mode ─┬─ small  → direct_review
                           └────────────────────────┼──────────────────────────────┘
                                                    ▼
                                            council_coordinator ★
-                                           (fan-in + RiskTag 解析
-                                            + 保守语义归并 + 去重)
+                                           (fan-in + 保守语义归并
+                                            + 去重)
                                                    │
                     ┌──────────────────────────────┴──────────────────────────────┐
                     ▼ (evidence_mode=off)                                          ▼ (evidence_mode=full)
@@ -49,7 +49,7 @@ START → classify_mode ─┬─ small  → direct_review
 
 三个发现者 Agent（ThreatModel / Behavior / Maintainability）并行运行，各自配备专属语义图工具 + 共享 `get_file_content`，走 ReAct 引擎：威胁建模用 `inspect_security_path`、行为审查用 `inspect_change_impact`、可维护性用 `inspect_structure`。每个 Agent 的 prompt = 45 行 base 领域知识 + 按 RiskTag 注入的知识文件（`prompts/knowledge/`，37 个），拆分是为分摊上下文压力，重叠是多角度验证。
 
-三路输出在 `council_coordinator` 处 fan-in：解析 RiskTag → 按文件路径和局部位置构建连通候选块 → 最多 8 个并行 LLM 调用做保守语义归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会去重；非法、低置信或失败结果一律完整保留。证据采用 **Evidence Ledger**（取代 ADR-046 的 evidence_chain 重放验证）：patch(P01)、预取上下文(Cxx)、真实工具结果(Txx)由运行时代码捕获为内容寻址 Artifact，审查员只输出短编号引用（`evidence_refs`），不生产任何证据文本；`evidence_verifier` 零 LLM 证明 Artifact 真实可用（健康检查 + 图护栏 + guard 扫描 + 异常重放白名单）；`council_judge` 用批量 EvidenceJudge 一次完成支持/反驳/去留/定级，输出经确定性合同校验、失败 fail-closed。`evidence_mode=off` 时跳过取证，候选由 `direct_judge` 直接终审（无证据链消融基线档）。
+三路输出在 `council_coordinator` 处 fan-in：按文件路径和局部位置构建连通候选块 → 最多 8 个并行 LLM 调用做保守语义归并。只有高置信且同时满足同根因、同影响和单一修复条件的分组才会去重；非法、低置信或失败结果一律完整保留。证据采用 **Evidence Ledger**（取代 ADR-046 的 evidence_chain 重放验证）：patch(P01)、预取上下文(Cxx)、真实工具结果(Txx)由运行时代码捕获为内容寻址 Artifact，审查员只输出短编号引用（`evidence_refs`），不生产任何证据文本；`evidence_verifier` 零 LLM 证明 Artifact 真实可用（健康检查 + 图护栏 + guard 扫描 + 异常重放白名单）；`council_judge` 用批量 EvidenceJudge 一次完成支持/反驳/去留/定级，输出经确定性合同校验、失败 fail-closed。`evidence_mode=off` 时跳过取证，候选由 `direct_judge` 直接终审（无证据链消融基线档）。
 
 旧 supervisor 调度图及 SelfChecker/FP/聚合 stages 的归档目录
 `services/agent/legacy/` 已于 2026-08 删除（git 历史可回溯），不再随 Python wheel 打包。
@@ -94,8 +94,8 @@ LLM 调用路径:Python → LLM Proxy(:9091) → 按 model 路由 → DeepSeek/C
 当前审查核心是 ReviewCouncil 多 Agent 编排：
 
 - **发现者 Agent ×3（并行）**:ThreatModelAgent（安全）/ BehaviorAgent（行为逻辑）/ MaintainabilityAgent（维护质量）。每个 Agent 配备专属语义图工具（`inspect_security_path` / `inspect_change_impact` / `inspect_structure`）+ 共享 `get_file_content`，走 ReAct 引擎。prompt = base 领域知识 + 按 RiskTag 注入的 `prompts/knowledge/` 知识文件——拆分是为分摊上下文压力。重叠不叫重复，叫多角度验证。每个候选输出带 `evidence_refs` 证据编号引用——审查员只从运行时捕获的 `<evidence_catalog>`（patch=P01 / 预取上下文=Cxx / 工具结果=Txx）里挑编号，不得重新填写工具参数、代码片段或工具原文；工具返回会回显编号（[证据编号 T0n]），离开发现子图即绑定为内容寻址 artifact ID。
-- **CouncilCoordinator（fan-in 归并）**:三路发现者输出的显式汇聚屏障——批量解析 RiskTag → 按同文件/邻行构建连通候选块 → 每块并行 LLM 保守语义归并（同根因+同影响+单一修复，最多 8 路）→ 产出严格等价逻辑组；非法/低置信/失败结果一律完整保留。
-- **EvidenceVerifier（确定性验证，零 LLM、正常路径零重放）**:只证明 Artifact 真实、可用、属于候选范围——① Artifact 健康检查（patch 摘要一致；图响应 subject/scope/status/coverage 护栏；TEST 关系不能证明生产可达）；② guard 注解扫描器（确定性：@PreAuthorize/@Transactional 命中直接产出 direct 反证，Judge 前淘汰）；③ 引用范围核对（跨 task/缺失/失败 Artifact 留痕）。仅异常 Artifact（失败/未知/revision 不一致/响应不可解析）进入重放队列，受 `enabled_evidence_tools` 白名单约束，重放失败只产生限制、不作反证。
+- **CouncilCoordinator（fan-in 归并）**:三路发现者输出的显式汇聚屏障——按同文件/邻行构建连通候选块 → 每块并行 LLM 保守语义归并（同根因+同影响+单一修复，最多 8 路）→ 产出严格等价逻辑组；非法/低置信/失败结果一律完整保留。
+- **EvidenceVerifier（确定性验证，零 LLM、正常路径零重放）**:只证明 Artifact 真实、可用、属于候选范围——① Artifact 健康检查（patch 摘要一致；图响应 subject/scope/status/coverage 护栏；TEST 关系不能证明生产可达）；② guard 注解扫描（按发现者分工：threat_model 候选扫 @PreAuthorize 族、behavior 候选扫 @Transactional，命中直接产出 direct 反证，Judge 前淘汰）；③ 引用范围核对（跨 task/缺失/失败 Artifact 留痕）。仅异常 Artifact（失败/未知/revision 不一致/响应不可解析）进入重放队列，受 `enabled_evidence_tools` 白名单约束，重放失败只产生限制、不作反证。
 - **CouncilJudge（批量证据裁决）**:每批 ≤8 候选、最多 4 批并行，一次完成支持/反驳/去留/定级（`EvidenceJudgeBatch`）——keep 必须引用 ≥1 支持事实、引用 ID 必须属于候选可见范围、supporting/counter 不得重叠、维护性候选不得 CRITICAL、LOCATION 角色不能单独支持 keep；输出合同违约重试/二分拆批，单候选最终失败 fail-closed 不输出。之后组内合并（严格等价组收敛，组内形状不一致安全拆回）。`evidence_mode=off` 时走 `direct_judge` 消融档：无证据输入、跳过取证，输出 keep/drop/severity 同构。
 
 ### CI 集成
@@ -183,7 +183,7 @@ Codeguard/
     │   │   ├── pipeline/evidence/         # 证据账本(ledger 注册/绑定/目录渲染,
     │   │   │                             #   verifier 健康检查/图护栏/异常重放,
     │   │   │                             #   graph_response 图摘要与护栏, guard_scan 注解扫描,
-    │   │   │                             #   tags 标签开关, planner, rules/classify+terms)
+    │   │   │                             #   planner)
     │   │   ├── pipeline/council/          # 裁决与指标(verdict 门控+终审+组内合并, dedup 归并, metrics)
     │   │   ├── pipeline/knowledge/        # RiskTag 知识目录与选择器
     │   │   ├── pipeline/summary/          # 可选变更摘要阶段
