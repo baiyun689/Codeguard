@@ -10,10 +10,9 @@ from __future__ import annotations
 import json
 import re
 
-from codeguard_agent.models.tasks import RiskTag
+from codeguard_agent.models.tasks import ReviewerKind
 from codeguard_agent.pipeline.context import rules as context_rules
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
-from codeguard_agent.pipeline.evidence.tags import SECURITY_TAGS
 
 _AUTHZ_ANNOTATIONS = ("PreAuthorize", "PostAuthorize", "Secured", "RolesAllowed")
 
@@ -215,15 +214,24 @@ def _scoped_annotation(
 def scan_guard_content(
     dossier: CandidateDossier,
     content: str,
-    tag: RiskTag,
+    source_agent: str,
 ) -> str | None:
-    """在证据内容(patch/文件)中确定性扫描 guard 注解;命中返回观察说明,否则 None。"""
-    if content.strip() and tag in SECURITY_TAGS:
-        observation = _scoped_annotation(dossier, content, _AUTHZ_ANNOTATIONS)
-        if observation and observation.strip():
-            return observation
-    if content.strip() and tag is RiskTag.TRANSACTION_ATOMICITY:
-        observation = _scoped_annotation(dossier, content, ("Transactional",))
-        if observation and observation.strip():
-            return observation
-    return None
+    """在证据内容(patch/文件)中确定性扫描 guard 注解;命中返回观察说明,否则 None。
+
+    过滤按发现者分工(候选级、零分类):threat_model 候选扫鉴权注解,
+    behavior 候选扫 @Transactional,maintainability 不扫。guard 反证
+    只是零成本淘汰,不做语义判断——miss 方向 fail-open,由 Judge 兜底。
+    """
+    if not content.strip():
+        return None
+    annotations = (
+        _AUTHZ_ANNOTATIONS
+        if source_agent == ReviewerKind.THREAT_MODEL.value
+        else ("Transactional",)
+        if source_agent == ReviewerKind.BEHAVIOR.value
+        else None
+    )
+    if annotations is None:
+        return None
+    observation = _scoped_annotation(dossier, content, annotations)
+    return observation if observation and observation.strip() else None

@@ -26,7 +26,6 @@ from codeguard_agent.models.evidence import (
     VerifiedEvidence,
     payload_digest,
 )
-from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.evidence.graph_response import validate_graph_payload
 from codeguard_agent.pipeline.evidence.guard_scan import scan_guard_content
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
@@ -176,7 +175,6 @@ def _verify_candidate(
     revision: str,
     tool_client: Any,
     enabled_replay_tools: list[str] | None,
-    tag: RiskTag,
     batch: VerificationBatch,
     replay_cache: dict[str, tuple[EvidenceValidationStatus, str, list[str]]],
 ) -> CandidateVerification:
@@ -278,7 +276,9 @@ def _verify_candidate(
             content = item.content.strip()
             if not content:
                 continue
-            observation = scan_guard_content(dossier, content, tag)
+            observation = scan_guard_content(
+                dossier, content, candidate.source_agent
+            )
             if observation:
                 guard_hit = observation
                 break
@@ -327,7 +327,6 @@ def verify_evidence(
     tool_client: Any,
     revision: str,
     enabled_replay_tools: list[str] | None,
-    tag_by_candidate: dict[str, RiskTag],
 ) -> VerificationBatch:
     """证据验证主入口:零 LLM、正常 Artifact 零重放。
 
@@ -346,7 +345,6 @@ def verify_evidence(
             revision=revision,
             tool_client=tool_client,
             enabled_replay_tools=enabled_replay_tools,
-            tag=tag_by_candidate.get(cid, RiskTag.GENERAL_REVIEW),
             batch=batch,
             replay_cache=replay_cache,
         )

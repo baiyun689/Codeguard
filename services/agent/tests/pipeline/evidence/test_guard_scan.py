@@ -8,7 +8,6 @@ from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import (
     ContextFact,
     ReviewTask,
-    RiskTag,
     TaskContextBundle,
 )
 from codeguard_agent.pipeline.evidence.guard_scan import scan_guard_content
@@ -20,6 +19,7 @@ def _dossier_for_method(
     start_line: int = 1,
     end_line: int = 2,
     annotations: list[str] | None = None,
+    source_agent: str = "threat_model",
 ) -> CandidateDossier:
     """构造锚定指定方法的 dossier(symbol_context 形状按 resolve_change_context 输出)。"""
     task = ReviewTask(
@@ -32,7 +32,7 @@ def _dossier_for_method(
     candidate = CandidateIssue(
         id="c1",
         task_id=task.id,
-        source_agent="threat_model",
+        source_agent=source_agent,
         file=task.file,
         line=start_line,
         type="authorization",
@@ -130,17 +130,17 @@ def test_scan_guard_detects_preauthorize():
     dossier = _dossier_for_method(annotations=["PreAuthorize"])
     observation = scan_guard_content(
         dossier, '@PreAuthorize("hasRole(\'ADMIN\')")\npublic void update() {}',
-        RiskTag.AUTHORIZATION,
+        "threat_model",
     )
     assert observation is not None
     assert observation.strip()
 
 
-def test_scan_guard_detects_transactional_for_transaction_tag():
-    dossier = _dossier_for_method(method="placeOrder")
+def test_scan_guard_detects_transactional_for_behavior():
+    dossier = _dossier_for_method(method="placeOrder", source_agent="behavior")
     observation = scan_guard_content(
         dossier, "@Transactional\npublic void placeOrder() {}",
-        RiskTag.TRANSACTION_ATOMICITY,
+        "behavior",
     )
     assert observation is not None
     assert "Transactional" in observation
@@ -156,7 +156,7 @@ def test_scan_guard_silent_for_guard_on_other_method():
         "    public void update() { save(); }\n"
         "}"
     )
-    assert scan_guard_content(dossier, content, RiskTag.AUTHORIZATION) is None
+    assert scan_guard_content(dossier, content, "threat_model") is None
 
 
 def test_scan_guard_detects_guard_on_candidate_method():
@@ -170,7 +170,7 @@ def test_scan_guard_detects_guard_on_candidate_method():
         "    public void update() { save(); }\n"
         "}"
     )
-    assert scan_guard_content(dossier, content, RiskTag.AUTHORIZATION) is not None
+    assert scan_guard_content(dossier, content, "threat_model") is not None
 
 
 def test_scan_guard_field_initializer_does_not_hijack_anchor():
@@ -185,24 +185,25 @@ def test_scan_guard_field_initializer_does_not_hijack_anchor():
         "    public void update() { save(); }\n"
         "}"
     )
-    observation = scan_guard_content(dossier, content, RiskTag.AUTHORIZATION)
+    observation = scan_guard_content(dossier, content, "threat_model")
     assert observation is not None
     assert "PreAuthorize" in observation
 
 
-def test_scan_guard_silent_for_non_security_tags():
-    dossier = _dossier_for_method()
-    assert scan_guard_content(dossier, "@PreAuthorize(...)\nvoid f() {}", RiskTag.PERFORMANCE) is None
+def test_scan_guard_silent_for_maintainability():
+    # guard 过滤按发现者分工:maintainability 候选不扫任何注解。
+    dossier = _dossier_for_method(source_agent="maintainability")
+    assert scan_guard_content(dossier, "@PreAuthorize(...)\nvoid f() {}", "maintainability") is None
 
 
 def test_scan_guard_silent_without_annotation():
     dossier = _dossier_for_method(method="f")
-    assert scan_guard_content(dossier, "public void f() {}", RiskTag.AUTHORIZATION) is None
+    assert scan_guard_content(dossier, "public void f() {}", "threat_model") is None
 
 
 def test_scan_guard_silent_for_empty_raw():
     dossier = _dossier_for_method()
-    assert scan_guard_content(dossier, "", RiskTag.AUTHORIZATION) is None
+    assert scan_guard_content(dossier, "", "threat_model") is None
 
 
 def test_scan_guard_detects_class_level_guard():
@@ -214,7 +215,7 @@ def test_scan_guard_detects_class_level_guard():
         "    public void update() { save(); }\n"
         "}"
     )
-    observation = scan_guard_content(dossier, content, RiskTag.AUTHORIZATION)
+    observation = scan_guard_content(dossier, content, "threat_model")
     assert observation is not None
     assert "所属类声明" in observation
 
@@ -223,11 +224,11 @@ def test_scan_guard_legacy_ast_structure_fallback_resolves_candidate_method():
     # 无 method 类 symbol_context,只有 ast_structure fact:
     # _resolved_method 走 _METHOD_RANGE 匹配 + task_span 过滤兜底,命中方法声明块 guard。
     dossier = _ast_fallback_dossier("@@ -9,3 +9,3 @@")
-    observation = scan_guard_content(dossier, _METHOD_GUARD_FILE, RiskTag.AUTHORIZATION)
+    observation = scan_guard_content(dossier, _METHOD_GUARD_FILE, "threat_model")
     assert observation is not None
 
 
 def test_scan_guard_legacy_ast_structure_fallback_filters_outside_task_span():
     # task_span 不覆盖 ast 声明的 [L9-L12] 区间时兜底不命中 → 不产出。
     dossier = _ast_fallback_dossier("@@ -50,3 +50,3 @@")
-    assert scan_guard_content(dossier, _METHOD_GUARD_FILE, RiskTag.AUTHORIZATION) is None
+    assert scan_guard_content(dossier, _METHOD_GUARD_FILE, "threat_model") is None

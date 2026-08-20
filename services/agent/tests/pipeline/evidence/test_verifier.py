@@ -17,7 +17,7 @@ from codeguard_agent.models.evidence import (
     EvidenceValidationStatus,
 )
 from codeguard_agent.models.schemas import EvidenceRole, Severity
-from codeguard_agent.models.tasks import ContextFact, ReviewTask, RiskTag, TaskContextBundle
+from codeguard_agent.models.tasks import ContextFact, ReviewTask, TaskContextBundle
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 from codeguard_agent.pipeline.evidence.verifier import verify_evidence
 from codeguard_agent.tools.tool_client import ToolResponse
@@ -129,7 +129,6 @@ def _verify(candidate: CandidateIssue, artifacts: dict, *, tool_client=None, rev
         tool_client=tool_client,
         revision=revision,
         enabled_replay_tools=enabled_replay_tools,
-        tag_by_candidate={candidate.id: RiskTag.INJECTION},
     )
 
 
@@ -326,7 +325,6 @@ def test_重放_相同调用全局只执行一次():
         tool_client=client,
         revision=REV,
         enabled_replay_tools=None,
-        tag_by_candidate={"c1": RiskTag.INJECTION, "c2": RiskTag.INJECTION},
     )
     assert batch.replayed_artifact_ids == [graph.id]
     assert client.calls == 1
@@ -335,7 +333,7 @@ def test_重放_相同调用全局只执行一次():
 # ── guard 扫描与引用范围 ───────────────────────────────────────────────
 
 
-def _guard_bundle() -> TaskContextBundle:
+def _guard_bundle(annotation: str = "PreAuthorize") -> TaskContextBundle:
     return TaskContextBundle(
         task_id=TASK_ID,
         facts=[
@@ -350,7 +348,7 @@ def _guard_bundle() -> TaskContextBundle:
                         "start_line": 1,
                         "end_line": 2,
                         "signature": "public void m()",
-                        "annotations": ["PreAuthorize"],
+                        "annotations": [annotation],
                         "resolution": "resolved",
                     },
                     sort_keys=True,
@@ -360,19 +358,49 @@ def _guard_bundle() -> TaskContextBundle:
     )
 
 
-def test_guard_注解命中_直接反证_不可裁决():
+def _verify_with_bundle(candidate: CandidateIssue, annotation: str):
     patch = _patch_artifact()
     batch = verify_evidence(
-        [_dossier(_candidate(patch.id), bundle=_guard_bundle())],
+        [_dossier(candidate, bundle=_guard_bundle(annotation))],
         artifacts={patch.id: patch},
         tool_client=None,
         revision=REV,
         enabled_replay_tools=None,
-        tag_by_candidate={"c1": RiskTag.AUTHORIZATION},
     )
-    verification = batch.candidates["c1"]
+    return batch.candidates[candidate.id]
+
+
+def test_guard_threat候选_授权注解命中_直接反证_不可裁决():
+    patch = _patch_artifact()
+    verification = _verify_with_bundle(_candidate(patch.id), "PreAuthorize")
     assert verification.eligible_for_judge is False
     assert verification.rejection_reason == "direct_counter_guard"
+
+
+def test_guard_behavior候选_事务注解命中_直接反证():
+    candidate = _candidate(_patch_artifact().id).model_copy(
+        update={"source_agent": "behavior"}
+    )
+    verification = _verify_with_bundle(candidate, "Transactional")
+    assert verification.eligible_for_judge is False
+    assert verification.rejection_reason == "direct_counter_guard"
+
+
+def test_guard_behavior候选_授权注解不扫描():
+    # guard 过滤按发现者分工:授权注解只对 threat_model 候选反证。
+    candidate = _candidate(_patch_artifact().id).model_copy(
+        update={"source_agent": "behavior"}
+    )
+    verification = _verify_with_bundle(candidate, "PreAuthorize")
+    assert verification.eligible_for_judge is True
+
+
+def test_guard_maintainability候选_不扫描():
+    candidate = _candidate(_patch_artifact().id).model_copy(
+        update={"source_agent": "maintainability"}
+    )
+    verification = _verify_with_bundle(candidate, "PreAuthorize")
+    assert verification.eligible_for_judge is True
 
 
 def test_引用指向缺失artifact_无效引用_partially_grounded():

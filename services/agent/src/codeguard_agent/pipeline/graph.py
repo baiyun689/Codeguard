@@ -1313,13 +1313,8 @@ def _evidence_verifier_node(tool_client=None, judge_llm=None):
 
     def _node(state: ReviewState) -> dict:
         from codeguard_agent.pipeline.evidence.verifier import verify_evidence
-        from codeguard_agent.pipeline.evidence.rules.classify import resolve_candidate_tag
 
         assembly = _assemble_state_dossiers(state)
-        tag_by_candidate = {
-            dossier.candidate.id: resolve_candidate_tag(dossier.candidate)
-            for dossier in assembly.dossiers
-        }
         batch = verify_evidence(
             assembly.dossiers,
             artifacts=state.get("evidence_artifacts") or {},
@@ -1328,7 +1323,6 @@ def _evidence_verifier_node(tool_client=None, judge_llm=None):
             enabled_replay_tools=state.get(
                 "enabled_evidence_tools", state.get("enabled_tools")
             ),
-            tag_by_candidate=tag_by_candidate,
         )
         return {
             "candidate_verifications": batch.candidates,
