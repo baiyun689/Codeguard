@@ -28,6 +28,10 @@ from codeguard_agent.pipeline.risk.rules.roles import matching_roles
 
 logger = logging.getLogger("codeguard")
 
+# ── 评分权重(启发式默认值,标定工具 = eval-triage-off 消融档)──
+# risk prior 权重最高但 path 来源打 5 折(路径只是上下文);patch 强词命中最重
+# (审查对象本身);file role 中等(文件名是弱角色信号);context symbol 命中
+# (预取事实里的注解/类名)介于两者之间。数值未做数据标定,调参需对照重跑。
 _MIN_SCORE_THRESHOLD = 0.5
 _RISK_PRIOR_WEIGHT = 2.0
 _STRONG_TERM_SCORE = 1.2

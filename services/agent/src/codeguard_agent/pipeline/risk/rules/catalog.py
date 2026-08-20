@@ -78,6 +78,13 @@ _THREAT_MODEL = "ThreatModelAgent"
 _BEHAVIOR = "BehaviorAgent"
 _MAINTAINABILITY = "MaintainabilityAgent"
 
+# ── 聚合阈值(启发式默认值,标定工具 = eval-triage-off 消融档)──
+# 置信度语义是"该审查方向值得重点看"的规则命中强度,不是问题成立概率。
+_HYPOTHESIS_CONFIDENCE_CAP = 0.90  # 合成置信度上限:规则再一致也不给满值,留出规则不可知的余地
+_PATH_ONLY_CONFIDENCE_CAP = 0.60   # 仅路径证据时上限:路径是上下文不是发现,压到"仅作参考"档位
+_AMBIGUITY_CONFIDENCE_FLOOR = 0.65  # 最高假设低于此值 → AMBIGUOUS(三路全审兜底,只加不减)
+_AMBIGUITY_GAP = 0.10              # 前两假设置信度差小于此值且发现者集不同 → 歧义
+
 # Stable order is part of triage determinism. Each concrete tag has one detector spec.
 RULE_SPECS: tuple[RiskRuleSpec, ...] = (
     RiskRuleSpec("authorization", RiskTag.AUTHORIZATION, frozenset({_THREAT_MODEL, _BEHAVIOR}), detect_authorization),
@@ -128,7 +135,7 @@ def _hypothesis(tag: RiskTag, signals: list[RiskSignal]) -> RiskHypothesis:
     confidence = 1.0 - confidence_remaining
     source_kinds = {signal.source_kind for signal in signals}
     if source_kinds == {"path"}:
-        confidence = min(confidence, 0.60)
+        confidence = min(confidence, _PATH_ONLY_CONFIDENCE_CAP)
     strongest = max(
         signals,
         key=lambda signal: (
@@ -140,7 +147,7 @@ def _hypothesis(tag: RiskTag, signals: list[RiskSignal]) -> RiskHypothesis:
     )
     return RiskHypothesis(
         tag=tag,
-        match_confidence=min(confidence, 0.90),
+        match_confidence=min(confidence, _HYPOTHESIS_CONFIDENCE_CAP),
         review_priority=max(signal.review_priority for signal in signals),
         source_kind=(
             strongest.source_kind
@@ -173,11 +180,14 @@ def _prior(task_id: str, signals: list[RiskSignal]) -> TaskRiskPrior:
             item.tag.value,
         )
     )
-    ambiguous = max(item.match_confidence for item in hypotheses) < 0.65
+    ambiguous = (
+        max(item.match_confidence for item in hypotheses)
+        < _AMBIGUITY_CONFIDENCE_FLOOR
+    )
     if len(hypotheses) >= 2:
         first, second = hypotheses[:2]
         if (
-            abs(first.match_confidence - second.match_confidence) < 0.10
+            abs(first.match_confidence - second.match_confidence) < _AMBIGUITY_GAP
             and reviewers_for_tag(first.tag) != reviewers_for_tag(second.tag)
         ):
             ambiguous = True

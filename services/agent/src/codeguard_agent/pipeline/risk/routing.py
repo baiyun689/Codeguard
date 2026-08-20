@@ -24,6 +24,12 @@ _REVIEWER_ORDER = (
     ReviewerKind.MAINTAINABILITY,
 )
 
+# ── ReAct 升格阈值(启发式默认值,标定工具 = eval-triage-off 消融档)──
+# 只有高置信 + 高优先级的假设才有资格把该 (task, reviewer) 从 Direct 升为
+# ReAct;阈值越低 ReAct 越多(成本↑ 覆盖↑),反向同理。调参后需对照重跑。
+_REACT_UPGRADE_MIN_CONFIDENCE = 0.75
+_REACT_UPGRADE_MIN_PRIORITY = 2
+
 _SOURCE_TO_KIND = {
     "ThreatModelAgent": ReviewerKind.THREAT_MODEL,
     "threat_model": ReviewerKind.THREAT_MODEL,
@@ -132,8 +138,8 @@ def plan_review_coverage(
                         force_react
                         or (
                             prior.coverage is RiskCoverage.CONFIDENT
-                            and hypothesis.match_confidence >= 0.75
-                            and hypothesis.review_priority >= 2
+                            and hypothesis.match_confidence >= _REACT_UPGRADE_MIN_CONFIDENCE
+                            and hypothesis.review_priority >= _REACT_UPGRADE_MIN_PRIORITY
                         )
                     )
                 ):
