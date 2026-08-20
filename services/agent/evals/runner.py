@@ -520,6 +520,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 allow_direct_fallback=not profile.strict_tools,
                 evidence_mode=profile.evidence_mode,
+                triage_enabled=profile.triage != "off",
                 evidence_revision=case_revision,
                 trace_enabled=settings.trace_enabled,
                 trace_dir=settings.trace_dir,

@@ -308,9 +308,14 @@ def build_file_tasks(diff_text: str) -> list[ReviewTask]:
     return tasks
 
 
-def triage_tasks(tasks: list[ReviewTask]) -> TriageResult:
-    """按注册表聚合风险信号并保留规则失败诊断。"""
-    return _triage_tasks(tasks)
+def triage_tasks(
+    tasks: list[ReviewTask], *, rules_enabled: bool = True
+) -> TriageResult:
+    """按注册表聚合风险信号并保留规则失败诊断。
+
+    rules_enabled=False 时全部 UNCLASSIFIED(triage 消融档)。
+    """
+    return _triage_tasks(tasks, rules_enabled=rules_enabled)
 
 
 def _is_production_path(path: str) -> bool:

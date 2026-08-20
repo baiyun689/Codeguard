@@ -50,6 +50,19 @@ profiles:
     evidence_mode: "off"
     strict_tools: true
 
+  # 消融 6:triage 关闭——风险先验全 UNCLASSIFIED,三路全审、无 ReAct 升格。
+  # 与 eval-codeguard-full 仅差 triage 一个变量,用于量化"审查前软分派"
+  # 的成本-收益(同等 recall 下省了多少 LLM 调用/时间)。注意:off 必须加
+  # 引号——YAML 1.1 会把裸 off 解析成布尔 False。
+  eval-triage-off:
+    mode: pipeline
+    execution: pipeline
+    orchestration: adr-032
+    tools: [get_file_content, inspect_security_path, inspect_change_impact, inspect_structure]
+    evidence_tools: [get_file_content, inspect_security_path, inspect_change_impact, inspect_structure]
+    strict_tools: true
+    triage: "off"
+
   # 管线但不开工具:并行三审查员直连(无工具对照基准)。
   pipeline-notools:
     mode: pipeline

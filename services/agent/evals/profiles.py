@@ -34,6 +34,7 @@ class Profile:
     evidence_tools: list[str] | None = None
     strict_tools: bool = False
     evidence_mode: str = "full"  # "off" = 无证据链消融档(DirectJudge 直接终审)
+    triage: str = "on"           # "off" = 风险先验消融档(全 UNCLASSIFIED,三路全审无 ReAct 升格)
 
     @property
     def wants_tools(self) -> bool:
@@ -66,6 +67,7 @@ def load_profiles(path: Path | None = None) -> dict[str, Profile]:
             ),
             strict_tools=bool(cfg.get("strict_tools", False)),
             evidence_mode=cfg.get("evidence_mode", "full"),
+            triage=str(cfg.get("triage", "on")),
         )
     return profiles
 

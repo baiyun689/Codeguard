@@ -40,6 +40,10 @@ def _write_profiles(tmp_path) -> Path:
             mode: pipeline
             tools: []
             fp_verify: true
+          eval-triage-off:
+            mode: pipeline
+            tools: [get_file_content]
+            triage: "off"
     """), encoding="utf-8")
     return p
 
@@ -47,7 +51,8 @@ def _write_profiles(tmp_path) -> Path:
 def test_load_profiles(tmp_path):
     profiles = load_profiles(_write_profiles(tmp_path))
     assert set(profiles) == {
-        "pipeline-notools", "pipeline-file", "custom-model", "pipeline-fpverify"
+        "pipeline-notools", "pipeline-file", "custom-model", "pipeline-fpverify",
+        "eval-triage-off",
     }
     assert profiles["pipeline-file"].tools == ["get_file_content"]
     assert profiles["custom-model"].model == "some-model"
@@ -58,6 +63,13 @@ def test_load_profiles_fp_verify(tmp_path):
     profiles = load_profiles(_write_profiles(tmp_path))
     assert profiles["pipeline-fpverify"].fp_verify is True
     assert profiles["pipeline-notools"].fp_verify is False
+
+
+def test_load_profiles_triage(tmp_path):
+    # triage 消融档:显式 "off" 被解析;未声明者默认 "on"。
+    profiles = load_profiles(_write_profiles(tmp_path))
+    assert profiles["eval-triage-off"].triage == "off"
+    assert profiles["pipeline-notools"].triage == "on"
     assert profiles["pipeline-file"].fp_verify is False
 
 

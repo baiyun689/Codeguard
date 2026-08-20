@@ -980,20 +980,23 @@ def test_risk_triage_node_emits_prior_and_rule_failure_trace(monkeypatch):
     )
 
     profile = _prior("A.java#h0")
-    monkeypatch.setattr(
-        task_prep,
-        "triage_tasks",
-        lambda _tasks: TriageResult(
+    captured: dict[str, object] = {}
+
+    def fake_triage(_tasks, *, rules_enabled: bool):
+        captured["rules_enabled"] = rules_enabled
+        return TriageResult(
             priors={"A.java#h0": profile},
             diagnostics=(
                 RuleDiagnostic(
                     task_id="A.java#h0", rule_id="broken", detail="detector error"
                 ),
             ),
-        ),
-    )
+        )
+
+    monkeypatch.setattr(task_prep, "triage_tasks", fake_triage)
 
     out = G._risk_triage_node()({"review_tasks": [G.ReviewTask(id="A.java#h0", file="A.java", patch="+x")]})
+    assert captured["rules_enabled"] is True
 
     assert out["risk_priors"] == {"A.java#h0": profile}
     assert [(trace.event, trace.detail) for trace in out["council_trace"]] == [

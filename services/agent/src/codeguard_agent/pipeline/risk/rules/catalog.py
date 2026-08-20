@@ -213,8 +213,25 @@ def _classify(task: ReviewTask) -> tuple[TaskRiskPrior, tuple[RuleDiagnostic, ..
     return _prior(task.id, signals), tuple(diagnostics)
 
 
-def triage_tasks(tasks: list[ReviewTask]) -> TriageResult:
-    """Classify tasks independently and retain rule failures as diagnostics."""
+def triage_tasks(
+    tasks: list[ReviewTask], *, rules_enabled: bool = True
+) -> TriageResult:
+    """Classify tasks independently and retain rule failures as diagnostics.
+
+    rules_enabled=False(triage 消融档):不跑任何规则,全部 UNCLASSIFIED——
+    下游 routing 因此走三路全审 baseline、无 ReAct 升格,用于量化
+    风险先验的净收益。
+    """
+    if not rules_enabled:
+        return TriageResult(
+            priors={
+                task.id: TaskRiskPrior(
+                    task_id=task.id, coverage=RiskCoverage.UNCLASSIFIED
+                )
+                for task in tasks
+            },
+            diagnostics=(),
+        )
     priors: dict[str, TaskRiskPrior] = {}
     diagnostics: list[RuleDiagnostic] = []
     for task in tasks:

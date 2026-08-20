@@ -453,12 +453,15 @@ def _diff_task_builder_node():
     return _node
 
 
-def _risk_triage_node():
-    """RiskTriage：为每个任务直接产出 TaskRiskPrior 和规则失败 trace。"""
+def _risk_triage_node(triage_enabled: bool = True):
+    """RiskTriage：为每个任务直接产出 TaskRiskPrior 和规则失败 trace。
+
+    triage_enabled=False 时全部 UNCLASSIFIED(消融档)。
+    """
 
     def _node(state: ReviewState) -> dict:
         tasks = state.get("review_tasks") or []
-        result = task_prep.triage_tasks(tasks)
+        result = task_prep.triage_tasks(tasks, rules_enabled=triage_enabled)
         trace = [
                 CouncilTrace(
                     node="risk_triage",
@@ -1438,6 +1441,7 @@ def build_review_graph(
     tool_client=None,
     discovery_only: bool = False,
     evidence_mode: str = "full",
+    triage_enabled: bool = True,
 ):
     """编译审查状态图。
 
@@ -1474,7 +1478,7 @@ def build_review_graph(
     # ── 全模式共用节点 ──
     g.add_node("diff_task_builder", _diff_task_builder_node())
     g.add_node("classify_mode", _classify_mode_node())
-    g.add_node("risk_triage", _risk_triage_node())
+    g.add_node("risk_triage", _risk_triage_node(triage_enabled))
     g.add_node("task_rank", _task_rank_node())
     g.add_node("review_coverage", _review_coverage_node(tool_client))
     g.add_node("context_provider", _context_provider_node(tool_client))

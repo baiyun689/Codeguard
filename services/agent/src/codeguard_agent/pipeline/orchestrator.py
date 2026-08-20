@@ -109,6 +109,7 @@ class PipelineOrchestrator:
         enabled_evidence_tools: list[str] | None = None,
         allow_direct_fallback: bool = True,
         evidence_mode: str = "full",
+        triage_enabled: bool = True,
         trace_enabled: bool = False,
         trace_dir: str = "trace",
         trace_max_llm_content: int = 0,
@@ -140,6 +141,7 @@ class PipelineOrchestrator:
             fp_verify_llm=fp_verify_llm,
             tool_client=tool_client,
             evidence_mode=evidence_mode,
+            triage_enabled=triage_enabled,
         )
         initial: ReviewState = {
             "diff_text": diff_text,

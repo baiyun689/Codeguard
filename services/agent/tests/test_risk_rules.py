@@ -336,6 +336,25 @@ def test_controller_path_strengthens_matching_hypotheses():
     assert RiskTag.API_CONTRACT in by_tag
 
 
+def test_triage_off_全部UNCLASSIFIED_无假设无诊断():
+    # 消融档:triage 关闭时不跑任何规则,所有 task 直接 UNCLASSIFIED
+    # → 下游 routing 走三路全审 baseline、无 ReAct 升格。
+    result = catalog.triage_tasks(
+        [
+            ReviewTask(
+                id="t1",
+                file="src/main/UserController.java",
+                patch="+@PreAuthorize(\"hasRole('ADMIN')\")",
+            )
+        ],
+        rules_enabled=False,
+    )
+    prior = result.priors["t1"]
+    assert prior.hypotheses == ()
+    assert prior.coverage is RiskCoverage.UNCLASSIFIED
+    assert result.diagnostics == ()
+
+
 def test_config_path_strengthens_matching_security_prior():
     prior = catalog.triage_tasks(
         [
