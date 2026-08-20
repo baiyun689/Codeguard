@@ -24,6 +24,7 @@ from codeguard_agent.models.tasks import (
     TaskRiskPrior,
 )
 from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
+from codeguard_agent.pipeline.risk.rules.roles import matching_roles
 
 logger = logging.getLogger("codeguard")
 
@@ -36,27 +37,6 @@ _FILE_ROLE_SCORE = 0.6
 _CONTEXT_SYMBOL_SCORE_MIN = 0.4
 _CONTEXT_SYMBOL_SCORE_MAX = 0.8
 _PATH_PRIOR_DISCOUNT = 0.5
-
-_FILE_ROLE_TOPICS: dict[str, tuple[str, ...]] = {
-    "controller": ("AUTHORIZATION", "INPUT_VALIDATION", "API_CONTRACT", "AUTHENTICATION_SESSION"),
-    "filter": ("AUTHORIZATION", "AUTHENTICATION_SESSION", "INPUT_VALIDATION"),
-    "interceptor": ("AUTHORIZATION", "AUTHENTICATION_SESSION"),
-    "repository": ("SQL_DATA_ACCESS", "TRANSACTION_ATOMICITY"),
-    "service": ("TRANSACTION_ATOMICITY", "ERROR_HANDLING", "NULL_STATE_SAFETY"),
-    "config": ("CONFIG_SECURITY", "RESOURCE_LIFECYCLE"),
-    "security": ("AUTHORIZATION", "AUTHENTICATION_SESSION", "CONFIG_SECURITY"),
-    "worker": ("MESSAGE_DELIVERY", "IDEMPOTENCY_RETRY", "CONCURRENCY_CONSISTENCY"),
-    "listener": ("MESSAGE_DELIVERY", "IDEMPOTENCY_RETRY"),
-    "event": ("MESSAGE_DELIVERY", "TRANSACTION_ATOMICITY"),
-    "cache": ("CACHE_CONSISTENCY", "PERFORMANCE"),
-    "mapper": ("SQL_DATA_ACCESS",),
-    "dao": ("SQL_DATA_ACCESS",),
-    "dto": ("DATA_EXPOSURE",),
-    "entity": ("DATA_EXPOSURE", "SQL_DATA_ACCESS"),
-    "util": ("NULL_STATE_SAFETY", "PERFORMANCE"),
-    "test": ("OBSERVABILITY_TESTABILITY",),
-}
-
 
 def _normalize(text: str) -> str:
     """稳定小写 + 去连字符 + 空白归一。"""
@@ -109,35 +89,16 @@ def _score_risk_prior(
     return 0.0, None
 
 
-def _detect_file_role(file_path: str) -> str | None:
-    norm = _normalize(file_path)
-    basename = norm.rsplit("/", 1)[-1] if "/" in norm else norm
-    basename_no_ext = basename.rsplit(".", 1)[0] if "." in basename else basename
-    for role in ("controller", "filter", "interceptor", "repository", "service",
-                 "config", "worker", "listener", "mapper", "dao", "dto", "entity", "util"):
-        if basename_no_ext.endswith(role) or f"/{role}/" in norm or f".{role}." in norm:
-            return role
-    if "security" in norm or "auth" in norm:
-        return "security"
-    if "cache" in norm:
-        return "cache"
-    if "event" in norm:
-        return "event"
-    if "test" in norm:
-        return "test"
-    return None
-
-
 def _score_file_role(
     fragment: KnowledgeFragment, file_path: str,
 ) -> tuple[float, KnowledgeSelectionSource | None]:
+    # 角色 → 标签映射来自 risk/rules/roles.py 单一注册表,与 triage 的
+    # 弱路径信号共用一份事实源。
     if fragment.risk_tag is None:
         return 0.0, None
-    role = _detect_file_role(file_path)
-    if role is None:
-        return 0.0, None
-    topics = _FILE_ROLE_TOPICS.get(role, ())
-    if fragment.risk_tag.value in topics:
+    if any(
+        fragment.risk_tag in spec.tags for spec in matching_roles(file_path)
+    ):
         return _FILE_ROLE_SCORE, KnowledgeSelectionSource.FILE_ROLE
     return 0.0, None
 
