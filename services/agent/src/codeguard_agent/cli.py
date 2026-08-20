@@ -11,9 +11,12 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from hashlib import sha256
 import logging
+from pathlib import Path
 import sys
+import time
 import uuid
 
 import os
@@ -28,6 +31,7 @@ from codeguard_agent.llm.client import build_llm
 from codeguard_agent.models.schemas import ReviewResult, Severity
 from codeguard_agent.models.tasks import ReviewBudget
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
+from codeguard_agent.report import render_review_report, report_filename
 from codeguard_agent.tools.tool_client import create_tool_session, destroy_tool_session
 
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s", stream=sys.stderr)
@@ -82,6 +86,10 @@ def main(argv: list[str] | None = None) -> int:
     review_parser.add_argument(
         "--trace", action=argparse.BooleanOptionalAction, default=None,
         help="开启审查追踪，产出可视化 Dashboard HTML 文件；默认读取 CODEGUARD_TRACE_ENABLED",
+    )
+    review_parser.add_argument(
+        "--report", action="store_true",
+        help="审查完成后在 <repo>/reports/ 生成带时间戳的 Markdown 报告(仅本地审查使用)",
     )
 
     args = parser.parse_args(argv)
@@ -153,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         effective_thread_id = args.thread_id or str(uuid.uuid4())
         trace_enabled = settings.trace_enabled if args.trace is None else args.trace
 
+        started = time.monotonic()
         try:
             result = orch.run(
                 llm,
@@ -173,11 +182,27 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             if tool_client is not None:
                 destroy_tool_session(tool_client)
+        duration_s = time.monotonic() - started
 
         if args.format == "json":
             print(result.model_dump_json(indent=2))
         else:
             _print_result(result)
+
+        if args.report:
+            report_text = render_review_report(
+                result,
+                repo=args.repo,
+                base=args.base,
+                model=settings.model,
+                duration_s=duration_s,
+                diff_text=diff_text,
+            )
+            report_dir = Path(repo_abspath) / "reports"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_path = report_dir / report_filename(datetime.now())
+            report_path.write_text(report_text, encoding="utf-8")
+            print(f"\n报告已写入: {report_path}")
 
         # 退出码约定:发现 CRITICAL 问题时返回非 0,方便接入 CI 做门禁
         has_critical = any(i.severity == Severity.CRITICAL for i in result.issues)
