@@ -9,7 +9,6 @@ import pytest
 
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.schemas import Severity
-from codeguard_agent.models.tasks import RiskTag
 from codeguard_agent.pipeline.council.dedup import (
     CandidateDedupDecision,
     DuplicateGroup,
@@ -44,13 +43,6 @@ def _candidate(
         claim=claim,
         confidence=0.8,
     )
-
-
-def _resolutions(
-    candidates: list[CandidateIssue],
-    tag: RiskTag = RiskTag.ERROR_HANDLING,
-) -> dict[str, RiskTag]:
-    return {candidate.id: tag for candidate in candidates}
 
 
 def _group(
@@ -141,7 +133,6 @@ def test_connected_component_links_nonconsecutive_same_task_candidates():
     result = deduplicate_candidates(
         candidates,
         tasks_by_id={},
-        tag_resolutions=_resolutions(candidates),
         llm=llm,
         structured_method="function_calling",
     )
@@ -165,7 +156,6 @@ def test_connected_blocks_do_not_reorder_unmerged_candidates():
     result = deduplicate_candidates(
         candidates,
         tasks_by_id={},
-        tag_resolutions={},
         llm=_FakeLlm(CandidateDedupDecision(groups=[])),
         structured_method="function_calling",
     )
@@ -184,7 +174,6 @@ def test_git_path_case_is_preserved_when_building_candidate_blocks():
             _candidate("lower", file="src/foo.java", line=10),
         ],
         tasks_by_id={},
-        tag_resolutions={},
         llm=_FakeLlm(CandidateDedupDecision(groups=[])),
         structured_method="function_calling",
     )
@@ -201,7 +190,6 @@ def test_redundant_dot_path_segments_refer_to_the_same_repo_file():
     result = deduplicate_candidates(
         candidates,
         tasks_by_id={},
-        tag_resolutions=_resolutions(candidates),
         llm=_FakeLlm(
             CandidateDedupDecision(
                 groups=[_group("plain", "dotted")]
@@ -444,7 +432,6 @@ def test_deduplicate_without_llm_only_canonicalizes_and_keeps_candidates():
     result = deduplicate_candidates(
         candidates,
         tasks_by_id={},
-        tag_resolutions={},
         llm=None,
         structured_method="function_calling",
     )
@@ -464,7 +451,6 @@ def test_candidate_dedup_system_prompt_enforces_conservative_contract():
     assert "触发条件" in text
     assert "可观察后果" in text
     assert "修复位置" in text
-    assert "RiskTag" in text
     assert "severity" in text
     assert "shared_root_cause" in text
     assert "shared_behavior" in text
@@ -496,7 +482,6 @@ def test_block_prompt_serializes_dynamic_text_as_json_data():
     prompt = _build_user_prompt(
         _CandidateBlock(id="block-1", candidates=(candidate,)),
         {task.id: task},
-        {candidate.id: RiskTag.ERROR_HANDLING},
     )
     assert prompt.count("</dedup_input>") == 1
     encoded = prompt.split("<dedup_input>\n", 1)[1].split("\n</dedup_input>", 1)[0]
@@ -548,7 +533,6 @@ def test_structured_llm_can_merge_different_types_for_one_root_cause():
     result = deduplicate_candidates(
         candidates,
         tasks_by_id={},
-        tag_resolutions=_resolutions(candidates),
         llm=llm,
         structured_method="function_calling",
     )
@@ -564,7 +548,6 @@ def test_accepted_semantic_group_preserves_every_original_candidate():
     result = deduplicate_candidates(
         candidates,
         tasks_by_id={},
-        tag_resolutions=_resolutions(candidates),
         llm=_FakeLlm(
             CandidateDedupDecision(
                 groups=[_group("a", "b")]
@@ -586,7 +569,6 @@ def test_semantic_group_with_different_severity_is_accepted():
     result = deduplicate_candidates(
         candidates,
         tasks_by_id={},
-        tag_resolutions=_resolutions(candidates),
         llm=_FakeLlm(
             CandidateDedupDecision(
                 groups=[
@@ -603,26 +585,6 @@ def test_semantic_group_with_different_severity_is_accepted():
 
     assert len(result.accepted_groups) == 1
     assert set(result.accepted_groups[0].member_ids) == {"runtime", "dead-code"}
-
-
-def test_semantic_group_with_different_risk_tag_is_accepted():
-    """不同 reviewer 对同一 bug 可能被分配不同 RiskTag，不应阻断归并。"""
-    candidates = [_candidate("a"), _candidate("b")]
-    resolutions = _resolutions(candidates)
-    resolutions["b"] = RiskTag.API_CONTRACT
-
-    result = deduplicate_candidates(
-        candidates,
-        tasks_by_id={},
-        tag_resolutions=resolutions,
-        llm=_FakeLlm(
-            CandidateDedupDecision(groups=[_group("a", "b")])
-        ),
-        structured_method="function_calling",
-    )
-
-    assert len(result.accepted_groups) == 1
-    assert set(result.accepted_groups[0].member_ids) == {"a", "b"}
 
 
 def test_strictly_equivalent_trace_shape_produces_four_logical_groups():
@@ -667,16 +629,6 @@ def test_strictly_equivalent_trace_shape_produces_four_logical_groups():
             severity=Severity.INFO,
         ),
     ]
-    resolutions = {
-        candidate.id: (
-            RiskTag.NULL_STATE_SAFETY
-            if candidate.id.startswith("input-")
-            else RiskTag.API_CONTRACT
-            if candidate.id.startswith("api-")
-            else RiskTag.ERROR_HANDLING
-        )
-        for candidate in candidates
-    }
     decision = CandidateDedupDecision(
         groups=[
             _group("input-0", "input-1", "input-2"),
@@ -688,7 +640,6 @@ def test_strictly_equivalent_trace_shape_produces_four_logical_groups():
     result = deduplicate_candidates(
         candidates,
         tasks_by_id={},
-        tag_resolutions=resolutions,
         llm=_FakeLlm(decision),
         structured_method="function_calling",
     )
@@ -702,8 +653,8 @@ def test_strictly_equivalent_trace_shape_produces_four_logical_groups():
     ]
 
 
-def test_latest_trace_metadata_all_groups_accepted_when_tags_differ():
-    """RiskTag/severity 差异不再阻断归并——LLM 确认等价即可合并。"""
+def test_latest_trace_metadata_all_groups_accepted_when_severity_differs():
+    """severity 差异不再阻断归并——LLM 确认等价即可合并。"""
     candidates = [
         _candidate("input-threat", severity=Severity.WARNING),
         _candidate("input-behavior", severity=Severity.WARNING),
@@ -715,26 +666,10 @@ def test_latest_trace_metadata_all_groups_accepted_when_tags_differ():
         _candidate("dead-catch", severity=Severity.INFO),
         _candidate("standalone", severity=Severity.INFO),
     ]
-    tags = {
-        "input-threat": RiskTag.INPUT_VALIDATION,
-        "input-behavior": RiskTag.NULL_STATE_SAFETY,
-        "input-maintainability": RiskTag.NULL_STATE_SAFETY,
-        "api-behavior": RiskTag.API_CONTRACT,
-        "api-maintainability": RiskTag.API_CONTRACT,
-        "api-threat": RiskTag.API_CONTRACT,
-        "runtime-propagation": RiskTag.ERROR_HANDLING,
-        "dead-catch": RiskTag.ERROR_HANDLING,
-        "standalone": RiskTag.DATA_EXPOSURE,
-    }
-    resolutions = {
-        candidate.id: tags[candidate.id]
-        for candidate in candidates
-    }
 
     result = deduplicate_candidates(
         candidates,
         tasks_by_id={},
-        tag_resolutions=resolutions,
         llm=_FakeLlm(
             CandidateDedupDecision(
                 groups=[
@@ -767,7 +702,6 @@ def test_llm_failure_keeps_entire_block(response):
     result = deduplicate_candidates(
         candidates,
         tasks_by_id={},
-        tag_resolutions={},
         llm=_FakeLlm(response),
         structured_method="function_calling",
     )
@@ -791,7 +725,6 @@ def test_public_worker_limit_is_capped_at_eight(monkeypatch):
     deduplicate_candidates(
         [_candidate("a", line=10), _candidate("b", line=11)],
         tasks_by_id={},
-        tag_resolutions={},
         llm=_FakeLlm(CandidateDedupDecision(groups=[])),
         structured_method="function_calling",
         max_workers=99,
@@ -830,7 +763,6 @@ def test_multi_member_blocks_run_in_parallel_and_reassemble_stably(monkeypatch):
     result = deduplicate_candidates(
         list(reversed(candidates)),
         tasks_by_id={},
-        tag_resolutions={},
         llm=object(),
         structured_method="function_calling",
         max_workers=2,

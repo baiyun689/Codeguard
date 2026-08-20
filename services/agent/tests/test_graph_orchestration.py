@@ -1675,7 +1675,7 @@ class TestCandidateCollectReducer:
         assert G.collect_candidate_reducer([first], [second]) == [first, second]
 
 
-def test_coordinator_resolves_candidate_tags_and_emits_trace(monkeypatch):
+def test_coordinator_dedup_and_emits_trace(monkeypatch):
     from codeguard_agent.pipeline.council.dedup import (
         CandidateGroup,
         CandidateBlockFailure,
@@ -1691,13 +1691,6 @@ def test_coordinator_resolves_candidate_tags_and_emits_trace(monkeypatch):
         patch="+ riskyCall();",
         changed_lines=[30, 31],
     )
-    calls: list[str] = []
-
-    def resolve(candidate):
-        calls.append(candidate.id)
-        return RiskTag.ERROR_HANDLING
-
-    monkeypatch.setattr(G, "resolve_candidate_tag", resolve)
     monkeypatch.setattr(
         G,
         "deduplicate_candidates",
@@ -1711,7 +1704,6 @@ def test_coordinator_resolves_candidate_tags_and_emits_trace(monkeypatch):
                 CandidateGroup(
                     id="candidate-group-test",
                     members=(first, second),
-                    primary_risk_tag=RiskTag.ERROR_HANDLING,
                     severity_proposal=first.severity_proposal,
                     confidence=0.99,
                     shared_root_cause="same defect",
@@ -1736,7 +1728,6 @@ def test_coordinator_resolves_candidate_tags_and_emits_trace(monkeypatch):
         }
     )
 
-    assert calls == [first.id, second.id]
     assert output["candidate_issues"] == [first, second]
     assert output["candidate_groups"][0].members == (first, second)
     assert output["candidate_dedup_stats"] == {
@@ -1748,7 +1739,6 @@ def test_coordinator_resolves_candidate_tags_and_emits_trace(monkeypatch):
         "block_failure_count": 1,
     }
     traces = {trace.event: trace.detail for trace in output["council_trace"]}
-    assert "rule=2" in traces["candidate_tags_resolved"]
     assert "singleton=0" in traces["candidate_dedup_blocks_built"]
     assert f"members=['{first.id}', '{second.id}']" in traces["candidate_dedup_group_accepted"]
     assert "root_cause=same defect" in traces["candidate_dedup_group_accepted"]
@@ -1784,9 +1774,6 @@ def test_coordinator_scopes_large_diff_patch_before_dedup(monkeypatch):
             block_failures=(),
         )
 
-    monkeypatch.setattr(
-        G, "resolve_candidate_tag", lambda candidate: RiskTag.ERROR_HANDLING
-    )
     monkeypatch.setattr(G, "deduplicate_candidates", dedup)
 
     G._coordinator_node(object())(

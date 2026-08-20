@@ -34,7 +34,6 @@ from codeguard_agent.models.tasks import (
     ReviewerKind,
     ReviewTask,
     RiskCoverage,
-    RiskTag,
     TaskContextBundle,
     TaskRiskPrior,
     TaskSelection,
@@ -76,7 +75,6 @@ from codeguard_agent.pipeline.evidence.ledger import (
     bind_discovered_issue,
 )
 from codeguard_agent.pipeline.evidence.planner import assemble_dossiers
-from codeguard_agent.pipeline.evidence.rules.classify import resolve_candidate_tag
 from codeguard_agent.pipeline.context.base import PipelineContext
 from codeguard_agent.pipeline.context.provider import ContextProviderStage
 from codeguard_agent.pipeline.reviewers.reviewers import (
@@ -1178,18 +1176,16 @@ def _discovery_collector_node():
 
 
 def _coordinator_node(effective_judge_llm):
-    """三路发现者的显式 fan-in barrier：RiskTag 解析 + 候选语义归并。
+    """三路发现者的显式 fan-in barrier：候选语义归并。
 
     1. 读 raw_candidate_issues
-    2. 组装轻量 dossier → 解析 RiskTag
-    3. 调用 deduplicate_candidates 做语义归并
-    4. 产出 candidate_issues（唯一写入者）、candidate_dedup_stats、council_trace
+    2. 调用 deduplicate_candidates 做语义归并
+    3. 产出 candidate_issues（唯一写入者）、candidate_dedup_stats、council_trace
     """
 
     def _node(state: ReviewState) -> dict:
         raw = list(state.get("raw_candidate_issues") or [])
         tasks = state.get("review_tasks") or []
-        bundles = state.get("task_context_bundles") or {}
         structured_method = state.get("structured_method", "function_calling")
 
         trace: list[CouncilTrace] = []
@@ -1209,42 +1205,9 @@ def _coordinator_node(effective_judge_llm):
             )
         tasks_by_id = {task.id: task for task in scoped_tasks}
 
-        # 1. 为 raw candidates 批量组装轻量 dossier 并解析 RiskTag
-        assembly = assemble_dossiers(
-            raw,
-            scoped_tasks,
-            bundles,
-        )
-        resolutions = {
-            dossier.candidate.id: resolve_candidate_tag(dossier.candidate)
-            for dossier in assembly.dossiers
-        }
-        for failure in assembly.failures:
-            resolutions[failure.candidate.id] = RiskTag.GENERAL_REVIEW
-
-        source_counts = {"rule": 0, "general": 0}
-        for tag in resolutions.values():
-            source_counts[
-                "rule" if tag is not RiskTag.GENERAL_REVIEW else "general"
-            ] += 1
-
-        trace.append(
-            CouncilTrace(
-                node="council_coordinator",
-                event="candidate_tags_resolved",
-                detail=(
-                    f"resolved={len(resolutions)} "
-                    f"rule={source_counts['rule']} "
-                    f"general={source_counts['general']}"
-                ),
-            )
-        )
-
-        # 2. 语义归并
         result = deduplicate_candidates(
             raw,
             tasks_by_id=tasks_by_id,
-            tag_resolutions=resolutions,
             llm=effective_judge_llm,
             structured_method=structured_method,
         )
@@ -1284,7 +1247,6 @@ def _coordinator_node(effective_judge_llm):
                     event="candidate_dedup_group_accepted",
                     detail=(
                         f"group={group.id} members={list(group.member_ids)} "
-                        f"tag={group.primary_risk_tag.value} "
                         f"severity={group.severity_proposal.value} "
                         f"confidence={group.confidence:.2f} "
                         f"root_cause={group.shared_root_cause} "
