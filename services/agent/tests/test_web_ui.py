@@ -25,6 +25,15 @@ def test_safe_project_rejects_unmounted_path(monkeypatch: pytest.MonkeyPatch, tm
         web_ui._safe_project(r"E:\other\demo")
 
 
+def test_host_path_maps_report_to_host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(web_ui, "PROJECT_ROOT", tmp_path / "projects")
+    monkeypatch.setattr(web_ui, "HOST_PROJECT_ROOT", r"E:\workspace")
+
+    result = web_ui._host_path(str(tmp_path / "projects" / "demo" / "reports" / "review.md"))
+
+    assert result == r"E:\workspace\demo\reports\review.md"
+
+
 def test_latest_report_returns_newest_markdown(tmp_path: Path) -> None:
     reports = tmp_path / "reports"
     reports.mkdir()

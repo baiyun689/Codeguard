@@ -42,7 +42,7 @@ def render_review_report(
 ) -> str:
     """把 ReviewResult 渲染为 Markdown 报告字符串。
 
-    结构:标题 + 元信息 → 总览统计表 + 审查结论 → 按严重级分组的问题列表
+    结构:标题 + 简要元信息 → 统计表 → 按严重级分组的问题列表
     (CRITICAL→WARNING→INFO,组内保持原顺序,全局编号连续)。每条问题含
     问题/建议(可空省略)/代码片段(diff 可提取时)/置信度。
     """
@@ -70,10 +70,6 @@ def render_review_report(
         )
     )
     lines.append("")
-    if result.summary:
-        lines.append(f"**审查结论**:{result.summary}")
-        lines.append("")
-
     if not result.issues:
         lines.append("✅ 未发现问题。")
         lines.append("")

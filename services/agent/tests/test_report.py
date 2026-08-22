@@ -82,7 +82,7 @@ def test_元信息与结论_耗时取整秒():
     assert "**基准** `HEAD`" in text
     assert "**模型** `deepseek-v4-flash`" in text
     assert "**耗时** `152s`" in text
-    assert "**审查结论**:建议修复后合并" in text
+    assert "**审查结论**" not in text
 
 
 def test_建议为空时省略建议行():
