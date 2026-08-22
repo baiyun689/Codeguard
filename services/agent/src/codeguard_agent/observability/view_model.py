@@ -89,6 +89,7 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
         step["code_name"] == "discovery_collector"
         for step in node_steps
     )
+    decision_summary = _decision_summary(report.events)
     review_council_step = _review_council_step(
         node_steps,
         skip_reason="small 模式按设计跳过" if small_complete else "",
@@ -96,6 +97,7 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
     coordination_loop_step = _coordination_loop_step(
         node_steps,
         report.events,
+        decision_summary=decision_summary,
         skip_reason=(
             "small 模式按设计跳过"
             if small_complete
@@ -120,10 +122,12 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
             review_council_step,
             coordination_loop_step,
             routing,
+            decision_summary=decision_summary,
         ),
         "routing": routing,
         "reviewer_sections": _reviewer_sections(steps),
         "coordination_steps": _coordination_steps(steps),
+        "decision_summary": decision_summary,
         "steps": steps,
         "state_writes": _state_writes(steps, events_by_sequence),
         "integrity": _integrity(report.events),
@@ -647,6 +651,8 @@ def _main_stages(
     review_council_step: dict[str, Any],
     coordination_loop_step: dict[str, Any],
     routing: dict[str, Any],
+    *,
+    decision_summary: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     by_name: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for step in node_steps:
@@ -718,12 +724,30 @@ def _main_stages(
         "step_id": coordination_loop_step["id"],
         "sequence": coordination_loop_step["sequence"],
         "summary": coordination_loop_step["summary"],
+        "metrics": coordination_loop_step.get("metrics", {}),
     })
-    stages.append(_main_stage(
+    judge_stage = _main_stage(
         "council_judge",
         "委员会裁决",
         by_name.get("council_judge"),
-    ))
+    )
+    decision_summary = decision_summary or {}
+    judge_summary = decision_summary.get("judge") or {}
+    if judge_summary.get("candidate_count"):
+        judge_stage["summary"] = _judge_summary(judge_summary)
+        judge_stage["metrics"] = judge_summary
+    stages.append(judge_stage)
+    causal_candidates = by_name.get("causal_merge")
+    if causal_candidates:
+        causal_stage = _main_stage(
+            "causal_merge",
+            "因果语义合并",
+            causal_candidates,
+        )
+        causal_summary = decision_summary.get("causal_merge") or {}
+        causal_stage["summary"] = _causal_merge_summary(causal_summary)
+        causal_stage["metrics"] = causal_summary
+        stages.append(causal_stage)
     return stages
 
 
@@ -771,6 +795,7 @@ def _coordination_loop_step(
     node_steps: list[dict[str, Any]],
     events: Iterable[TraceEvent],
     *,
+    decision_summary: dict[str, Any] | None = None,
     skip_reason: str = "",
 ) -> dict[str, Any]:
     coordination = [
@@ -806,6 +831,13 @@ def _coordination_loop_step(
         f"证据验证 {evidence_count} 次",
         f"路由 {route_count} 次",
     ]
+    decision_summary = decision_summary or {}
+    judge = decision_summary.get("judge") or {}
+    causal = decision_summary.get("causal_merge") or {}
+    if judge.get("candidate_count"):
+        summary_parts.append(_judge_summary(judge))
+    if causal.get("survivor_count") or causal.get("final_issue_count"):
+        summary_parts.append(_causal_merge_summary(causal))
     return {
         "id": "group:coordination_loop",
         "sequence": min(
@@ -829,7 +861,152 @@ def _coordination_loop_step(
             else "missing"
         ),
         "summary": "，".join(summary_parts) if coordination else skip_reason,
+        "metrics": decision_summary,
     }
+
+
+def _decision_summary(events: Iterable[TraceEvent]) -> dict[str, Any]:
+    """从 Judge/因果合并节点的无损事件中派生总览统计。
+
+    详细裁决仍保留在原始 ``council_trace`` 中；这里只生成面向流程总览的
+    小型摘要，避免 Dashboard 为了显示几个数字重新理解业务 State。
+    """
+    event_list = list(events)
+    judge = _judge_summary_data(event_list)
+    causal = _causal_merge_summary_data(event_list)
+    return {"judge": judge, "causal_merge": causal}
+
+
+def _latest_node_output(
+    events: Iterable[TraceEvent],
+    node_name: str,
+) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    for event in sorted(events, key=lambda item: item.sequence):
+        if event.event_type != "node_end" or event.node_name != node_name:
+            continue
+        candidate = event.detail.get("output")
+        if isinstance(candidate, dict):
+            output = candidate
+    return output
+
+
+def _council_trace_payloads(output: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    payloads: list[tuple[str, dict[str, Any]]] = []
+    traces = output.get("council_trace")
+    if not isinstance(traces, list):
+        return payloads
+    for item in traces:
+        if not isinstance(item, dict):
+            continue
+        event = str(item.get("event") or "")
+        detail = item.get("detail")
+        if isinstance(detail, dict):
+            payloads.append((event, detail))
+            continue
+        if not isinstance(detail, str):
+            continue
+        try:
+            parsed = json.loads(detail)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(parsed, dict):
+            payloads.append((event, parsed))
+    return payloads
+
+
+def _judge_summary_data(events: Iterable[TraceEvent]) -> dict[str, Any]:
+    output = _latest_node_output(events, "council_judge")
+    if not output:
+        output = _latest_node_output(events, "direct_judge")
+    payloads = _council_trace_payloads(output)
+    verdicts = [
+        payload
+        for event, payload in payloads
+        if event in {"judge_verdict", "direct_judge_verdict"}
+    ]
+    batch_count = sum(
+        event == "evidence_judge_batch_started" for event, _payload in payloads
+    )
+    contract_violations = sum(
+        len(payload.get("violations") or [])
+        for event, payload in payloads
+        if event == "evidence_judge_contract_violations"
+    )
+    keep_count = sum(payload.get("action") == "keep" for payload in verdicts)
+    drop_count = sum(payload.get("action") == "drop" for payload in verdicts)
+    insufficient_count = sum(
+        payload.get("reason_code") == "insufficient_evidence"
+        for payload in verdicts
+    )
+    failed_count = sum(
+        payload.get("reason_code") == "verification_failed"
+        for payload in verdicts
+    )
+    return {
+        "candidate_count": len(verdicts),
+        "keep_count": keep_count,
+        "drop_count": drop_count,
+        "insufficient_evidence_count": insufficient_count,
+        "verification_failed_count": failed_count,
+        "contract_violation_count": contract_violations,
+        "batch_count": batch_count,
+        "final_issue_count": len(output.get("final_issues") or []),
+    }
+
+
+def _causal_merge_summary_data(events: Iterable[TraceEvent]) -> dict[str, Any]:
+    output = _latest_node_output(events, "causal_merge")
+    stats = output.get("causal_merge_stats")
+    if not isinstance(stats, dict):
+        stats = {}
+    completed = next(
+        (
+            payload
+            for event, payload in reversed(_council_trace_payloads(output))
+            if event == "causal_merge_batch_completed"
+        ),
+        {},
+    )
+    judge = _judge_summary_data(events)
+    return {
+        "survivor_count": judge.get("keep_count", 0),
+        "batch_count": int(stats.get("batch_count", 0)),
+        "successful_batch_count": int(stats.get("successful_batch_count", 0)),
+        "failed_batch_count": int(stats.get("failed_batch_count", 0)),
+        "comparison_count": sum(
+            int(payload.get("comparisons", 0))
+            for event, payload in _council_trace_payloads(output)
+            if event == "causal_merge_batch_completed"
+        ) or int(completed.get("comparisons", 0)),
+        "merged_group_count": int(stats.get("merged_group_count", 0)),
+        "merged_candidate_count": int(stats.get("merged_candidate_count", 0)),
+        "final_issue_count": len(output.get("final_issues") or []),
+    }
+
+
+def _judge_summary(data: dict[str, Any]) -> str:
+    text = (
+        f"Judge {data.get('candidate_count', 0)} 个候选 → "
+        f"保留 {data.get('keep_count', 0)} / 丢弃 {data.get('drop_count', 0)}"
+    )
+    reasons: list[str] = []
+    if data.get("insufficient_evidence_count"):
+        reasons.append(f"证据不足 {data['insufficient_evidence_count']}")
+    if data.get("verification_failed_count"):
+        reasons.append(f"失败 {data['verification_failed_count']}")
+    if data.get("contract_violation_count"):
+        reasons.append(f"合同违规 {data['contract_violation_count']}")
+    return f"{text}（{'，'.join(reasons)}）" if reasons else text
+
+
+def _causal_merge_summary(data: dict[str, Any]) -> str:
+    return (
+        f"因果合并 {data.get('survivor_count', 0)} 个 survivor → "
+        f"比较 {data.get('comparison_count', 0)} 次 → "
+        f"合并 {data.get('merged_group_count', 0)} 组 → "
+        f"最终 {data.get('final_issue_count', 0)} 个 Issue"
+    )
 
 
 def _missing_main_steps(

@@ -294,6 +294,94 @@ def test_trace_view_groups_reviewer_react_steps_and_state_writes():
     assert view["integrity"]["missing_end_count"] == 0
 
 
+def test_trace_view_summarizes_judge_and_causal_merge_results():
+    events = [
+        _flow_event(
+            1,
+            "node_end",
+            "council_judge",
+            "council_judge",
+            "judge-run",
+            detail={
+                "output": {
+                    "final_issues": [{"id": "issue-1"}],
+                    "council_trace": [
+                        {
+                            "event": "evidence_judge_batch_started",
+                            "detail": '{"candidate_ids":["c1","c2","c3"]}',
+                        },
+                        {
+                            "event": "judge_verdict",
+                            "detail": '{"candidate_id":"c1","action":"keep","reason_code":"evidence_judge_keep"}',
+                        },
+                        {
+                            "event": "judge_verdict",
+                            "detail": '{"candidate_id":"c2","action":"drop","reason_code":"insufficient_evidence"}',
+                        },
+                        {
+                            "event": "judge_verdict",
+                            "detail": '{"candidate_id":"c3","action":"drop","reason_code":"judge_drop"}',
+                        },
+                        {
+                            "event": "evidence_judge_contract_violations",
+                            "detail": '{"violations":["missing_assessment:c3"]}',
+                        },
+                    ],
+                }
+            },
+        ),
+        _flow_event(
+            2,
+            "node_end",
+            "causal_merge",
+            "causal_merge",
+            "merge-run",
+            detail={
+                "output": {
+                    "final_issues": [{"id": "issue-1"}],
+                    "causal_merge_stats": {
+                        "batch_count": 1,
+                        "successful_batch_count": 1,
+                        "failed_batch_count": 0,
+                        "merged_group_count": 0,
+                        "merged_candidate_count": 0,
+                    },
+                    "council_trace": [
+                        {
+                            "event": "causal_merge_batch_completed",
+                            "detail": '{"comparisons":1,"groups":0}',
+                        }
+                    ],
+                }
+            },
+        ),
+    ]
+
+    view = build_trace_view(
+        TraceReport(
+            run_id="decision-run",
+            timestamp="2026-08-22T00:00:00",
+            events=events,
+        )
+    )
+
+    assert view["decision_summary"]["judge"] == {
+        "candidate_count": 3,
+        "keep_count": 1,
+        "drop_count": 2,
+        "insufficient_evidence_count": 1,
+        "verification_failed_count": 0,
+        "contract_violation_count": 1,
+        "batch_count": 1,
+        "final_issue_count": 1,
+    }
+    assert view["decision_summary"]["causal_merge"]["comparison_count"] == 1
+    assert view["decision_summary"]["causal_merge"]["final_issue_count"] == 1
+    assert "Judge 3 个候选 → 保留 1 / 丢弃 2" in view["main_stages"][-2]["summary"]
+    assert "因果合并 1 个 survivor → 比较 1 次" in view["main_stages"][-1]["summary"]
+    assert view["main_stages"][-1]["code_name"] == "causal_merge"
+
+
 def test_trace_view_main_stages_resolve_without_copying_state_values():
     view = build_trace_view(_flow_report_fixture())
 
