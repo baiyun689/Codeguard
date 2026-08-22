@@ -301,6 +301,7 @@ def test_evidence_and_judge_prompts_describe_wrapper_contracts() -> None:
 
     judge = _prompt("evidence-judge.txt")
     assert "EvidenceJudgeBatch" in judge
+    assert all(section in judge for section in ("# Role", "# Task", "# Rules", "# Output"))
     assert all(
         field in judge
         for field in (
@@ -314,6 +315,9 @@ def test_evidence_and_judge_prompts_describe_wrapper_contracts() -> None:
     assert "不得请求工具" in judge
     assert "未找到保护不等于证明保护不存在" in judge
     assert "keep 必须至少引用一个" in judge
+    assert "现有证据是否足以证明候选问题成立" in judge
+    assert "source_agent 为 maintainability 的候选不得判为 CRITICAL" in judge
+    assert "每个输入候选必须且只能对应一个 assessment" in judge
     assert "maintainability" in judge
     assert "location" in judge
 
