@@ -9,15 +9,10 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.tasks import ReviewTask, TaskContextBundle
 from codeguard_agent.pipeline.risk import task_prep
-
-if TYPE_CHECKING:
-    from codeguard_agent.pipeline.council.dedup import CandidateGroup
-
 
 @dataclass(frozen=True)
 class CandidateDossier:
@@ -26,7 +21,6 @@ class CandidateDossier:
     candidate: CandidateIssue
     task: ReviewTask
     context_bundle: TaskContextBundle | None
-    candidate_group: CandidateGroup | None = None
 
 
 @dataclass(frozen=True)
@@ -54,18 +48,11 @@ def assemble_dossiers(
     candidates: Sequence[CandidateIssue],
     tasks: Sequence[ReviewTask],
     bundles: Mapping[str, TaskContextBundle],
-    candidate_groups: Sequence[CandidateGroup] = (),
 ) -> DossierAssembly:
     """把 graph state 关联为候选级只读快照，并显式保留绑定失败。"""
     tasks_by_id: dict[str, list[ReviewTask]] = {}
     for task in tasks:
         tasks_by_id.setdefault(task.id, []).append(task)
-    groups_by_candidate = {
-        member.id: group
-        for group in candidate_groups
-        for member in group.members
-    }
-
     dossiers: list[CandidateDossier] = []
     failures: list[CandidateBindingFailure] = []
     trace: list[tuple[str, str]] = []
@@ -109,7 +96,6 @@ def assemble_dossiers(
                 candidate=candidate,
                 task=task,
                 context_bundle=bundles.get(task.id),
-                candidate_group=groups_by_candidate.get(candidate.id),
             )
         )
     return DossierAssembly(tuple(dossiers), tuple(failures), tuple(trace))

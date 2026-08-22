@@ -93,17 +93,11 @@ def _settings():
 
 def test_报告_渲染行为诊断指标行():
     m = _metrics(distractor_hit_rate=0.25, vuln_noise_per_case=1.5,
-                 report_inflation=2.0, severity_accuracy_complex=0.5,
-                 candidate_compression_rate=0.25,
-                 duplicate_report_rate=0.1,
-                 suspected_false_merge_rate=0.2)
+                 report_inflation=2.0, severity_accuracy_complex=0.5)
     out = render_report(m, _settings(), [[MatchOutcome(case_id="v", is_clean=False)]], [])
     assert "诱饵命中率" in out
     assert "vuln 噪音/条" in out
     assert "报告膨胀比" in out
-    assert "候选压缩率" in out
-    assert "重复报告率上界" in out
-    assert "疑似误归并用例率" in out
     assert "级别准确率·复杂用例" in out
 
 
@@ -159,12 +153,6 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
             is_clean=False,
             council_trace={
                 "candidate_count": 5,
-                "raw_candidate_count": 5,
-                "logical_candidate_count": 3,
-                "candidate_grouped_member_count": 2,
-                "candidate_dedup_removed_count": 0,
-                "candidate_dedup_llm_calls": 2,
-                "candidate_dedup_block_failure_count": 1,
                 "candidate_count_by_agent": {
                     "threat_model": 1,
                     "behavior": 1,
@@ -207,13 +195,11 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
 
     out = render_report(_metrics(), _settings(), [run], [])
 
-    assert "原始→逻辑组/举证成员" in out
-    assert "5->3/5" in out
-    assert "逻辑归组=2" in out
-    assert "实删=0" in out
+    assert "| 用例 | 候选数 | 角色候选分布 |" in out
+    assert "| v | 5 |" in out
     assert "角色候选分布" in out
     assert "threat_model=1, behavior=1, maintainability=1" in out
-    assert "| 候选归并 | Artifact | Judge 裁决 |" in out
+    assert "| Artifact | Judge 裁决 |" in out
     assert "Judge 裁决" in out
     assert "无支持 drop" in out
     assert "| 1 | 0 | 1 | WARNING->CRITICAL=1 |" in out

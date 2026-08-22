@@ -9,7 +9,7 @@ from __future__ import annotations
 from evals.metrics import aggregate, compute_stability
 from codeguard_agent.models.schemas import Issue, Severity
 
-from evals.schema import CouncilTraceStats, MatchOutcome
+from evals.schema import MatchOutcome
 
 
 def _vuln(**kw) -> MatchOutcome:
@@ -147,46 +147,6 @@ def test_vuln噪音每条与膨胀比():
     m = aggregate([run])
     assert m.vuln_noise_per_case == 1.0          # (2+0)/2 条
     assert m.report_inflation == 1.5             # mean(4/2, 1/1) = mean(2,1)
-
-
-def test_候选归并压缩重复与疑似误归并指标():
-    run = [
-        _vuln(
-            case_id="duplicate",
-            expected_total=1,
-            reported_total=2,
-            true_positives=1,
-            false_positives=1,
-                council_trace=CouncilTraceStats(
-                    raw_candidate_count=4,
-                    logical_candidate_count=3,
-                    candidate_grouped_member_count=1,
-                    candidate_count=4,
-                    candidate_dedup_removed_count=0,
-            ),
-        ),
-        _vuln(
-            case_id="adjacent",
-            expected_total=2,
-            reported_total=2,
-            true_positives=1,
-            false_positives=1,
-            false_negatives=1,
-                council_trace=CouncilTraceStats(
-                    raw_candidate_count=3,
-                    logical_candidate_count=2,
-                    candidate_grouped_member_count=1,
-                    candidate_count=3,
-                    candidate_dedup_removed_count=0,
-            ),
-        ),
-    ]
-
-    metrics = aggregate([run])
-
-    assert metrics.candidate_compression_rate == 2 / 7
-    assert metrics.duplicate_report_rate == 0.5
-    assert metrics.suspected_false_merge_rate == 0.5
 
 
 def test_主次项recall分层():

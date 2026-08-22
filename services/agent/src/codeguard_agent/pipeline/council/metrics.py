@@ -26,7 +26,6 @@ from codeguard_agent.models.evidence import (
 )
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.pipeline.evidence.planner import DossierAssembly
-from codeguard_agent.pipeline.council.dedup import CandidateDedupStats
 
 
 def _ratio(numerator: int, denominator: int) -> float | None:
@@ -44,7 +43,6 @@ def compute_council_run_stats(
     final_candidate_ids: Sequence[str],
     truncated_candidates: int,
     council_trace: Sequence[CouncilTrace],
-    candidate_dedup_stats: Mapping[str, int] | CandidateDedupStats | None = None,
     artifacts: Mapping[str, EvidenceArtifact] | None = None,
     verifications: Mapping[str, Any] | None = None,
 ) -> CouncilRunStats:
@@ -129,23 +127,6 @@ def compute_council_run_stats(
         verdict.candidate_id in final_ids and verdict.supported
         for verdict in verdicts
     )
-    dedup = candidate_dedup_stats or {}
-    raw_candidate_count = dedup.get("raw_candidate_count", candidate_count)
-    logical_candidate_count = dedup.get(
-        "logical_candidate_count",
-        candidate_count,
-    )
-    candidate_grouped_member_count = dedup.get(
-        "grouped_member_count",
-        max(0, raw_candidate_count - logical_candidate_count),
-    )
-    candidate_dedup_removed_count = dedup.get(
-        "removed_count",
-        max(0, raw_candidate_count - candidate_count),
-    )
-    candidate_dedup_llm_calls = dedup.get("llm_call_count", 0)
-    candidate_dedup_block_failure_count = dedup.get("block_failure_count", 0)
-
     # ── 降级指标:从 council_trace 事件中计数 ──
     react_degraded_recursion_count = _count_event(
         council_trace, "react_degraded_recursion"
@@ -158,12 +139,6 @@ def compute_council_run_stats(
         candidate_count=candidate_count,
         candidate_count_by_agent=by_agent,
         truncated_candidates=truncated_candidates,
-        raw_candidate_count=raw_candidate_count,
-        logical_candidate_count=logical_candidate_count,
-        candidate_grouped_member_count=candidate_grouped_member_count,
-        candidate_dedup_removed_count=candidate_dedup_removed_count,
-        candidate_dedup_llm_calls=candidate_dedup_llm_calls,
-        candidate_dedup_block_failure_count=candidate_dedup_block_failure_count,
         verdict_count=len(verdicts),
         removed_by_judge=sum(verdict.action == "drop" for verdict in verdicts),
         critical_candidate_count=sum(

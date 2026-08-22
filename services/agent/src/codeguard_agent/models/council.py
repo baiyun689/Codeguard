@@ -142,15 +142,6 @@ class CouncilRunStats(BaseModel):
 
     candidate_count: int = Field(default=0, description="本次进入 Evidence/Judge 的候选成员总数")
     candidate_count_by_agent: dict[str, int] = Field(default_factory=dict)
-    raw_candidate_count: int = Field(default=0, description="归并前的原始候选总数")
-    logical_candidate_count: int = Field(default=0, description="严格等价分组后的逻辑候选数")
-    candidate_grouped_member_count: int = Field(
-        default=0,
-        description="逻辑分组减少量；成员仍会独立进入 Evidence/Judge",
-    )
-    candidate_dedup_removed_count: int = Field(default=0, description="归并阶段真实删除的候选数")
-    candidate_dedup_llm_calls: int = Field(default=0, description="归并 LLM 调用次数")
-    candidate_dedup_block_failure_count: int = Field(default=0, description="归并失败块数")
     truncated_candidates: int = Field(default=0, description="发现阶段因候选上限被截断的数量")
     verdict_count: int = Field(default=0, description="Judge 产生的候选裁决总数")
     removed_by_judge: int = Field(default=0, description="Judge 裁决为 drop 的候选数")

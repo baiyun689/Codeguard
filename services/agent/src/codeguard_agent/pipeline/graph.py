@@ -43,10 +43,6 @@ from codeguard_agent.models.tasks import (
 )
 from codeguard_agent.pipeline.context import rules as context_rules
 from codeguard_agent.pipeline.risk import task_prep
-from codeguard_agent.pipeline.council.dedup import (
-    CandidateGroup,
-    CandidateDedupStats,
-)
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.risk.discovery import (
     CoordinatedDiscoveryToolClient,
@@ -149,7 +145,6 @@ class ReviewState(TypedDict, total=False):
     task_context_bundles: dict[str, TaskContextBundle]
     raw_candidate_issues: Annotated[list[CandidateIssue], collect_candidate_reducer]
     candidate_issues: list[CandidateIssue]
-    candidate_groups: list[CandidateGroup]
     candidate_verifications: dict[str, Any]
     evidence_artifacts: Annotated[dict[str, EvidenceArtifact], merge_evidence_artifacts]
     review_summaries: Annotated[list, operator.add]
@@ -165,7 +160,6 @@ class ReviewState(TypedDict, total=False):
 
     # --- Diagnostics: Trace / eval 数据，不属于产品输出 ---
     context_diagnostics: dict[str, str]
-    candidate_dedup_stats: CandidateDedupStats
     council_stats: CouncilRunStats
     council_trace: Annotated[list[CouncilTrace], operator.add]
     truncated_candidates: Annotated[int, operator.add]
@@ -1208,15 +1202,6 @@ def _coordinator_node(effective_judge_llm):
 
         return {
             "candidate_issues": list(candidates),
-            "candidate_groups": [],
-            "candidate_dedup_stats": {
-                "raw_candidate_count": len(raw),
-                "logical_candidate_count": len(candidates),
-                "grouped_member_count": 0,
-                "removed_count": 0,
-                "llm_call_count": 0,
-                "block_failure_count": 0,
-            },
             "council_trace": trace,
         }
 
@@ -1228,7 +1213,6 @@ def _assemble_state_dossiers(state: ReviewState):
         state.get("candidate_issues") or [],
         state.get("review_tasks") or [],
         state.get("task_context_bundles") or {},
-        state.get("candidate_groups") or [],
     )
 
 
@@ -1274,7 +1258,6 @@ def _council_judge_node(judge_llm=None):
             judge_llm=judge_llm,
             structured_method=state.get("structured_method", "function_calling"),
             max_retries=state.get("max_retries", 2),
-            candidate_groups=(),
         )
         judge_trace = [
             CouncilTrace(node="council_judge", event=event, detail=detail)
@@ -1287,7 +1270,6 @@ def _council_judge_node(judge_llm=None):
             final_candidate_ids=batch.final_candidate_ids,
             truncated_candidates=state.get("truncated_candidates", 0),
             council_trace=[*(state.get("council_trace") or []), *judge_trace],
-            candidate_dedup_stats=state.get("candidate_dedup_stats"),
             artifacts=state.get("evidence_artifacts") or {},
             verifications=state.get("candidate_verifications") or {},
         )
@@ -1361,7 +1343,6 @@ def _direct_judge_node(judge_llm=None):
             judge_llm=judge_llm,
             structured_method=state.get("structured_method", "function_calling"),
             max_retries=state.get("max_retries", 2),
-            candidate_groups=(),
         )
         judge_trace = [
             CouncilTrace(node="direct_judge", event=event, detail=detail)
@@ -1374,7 +1355,6 @@ def _direct_judge_node(judge_llm=None):
             final_candidate_ids=batch.final_candidate_ids,
             truncated_candidates=state.get("truncated_candidates", 0),
             council_trace=[*(state.get("council_trace") or []), *judge_trace],
-            candidate_dedup_stats=state.get("candidate_dedup_stats"),
             artifacts=state.get("evidence_artifacts") or {},
             verifications=state.get("candidate_verifications") or {},
         )

@@ -230,12 +230,6 @@ class CouncilTraceStats(BaseModel):
 
     candidate_count: int = 0
     candidate_count_by_agent: dict[str, int] = Field(default_factory=dict)
-    raw_candidate_count: int = Field(default=0, description="归并前的原始候选数")
-    logical_candidate_count: int = Field(default=0, description="严格等价分组后的逻辑候选数")
-    candidate_grouped_member_count: int = Field(default=0, description="逻辑分组减少量")
-    candidate_dedup_removed_count: int = Field(default=0, description="归并阶段真实删除的候选数")
-    candidate_dedup_llm_calls: int = Field(default=0, description="归并 LLM 调用次数")
-    candidate_dedup_block_failure_count: int = Field(default=0, description="归并失败块数")
     truncated_candidates: int = Field(default=0, description="发现阶段因候选上限被截断的数量")
     verdict_count: int = Field(default=0, description="Judge 产生的候选裁决数")
     removed_by_judge: int = Field(default=0, description="Judge 候选裁决为 drop 的数量")
@@ -455,18 +449,6 @@ class AggregateMetrics(BaseModel):
     )
     report_inflation: float = Field(
         default=0.0, description="报告膨胀比 = vuln 用例上 报告数/标答数 的均值"
-    )
-    candidate_compression_rate: float | None = Field(
-        default=None,
-        description="候选压缩率 = Σ归并移除候选 / Σ原始候选；无 Council 数据时 None",
-    )
-    duplicate_report_rate: float | None = Field(
-        default=None,
-        description="重复报告率上界 = vuln 用例未匹配报告 / vuln 总报告；无 Council 数据时 None",
-    )
-    suspected_false_merge_rate: float | None = Field(
-        default=None,
-        description="疑似误归并用例率 = 发生归并且仍漏标答的用例 / 发生归并的用例",
     )
     recall_primary: float | None = Field(
         default=None, description="主项(CRITICAL)recall;无主项标答时 None"

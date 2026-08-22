@@ -1695,15 +1695,6 @@ def test_coordinator_only_fans_in_candidates():
     )
 
     assert output["candidate_issues"] == [first, second]
-    assert output["candidate_groups"] == []
-    assert output["candidate_dedup_stats"] == {
-        "raw_candidate_count": 2,
-            "logical_candidate_count": 2,
-        "grouped_member_count": 0,
-        "removed_count": 0,
-        "llm_call_count": 0,
-        "block_failure_count": 0,
-    }
     traces = {trace.event: trace.detail for trace in output["council_trace"]}
     assert "raw=2 unique=2 semantic_merge=deferred" == traces["candidate_fan_in"]
 
@@ -1730,4 +1721,3 @@ def test_coordinator_does_not_run_semantic_merge_on_large_diff():
     )
 
     assert output["candidate_issues"] == [candidate]
-    assert output["candidate_dedup_stats"]["llm_call_count"] == 0

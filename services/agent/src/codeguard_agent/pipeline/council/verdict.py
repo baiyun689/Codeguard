@@ -12,7 +12,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.council import Verdict
@@ -26,7 +26,6 @@ from codeguard_agent.models.evidence import (
 )
 from codeguard_agent.models.schemas import Issue, Severity
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
-from codeguard_agent.pipeline.council.dedup import CandidateGroup
 from codeguard_agent.pipeline.evidence.graph_response import summarize_graph
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
 
@@ -56,85 +55,6 @@ class VerdictBatch:
 
 def _trace(batch: VerdictBatch, event: str, detail: dict[str, object]) -> None:
     batch.trace.append((event, _stable_json(detail)))
-
-
-def _unique_text(values: Sequence[str]) -> str:
-    return "；".join(dict.fromkeys(value.strip() for value in values if value.strip()))
-
-
-def consolidate_groups(
-    batch: VerdictBatch,
-    supported: Sequence[tuple[str, Issue]],
-    candidate_groups: Sequence[CandidateGroup],
-) -> None:
-    """按严格等价组汇总已支持成员;任何未获支持成员都不影响其兄弟。
-
-    组内形状不一致(文件/类型/裁决后严重度)安全拆回多条;合并取最小正行号,
-    类型/消息/建议去重拼接、置信度取 min。
-    """
-    issue_by_id = dict(supported)
-    group_by_member = {
-        member.id: group
-        for group in candidate_groups
-        for member in group.members
-    }
-    emitted_groups: set[str] = set()
-
-    for candidate_id, issue in supported:
-        group = group_by_member.get(candidate_id)
-        if group is None:
-            batch.final_candidate_ids.append(candidate_id)
-            batch.final_issues.append(issue)
-            continue
-        if group.id in emitted_groups:
-            continue
-        emitted_groups.add(group.id)
-        kept = [
-            (member.id, issue_by_id[member.id])
-            for member in group.members
-            if member.id in issue_by_id
-        ]
-        if not kept:
-            continue
-
-        # 类型、裁决后严重度或文件不同,说明实际影响并不等价,安全拆回多条。
-        output_shapes = {
-            (
-                member_issue.file,
-                member_issue.type.strip().casefold(),
-                member_issue.severity,
-            )
-            for _, member_issue in kept
-        }
-        if len(output_shapes) != 1:
-            for kept_id, kept_issue in kept:
-                batch.final_candidate_ids.append(kept_id)
-                batch.final_issues.append(kept_issue)
-            _trace(
-                batch,
-                "candidate_group_split",
-                {"group_id": group.id, "member_ids": [item[0] for item in kept]},
-            )
-            continue
-
-        anchor_id, anchor = kept[0]
-        positive_lines = [item.line for _, item in kept if item.line > 0]
-        combined = anchor.model_copy(
-            update={
-                "line": min(positive_lines) if positive_lines else 0,
-                "type": _unique_text([item.type for _, item in kept]),
-                "message": _unique_text([item.message for _, item in kept]),
-                "suggestion": _unique_text([item.suggestion for _, item in kept]),
-                "confidence": min(item.confidence for _, item in kept),
-            }
-        )
-        batch.final_candidate_ids.append(anchor_id)
-        batch.final_issues.append(combined)
-        _trace(
-            batch,
-            "candidate_group_consolidated",
-            {"group_id": group.id, "member_ids": [item[0] for item in kept]},
-        )
 
 
 # ── Judge 载荷与输出合同 ────────────────────────────────────────────────
@@ -449,9 +369,8 @@ def judge_with_evidence(
     judge_llm: Any,
     structured_method: str,
     max_retries: int,
-    candidate_groups: Sequence[CandidateGroup] = (),
 ) -> VerdictBatch:
-    """完整档裁决:绑定失败/验证淘汰 → 批量 EvidenceJudge → 组内合并。"""
+    """完整档裁决:绑定失败/验证淘汰 → 批量 EvidenceJudge。"""
     batch = VerdictBatch()
     for failure in assembly.failures:
         verdict = Verdict(failure.candidate.id, "drop", "invalid_candidate_binding", failure.reason)
@@ -509,7 +428,9 @@ def judge_with_evidence(
             batch.verdicts.append(verdict)
             if issue is not None:
                 supported.append((dossier.candidate.id, issue))
-    consolidate_groups(batch, supported, candidate_groups)
+    for candidate_id, issue in supported:
+        batch.final_candidate_ids.append(candidate_id)
+        batch.final_issues.append(issue)
     return batch
 
 
@@ -576,7 +497,6 @@ def judge_direct(
     judge_llm: Any,
     structured_method: str,
     max_retries: int,
-    candidate_groups: Sequence[CandidateGroup] = (),
 ) -> VerdictBatch:
     """无证据链消融档:输入无证据 ID、无门控,输出 keep/drop/severity 同构。"""
     batch = VerdictBatch()
@@ -622,5 +542,7 @@ def judge_direct(
             batch.verdicts.append(verdict)
             if final_issue is not None:
                 supported.append((dossier.candidate.id, final_issue))
-        consolidate_groups(batch, supported, candidate_groups)
+        for candidate_id, issue in supported:
+            batch.final_candidate_ids.append(candidate_id)
+            batch.final_issues.append(issue)
     return batch
