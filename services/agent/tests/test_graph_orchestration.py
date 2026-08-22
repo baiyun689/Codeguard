@@ -524,7 +524,7 @@ def test_classify_mode_emits_structured_trace_route():
 
     assert output["review_mode"] == "small"
     assert output["review_route"].initial_mode.value == "small"
-    assert output["review_route"].selected_node == "direct_review"
+    assert output["review_route"].selected_node == "file_task_builder"
     assert output["review_route"].metrics.file_count == 1
     assert output["review_route"].thresholds.small_max_files == 3
     assert output["council_trace"][0].event == "mode_selected"

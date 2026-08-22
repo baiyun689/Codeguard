@@ -21,6 +21,7 @@ from codeguard_agent.models.tasks import (
     SkippedTask,
     TaskSelection,
     TaskRiskPrior,
+    TaskRoute,
 )
 from codeguard_agent.pipeline.risk.rules.catalog import (
     TriageResult,
@@ -65,6 +66,16 @@ _NON_SOURCE_SUFFIXES = (
     ".map",
 )
 
+_DIRECT_DOCUMENT_SUFFIXES = (".md", ".mdx", ".adoc", ".rst", ".txt")
+_DIRECT_DENY_TERMS = (
+    "auth", "permission", "role", "token", "password", "secret", "csrf", "cors",
+    "sql", "jdbc", "query", "transaction", "@transactional", "http", "url", "uri",
+    "api", "controller", "request", "response", "serialize", "deserialize", "json",
+    "yaml", "yml", "xml", "pom.xml", "build.gradle", "dependency", "synchronized",
+    "lock", "thread", "executor", "async", "await", "cache", "kafka", "rabbit",
+    "message", "stream", "file", "path", "upload", "download", "processbuilder",
+)
+
 
 def _is_build_artifact(file_path: str) -> bool:
     """判断文件是否为构建产物或二进制文件，不应作为审查任务。"""
@@ -81,6 +92,47 @@ def _is_build_artifact(file_path: str) -> bool:
     ):
         return True
     return False
+
+
+def _changed_content_lines(patch: str) -> list[str]:
+    """提取 diff 中真正新增/删除的内容行，排除 diff 元数据。"""
+    lines: list[str] = []
+    for line in patch.splitlines():
+        if line.startswith(("+++", "---", "@@", "diff --git", "index ")):
+            continue
+        if line.startswith(("+", "-")):
+            lines.append(line[1:])
+    return lines
+
+
+def _is_comment_or_blank(line: str) -> bool:
+    stripped = line.strip()
+    return not stripped or stripped.startswith(("//", "/*", "*", "*/", "#", "<!--", "-->", ";"))
+
+
+def classify_task_route(task: ReviewTask) -> TaskRoute:
+    """确定性判断 task 是否可以走无工具 Direct 路径。
+
+    规则故意保守：无法证明是文档/注释/空白变更时一律 Full。
+    """
+    normalized_path = task.file.replace("\\", "/").lower()
+    patch_lower = task.patch.lower()
+    if task.patch.count("\n") > 80:
+        return TaskRoute(task_id=task.id, route="full", reason="task_too_large")
+    if any(term in patch_lower or term in normalized_path for term in _DIRECT_DENY_TERMS):
+        return TaskRoute(task_id=task.id, route="full", reason="semantic_or_runtime_change")
+
+    changed = _changed_content_lines(task.patch)
+    if normalized_path.endswith(_DIRECT_DOCUMENT_SUFFIXES):
+        return TaskRoute(task_id=task.id, route="direct", reason="documentation_only")
+    if changed and all(_is_comment_or_blank(line) for line in changed):
+        return TaskRoute(task_id=task.id, route="direct", reason="comment_or_whitespace_only")
+    return TaskRoute(task_id=task.id, route="full", reason="code_change_requires_full_review")
+
+
+def classify_task_routes(tasks: list[ReviewTask]) -> dict[str, TaskRoute]:
+    """为每个 ReviewTask 生成稳定的 Direct/Full 路由。"""
+    return {task.id: classify_task_route(task) for task in tasks}
 
 
 # @@ -oldStart[,oldLen] +newStart[,newLen] @@ [section heading]
@@ -102,6 +154,8 @@ def file_matches_task(file: str, task: ReviewTask) -> bool:
     单 task 调用不再做行号级映射（prompt 只含这一个 task），但仍需要
     这道最基本的一致性校验，防止模型报告了完全无关的文件却被直接绑定到该 task。
     """
+    if task.file == "<whole-diff>":
+        return bool(file.strip())
     return _norm(file) == _norm(task.file) or _basename(file) == _basename(task.file)
 
 
@@ -306,6 +360,24 @@ def build_file_tasks(diff_text: str) -> list[ReviewTask]:
     if skipped_artifacts:
         logger.info("build_file_tasks: 跳过 %d 个构建产物文件", skipped_artifacts)
     return tasks
+
+
+def build_whole_diff_task(diff_text: str) -> list[ReviewTask]:
+    """SMALL 模式保持单 task，但仍进入统一 ReviewCouncil 管线。"""
+    files = [file for file in split_diff_by_file(diff_text) if not _is_build_artifact(file)]
+    changed_lines: list[int] = []
+    for section in split_diff_by_file(diff_text).values():
+        for _header, body, new_start in _split_hunks(section):
+            changed_lines.extend(_changed_lines(body, new_start))
+    return [
+        ReviewTask(
+            id="whole_diff#task",
+            file=files[0] if len(files) == 1 else "<whole-diff>",
+            patch=diff_text,
+            changed_lines=changed_lines,
+            patch_complete=False,
+        )
+    ] if diff_text.strip() else []
 
 
 def triage_tasks(

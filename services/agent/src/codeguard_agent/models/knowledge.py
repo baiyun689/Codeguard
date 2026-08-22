@@ -19,6 +19,7 @@ class KnowledgeKind(str, Enum):
 
 
 class KnowledgeSelectionSource(str, Enum):
+    PLAN = "plan"
     RISK_PRIOR = "risk_prior"
     PATCH_SEMANTICS = "patch_semantics"
     FILE_ROLE = "file_role"

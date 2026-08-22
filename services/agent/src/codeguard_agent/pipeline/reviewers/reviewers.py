@@ -99,6 +99,7 @@ def build_reviewer_user_prompt(
     risk_prior: TaskRiskPrior | None = None,
     context_bundle: TaskContextBundle | None = None,
     task_knowledge: str = "",
+    plan_objectives: tuple[str, ...] = (),
     task_scope: str = "current_hunk",
     catalog: Any = None,
 ) -> str:
@@ -188,6 +189,14 @@ def build_reviewer_user_prompt(
             _text(task_knowledge.strip()),
             "  </knowledge_bundle>",
         ])
+    if plan_objectives:
+        parts.extend([
+            '  <review_plan role="review_focus_not_evidence">',
+            "    本 task 的 Plan 审查重点：",
+            *[f"    - {_text(objective)}" for objective in plan_objectives if objective.strip()],
+            "    这些重点用于安排检查顺序，不是问题成立的结论，也不能替代 patch 或工具事实。",
+            "  </review_plan>",
+        ])
     parts.extend([
         "",
         "  <context_guide> 下面是对你可能收到的各种上下文的简要说明，帮助你正确理解和加权:",
@@ -202,11 +211,6 @@ def build_reviewer_user_prompt(
         "      scope=\"current_hunk\" 时只包含单个连续变更块，不保证涵盖文件的全部 PR 变更；"
         "      scope=\"current_file\" 时包含该文件在本次 PR 中的全部变更块，"
         "      但仍不包含文件未变更的部分。",
-        "",
-        "  - <risk_prior role=\"routing_prior_not_evidence\">:",
-        "      每个 <risk_hypothesis> 是规则给出的有噪声审查先验，包含匹配可信度和审查优先级。",
-        "      它只能帮助安排检查顺序，不能限制审查范围，也不表示对应缺陷已经成立。",
-        "      你仍须用当前 task patch 和工具事实独立验证；未命中先验的真实问题也必须报告。",
         "",
         "  - <prefetched_context>: 工具预取的代码事实，帮你减少反复查工具。每个 <fact> 的属性含义:",
         "      kind:   事实类型——symbol_context(当前变更所属的稳定 symbol_id、声明、注解和局部控制流)",
@@ -223,8 +227,8 @@ def build_reviewer_user_prompt(
         "      不要假设它们的内容；但也不需要为「无法获取」而反复调用工具。",
         "",
         "  - <knowledge_bundle role=\"methodology_not_repository_fact\">:",
-        "      它由当前审查员稳定的 BASE 方法论和按 task 线索选出的少量专项检查组成。专项主题可能来自风险先验、",
-        "      patch 文本或 symbol context；被选中只表示值得检查，不表示对应缺陷存在，也不限制你发现其他真实问题。",
+        "      它由当前审查员稳定的 BASE 方法论和 Plan 按 task 重点选出的少量专项检查组成。",
+        "      被选中只表示值得检查，不表示对应缺陷存在，也不限制你发现其他真实问题。",
         "      不能引用 knowledge_bundle 中的示例、风险名称或假设场景作为证据——所有证据必须来自 task patch 和工具事实。",
         "",
         "  </context_guide>",

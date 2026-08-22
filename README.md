@@ -40,7 +40,8 @@ GitHub pull_request Webhook
         |
         v
 Python Agent
-  PR 规模路由(small/medium/large) -> Diff 任务 -> 风险路由
+  PR 规模路由(small/medium/large) -> Diff 任务 -> Task 级 DirectGate
+  -> Full task PlanUnit -> Reviewer 分派 -> 工具/证据 -> Judge
   -> 三路发现者(并行) -> 归并 -> 证据验证(账本健康/图护栏/异常重放,零 LLM)
   -> 批量 EvidenceJudge 终审(evidence_mode=off 时跳过取证直接终审)
   LLM 调用经 LLM Proxy 或直连提供商
@@ -51,11 +52,11 @@ GitHub Check Run、Diff Annotation 和 PR 评论
 
 Python Agent 负责审查推理与编排。Java Gateway 拆为三个独立服务：LLM Proxy 负责多提供商路由和韧性策略（协议转发，不做语义判断），Tool Server 负责确定性代码事实采集和文件访问护栏，CI Webhook 负责 GitHub 事件接入和审查作业调度。
 
-发现阶段的 system prompt 只定义稳定的上下文语义和工具调用门槛；每个 task 的实际 patch、风险画像、预取事实、缺失状态及标签知识通过 user 消息动态注入。上下文已经回答候选所需事实时，发现者必须略过工具。单个发现者的并发 task 共享一次审查内的工具结果，但不会与另外两个发现者或下一次审查共享。
+Full task 先由 OCR 式 PlanUnit 并发生成审查计划：Plan 选择 ThreatModelAgent、BehaviorAgent、MaintainabilityAgent、具体审查目标和按 reviewer 划分的知识主题，不负责工具调用或最终裁决。三个发现者分别固定使用 inspect_security_path、inspect_change_impact、inspect_structure 等专属工具；这些工具用于发现当前 diff 表面看不到的跨文件安全、行为和结构问题。LARGE 模式同文件 hunk 复用一次文件级 Plan。DirectGate 只由确定性 task 规则决定，低风险文档/注释 task 才走 Direct，其余进入 Full。
 
 配置工具服务后，每次审查会按精确 revision 异步构建完整、只读的 Java `ProjectSnapshot`，缓存全部源码、JavaParser AST、符号索引和 Spring 感知语义图。ContextProvider 只注入变更所属的稳定 `symbol_id`；三路发现者分别通过 `inspect_security_path`、`inspect_change_impact`、`inspect_structure` 查询有限局部子图，取证验证阶段复用同一快照。图谱明确区分 `confirmed/not_found/unknown`，并将 `MAIN/TEST/GENERATED` 来源贯穿节点、关系、coverage 和工具结果：生产状态只由非测试事实确定，测试关系作为独立上下文返回，不能单独证明生产可达或提高严重度。静态分析未知不会被解释为不可达。
 
-证据阶段采用 Evidence Ledger：工具调用、预取上下文与 task patch 由运行时代码捕获为内容寻址 Artifact（P01/Cxx/Txx 短编号），审查员只输出编号引用（`evidence_refs`），离开发现子图即绑定为内部稳定 ID——LLM 无法伪造、改写或重新填写证据。EvidenceVerifier 全部确定性、零 LLM、正常路径零重放：只做 Artifact 健康检查（patch 摘要一致、图响应 subject/scope/status 护栏、coverage partial 保留正事实）、guard 注解扫描（按发现者分工：threat_model 扫 @PreAuthorize 族、behavior 扫 @Transactional，确定性反证）与引用范围核对；仅异常 Artifact（失败/未知/revision 不一致/响应不可解析）进入重放队列，且受工具白名单约束。终审由批量 EvidenceJudge 承担：每批 ≤8 候选，一次完成支持/反驳/去留/定级，输出经确定性合同校验（keep 必须引用支持事实、引用 ID 必须可见、维护性候选不得 CRITICAL），违规重试/二分拆批，单候选最终失败 fail-closed 不输出。`evidence_mode=off` 时跳过取证，候选由 direct_judge 直接终审（无证据链消融基线档）。开启本地 HTML Trace 后，主流程会呈现 PR 规模统计、small/medium/large 路由、实际 task builder 和 Direct 降级路径；按模式未执行的阶段标记为”按设计跳过”。发现者的每次工具输入、输出、耗时、复用、证据编号绑定及失败也会作为独立工具步骤记录。
+证据阶段采用 Evidence Ledger：工具调用、预取上下文与 task patch 由运行时代码捕获为内容寻址 Artifact（P01/Cxx/Txx 短编号），审查员只输出编号引用（`evidence_refs`），离开发现子图即绑定为内部稳定 ID——LLM 无法伪造、改写或重新填写证据。EvidenceVerifier 全部确定性、零 LLM、正常路径零重放：只做 Artifact 健康检查（patch 摘要一致、图响应 subject/scope/status 护栏、coverage partial 保留正事实）、guard 注解扫描与引用范围核对；终审由批量 EvidenceJudge 承担。`evidence_mode=off` 时仍可作为无证据消融基线。开启本地 HTML Trace 后，主流程会呈现 PR 规模、task 路由、Plan、Reviewer、知识主题和工具步骤；按模式未执行的阶段标记为”按设计跳过”。
 
 ## 使用 Docker Compose 快速开始
 

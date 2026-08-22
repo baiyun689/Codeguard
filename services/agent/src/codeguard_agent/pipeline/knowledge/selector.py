@@ -269,13 +269,19 @@ def _render_bundle(
 def select_knowledge(
     *,
     reviewer: ReviewerKind,
-    task: ReviewTask,
-    prior: TaskRiskPrior,
-    context: TaskContextBundle | None,
     catalog: KnowledgeCatalog,
     budget: KnowledgeBudget,
+    requested_topics: tuple[str, ...] | None = None,
+    # 旧调用方兼容参数：新 Plan 路径不再传入这些值。
+    task: ReviewTask | None = None,
+    prior: TaskRiskPrior | None = None,
+    context: TaskContextBundle | None = None,
 ) -> KnowledgeBundle:
-    """为一个 (task, reviewer) 选择两层 Knowledge 包。"""
+    """为一个 reviewer 选择两层 Knowledge 包。
+
+    新路径由 Plan 显式提供 requested_topics；旧参数仅保留给历史消融和
+    外部调用方，默认不参与新图的知识选择。
+    """
     diagnostics: list[str] = []
 
     base_fragment = catalog.base_fragment(reviewer)
@@ -290,11 +296,49 @@ def select_knowledge(
         diagnostics.append(f"missing_base:{reviewer.value}")
 
     all_specialized = list(catalog.specialized_fragments(reviewer))
-    selected, omitted, select_diags = _select_specialized(
-        all_specialized, task, prior, context, budget,
-    )
+    selected: list[SelectedKnowledge]
+    omitted: tuple[str, ...]
+    select_diags: tuple[str, ...]
+    if requested_topics is not None:
+        by_topic = {fragment.topic: fragment for fragment in all_specialized}
+        selected = []
+        omitted_list: list[str] = []
+        seen: set[str] = set()
+        for topic in requested_topics:
+            if topic in seen:
+                continue
+            seen.add(topic)
+            fragment = by_topic.get(topic)
+            if fragment is None:
+                omitted_list.append(topic)
+                continue
+            if len(selected) >= budget.max_specialized_fragments:
+                omitted_list.append(topic)
+                continue
+            selected.append(
+                SelectedKnowledge(
+                    fragment=fragment,
+                    score=1.0,
+                    reasons=("selected by Plan",),
+                )
+            )
+        omitted = tuple(omitted_list)
+        select_diags = ("knowledge topics selected explicitly by Plan",) if selected else ()
+    else:
+        if task is None or prior is None:
+            selected, omitted, select_diags = [], (), ("no explicit Plan topics",)
+        else:
+            selected, omitted, select_diags = _select_specialized(
+                all_specialized, task, prior, context, budget,
+            )
     diagnostics.extend(select_diags)
 
     return _render_bundle(
-        base, selected, task.id, reviewer, budget, omitted, tuple(diagnostics),
+        base,
+        selected,
+        task.id if task is not None else "plan",
+        reviewer,
+        budget,
+        omitted,
+        tuple(diagnostics),
     )

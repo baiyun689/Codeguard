@@ -1324,7 +1324,8 @@ class TestPhaseMapping:
     def test_all_nodes_have_phase(self):
         expected = {
             "summary", "classify_mode", "direct_review", "file_task_builder",
-            "diff_task_builder", "risk_triage", "task_rank", "review_coverage",
+            "diff_task_builder", "task_route", "direct_task_review", "risk_triage",
+            "task_rank", "plan", "review_coverage",
             "context_provider",
             "discover_threat_model", "discover_behavior", "discover_maintainability",
             "discovery_collector", "council_coordinator",

@@ -32,8 +32,11 @@ _NODE_TITLES: dict[str, str] = {
     "file_task_builder": "文件级任务构建",
     "summary": "变更摘要",
     "diff_task_builder": "Hunk 级任务构建",
+    "task_route": "Task 路由",
+    "direct_task_review": "Direct Task 审查",
     "risk_triage": "风险分诊",
     "task_rank": "任务选择",
+    "plan": "审查计划",
     "review_coverage": "审查覆盖规划",
     "context_provider": "上下文构建",
     "discover_threat_model": "安全候选发现",
@@ -166,7 +169,7 @@ def _routing_view(events: Iterable[TraceEvent]) -> dict[str, Any]:
                 route.setdefault(
                     "selected_node",
                     {
-                        "small": "direct_review",
+                        "small": "file_task_builder",
                         "medium": "file_task_builder",
                         "large": "diff_task_builder",
                     }[mode],
@@ -594,8 +597,11 @@ def _is_visible_node_step(step: dict[str, Any]) -> bool:
         "direct_review",
         "file_task_builder",
         "diff_task_builder",
+        "task_route",
+        "direct_task_review",
         "risk_triage",
         "task_rank",
+        "plan",
         "review_coverage",
         "summary",
         "context_provider",
@@ -679,7 +685,7 @@ def _main_stages(
                 builder = "diff_task_builder"
         if builder in {"file_task_builder", "diff_task_builder"} and builder in by_name:
             stages.append(_main_stage(builder, _NODE_TITLES[builder], by_name[builder]))
-        for code_name in ("risk_triage", "task_rank", "review_coverage"):
+        for code_name in ("task_route", "direct_task_review", "risk_triage", "task_rank", "plan", "review_coverage"):
             if code_name in by_name:
                 stages.append(_main_stage(
                     code_name,
@@ -731,6 +737,9 @@ def _main_stages(
         "委员会裁决",
         by_name.get("council_judge"),
     )
+    if "discovery_collector" in by_name and "council_judge" not in by_name:
+        judge_stage["status"] = "skipped"
+        judge_stage["summary"] = "discovery_only：发现阶段结束，不执行裁决"
     decision_summary = decision_summary or {}
     judge_summary = decision_summary.get("judge") or {}
     if judge_summary.get("candidate_count"):
@@ -1021,8 +1030,24 @@ def _missing_main_steps(
         and routing.get("outcome") == "completed"
     )
     discovery_only = "discovery_collector" in present
-    expected: tuple[str, ...] = (
-        (
+    has_task_plan_flow = any(
+        name in present for name in ("task_route", "direct_task_review", "plan")
+    )
+    if has_task_plan_flow:
+        expected: tuple[str, ...] = (
+            "task_route",
+            "direct_task_review",
+            "risk_triage",
+            "task_rank",
+            "plan",
+            "review_coverage",
+            "summary",
+            "context_provider",
+            "council_judge",
+        )
+    elif "classify_mode" in present:
+        expected = (
+            *(("direct_review",) if routing.get("initial_mode") == "small" else ()),
             "risk_triage",
             "task_rank",
             "review_coverage",
@@ -1030,14 +1055,8 @@ def _missing_main_steps(
             "context_provider",
             "council_judge",
         )
-        if small_complete
-        else ("summary", "context_provider", "council_judge")
-    )
-    if (
-        routing.get("initial_mode") == "small"
-        and "direct_review" not in present
-    ):
-        expected = ("direct_review", *expected)
+    else:
+        expected = ("summary", "context_provider", "council_judge")
     for index, code_name in enumerate(expected, start=1):
         if code_name in present:
             continue

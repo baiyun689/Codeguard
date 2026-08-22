@@ -10,14 +10,14 @@
 
 Codeguard 是一个 **AI 代码审查引擎**,以 Agent 为最终核心,双语言架构(Python Agent + Java Gateway)。它的输入是代码变更(git diff),输出是结构化的审查问题(`Issue` 列表),覆盖安全、逻辑、质量等维度。
 
-默认审查使用证据驱动的多 Agent ReviewCouncil、风险任务链、task-scoped reviewer、风险感知上下文/知识注入，以及策略驱动的证据规划与裁决链。双语言边界保持不变:Python 智能层 + Java 护栏层。默认审查路径为:
+默认审查使用证据驱动的多 Agent ReviewCouncil、task 级 DirectGate、OCR 式 PlanUnit、task-scoped reviewer、按需知识注入，以及策略驱动的证据规划与裁决链。双语言边界保持不变:Python 智能层 + Java 护栏层。默认审查路径为:
 
 ```
-git diff → PRModeClassifier
-         ├─ SMALL  → WholeDiffDirectReview → ReviewResult
-         └─ MEDIUM/LARGE
-              → FileTaskBuilder/HunkTaskBuilder → RiskTriage → TaskRank → ReviewCoverage
-              → [Summary] → ContextProvider → task-scoped Discover × 3
+git diff → PRModeClassifier → FileTaskBuilder/HunkTaskBuilder
+         → TaskRoute(DirectGate)
+         ├─ direct task → DirectTaskReview
+         └─ full task → RiskTriage → TaskRank → PlanUnit(按文件复用)
+              → ReviewCoverage → [Summary] → ContextProvider → task-scoped Discover
               → CouncilCoordinator → EvidenceVerifier(账本验证,零 LLM)
               → CouncilJudge(批量 EvidenceJudge)→ ReviewResult
 ```
@@ -31,12 +31,11 @@ ReviewCouncil 发现者由 `ThreatModelAgent` / `BehaviorAgent` / `Maintainabili
 
 证据采用 **Evidence Ledger**（取代 ADR-046 的 evidence_chain 重放验证与更早的多阶段 Concern/Strategist/Researcher/ImpactAssessor，后者已废弃勿恢复）：patch（P01）、预取上下文（Cxx）、真实工具结果（Txx）由运行时代码捕获为内容寻址 Artifact，审查员只输出短编号引用（`evidence_refs`），不生产任何证据文本。EvidenceVerifier 全部确定性、零 LLM、正常路径零重放——Artifact 健康检查（patch 摘要一致、图响应 subject/scope/status/coverage 护栏）、guard 注解扫描（按发现者分工：@PreAuthorize 族/@Transactional 确定性反证）、引用范围核对；仅异常 Artifact 进入重放队列且受工具白名单约束。CouncilJudge 用批量 EvidenceJudge（每批 ≤8 候选）一次完成支持/反驳/去留/定级，输出经确定性合同校验（keep 必须引用支持事实、ID 必须可见、维护性候选不得 CRITICAL、LOCATION 不能单独支持），违规重试/二分拆批，单候选最终失败 fail-closed 不输出。旧 Supervisor 图迁移到 `services/agent/legacy/supervisor_graph/`,仅作历史参考,不作为默认路径、feature flag 或 eval profile 回退。
 
-风险路由包含 24 个具体 `RiskTag` + `GENERAL_REVIEW`，风险规则只消费
+风险规则仍包含 24 个具体 `RiskTag` + `GENERAL_REVIEW`，但 RiskTag 不再决定 Reviewer、Direct/ReAct 或知识注入；它暂时只作为任务排序兼容信息。知识注入由 Full task 的 Plan 按 reviewer 选择专项主题，失败时只注入 BASE。风险规则只消费
 path/diff-text 变化方向；普通 diff 默认全选 task，100/10 配置只作为超大 diff 的更严格上限。
 风险规则直接生成 `TaskRiskPrior`，再由 `ReviewCoveragePlanner` 组合基础覆盖、风险增强
 和 ReAct assignment 预算；Risk 只能增加/升级 Reviewer，不能排除基础覆盖。内部 State 保存
-`risk_priors` 和 `review_coverage_plan`，不增加产品输出字段。task RiskTag 只消费于审查员分派与知识注入，不进入裁决或定级；候选证据画像由运行时捕获的 Artifact 与引用验证结果派生。知识注入固定包含
-reviewer BASE 方法论，并由 risk prior、patch 与 symbol context 共同选择有预算上限的专项主题。
+`risk_priors` 和 `review_coverage_plan`，不增加产品输出字段；候选证据画像由运行时捕获的 Artifact 与引用验证结果派生。
 
 ---
 
@@ -56,19 +55,19 @@ reviewer BASE 方法论，并由 risk prior、patch 与 symbol context 共同选
 Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执行方式按是否配置工具服务分流:
 
 ```
-默认(无工具):git diff → 任务/风险/覆盖计划/上下文 → 三路直连发现者 → 证据账本验证 → 批量 Judge → 打印
+默认(无工具):git diff → task 构建/DirectGate → Plan → Reviewer 直连 → 证据账本验证 → 批量 Judge → 打印
 默认(有工具):配置 CODEGUARD_TOOL_SERVER_URL 后,Tool Server 按 revision 构建完整 Java ProjectSnapshot；
-              ContextProvider 注入 symbol_context，三路发现者分别使用 inspect_security_path /
-              inspect_change_impact / inspect_structure，工具结果由运行时捕获为 Txx Artifact 进账
+              Full task 经 Plan 选择 Reviewer，ContextProvider 注入 symbol_context，三路发现者分别使用
+              inspect_security_path / inspect_change_impact / inspect_structure，工具结果由运行时捕获为 Txx Artifact 进账
 ```
 
 默认节点:
 
 - **Summary 阶段(可选)**:在 TaskRank 后对选中任务范围产出变更摘要,作为 ContextBundle 和 ReviewCouncil 的共享背景。由 `CODEGUARD_ENABLE_SUMMARY` 控制(默认开)。摘要模块通过显式输入/输出函数与 LangGraph 交互,不再依赖可变的共享 `PipelineContext`。
-- **PR 规模路由**:`PRModeClassifier` 在 task 构建前只按 diff 体量选择执行形态：小型 PR 整体直审且正常成功时不运行 Risk/证据链；中型 PR 按文件建 task；大型 PR 按 hunk 建 task。Risk 不参与规模判定。小型直审异常或缺少结构化输出时安全回退到文件级完整管线，不能把调用失败伪装成“零问题”。`review_route` 以结构化 State patch 记录初始/生效模式、规模指标、实际分支和降级原因；HTML Trace 将未进入的阶段显示为按设计跳过。
+- **PR 规模与 Task 路由**:`PRModeClassifier` 只按 diff 体量选择 task 粒度：SMALL 整个 diff 一个 task，MEDIUM 按文件建 task，LARGE 按 hunk 建 task。TaskBuilder 之后由确定性 DirectGate 逐 task 决定 direct/full；低风险文档/注释任务走 Direct，其余默认 Full。SMALL 不再绕过统一管线。LARGE 同一文件的 Full hunk 共享一个 PlanUnit，Plan 只调用一次；HTML Trace 展示 TaskRoute、DirectTaskReview 和 Plan。
 - **ContextProvider**:在 ReviewCouncil 前构造轻量 `ContextBundle`,只产出事实、来源与截断标记,不判断"是不是问题"。
-- **大 diff 降级**:仅在超过 5000 行时，Python 确定性收紧为最多 20 个任务、每文件 3 个、每任务上下文 2000 字符；普通 diff 全选 task，并只让风险排序前 `CODEGUARD_MAX_REACT_TASKS`（默认 20）个合格 task 使用 ReAct，其余 Direct。Summary/AST/发现者在大 diff 时只看选中范围，结果摘要披露部分覆盖。Java 不重复判断。
-- **ReviewCouncilSubgraph**:三个 task-scoped 发现者 fan-out 产出 raw `CandidateIssue`;system prompt 定义稳定的上下文语义与工具门槛，user prompt 动态携带本 task 的 patch、风险画像、预取事实、缺失/失败状态和 BASE+专项 knowledge bundle。`CouncilCoordinator` 在显式 fan-in 后构建局部候选块并保守归并。
+- **大 diff 降级**:仅在超过 5000 行时，Python 确定性收紧为最多 20 个任务、每文件 3 个、每任务上下文 2000 字符；普通 diff 全选 Full task。Plan 不引入新的总 Token 预算，成本由 task 粒度、同文件 Plan 复用、并发限制、超时和现有重试控制。Java 不重复判断。
+- **Plan 与 ReviewCouncilSubgraph**:Full task 按 PlanUnit 并发执行结构化 Plan；Plan 显式选择 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent`、审查重点和知识主题，不选择工具。三个 task-scoped 发现者 fan-out 产出 raw `CandidateIssue`;Reviewer 固定持有 `inspect_security_path` / `inspect_change_impact` / `inspect_structure`，这些专属工具负责发现隐藏的跨文件安全、行为和结构问题。user prompt 携带 Plan 重点、预取事实和 Plan 选中的 BASE+专项 knowledge bundle。`CouncilCoordinator` 在显式 fan-in 后构建局部候选块并保守归并。
 - **发现者工具协调**:`pipeline/discovery_tools.py` 在单次 review 的单个 reviewer node 内按规范化工具参数执行 single-flight/cache；不同 task 首次复用完整结果，同一 ReAct 对话重复调用只返回短标记，最终 gathered context 也按相同 canonical key 去重，三个发现者之间及跨 review 不共享。只有未被大 diff 策略截断的完整新增文件 patch 才可代替 `get_file_content`。
 - **EvidenceVerifier(证据账本验证,零 LLM)**:审查员只从运行时捕获的 `<evidence_catalog>` 里选编号(`evidence_refs` 最多 3 条，patch=P01 自动绑定)，离开发现子图即绑定为内容寻址 artifact ID——LLM 无法伪造、改写或重新填写证据。Verifier 只证明 Artifact 真实、可用、属于候选范围：patch 摘要一致、图响应 subject/scope/status/coverage 护栏（`MAIN/TEST/GENERATED` 分类，生产查询不消费 TEST 关系，测试事实不能证明生产可达/影响/severity）、guard 注解扫描确定性反证、引用范围核对；仅异常 Artifact 进入重放队列且受 `enabled_evidence_tools` 白名单约束，重放失败只产生限制、不作反证。
 - **CouncilJudge(批量证据裁决)**:每批 ≤8 候选、最多 4 批并行，一次完成支持/反驳/去留/定级。Patch 可以证明局部代码机制，但不能自动证明跨文件调用、生产可达性或外部契约；定位事实（LOCATION）不能单独证明缺陷成立；未找到保护不等于证明保护不存在。输出经确定性合同校验（keep 必须引用 ≥1 支持事实、引用 ID 必须属于候选可见范围、supporting/counter 不得重叠、维护性候选不得 CRITICAL），违规重试/二分拆批，单候选最终失败 fail-closed 不输出。Judge 不补证、不按标签直定级，也不接受 LLM 直接选择危险等级。
@@ -110,11 +109,12 @@ Codeguard/
     │   │   ├── pipeline/risk/             # ★任务拆分、风险规则、路由与排序
     │   │   ├── pipeline/context/          # ★图谱符号上下文与事实预算
     │   │   ├── pipeline/reviewers/        # ★三路发现者、工具协调与 prompt 构造
+    │   │   ├── pipeline/planning.py       # ★OCR 式 PlanUnit、Reviewer 与知识主题规划
     │   │   ├── pipeline/evidence/         # ★证据账本:注册/绑定/目录渲染、健康检查/图护栏/异常重放、guard 扫描
     │   │   ├── pipeline/council/          # ★候选归并、裁决与过程指标
     │   │   ├── pipeline/summary/          # 可选变更摘要阶段
     │   │   ├── pipeline/engines.py        # ★审查员执行引擎:DirectEngine(直连基准)/ ToolAgentEngine(ReAct)
-    │   │   └── prompts/                   # 三路发现、证据、裁决、摘要与 RiskTag 知识
+    │   │   └── prompts/                   # Plan、三路发现、证据、裁决、摘要与知识主题
     │   ├── legacy/                # 不打包、不参与默认 pytest 的历史实现
     │   │   ├── supervisor_graph/  # 旧 Supervisor 图
     │   │   ├── runtime_archive/   # 旧 stages/prompts/fp rules
@@ -147,8 +147,9 @@ Codeguard/
 4. **`llm/client.py:build_llm`** 按 provider 造 LangChain Chat 模型;`provider=mock` 返回 `None`。
 5. **工具会话(可选)**:配置 `CODEGUARD_TOOL_SERVER_URL` 且非 mock 时,CLI 为本次 diff 创建 Java 工具会话;否则走无工具直连基准。
 6. **`pipeline/orchestrator.py:PipelineOrchestrator.run`** 是审查唯一门面,内部构建 `pipeline/graph.py` 的 ADR-032 LangGraph:
-   - `PRModeClassifier` 先按规模选择整体直审、file task 或 hunk task；小型 PR 在整体直审后结束。
-   - 中/大型 PR 进入 `RiskTriage → TaskRank → ReviewCoverage`，直接生成风险先验、按预算选择任务并生成 Reviewer 覆盖计划。
+   - `PRModeClassifier` 先按规模选择 whole-diff、file task 或 hunk task；所有规模都进入统一 task 管线。
+   - TaskBuilder 后执行确定性 `TaskRoute(DirectGate)`；Direct task 独立直审，Full task 进入 `RiskTriage → TaskRank → Plan → ReviewCoverage`。
+   - `Plan` 按 PlanUnit 并发生成 Reviewer、审查重点和知识主题；LARGE 模式同文件 hunk 复用文件级 Plan。
    - `[Summary]` 对 TaskRank 选中范围产出可选变更摘要。
    - `ContextProvider` 构造只读 `ContextBundle`。
    - `ReviewCouncil` 并行运行 task-scoped 发现者 Agent；没有匹配任务的 reviewer 记录 `no_tasks_routed`。

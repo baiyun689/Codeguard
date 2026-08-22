@@ -71,6 +71,7 @@ class AssignmentReason(str, Enum):
     RISK_UPGRADED = "risk_upgraded"
     EXECUTION_OVERRIDE = "execution_override"
     AMBIGUITY_FALLBACK = "ambiguity_fallback"
+    PLAN_SELECTED = "plan_selected"
 
 
 class RiskHypothesis(BaseModel):
@@ -101,6 +102,40 @@ class ReviewerAssignment(BaseModel):
 class TaskReviewPlan(BaseModel):
     task_id: str
     assignments: tuple[ReviewerAssignment, ...] = ()
+
+
+class ReviewerPlan(BaseModel):
+    """Plan 为单个 Reviewer 生成的审查目标和知识主题选择。"""
+
+    reviewer: ReviewerKind
+    objectives: tuple[str, ...] = ()
+    knowledge_topics: tuple[str, ...] = ()
+
+
+class TaskAgentPlan(BaseModel):
+    """一个 PlanUnit 的 LLM 审查计划。"""
+
+    plan_unit_id: str
+    reviewers: tuple[ReviewerKind, ...] = ()
+    reviewer_plans: tuple[ReviewerPlan, ...] = ()
+    fallback: bool = False
+    fallback_reason: str = ""
+
+
+class TaskRoute(BaseModel):
+    """Task 级 Direct/Full 确定性路由。"""
+
+    task_id: str
+    route: Literal["direct", "full"]
+    reason: str = ""
+
+
+class PlanUnit(BaseModel):
+    """一次 Plan 调用覆盖的任务集合；large 模式按文件复用。"""
+
+    id: str
+    file: str
+    task_ids: tuple[str, ...] = ()
 
 
 class ReviewCoveragePlan(BaseModel):

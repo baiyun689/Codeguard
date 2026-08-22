@@ -142,7 +142,7 @@ class KnowledgeCatalog:
     def specialized_fragments(
         self, reviewer: ReviewerKind,
     ) -> Sequence[KnowledgeFragment]:
-        """返回 reviewer 目录下所有非 BASE 的专门 fragment，按 RiskTag 稳定排序。"""
+        """返回 reviewer 目录下所有非 BASE 的专门 fragment，按 topic 稳定排序。"""
         domain_dir = self._root / reviewer.value
         if not domain_dir.is_dir():
             return ()
