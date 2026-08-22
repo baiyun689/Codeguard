@@ -1240,7 +1240,7 @@ class TestPhaseMapping:
             "context_provider",
             "discover_threat_model", "discover_behavior", "discover_maintainability",
             "discovery_collector", "council_coordinator",
-            "evidence_verifier", "direct_judge", "council_judge",
+            "evidence_verifier", "direct_judge", "council_judge", "causal_merge",
             "prepare", "review", "collect",
         }
         assert set(_NODE_PHASE_MAP.keys()) == expected

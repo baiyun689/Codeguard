@@ -106,9 +106,9 @@ def main(argv: list[str] | None = None) -> int:
         llm = build_llm(settings)
         logger.info(
             "审查方式:ADR-032/038 ReviewCouncil(summary → task/risk/context → "
-            "discover×3 → coordinator → evidence_verifier → council_judge)"
+            "discover×3 → coordinator → evidence_verifier → council_judge → causal_merge)"
         )
-        # 裁决模型(优先异源+低温,供 council_judge 去重与终审使用;误报验证也复用)。
+        # 裁决模型(优先异源+低温,供 EvidenceJudge 与 causal_merge 使用;误报验证也复用)。
         # 只要配置了 CODEGUARD_JUDGE_* 就创建,不再仅依赖 fp_llm_verify 开关。
         fp_verify_llm = None
         try:

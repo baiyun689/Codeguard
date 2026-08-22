@@ -45,6 +45,7 @@ _NODE_TITLES: dict[str, str] = {
     "council_coordinator": "委员会协调",
     "evidence_verifier": "证据验证",
     "council_judge": "委员会裁决",
+    "causal_merge": "因果语义合并",
     "direct_judge": "直接裁决",
 }
 _COORDINATION_NODES = {
@@ -52,6 +53,7 @@ _COORDINATION_NODES = {
     "evidence_verifier",
     "direct_judge",
     "council_judge",
+    "causal_merge",
 }
 
 

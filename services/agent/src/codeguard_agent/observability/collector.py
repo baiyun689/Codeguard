@@ -41,6 +41,7 @@ _NODE_PHASE_MAP: dict[str, str] = {
     "evidence_verifier": "evidence",
     "direct_judge": "judge",
     "council_judge": "judge",
+    "causal_merge": "judge",
     "prepare": "reviewer_subgraph",
     "review": "reviewer_subgraph",
     "collect": "reviewer_subgraph",

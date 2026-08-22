@@ -21,6 +21,43 @@ MAX_CANDIDATES_PER_AGENT = 10
 NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
+class CausalProfile(BaseModel):
+    """LLM 从已裁决候选中提取的 Cause/Effect 画像。"""
+
+    candidate_id: str
+    defect_mechanism: str = "unknown"
+    location: list[str] = Field(default_factory=list)
+    trigger: str = "unknown"
+    runtime_consequence: str = "unknown"
+    affected_scope: str = "unknown"
+    observable_behavior: str = "unknown"
+    cause_evidence_ids: list[str] = Field(default_factory=list)
+    effect_evidence_ids: list[str] = Field(default_factory=list)
+
+
+class CausalComparison(BaseModel):
+    """两个候选的 Cause/Effect 语义比较结果。"""
+
+    left_candidate_id: str
+    right_candidate_id: str
+    same_cause: bool | None = None
+    same_effect: bool | None = None
+
+
+class CausalAnalysisBatch(BaseModel):
+    """一次 Cause/Effect 分析批次的结构化输出。"""
+
+    profiles: list[CausalProfile] = Field(default_factory=list)
+    comparisons: list[CausalComparison] = Field(default_factory=list)
+
+
+class CausalMergeGroup(BaseModel):
+    """由确定性代码根据 pairwise duplicate 关系生成的合并组。"""
+
+    id: str
+    member_ids: tuple[str, ...]
+
+
 # ── CouncilJudge 裁决模型 ──
 
 

@@ -19,6 +19,9 @@ from codeguard_agent.models.council import (
     CandidateIssue,
     ContextBundle,
     ContextFact,
+    CausalComparison,
+    CausalMergeGroup,
+    CausalProfile,
     CouncilRunStats,
     CouncilTrace,
     MAX_CANDIDATES_PER_AGENT,
@@ -43,7 +46,6 @@ from codeguard_agent.pipeline.risk import task_prep
 from codeguard_agent.pipeline.council.dedup import (
     CandidateGroup,
     CandidateDedupStats,
-    deduplicate_candidates,
 )
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.risk.discovery import (
@@ -94,7 +96,7 @@ _ALL_REVIEWER_NAMES = [r.source_agent for r in DEFAULT_REVIEWERS]
 def collect_candidate_reducer(existing: list | None, new: list | None) -> list:
     """`raw_candidate_issues` reducer: 仅按 candidate.id 去重，保留首次出现的 payload。
 
-    语义去重在 CouncilCoordinator 中显式执行（见 candidate_dedup 模块）。
+    语义合并在 EvidenceJudge 之后的 causal_merge 节点中执行。
     """
     merged = list(existing or []) + list(new or [])
     seen: set[str] = set()
@@ -151,6 +153,11 @@ class ReviewState(TypedDict, total=False):
     candidate_verifications: dict[str, Any]
     evidence_artifacts: Annotated[dict[str, EvidenceArtifact], merge_evidence_artifacts]
     review_summaries: Annotated[list, operator.add]
+    judge_survivor_ids: list[str]
+    causal_profiles: dict[str, CausalProfile]
+    causal_comparisons: list[CausalComparison]
+    causal_merge_groups: list[CausalMergeGroup]
+    causal_merge_stats: dict[str, int]
 
     # --- Output: 对外 ReviewResult 的来源 ---
     final_issues: list
@@ -1181,122 +1188,34 @@ def _discovery_collector_node():
 
 
 def _coordinator_node(effective_judge_llm):
-    """三路发现者的显式 fan-in barrier：候选语义归并。
+    """三路发现者的显式 fan-in barrier：只做候选规范化，不做语义合并。
 
     1. 读 raw_candidate_issues
-    2. 调用 deduplicate_candidates 做语义归并
-    3. 产出 candidate_issues（唯一写入者）、candidate_dedup_stats、council_trace
+    2. 按 candidate.id 做确定性去重并保留稳定顺序
+    3. 产出 candidate_issues（唯一写入者）和 council_trace
     """
 
     def _node(state: ReviewState) -> dict:
         raw = list(state.get("raw_candidate_issues") or [])
-        tasks = state.get("review_tasks") or []
-        structured_method = state.get("structured_method", "function_calling")
-
-        trace: list[CouncilTrace] = []
-        scope = _scope_plan(state)
-        scoped_tasks = []
-        for task in tasks:
-            scoped_patch = scope.scoped_patch(task.patch)
-            scoped_tasks.append(
-                task.model_copy(
-                    update={
-                        "patch": scoped_patch,
-                        "patch_complete": (
-                            task.patch_complete and scoped_patch == task.patch
-                        ),
-                    }
-                )
-            )
-        tasks_by_id = {task.id: task for task in scoped_tasks}
-
-        result = deduplicate_candidates(
-            raw,
-            tasks_by_id=tasks_by_id,
-            llm=effective_judge_llm,
-            structured_method=structured_method,
-        )
-
-        trace.append(
+        candidates = collect_candidate_reducer([], raw)
+        trace = [
             CouncilTrace(
                 node="council_coordinator",
-                event="candidate_dedup_blocks_built",
-                detail=(
-                    f"raw={result.raw_candidate_count} "
-                    f"singleton={result.block_count - result.multi_member_block_count} "
-                    f"multi={result.multi_member_block_count}"
-                ),
+                event="candidate_fan_in",
+                detail=f"raw={len(raw)} unique={len(candidates)} semantic_merge=deferred",
             )
-        )
-        trace.append(
-            CouncilTrace(
-                node="council_coordinator",
-                event="candidate_dedup_completed",
-                detail=(
-                    f"raw={result.raw_candidate_count} "
-                    f"logical={result.logical_candidate_count} "
-                    f"grouped={result.grouped_member_count} "
-                    f"blocks={result.block_count} multi={result.multi_member_block_count} "
-                    f"llm_calls={result.llm_call_count} "
-                    f"accepted_groups={len(result.accepted_groups)} "
-                    f"rejected_groups={len(result.rejected_groups)} "
-                    f"block_failures={len(result.block_failures)}"
-                ),
-            )
-        )
-
-        for group in result.accepted_groups:
-            trace.append(
-                CouncilTrace(
-                    node="council_coordinator",
-                    event="candidate_dedup_group_accepted",
-                    detail=(
-                        f"group={group.id} members={list(group.member_ids)} "
-                        f"severity={group.severity_proposal.value} "
-                        f"confidence={group.confidence:.2f} "
-                        f"root_cause={group.shared_root_cause} "
-                        f"behavior={group.shared_behavior} fix={group.shared_fix}"
-                    ),
-                )
-            )
-        for rejected in result.rejected_groups:
-            trace.append(
-                CouncilTrace(
-                    node="council_coordinator",
-                    event="candidate_dedup_group_rejected",
-                    detail=f"members={list(rejected.member_ids)} reason={rejected.reason}",
-                )
-            )
-        for block_failure in result.block_failures:
-            trace.append(
-                CouncilTrace(
-                    node="council_coordinator",
-                    event="candidate_dedup_block_failed",
-                    detail=(
-                        f"block={block_failure.block_id} "
-                        f"reason={block_failure.reason}"
-                    ),
-                )
-            )
-
-        trace.append(
-            CouncilTrace(
-                node="council_coordinator",
-                event="fan_in",
-                detail=f"candidates={len(result.candidates)}",
-            )
-        )
+        ]
 
         return {
-            "candidate_issues": list(result.candidates),
-            "candidate_groups": list(result.accepted_groups),
+            "candidate_issues": list(candidates),
+            "candidate_groups": [],
             "candidate_dedup_stats": {
-                "raw_candidate_count": result.raw_candidate_count,
-                "logical_candidate_count": result.logical_candidate_count,
-                "grouped_member_count": result.grouped_member_count,
+                "raw_candidate_count": len(raw),
+                "logical_candidate_count": len(candidates),
+                "grouped_member_count": 0,
                 "removed_count": 0,
-                "llm_call_count": result.llm_call_count,
-                "block_failure_count": len(result.block_failures),
+                "llm_call_count": 0,
+                "block_failure_count": 0,
             },
             "council_trace": trace,
         }
@@ -1341,7 +1260,7 @@ def _evidence_verifier_node(tool_client=None, judge_llm=None):
 
 
 def _council_judge_node(judge_llm=None):
-    """裁决节点:验证淘汰 → 批量 EvidenceJudge → 组内合并(Evidence Ledger)。"""
+    """裁决节点:验证淘汰 → 批量 EvidenceJudge，暂不做语义合并。"""
 
     def _node(state: ReviewState) -> dict:
         from codeguard_agent.pipeline.council.metrics import compute_council_run_stats
@@ -1355,7 +1274,7 @@ def _council_judge_node(judge_llm=None):
             judge_llm=judge_llm,
             structured_method=state.get("structured_method", "function_calling"),
             max_retries=state.get("max_retries", 2),
-            candidate_groups=state.get("candidate_groups") or [],
+            candidate_groups=(),
         )
         judge_trace = [
             CouncilTrace(node="council_judge", event=event, detail=detail)
@@ -1380,9 +1299,50 @@ def _council_judge_node(judge_llm=None):
                 summaries.insert(0, notice)
         return {
             "final_issues": batch.final_issues,
+            "judge_survivor_ids": list(batch.final_candidate_ids),
             "council_stats": stats,
             "summary": "  ".join(summaries),
             "council_trace": judge_trace,
+        }
+
+    return _node
+
+
+def _causal_merge_node(judge_llm=None):
+    """对 EvidenceJudge survivors 做 Cause/Effect 语义分析和保守合并。"""
+
+    def _node(state: ReviewState) -> dict:
+        from codeguard_agent.pipeline.council.causal_merge import merge_survivors
+
+        result = merge_survivors(
+            state.get("candidate_issues") or [],
+            state.get("judge_survivor_ids") or [],
+            state.get("final_issues") or [],
+            state.get("candidate_verifications") or {},
+            llm=judge_llm,
+            structured_method=state.get("structured_method", "function_calling"),
+        )
+        trace = [
+            CouncilTrace(node="causal_merge", event=event, detail=detail)
+            for event, detail in result.trace
+        ]
+        trace.append(
+            CouncilTrace(
+                node="causal_merge",
+                event="completed",
+                detail=(
+                    f"profiles={len(result.profiles)} comparisons={len(result.comparisons)} "
+                    f"groups={len(result.groups)} final_issues={len(result.final_issues)}"
+                ),
+            )
+        )
+        return {
+            "final_issues": result.final_issues,
+            "causal_profiles": result.profiles,
+            "causal_comparisons": result.comparisons,
+            "causal_merge_groups": result.groups,
+            "causal_merge_stats": result.stats,
+            "council_trace": trace,
         }
 
     return _node
@@ -1401,7 +1361,7 @@ def _direct_judge_node(judge_llm=None):
             judge_llm=judge_llm,
             structured_method=state.get("structured_method", "function_calling"),
             max_retries=state.get("max_retries", 2),
-            candidate_groups=state.get("candidate_groups") or [],
+            candidate_groups=(),
         )
         judge_trace = [
             CouncilTrace(node="direct_judge", event=event, detail=detail)
@@ -1460,7 +1420,7 @@ def build_review_graph(
                        → context_provider → discover_*(×3)
                        → council_coordinator(fan-in)
                          ├─ evidence_mode=full → evidence_verifier
-                         │    → council_judge → END
+                         │    → council_judge → causal_merge → END
                          └─ evidence_mode=off  → direct_judge → END
                            (无证据链消融基线:跳过取证/门控,DirectJudge 直接终审)
 
@@ -1512,6 +1472,10 @@ def build_review_graph(
         g.add_node(
             "council_judge",
             _council_judge_node(judge_llm=effective_judge_llm),
+        )
+        g.add_node(
+            "causal_merge",
+            _causal_merge_node(judge_llm=effective_judge_llm),
         )
 
     # ── 边：START → classify_mode（不预建 task）──
@@ -1571,6 +1535,7 @@ def build_review_graph(
         else:
             g.add_edge("council_coordinator", "evidence_verifier")
             g.add_edge("evidence_verifier", "council_judge")
-            g.add_edge("council_judge", END)
+            g.add_edge("council_judge", "causal_merge")
+            g.add_edge("causal_merge", END)
 
     return g.compile(checkpointer=checkpointer)

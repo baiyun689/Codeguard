@@ -1020,10 +1020,11 @@ def test_coordinator_edges_through_agentic_evidence_chain():
     graph = G.build_review_graph(enable_summary=False, llm=None)
     edges = graph.get_graph().edges
     pairs = {(e.source, e.target) for e in edges}
-    # coordinator → verifier → judge(ADR-046 两节点证据链)
+    # coordinator → verifier → judge → causal merge
     assert ("council_coordinator", "evidence_verifier") in pairs
     assert ("evidence_verifier", "council_judge") in pairs
-    assert ("council_judge", END) in pairs
+    assert ("council_judge", "causal_merge") in pairs
+    assert ("causal_merge", END) in pairs
     # 旧四阶段链已移除
     assert ("council_coordinator", "concern_analyzer") not in pairs
     assert ("evidence_researcher", "impact_assessor") not in pairs
@@ -1673,13 +1674,7 @@ class TestCandidateCollectReducer:
         assert G.collect_candidate_reducer([first], [second]) == [first, second]
 
 
-def test_coordinator_dedup_and_emits_trace(monkeypatch):
-    from codeguard_agent.pipeline.council.dedup import (
-        CandidateGroup,
-        CandidateBlockFailure,
-        CandidateDedupResult,
-    )
-
+def test_coordinator_only_fans_in_candidates():
     first = _c("behavior", "1", "OrderService.java", 30, "ERROR_HANDLING")
     second = _c("threat_model", "2", "OrderService.java", 31, "错误处理")
     second = second.model_copy(update={"task_id": first.task_id})
@@ -1689,33 +1684,6 @@ def test_coordinator_dedup_and_emits_trace(monkeypatch):
         patch="+ riskyCall();",
         changed_lines=[30, 31],
     )
-    monkeypatch.setattr(
-        G,
-        "deduplicate_candidates",
-        lambda candidates, **kwargs: CandidateDedupResult(
-            candidates=(first, second),
-            raw_candidate_count=2,
-            block_count=1,
-            multi_member_block_count=1,
-            llm_call_count=1,
-            accepted_groups=(
-                CandidateGroup(
-                    id="candidate-group-test",
-                    members=(first, second),
-                    severity_proposal=first.severity_proposal,
-                    confidence=0.99,
-                    shared_root_cause="same defect",
-                    shared_behavior="same behavior",
-                    shared_fix="same fix",
-                ),
-            ),
-            rejected_groups=(),
-            block_failures=(
-                CandidateBlockFailure("block-1", "empty_response"),
-            ),
-        ),
-    )
-
     output = G._coordinator_node(object())(
         {
             "raw_candidate_issues": [first, second],
@@ -1727,27 +1695,20 @@ def test_coordinator_dedup_and_emits_trace(monkeypatch):
     )
 
     assert output["candidate_issues"] == [first, second]
-    assert output["candidate_groups"][0].members == (first, second)
+    assert output["candidate_groups"] == []
     assert output["candidate_dedup_stats"] == {
         "raw_candidate_count": 2,
-        "logical_candidate_count": 1,
-        "grouped_member_count": 1,
+            "logical_candidate_count": 2,
+        "grouped_member_count": 0,
         "removed_count": 0,
-        "llm_call_count": 1,
-        "block_failure_count": 1,
+        "llm_call_count": 0,
+        "block_failure_count": 0,
     }
     traces = {trace.event: trace.detail for trace in output["council_trace"]}
-    assert "singleton=0" in traces["candidate_dedup_blocks_built"]
-    assert f"members=['{first.id}', '{second.id}']" in traces["candidate_dedup_group_accepted"]
-    assert "root_cause=same defect" in traces["candidate_dedup_group_accepted"]
-    assert "reason=empty_response" in traces["candidate_dedup_block_failed"]
-    assert "logical=1" in traces["candidate_dedup_completed"]
-    assert "grouped=1" in traces["candidate_dedup_completed"]
+    assert "raw=2 unique=2 semantic_merge=deferred" == traces["candidate_fan_in"]
 
 
-def test_coordinator_scopes_large_diff_patch_before_dedup(monkeypatch):
-    from codeguard_agent.pipeline.council.dedup import CandidateDedupResult
-
+def test_coordinator_does_not_run_semantic_merge_on_large_diff():
     candidate = _c("behavior", "1", "OrderService.java", 30, "ERROR_HANDLING")
     original_patch = "+" + ("x" * 13_000)
     task = G.ReviewTask(
@@ -1757,24 +1718,7 @@ def test_coordinator_scopes_large_diff_patch_before_dedup(monkeypatch):
         patch_complete=True,
         changed_lines=[30],
     )
-    captured: dict[str, object] = {}
-
-    def dedup(candidates, **kwargs):
-        captured["dedup_task"] = kwargs["tasks_by_id"][candidate.task_id]
-        return CandidateDedupResult(
-            candidates=(candidate,),
-            raw_candidate_count=1,
-            block_count=1,
-            multi_member_block_count=0,
-            llm_call_count=0,
-            accepted_groups=(),
-            rejected_groups=(),
-            block_failures=(),
-        )
-
-    monkeypatch.setattr(G, "deduplicate_candidates", dedup)
-
-    G._coordinator_node(object())(
+    output = G._coordinator_node(object())(
         {
             "diff_text": "\n".join("+ changed" for _ in range(5001)),
             "raw_candidate_issues": [candidate],
@@ -1785,7 +1729,5 @@ def test_coordinator_scopes_large_diff_patch_before_dedup(monkeypatch):
         }
     )
 
-    scoped_task = captured["dedup_task"]
-    assert scoped_task.patch != original_patch
-    assert scoped_task.patch.endswith("...(大 diff 单任务 patch 已截断)")
-    assert scoped_task.patch_complete is False
+    assert output["candidate_issues"] == [candidate]
+    assert output["candidate_dedup_stats"]["llm_call_count"] == 0
