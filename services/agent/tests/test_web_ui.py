@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from subprocess import CompletedProcess
 
 import pytest
 
@@ -45,6 +46,27 @@ def test_latest_report_returns_newest_markdown(tmp_path: Path) -> None:
     new.touch()
 
     assert web_ui._latest_report(tmp_path) == str(new)
+
+
+def test_git_bases_returns_head_and_recent_commits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(
+        web_ui.subprocess,
+        "run",
+        lambda *args, **kwargs: CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout="abcdef123456\tabcdef1\tadd review fixture\n",
+            stderr="",
+        ),
+    )
+
+    assert web_ui._git_bases(tmp_path) == [
+        {"value": "HEAD", "label": "HEAD（当前工作树）"},
+        {"value": "abcdef123456", "label": "abcdef1 add review fixture"},
+    ]
 
 
 def test_parse_review_output_allows_report_message_after_json() -> None:
