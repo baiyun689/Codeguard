@@ -307,20 +307,19 @@ def test_evidence_and_judge_prompts_describe_wrapper_contracts() -> None:
             "candidate_id",
             "action",
             "severity",
-            "supporting_evidence_ids",
-            "counter_evidence_ids",
+            "evidence_ids",
             "reason",
         )
     )
     assert "不得请求工具" in judge
     assert "未找到保护不等于证明保护不存在" in judge
-    assert "keep 必须至少引用一个 supporting_evidence_id" in judge
+    assert "keep 必须至少引用一个" in judge
     assert "maintainability" in judge
     assert "location" in judge
 
     direct = _prompt("direct-judge.txt")
     assert "EvidenceJudgeAssessment" in direct
-    assert "supporting_evidence_ids / counter_evidence_ids" in direct
+    assert "evidence_ids" in direct
 
 
 def test_summary_prompt_names_structured_fields() -> None:
@@ -346,8 +345,7 @@ def test_judge_prompt_names_every_synthesis_field() -> None:
         "candidate_id",
         "action",
         "severity",
-        "supporting_evidence_ids",
-        "counter_evidence_ids",
+        "evidence_ids",
         "reason",
     }
     assert all(field in judge for field in fields)

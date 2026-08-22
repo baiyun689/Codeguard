@@ -149,46 +149,33 @@ def _validate_assessment(
 ) -> EvidenceJudgeAssessment | None:
     """单候选裁决合同校验;违约返回 None(该候选 fail-closed)。"""
     visible = set(fact_map.keys())  # 批内 F 编号
-    supporting = [fid for fid in item.supporting_evidence_ids]
-    counter = [fid for fid in item.counter_evidence_ids]
+    evidence_ids = list(item.evidence_ids)
+    unknown = [fid for fid in evidence_ids if fid not in visible]
+    if unknown:
+        violations.append(f"evidence_unknown_id:{','.join(unknown)}")
+        return None
     if item.action == "keep":
-        if not supporting:
-            violations.append("keep_without_supporting")
+        if not evidence_ids:
+            violations.append("keep_without_evidence")
             return None
         if item.severity is None:
             violations.append("keep_without_severity")
-            return None
-        if item.severity in {Severity.WARNING, Severity.CRITICAL} and not supporting:
-            violations.append("severity_without_supporting")
             return None
         if dossier.candidate.source_agent == "maintainability" and item.severity is Severity.CRITICAL:
             violations.append("maintainability_critical")
             return None
         # 修正⑤:LOCATION 只说明位置,不能单独满足 keep 的支持要求。
-        artifact_ids = [fact_map.get(fid, "") for fid in supporting]
+        artifact_ids = [fact_map[fid] for fid in evidence_ids]
         if artifact_ids and all(
             _role_of(artifact_id, dossier) is EvidenceRole.LOCATION
             for artifact_id in artifact_ids
         ):
-            violations.append("supporting_all_location")
+            violations.append("evidence_all_location")
             return None
     else:
         if item.severity is not None:
             violations.append("drop_with_severity")
             return None
-    if supporting:
-        unknown = [fid for fid in supporting if fid not in visible]
-        if unknown:
-            violations.append(f"supporting_unknown_id:{','.join(unknown)}")
-            return None
-    if counter:
-        unknown = [fid for fid in counter if fid not in visible]
-        if unknown:
-            violations.append(f"counter_unknown_id:{','.join(unknown)}")
-            return None
-    if set(supporting) & set(counter):
-        violations.append("supporting_counter_overlap")
-        return None
     return item
 
 
@@ -335,11 +322,7 @@ def _finalize_assessment(
         })
         return verdict, None
     if assessment.action == "drop":
-        reason_code = (
-            "no_supporting_evidence"
-            if not assessment.supporting_evidence_ids
-            else "synthesized_evidence_drop"
-        )
+        reason_code = "insufficient_evidence" if not assessment.evidence_ids else "judge_drop"
         verdict = Verdict(candidate.id, "drop", reason_code, assessment.reason)
         _trace(batch, event, {
             "candidate_id": candidate.id, "action": "drop",
@@ -349,14 +332,14 @@ def _finalize_assessment(
     verdict = Verdict(
         candidate.id, "keep", verdict_reason, assessment.reason,
         resolved_severity=assessment.severity,
-        supported=bool(assessment.supporting_evidence_ids),
+        supported=bool(assessment.evidence_ids),
     )
     issue = candidate.to_issue().model_copy(update={"severity": assessment.severity})
     _trace(batch, event, {
         "candidate_id": candidate.id, "action": "keep",
         "reason_code": verdict_reason,
         "resolved_severity": assessment.severity.value if assessment.severity else None,
-        "supporting_evidence_ids": list(assessment.supporting_evidence_ids),
+        "evidence_ids": list(assessment.evidence_ids),
     })
     return verdict, issue
 

@@ -9,7 +9,7 @@
   - CRITICAL = 完整危害在变更内即可自证、可直接利用(注入/鉴权绕过/反序列化/硬编码密钥)→ 建议阻断合并
   - WARNING = 风险成立但完整危害依赖变更之外的条件(SSRF/XXE/弱加密/敏感日志)
   - INFO = 无明确攻击路径的加固建议
-- supporting_evidence_ids / counter_evidence_ids: 本档无证据输入,恒为空
+- evidence_ids: 本档无证据输入,恒为空
 - reason: 裁决理由,引用 patch 中的具体代码
 
 纪律:

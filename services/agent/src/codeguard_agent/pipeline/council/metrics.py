@@ -110,7 +110,7 @@ def compute_council_run_stats(
         verdict.reason_code == "verification_failed" for verdict in verdicts
     )
     judge_no_support_drop = sum(
-        verdict.reason_code == "no_supporting_evidence" for verdict in verdicts
+        verdict.reason_code == "insufficient_evidence" for verdict in verdicts
     )
     proposals = {candidate.id: candidate.severity_proposal for candidate in candidates}
     severity_transitions: dict[str, int] = {}

@@ -133,13 +133,12 @@ class _FakeJudgeLLM:
 
 
 def _assessment(cid: str, action: str = "keep", severity: Severity | None = Severity.WARNING,
-                supporting: list[str] | None = None, counter: list[str] | None = None) -> EvidenceJudgeAssessment:
+                evidence: list[str] | None = None) -> EvidenceJudgeAssessment:
     return EvidenceJudgeAssessment(
         candidate_id=cid,
         action=action,  # type: ignore[arg-type]
         severity=severity,
-        supporting_evidence_ids=supporting if supporting is not None else ["F001", "F002"],
-        counter_evidence_ids=counter or [],
+        evidence_ids=evidence if evidence is not None else ["F001", "F002"],
         reason="patch 与文件事实均支持",
     )
 
@@ -184,7 +183,7 @@ def test_keep裁决_产出issue():
 def test_drop裁决_不产出issue():
     candidate = _candidate("c1")
     llm = _FakeJudgeLLM(EvidenceJudgeBatch(
-        assessments=[_assessment("c1", action="drop", severity=None, supporting=[])]
+        assessments=[_assessment("c1", action="drop", severity=None, evidence=[])]
     ))
     batch = judge_with_evidence(
         _assembly([candidate]),
@@ -217,10 +216,10 @@ def test_不可裁决候选_按验证淘汰原因drop():
 # ── 输出合同校验 ───────────────────────────────────────────────────────
 
 
-def test_keep无supporting_合同违约_fail_closed():
+def test_keep无evidence_合同违约_fail_closed():
     candidate = _candidate("c1")
     llm = _FakeJudgeLLM(EvidenceJudgeBatch(
-        assessments=[_assessment("c1", supporting=[])]
+        assessments=[_assessment("c1", evidence=[])]
     ))
     batch = judge_with_evidence(
         _assembly([candidate]),
@@ -266,11 +265,11 @@ def test_maintainability_候选_CRITICAL_违约():
     assert batch.verdicts[0].reason_code == "verification_failed"
 
 
-def test_supporting全为LOCATION_违约():
+def test_evidence全为LOCATION_违约():
     candidate = _candidate("c1", role=EvidenceRole.LOCATION)
     # 只引用 LOCATION 角色的工具事实(不含自动 patch)时违约。
     llm = _FakeJudgeLLM(EvidenceJudgeBatch(
-        assessments=[_assessment("c1", supporting=["F002"])]
+        assessments=[_assessment("c1", evidence=["F002"])]
     ))
     batch = judge_with_evidence(
         _assembly([candidate]),
@@ -283,10 +282,10 @@ def test_supporting全为LOCATION_违约():
     assert batch.verdicts[0].reason_code == "verification_failed"
 
 
-def test_supporting引用未知ID_违约():
+def test_evidence引用未知ID_违约():
     candidate = _candidate("c1")
     llm = _FakeJudgeLLM(EvidenceJudgeBatch(
-        assessments=[_assessment("c1", supporting=["F999"])]
+        assessments=[_assessment("c1", evidence=["F999"])]
     ))
     batch = judge_with_evidence(
         _assembly([candidate]),
@@ -315,10 +314,10 @@ def test_drop带severity_违约():
     assert batch.verdicts[0].reason_code == "verification_failed"
 
 
-def test_supporting_counter重叠_违约():
+def test_drop可以引用已知证据():
     candidate = _candidate("c1")
     llm = _FakeJudgeLLM(EvidenceJudgeBatch(
-        assessments=[_assessment("c1", supporting=["F001"], counter=["F001"])]
+        assessments=[_assessment("c1", action="drop", severity=None, evidence=["F001"])]
     ))
     batch = judge_with_evidence(
         _assembly([candidate]),
@@ -328,7 +327,7 @@ def test_supporting_counter重叠_违约():
         structured_method="function_calling",
         max_retries=1,
     )
-    assert batch.verdicts[0].reason_code == "verification_failed"
+    assert batch.verdicts[0].reason_code == "judge_drop"
 
 
 # ── 失败策略:二分拆批 / fail-closed ────────────────────────────────────

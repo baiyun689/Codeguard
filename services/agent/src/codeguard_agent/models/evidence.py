@@ -265,8 +265,10 @@ class EvidenceJudgeAssessment(BaseModel):
     candidate_id: str
     action: Literal["keep", "drop"]
     severity: Severity | None = None
-    supporting_evidence_ids: list[str] = Field(default_factory=list)
-    counter_evidence_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(
+        default_factory=list,
+        description="Judge 作出裁决时实际使用的已验证证据 ID",
+    )
     reason: str = ""
 
 

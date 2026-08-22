@@ -577,8 +577,7 @@ class _JudgeBatchStub:
                 "candidate_id": cand["candidate_id"],
                 "action": "keep",
                 "severity": "INFO",
-                "supporting_evidence_ids": evidence_ids[:1],
-                "counter_evidence_ids": [],
+                "evidence_ids": evidence_ids[:1],
                 "reason": "supported for graph wiring test",
             })
         return {"assessments": assessments}
