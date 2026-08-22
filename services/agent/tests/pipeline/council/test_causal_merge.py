@@ -18,12 +18,18 @@ from codeguard_agent.models.schemas import Issue, Severity
 from codeguard_agent.pipeline.council.causal_merge import merge_survivors
 
 
-def _candidate(cid: str, claim: str) -> CandidateIssue:
+def _candidate(
+    cid: str,
+    claim: str,
+    *,
+    task_id: str = "task-1",
+    file: str = "OrderService.java",
+) -> CandidateIssue:
     return CandidateIssue(
         id=cid,
-        task_id="task-1",
+        task_id=task_id,
         source_agent="behavior",
-        file="OrderService.java",
+        file=file,
         line=10,
         type="logic",
         severity_proposal=Severity.WARNING,
@@ -136,3 +142,31 @@ def test_uncertain_or_failed_analysis_is_fail_closed():
     assert output.stats["failed_batch_count"] == 1
     assert llm.calls == 2
 
+
+def test_candidates_from_different_tasks_are_not_compared_or_merged():
+    first = _candidate("a", "same bug", task_id="task-1")
+    second = _candidate("b", "same bug", task_id="task-2")
+    llm = _FakeLLM(
+        CausalAnalysisBatch(
+            profiles=[_profile("a"), _profile("b")],
+            comparisons=[CausalComparison(
+                left_candidate_id="a",
+                right_candidate_id="b",
+                same_cause=True,
+                same_effect=True,
+            )],
+        )
+    )
+
+    output = merge_survivors(
+        [first, second],
+        [first.id, second.id],
+        [_issue(first), _issue(second)],
+        {first.id: _verification(first), second.id: _verification(second)},
+        llm=llm,
+        structured_method="function_calling",
+    )
+
+    assert len(output.final_issues) == 2
+    assert llm.calls == 0
+    assert output.stats["batch_count"] == 0

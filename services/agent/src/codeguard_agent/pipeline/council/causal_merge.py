@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -28,6 +29,7 @@ logger = logging.getLogger("codeguard")
 
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
 _BATCH_SIZE = 8
+_MAX_CONCURRENCY = 4
 _MAX_ATTEMPTS = 2
 _UNKNOWN = "unknown"
 _SEVERITY_ORDER = {
@@ -303,20 +305,43 @@ def merge_survivors(
     succeeded = 0
     failed = 0
 
-    for offset in range(0, len(survivor_candidates), _BATCH_SIZE):
-        batch = survivor_candidates[offset:offset + _BATCH_SIZE]
-        if len(batch) < 2:
-            continue
-        attempted += 1
+    buckets: dict[tuple[str, str], list[CandidateIssue]] = {}
+    for candidate in survivor_candidates:
+        buckets.setdefault((candidate.task_id, candidate.file), []).append(candidate)
+
+    # task/file 是确定性边界：不同审查任务之间不做语义去重。
+    batches: list[tuple[tuple[str, str], list[CandidateIssue]]] = []
+    for bucket_key, bucket in buckets.items():
+        for offset in range(0, len(bucket), _BATCH_SIZE):
+            batch = bucket[offset:offset + _BATCH_SIZE]
+            if len(batch) >= 2:
+                batches.append((bucket_key, batch))
+
+    def analyze(item: tuple[tuple[str, str], list[CandidateIssue]]):
+        bucket_key, batch = item
         analysis, error = _invoke_batch(
             batch,
             verifications,
             llm=llm,
             structured_method=structured_method,
         )
+        return bucket_key, batch, analysis, error
+
+    if batches:
+        with ThreadPoolExecutor(
+            max_workers=min(_MAX_CONCURRENCY, len(batches))
+        ) as pool:
+            results = list(pool.map(analyze, batches))
+    else:
+        results = []
+
+    for bucket_key, batch, analysis, error in results:
+        attempted += 1
         if analysis is None:
             failed += 1
             trace.append(("causal_merge_failed", _stable_json({
+                "task_id": bucket_key[0],
+                "file": bucket_key[1],
                 "candidate_ids": [candidate.id for candidate in batch],
                 "reason": error,
             })))
@@ -330,6 +355,8 @@ def merge_survivors(
         batch_groups = _build_groups(batch, analysis.comparisons, batch_profiles)
         groups.extend(batch_groups)
         trace.append(("causal_merge_batch_completed", _stable_json({
+            "task_id": bucket_key[0],
+            "file": bucket_key[1],
             "candidate_ids": [candidate.id for candidate in batch],
             "comparisons": len(analysis.comparisons),
             "groups": len(batch_groups),
