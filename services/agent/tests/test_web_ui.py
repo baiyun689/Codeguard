@@ -76,3 +76,9 @@ def test_parse_review_output_allows_report_message_after_json() -> None:
 
     assert result == {"summary": "发现 1 个问题", "issues": []}
     assert trailing == "报告已写入: /workspace/reports/review.md"
+
+
+def test_report_link_opens_web_endpoint() -> None:
+    assert 'href="/api/jobs/\'+id+\'/report"' in web_ui.UI_HTML
+    assert "打开报告目录" not in web_ui.UI_HTML
+    assert "复制报告路径" not in web_ui.UI_HTML
