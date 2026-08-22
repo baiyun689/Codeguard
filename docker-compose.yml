@@ -40,6 +40,7 @@ services:
       CODEGUARD_JOB_DB_PASSWORD: ${MYSQL_PASSWORD:-codeguard}
       CODEGUARD_WORKSPACE_DIR: /tmp/codeguard-jobs
       CODEGUARD_TRACE_DIR: /app/trace
+      CODEGUARD_HOST_PROJECT_ROOT: ${CODEGUARD_PROJECTS_DIR:-./projects}
     secrets:
       - github_app_private_key
     ports:

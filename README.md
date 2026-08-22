@@ -145,8 +145,7 @@ Prometheus 数据均使用命名卷持久化。
 ### 本地 Web 审查界面
 
 启动 `codeguard` 服务后，可访问 `http://localhost:8501` 打开本地审查界面。
-将待审查的 Git 项目放入仓库根目录的 `projects/` 目录，或在界面中上传 ZIP，
-选择项目和 Diff 基线后即可开始审查。界面默认使用完整审查管线，摘要、代码图谱、
+在界面中填写宿主机上的 Git 项目根目录，选择 Diff 基线后即可开始审查。界面默认使用完整审查管线，摘要、代码图谱、
 Evidence Ledger、Judge 和因果合并不会被拆成相互独立的开关；报告和 Agent Trace
 作为展示选项提供。
 
@@ -155,14 +154,14 @@ docker compose up -d --build codeguard
 # 浏览器打开 http://localhost:8501
 ```
 
-如果项目不在 `projects/` 目录，可在 `.env` 中设置宿主机目录：
+在 `.env` 中设置项目父目录，Docker 会将它挂载到 UI：
 
 ```dotenv
 CODEGUARD_PROJECTS_DIR=E:/workspace/review-projects
 ```
 
-该目录中的一级子目录会显示在项目选择器中。项目最好保留 Git 历史，
-这样可以使用 `HEAD`、`main` 或 commit SHA 作为 Diff 基线。
+例如填写 `E:\\workspace\\demo-project`。项目最好保留 Git 历史，
+这样可以从下拉框选择 `HEAD`、`main` 或其他本地分支作为 Diff 基线。
 
 容器内用于接收 GitHub Webhook 的 CI 服务固定监听 `8080`；Tool Server 与 LLM Proxy
 分别监听内部端口 `9090` 和 `9091`。Webhook 通过 `CODEGUARD_HOST_PORT` 发布；

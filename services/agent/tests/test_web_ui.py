@@ -7,27 +7,22 @@ import pytest
 from codeguard_agent import web_ui
 
 
-def test_projects_lists_only_directories(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    (tmp_path / "demo").mkdir()
-    (tmp_path / "demo" / ".git").mkdir()
-    (tmp_path / "nested").mkdir()
-    (tmp_path / ".hidden").mkdir()
-    (tmp_path / "file.txt").write_text("ignored", encoding="utf-8")
-    monkeypatch.setattr(web_ui, "PROJECT_ROOT", tmp_path)
+def test_safe_project_maps_host_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "projects"
+    (project_root / "demo").mkdir(parents=True)
+    monkeypatch.setattr(web_ui, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(web_ui, "HOST_PROJECT_ROOT", r"E:\workspace")
 
-    assert web_ui._projects() == [
-        {"name": "demo", "has_git": True, "path": str(tmp_path / "demo")},
-        {"name": "nested", "has_git": False, "path": str(tmp_path / "nested")},
-    ]
+    assert web_ui._safe_project(r"E:\workspace\demo") == (project_root / "demo").resolve()
 
 
-def test_safe_project_rejects_path_traversal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    (tmp_path / "demo").mkdir()
-    monkeypatch.setattr(web_ui, "PROJECT_ROOT", tmp_path)
-
-    assert web_ui._safe_project("demo") == (tmp_path / "demo").resolve()
+def test_safe_project_rejects_unmounted_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "projects"
+    project_root.mkdir()
+    monkeypatch.setattr(web_ui, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(web_ui, "HOST_PROJECT_ROOT", r"E:\workspace")
     with pytest.raises(ValueError):
-        web_ui._safe_project("../demo")
+        web_ui._safe_project(r"E:\other\demo")
 
 
 def test_latest_report_returns_newest_markdown(tmp_path: Path) -> None:
