@@ -16,7 +16,6 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from codeguard_agent.llm.client import invoke_with_retry
-from codeguard_agent.pipeline.context.base import PipelineContext, PipelineStage
 
 logger = logging.getLogger("codeguard")
 
@@ -39,44 +38,46 @@ def _build_user_prompt(diff_text: str) -> str:
     return tpl.replace("{{diff}}", diff_text)
 
 
-class SummaryStage(PipelineStage):
-    """前置摘要：一次 LLM 调用产出变更摘要，透传给后续节点作为背景。"""
+def build_diff_summary(
+    diff_text: str,
+    *,
+    llm=None,
+    max_retries: int = 3,
+    structured_method: str = "function_calling",
+) -> str:
+    """生成变更摘要。
 
-    @property
-    def name(self) -> str:
-        return "summary"
+    这是一个显式输入/输出模块：失败、空响应或 mock 模式均返回空字符串，
+    不通过可变共享上下文向调用者回写状态。
+    """
+    if not diff_text.strip():
+        return ""
 
-    def execute(self, context: PipelineContext) -> PipelineContext:
-        diff_text = context.diff_text
-        if not diff_text.strip():
-            return context
+    # mock 模式:不发起真实调用,跳过摘要。
+    if llm is None:
+        logger.info("mock 模式，跳过摘要（不发起真实 LLM 调用）")
+        return ""
 
-        # mock 模式:不发起真实调用,跳过摘要。
-        if context.llm is None:
-            logger.info("mock 模式，跳过摘要（不发起真实 LLM 调用）")
-            return context
+    system = _load_prompt("summary-system.txt")
+    user = _build_user_prompt(diff_text)
 
-        system = _load_prompt("summary-system.txt")
-        user = _build_user_prompt(diff_text)
-
-        structured_llm = context.llm.with_structured_output(
-            _DiffSummary, method=context.structured_method
+    structured_llm = llm.with_structured_output(
+        _DiffSummary, method=structured_method
+    )
+    try:
+        result = invoke_with_retry(
+            structured_llm,
+            [("system", system), ("human", user)],
+            max_retries=max_retries,
         )
-        try:
-            result = invoke_with_retry(
-                structured_llm,
-                [("system", system), ("human", user)],
-                max_retries=context.max_retries,
-            )
-        except Exception as exc:  # noqa: BLE001 摘要失败不应拖垮整条管线
-            logger.warning("摘要调用失败，退回无摘要路径：%s", exc)
-            return context
+    except Exception as exc:  # noqa: BLE001 摘要失败不应拖垮整条管线
+        logger.warning("摘要调用失败，退回无摘要路径：%s", exc)
+        return ""
 
-        # None 防御:结构化输出可能返回 None / 非预期类型 —— 退回无摘要路径。
-        if result is None or not isinstance(result, _DiffSummary):
-            logger.warning("摘要未返回有效结果，退回无摘要路径")
-            return context
+    # None 防御:结构化输出可能返回 None / 非预期类型 —— 退回无摘要路径。
+    if result is None or not isinstance(result, _DiffSummary):
+        logger.warning("摘要未返回有效结果，退回无摘要路径")
+        return ""
 
-        context.diff_summary = result.summary
-        logger.info("[summary] 摘要长度=%d", len(context.diff_summary))
-        return context
+    logger.info("[summary] 摘要长度=%d", len(result.summary))
+    return result.summary

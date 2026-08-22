@@ -94,13 +94,12 @@ def test_summary_receives_only_selected_task_scope(monkeypatch):
     tasks = _tasks()
     captured: dict[str, str] = {}
 
-    def capture(stage, context):
-        captured["diff"] = context.diff_text
-        context.diff_summary = "summary"
-        return context
+    def capture(diff_text, **kwargs):
+        captured["diff"] = diff_text
+        return "summary"
 
-    monkeypatch.setattr(G.SummaryStage, "execute", capture)
-    out = G._summary_node(None, None)(
+    monkeypatch.setattr(G, "build_diff_summary", capture)
+    out = G._summary_node(None)(
         {
             "diff_text": _large_diff(tasks),
             "review_tasks": tasks,

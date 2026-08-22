@@ -1,1 +1,1 @@
-"""上下文提供器：PipelineContext + ContextProviderStage + 上下文规则。"""
+"""上下文事实提供器与上下文规则。"""

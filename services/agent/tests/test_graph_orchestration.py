@@ -37,8 +37,7 @@ from codeguard_agent.pipeline.engines import GatheredContext, ReviewOutcome
 from codeguard_agent.pipeline.evidence.ledger import EvidenceCatalogBuilder
 from codeguard_agent.pipeline.risk.discovery import DiscoveryToolRecord
 from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
-from codeguard_agent.pipeline.context.base import PipelineContext
-from codeguard_agent.pipeline.context.provider import ContextProviderStage
+from codeguard_agent.pipeline.context.provider import provide_context
 from codeguard_agent.tools.tool_client import ToolResponse
 
 
@@ -66,11 +65,9 @@ def _prior(task_id: str, tag: RiskTag | None = None, priority: int = 2) -> TaskR
 
 def test_context_provider_keeps_summary_and_files_out_of_facts():
     diff = "diff --git a/A.java b/A.java\n+++ b/A.java\n+class A {}"
-    ctx = PipelineContext(diff_text=diff, diff_summary="新增 A")
+    result = provide_context(diff)
 
-    ContextProviderStage().execute(ctx)
-
-    dumped = ctx.context_bundle.model_dump()
+    dumped = result.bundle.model_dump()
     assert set(dumped) == {"changed_files", "facts"}
     assert dumped["changed_files"] == ["A.java"]
     assert all(
@@ -84,15 +81,13 @@ def test_context_provider_records_tool_failures_as_diagnostics_not_facts():
         def resolve_change_context(self, changes):  # noqa: ARG002
             return _MockToolResponse(False, error="graph timeout")
 
-    ctx = PipelineContext(
-        diff_text="diff --git a/A.java b/A.java\n+++ b/A.java\n+class A {}",
+    result = provide_context(
+        "diff --git a/A.java b/A.java\n+++ b/A.java\n+class A {}",
         tool_client=_FailingBroadContextClient(),
     )
 
-    ContextProviderStage().execute(ctx)
-
-    assert ctx.context_bundle.facts == []
-    assert ctx.context_diagnostics == {"symbol_context": "graph timeout"}
+    assert result.bundle.facts == []
+    assert result.diagnostics == {"symbol_context": "graph timeout"}
 
 
 def test_summary_prompts_only_request_summary():

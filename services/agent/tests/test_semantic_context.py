@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 
-from codeguard_agent.pipeline.context.base import PipelineContext
-from codeguard_agent.pipeline.context.provider import ContextProviderStage
+from codeguard_agent.pipeline.context.provider import provide_context
 from codeguard_agent.tools.tool_client import ToolResponse
 
 
@@ -52,10 +51,8 @@ class _GraphClient:
 
 def test_context_provider_prefetches_structured_symbol_context():
     client = _GraphClient()
-    context = PipelineContext(diff_text=_DIFF, tool_client=client)
-
-    ContextProviderStage().execute(context)
+    result = provide_context(_DIFF, tool_client=client)
 
     assert client.changes == [{"file": "src/A.java", "lines": [3]}]
-    assert [fact.kind for fact in context.context_bundle.facts] == ["symbol_context"]
-    assert "java:A#run()" in context.context_bundle.facts[0].content
+    assert [fact.kind for fact in result.bundle.facts] == ["symbol_context"]
+    assert "java:A#run()" in result.bundle.facts[0].content

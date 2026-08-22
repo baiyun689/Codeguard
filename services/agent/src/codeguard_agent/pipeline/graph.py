@@ -75,15 +75,14 @@ from codeguard_agent.pipeline.evidence.ledger import (
     bind_discovered_issue,
 )
 from codeguard_agent.pipeline.evidence.planner import assemble_dossiers
-from codeguard_agent.pipeline.context.base import PipelineContext
-from codeguard_agent.pipeline.context.provider import ContextProviderStage
+from codeguard_agent.pipeline.context.provider import provide_context
 from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
     Reviewer,
     build_reviewer_system_prompt,
     build_reviewer_user_prompt,
 )
-from codeguard_agent.pipeline.summary.summary import SummaryStage
+from codeguard_agent.pipeline.summary.summary import build_diff_summary
 
 logger = logging.getLogger("codeguard")
 
@@ -204,21 +203,6 @@ def _extend_catalog_from_client(catalog: Any, coordinated_client: Any) -> Any:
     return EvidenceCatalogBuilder().append_tool_records(catalog, records)
 
 
-def _state_to_context(state: ReviewState, llm=None, fp_verify_llm=None, tool_client=None) -> PipelineContext:
-    ctx = PipelineContext(
-        diff_text=state.get("diff_text", ""),
-        llm=llm,
-        max_retries=state.get("max_retries", 3),
-        structured_method=state.get("structured_method", "function_calling"),
-        fp_verify_llm=fp_verify_llm,
-        tool_client=tool_client,
-        enabled_tools=state.get("enabled_tools"),
-        diff_summary=state.get("diff_summary", ""),
-    )
-    ctx.context_bundle = state.get("context_bundle")
-    return ctx
-
-
 def _scope_plan(state: ReviewState) -> LargeDiffPlan:
     return plan_large_diff(
         state.get("diff_text", ""),
@@ -234,13 +218,16 @@ def _selected_diff(state: ReviewState, scope: LargeDiffPlan) -> str:
     return scope.selected_diff(list(state.get("review_tasks") or []), selection)
 
 
-def _summary_node(llm, tool_client):
+def _summary_node(llm):
     def _node(state: ReviewState) -> dict:
         scope = _scope_plan(state)
-        ctx = _state_to_context(state, llm=llm, tool_client=tool_client)
-        ctx.diff_text = _selected_diff(state, scope)
-        SummaryStage().execute(ctx)
-        return {"diff_summary": ctx.diff_summary}
+        summary = build_diff_summary(
+            _selected_diff(state, scope),
+            llm=llm,
+            max_retries=state.get("max_retries", 3),
+            structured_method=state.get("structured_method", "function_calling"),
+        )
+        return {"diff_summary": summary}
 
     return _node
 
@@ -594,14 +581,16 @@ def _context_provider_node(tool_client):
         selected_ids = set(selection.selected_task_ids) if selection is not None else set()
         all_tasks: list[ReviewTask] = state.get("review_tasks") or []
         tasks = [task for task in all_tasks if task.id in selected_ids]
-        ctx = _state_to_context(state, tool_client=tool_client)
-        ctx.diff_text = _selected_diff(state, scope)
-        ctx.change_locations = [
+        change_locations: list[dict[str, object]] = [
             {"file": task.file, "lines": task.changed_lines}
             for task in tasks
         ]
-        ContextProviderStage().execute(ctx)
-        bundle = ctx.context_bundle
+        context_result = provide_context(
+            _selected_diff(state, scope),
+            tool_client=tool_client,
+            change_locations=change_locations,
+        )
+        bundle = context_result.bundle
 
         budget = scope.effective_budget
         symbol_facts: list[tuple[ContextFact, dict[str, Any]]] = []
@@ -639,7 +628,7 @@ def _context_provider_node(tool_client):
             ]
             statuses: list[ContextStatus] = []
             if not facts:
-                failure = ctx.context_diagnostics.get("symbol_context")
+                failure = context_result.diagnostics.get("symbol_context")
                 statuses.append(
                     ContextStatus(
                         kind="symbol_context",
@@ -671,7 +660,7 @@ def _context_provider_node(tool_client):
                     detail=(
                         f"task={task.id} facts={len(facts)} "
                         f"symbol_context={bool(facts)} "
-                        f"diagnostic={ctx.context_diagnostics.get('symbol_context', '')} "
+                        f"diagnostic={context_result.diagnostics.get('symbol_context', '')} "
                         f"truncated={truncated}"
                     ),
                 )
@@ -679,7 +668,7 @@ def _context_provider_node(tool_client):
 
         return {
             "context_bundle": bundle,
-            "context_diagnostics": dict(ctx.context_diagnostics),
+            "context_diagnostics": dict(context_result.diagnostics),
             "task_context_bundles": task_bundles,
 
             "council_trace": trace,
@@ -1546,7 +1535,7 @@ def build_review_graph(
     g.add_edge("risk_triage", "task_rank")
     g.add_edge("task_rank", "review_coverage")
     if enable_summary:
-        g.add_node("summary", _summary_node(llm, tool_client))
+        g.add_node("summary", _summary_node(llm))
         g.add_edge("review_coverage", "summary")
         g.add_edge("summary", "context_provider")
     else:

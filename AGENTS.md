@@ -64,7 +64,7 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 
 默认节点:
 
-- **SummaryStage(可选)**:在 TaskRank 后对选中任务范围产出变更摘要,作为 ContextBundle 和 ReviewCouncil 的共享背景。由 `CODEGUARD_ENABLE_SUMMARY` 控制(默认开)。
+- **Summary 阶段(可选)**:在 TaskRank 后对选中任务范围产出变更摘要,作为 ContextBundle 和 ReviewCouncil 的共享背景。由 `CODEGUARD_ENABLE_SUMMARY` 控制(默认开)。摘要模块通过显式输入/输出函数与 LangGraph 交互,不再依赖可变的共享 `PipelineContext`。
 - **PR 规模路由**:`PRModeClassifier` 在 task 构建前只按 diff 体量选择执行形态：小型 PR 整体直审且正常成功时不运行 Risk/证据链；中型 PR 按文件建 task；大型 PR 按 hunk 建 task。Risk 不参与规模判定。小型直审异常或缺少结构化输出时安全回退到文件级完整管线，不能把调用失败伪装成“零问题”。`review_route` 以结构化 State patch 记录初始/生效模式、规模指标、实际分支和降级原因；HTML Trace 将未进入的阶段显示为按设计跳过。
 - **ContextProvider**:在 ReviewCouncil 前构造轻量 `ContextBundle`,只产出事实、来源与截断标记,不判断"是不是问题"。
 - **大 diff 降级**:仅在超过 5000 行时，Python 确定性收紧为最多 20 个任务、每文件 3 个、每任务上下文 2000 字符；普通 diff 全选 task，并只让风险排序前 `CODEGUARD_MAX_REACT_TASKS`（默认 20）个合格 task 使用 ReAct，其余 Direct。Summary/AST/发现者在大 diff 时只看选中范围，结果摘要披露部分覆盖。Java 不重复判断。
