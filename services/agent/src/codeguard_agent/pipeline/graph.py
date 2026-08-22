@@ -112,21 +112,27 @@ def _discover_node_name(reviewer: Reviewer) -> str:
 
 
 class ReviewState(TypedDict, total=False):
-    """审查图共享状态。"""
+    """审查图共享状态。
 
+    字段按生命周期分组，但仍保持顶层 channel 以保留 LangGraph reducer
+    语义。只有会影响后续节点的工作数据留在这里；纯运行观测数据逐步由
+    TraceCollector / eval 侧信道承载。
+    """
+
+    # --- Input: 本次审查的只读事实 ---
     diff_text: str
     evidence_revision: str
+
+    # --- Config: 本次运行的策略和预算 ---
     enabled_tools: Any
     enabled_evidence_tools: Any
-    context_diagnostics: dict[str, str]
-
     max_retries: int
     structured_method: str
     react_recursion_limit: int
     allow_direct_fallback: bool
-    diff_summary: str
-
     review_budget: ReviewBudget
+
+    # --- Plan: 确定性规划结果 ---
     review_mode: str  # "small" | "medium" | "large"
     review_route: ReviewRoute
     direct_review_status: str  # "completed" | "fallback"
@@ -134,29 +140,35 @@ class ReviewState(TypedDict, total=False):
     risk_priors: dict[str, TaskRiskPrior]
     task_selection: TaskSelection
     review_coverage_plan: ReviewCoveragePlan
-    task_context_bundles: dict[str, TaskContextBundle]
 
+    # --- Working: 跨节点传递、会影响后续决策的审查工作集 ---
+    diff_summary: str
     context_bundle: ContextBundle
+    task_context_bundles: dict[str, TaskContextBundle]
     raw_candidate_issues: Annotated[list[CandidateIssue], collect_candidate_reducer]
     candidate_issues: list[CandidateIssue]
     candidate_groups: list[CandidateGroup]
-    candidate_dedup_stats: CandidateDedupStats
     candidate_verifications: dict[str, Any]
     evidence_artifacts: Annotated[dict[str, EvidenceArtifact], merge_evidence_artifacts]
-    council_trace: Annotated[list[CouncilTrace], operator.add]
-    truncated_candidates: Annotated[int, operator.add]
-
-    tool_trace_records: Annotated[list, operator.add]
     review_summaries: Annotated[list, operator.add]
 
+    # --- Output: 对外 ReviewResult 的来源 ---
     final_issues: list
     summary: str
+
+    # --- Diagnostics: Trace / eval 数据，不属于产品输出 ---
+    context_diagnostics: dict[str, str]
+    candidate_dedup_stats: CandidateDedupStats
     council_stats: CouncilRunStats
+    council_trace: Annotated[list[CouncilTrace], operator.add]
+    truncated_candidates: Annotated[int, operator.add]
+    tool_trace_records: Annotated[list, operator.add]
 
 
 class ReviewerState(TypedDict, total=False):
-    """单个发现者 Agent 子图状态。"""
+    """单个发现者 Agent 子图的局部状态，不是顶层审查结果状态。"""
 
+    # 输入/策略：由顶层 ReviewState 为当前 reviewer + task 投影而来。
     diff_text: str
     enabled_tools: Any
     max_retries: int
@@ -172,6 +184,7 @@ class ReviewerState(TypedDict, total=False):
     task_scope: str  # "current_hunk" | "current_file"
     review_tool_client: Any
 
+    # 当前 task 的证据目录和结构化 Prompt。
     evidence_revision: str
     evidence_catalog: Any
 
