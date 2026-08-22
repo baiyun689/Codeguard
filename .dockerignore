@@ -17,3 +17,9 @@ services/gateway/legacy
 services/agent/legacy
 services/agent/trace
 services/agent/evals/runs
+services/agent/evals/dataset
+services/agent/tests
+services/agent/**/__pycache__
+services/agent/.mypy_cache
+services/agent/.pytest_cache
+services/agent/.ruff_cache
