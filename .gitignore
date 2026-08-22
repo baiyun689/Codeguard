@@ -1,5 +1,6 @@
 # 环境与密钥
 .env
+projects/
 *.env
 !.env.example
 

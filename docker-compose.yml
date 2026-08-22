@@ -44,11 +44,13 @@ services:
       - github_app_private_key
     ports:
       - "${CODEGUARD_HOST_PORT:-9090}:8080"
+      - "${CODEGUARD_UI_HOST_PORT:-8501}:8501"
       - "127.0.0.1:${CODEGUARD_TOOL_HOST_PORT:-9092}:9090"
     volumes:
       - gateway-data:/app/data
       - job-workspaces:/tmp/codeguard-jobs
       - ./trace:/app/trace
+      - "${CODEGUARD_PROJECTS_DIR:-./projects}:/workspace/projects"
     depends_on:
       mysql:
         condition: service_healthy
@@ -57,7 +59,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget -qO- http://localhost:8080/health/ready >/dev/null && wget -qO- http://localhost:9090/health/ready >/dev/null && wget -qO- http://localhost:9091/health/ready >/dev/null",
+          "wget -qO- http://localhost:8080/health/ready >/dev/null && wget -qO- http://localhost:9090/health/ready >/dev/null && wget -qO- http://localhost:9091/health/ready >/dev/null && wget -qO- http://localhost:8501/ >/dev/null",
         ]
       interval: 30s
       timeout: 5s

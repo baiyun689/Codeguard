@@ -18,7 +18,9 @@ ENV PATH="/opt/codeguard/venv/bin:${PATH}"
 COPY services/agent/ /app/agent/
 RUN pip install --no-cache-dir /app/agent
 COPY --from=gateway-build /build/gateway/ci-webhook/target/codeguard-gateway.jar /app/codeguard-gateway.jar
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 WORKDIR /app
-EXPOSE 8080 9090 9091
+EXPOSE 8080 8501 9090 9091
 VOLUME ["/app/data", "/tmp/codeguard-jobs"]
-ENTRYPOINT ["java", "-jar", "/app/codeguard-gateway.jar"]
+ENTRYPOINT ["/app/start.sh"]
