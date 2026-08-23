@@ -34,7 +34,7 @@ def test_repo_case_preserves_provenance_and_ground_truth_contract() -> None:
                     "line": 12,
                     "root_cause": "未规范化的用户路径进入文件系统",
                     "cwe": "CWE-22",
-                    "risk_tag": "path-traversal",
+                    "category": "path-traversal",
                     "evidence_anchors": ["A.open(String):12", "Path.resolve(String)"],
                 }
             ],

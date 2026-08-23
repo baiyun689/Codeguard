@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from codeguard_agent.git.diff_collector import parse_changed_files
 from codeguard_agent.models.council import ContextBundle, ContextFact
-from codeguard_agent.pipeline.risk.task_prep import build_tasks
+from codeguard_agent.pipeline.tasks import build_tasks
 
 logger = logging.getLogger("codeguard")
 

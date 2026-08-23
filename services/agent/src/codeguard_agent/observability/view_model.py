@@ -34,10 +34,9 @@ _NODE_TITLES: dict[str, str] = {
     "diff_task_builder": "Hunk 级任务构建",
     "task_route": "Task 路由",
     "direct_task_review": "Direct Task 审查",
-    "risk_triage": "风险分诊",
-    "task_rank": "任务选择",
+    "task_selection": "任务选择",
     "plan": "审查计划",
-    "review_coverage": "审查覆盖规划",
+    "review_plan": "审查计划",
     "context_provider": "上下文构建",
     "discover_threat_model": "安全候选发现",
     "discover_behavior": "行为候选发现",
@@ -599,10 +598,9 @@ def _is_visible_node_step(step: dict[str, Any]) -> bool:
         "diff_task_builder",
         "task_route",
         "direct_task_review",
-        "risk_triage",
-        "task_rank",
+        "task_selection",
         "plan",
-        "review_coverage",
+        "review_plan",
         "summary",
         "context_provider",
         "discovery_collector",
@@ -685,7 +683,7 @@ def _main_stages(
                 builder = "diff_task_builder"
         if builder in {"file_task_builder", "diff_task_builder"} and builder in by_name:
             stages.append(_main_stage(builder, _NODE_TITLES[builder], by_name[builder]))
-        for code_name in ("task_route", "direct_task_review", "risk_triage", "task_rank", "plan", "review_coverage"):
+        for code_name in ("task_route", "direct_task_review", "task_selection", "plan", "review_plan"):
             if code_name in by_name:
                 stages.append(_main_stage(
                     code_name,
@@ -695,8 +693,8 @@ def _main_stages(
     else:
         for code_name, title in (
             ("diff_task_builder", "审查任务构建"),
-            ("risk_triage", "风险分诊"),
-            ("task_rank", "任务选择"),
+            ("task_selection", "任务选择"),
+            ("review_plan", "审查计划"),
         ):
             if code_name in by_name:
                 stages.append(_main_stage(code_name, title, by_name[code_name]))
@@ -1037,10 +1035,9 @@ def _missing_main_steps(
         expected: tuple[str, ...] = (
             "task_route",
             "direct_task_review",
-            "risk_triage",
-            "task_rank",
+            "task_selection",
             "plan",
-            "review_coverage",
+            "review_plan",
             "summary",
             "context_provider",
             "council_judge",
@@ -1048,9 +1045,8 @@ def _missing_main_steps(
     elif "classify_mode" in present:
         expected = (
             *(("direct_review",) if routing.get("initial_mode") == "small" else ()),
-            "risk_triage",
-            "task_rank",
-            "review_coverage",
+            "task_selection",
+            "review_plan",
             "summary",
             "context_provider",
             "council_judge",

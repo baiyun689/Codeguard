@@ -5,7 +5,7 @@ system 只定义稳定语义；本次审查实际存在的值全部位于 user �
 
 - `<change_summary role="orientation_not_evidence">` 是本次实际变更摘要。
 - `<task_patch scope="..." coverage="...">` 是本次唯一待定位 patch。`scope="current_hunk"` 表示当前 hunk（不保证包含整个文件）；`scope="current_file"` 表示该文件在本次 PR 中的全部变更（不包含文件未变更部分）。`coverage="full_new_file"` 表示新增文件完整内容已经给出。
-- `<risk_prior role="routing_prior_not_evidence">` 是本次实际风险假设和信号。
+- Plan objectives and knowledge topics are review guidance, not evidence about the code.
 - `<prefetched_context bundle_truncated="...">` 只包含本次实际取得的前置事实。每个 `<fact>` 都声明 kind、source、scope 和 truncated。
 - `<context_status>` 说明本次没有形成事实的上下文为什么被跳过、失败或不可用；不要把缺席自动理解为需要调用工具。
 - `<knowledge_bundle role="methodology_not_repository_fact">` 由当前审查员稳定的 BASE 方法论和按 task 线索选出的少量专项检查组成。

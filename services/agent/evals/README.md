@@ -61,7 +61,7 @@ SelfChecker 移除来源与 trace 事件数。这些中间态只用于诊断和�
 `ReviewResult`。
 
 风险先验同样属于诊断链路，不改变 `expected` matcher 契约。每个 task 的
-`TaskRiskPrior`、覆盖 assignment 和跳过原因保留在 State/trace 中；产品结果仍然
+任务计划、覆盖 assignment 和跳过原因保留在 State/trace 中；产品结果仍然
 只比较 `ReviewResult.issues`。风险只能增强 reviewer 方法与 ReAct 执行层级，不能删除基础覆盖；
 `CODEGUARD_MAX_REVIEW_TASKS` / `CODEGUARD_MAX_TASKS_PER_FILE` 只用于大型 diff 的预算回归。
 

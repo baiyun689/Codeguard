@@ -1,5 +1,5 @@
 from codeguard_agent.models.tasks import ReviewBudget, ReviewTask, TaskSelection
-from codeguard_agent.pipeline.risk.large_diff import plan_large_diff
+from codeguard_agent.pipeline.task_scope import plan_large_diff
 
 
 def _task(index: int, patch: str = "+x") -> ReviewTask:
@@ -75,12 +75,12 @@ def test_large_diff_scopes_single_task_patch_and_reports_partial_coverage():
     )
 
     scoped = plan.scoped_patch("x" * 20_000)
-    notice = plan.coverage_notice(selection)
+    notice = plan.limit_notice(selection)
 
     assert len(scoped) <= 12_100
     assert scoped.endswith("...(大 diff 单任务 patch 已截断)")
     assert "共 51 个任务" in notice
-    assert "审查 2 个" in notice
+    assert "执行 2 个" in notice
     assert "跳过 49 个" in notice
     assert "不代表完整覆盖" in notice
 
@@ -91,4 +91,4 @@ def test_normal_diff_preserves_full_patch_and_has_no_notice():
     selection = TaskSelection(selected_task_ids=[task.id])
 
     assert plan.scoped_patch(task.patch) == task.patch
-    assert plan.coverage_notice(selection) == ""
+    assert plan.limit_notice(selection) == ""

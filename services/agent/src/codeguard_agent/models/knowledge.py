@@ -1,8 +1,4 @@
-"""Risk-aware Knowledge 选择的数据模型。
-
-这些模型描述 Knowledge 片段、选择结果和渲染输出，
-供 catalog、selector 和 reviewer prompt builder 使用。
-"""
+"""Knowledge 片段、选择结果和渲染输出的数据模型。"""
 
 from __future__ import annotations
 
@@ -10,7 +6,7 @@ from enum import Enum
 
 from pydantic import BaseModel
 
-from codeguard_agent.models.tasks import ReviewerKind, RiskTag
+from codeguard_agent.models.tasks import ReviewerKind
 
 
 class KnowledgeKind(str, Enum):
@@ -20,10 +16,6 @@ class KnowledgeKind(str, Enum):
 
 class KnowledgeSelectionSource(str, Enum):
     PLAN = "plan"
-    RISK_PRIOR = "risk_prior"
-    PATCH_SEMANTICS = "patch_semantics"
-    FILE_ROLE = "file_role"
-    CONTEXT_SYMBOL = "context_symbol"
 
 
 class KnowledgeFragment(BaseModel):
@@ -32,11 +24,7 @@ class KnowledgeFragment(BaseModel):
     reviewer: ReviewerKind
     kind: KnowledgeKind
     topic: str
-    risk_tag: RiskTag | None = None
     content: str = ""
-    # 专门主题的检索词：strong_terms 强匹配（函数调用/API名），weak_terms 弱匹配（概念/模式）
-    strong_terms: tuple[str, ...] = ()
-    weak_terms: tuple[str, ...] = ()
 
 
 class SelectedKnowledge(BaseModel):

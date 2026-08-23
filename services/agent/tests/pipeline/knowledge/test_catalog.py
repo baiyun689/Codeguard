@@ -21,7 +21,7 @@ class TestKnowledgeCatalog:
             for f in fragments:
                 assert f.reviewer == reviewer
                 assert f.kind.value == "specialized"
-                assert f.risk_tag is not None
+                assert f.topic
 
     def test_fragments_stable_order(self):
         catalog = KnowledgeCatalog()
@@ -29,13 +29,13 @@ class TestKnowledgeCatalog:
         second = catalog.specialized_fragments(ReviewerKind.THREAT_MODEL)
         assert [f.topic for f in first] == [f.topic for f in second]
 
-    def test_behavior_has_no_threat_fragments(self):
+    def test_reviewer_catalogs_are_scoped(self):
         catalog = KnowledgeCatalog()
-        threat_topics = {f.risk_tag for f in catalog.specialized_fragments(ReviewerKind.THREAT_MODEL) if f.risk_tag}
-        behavior_frags = catalog.specialized_fragments(ReviewerKind.BEHAVIOR)
-        for f in behavior_frags:
-            if f.risk_tag and f.risk_tag in threat_topics:
-                pass  # overlapping tags are OK (some tags map to both reviewers)
+        for reviewer in ReviewerKind:
+            assert all(
+                fragment.reviewer is reviewer
+                for fragment in catalog.specialized_fragments(reviewer)
+            )
 
     def test_base_fragment_has_required_sections(self):
         catalog = KnowledgeCatalog()

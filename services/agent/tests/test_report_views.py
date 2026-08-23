@@ -205,7 +205,7 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
     assert "| 1 | 0 | 1 | WARNING->CRITICAL=1 |" in out
     assert "最终 Issue 支持覆盖率" in out
     assert "1/2 (0.500)" in out
-    assert "RiskTag 策略覆盖率" not in out
+    assert "策略覆盖率" not in out
     assert "WARNING->CRITICAL=1" in out
     assert "证据请求" not in out
     assert "证据账本" in out

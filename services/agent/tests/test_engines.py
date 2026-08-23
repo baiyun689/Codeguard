@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from codeguard_agent.models.schemas import ReviewResult
-from codeguard_agent.pipeline.risk.discovery import COMPLETE_PATCH_RESULT
+from codeguard_agent.pipeline.discovery import COMPLETE_PATCH_RESULT
 from codeguard_agent.pipeline.engines import (
     DirectEngine,
     ReviewOutcome,

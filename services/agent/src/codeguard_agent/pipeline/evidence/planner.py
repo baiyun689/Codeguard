@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.tasks import ReviewTask, TaskContextBundle
-from codeguard_agent.pipeline.risk import task_prep
+from codeguard_agent.pipeline import tasks as task_prep
 
 @dataclass(frozen=True)
 class CandidateDossier:

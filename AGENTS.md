@@ -16,8 +16,8 @@ Codeguard 是一个 **AI 代码审查引擎**,以 Agent 为最终核心,双语�
 git diff → PRModeClassifier → FileTaskBuilder/HunkTaskBuilder
          → TaskRoute(DirectGate)
          ├─ direct task → DirectTaskReview
-         └─ full task → RiskTriage → TaskRank → PlanUnit(按文件复用)
-              → ReviewCoverage → [Summary] → ContextProvider → task-scoped Discover
+         └─ full task → TaskSelection → PlanUnit(按文件复用)
+              → Plan → ReviewPlan → [Summary] → ContextProvider → task-scoped Discover
               → CouncilCoordinator → EvidenceVerifier(账本验证,零 LLM)
               → CouncilJudge(批量 EvidenceJudge)→ ReviewResult
 ```
@@ -31,11 +31,9 @@ ReviewCouncil 发现者由 `ThreatModelAgent` / `BehaviorAgent` / `Maintainabili
 
 证据采用 **Evidence Ledger**（取代 ADR-046 的 evidence_chain 重放验证与更早的多阶段 Concern/Strategist/Researcher/ImpactAssessor，后者已废弃勿恢复）：patch（P01）、预取上下文（Cxx）、真实工具结果（Txx）由运行时代码捕获为内容寻址 Artifact，审查员只输出短编号引用（`evidence_refs`），不生产任何证据文本。EvidenceVerifier 全部确定性、零 LLM、正常路径零重放——Artifact 健康检查（patch 摘要一致、图响应 subject/scope/status/coverage 护栏）、guard 注解扫描（按发现者分工：@PreAuthorize 族/@Transactional 确定性反证）、引用范围核对；仅异常 Artifact 进入重放队列且受工具白名单约束。CouncilJudge 用批量 EvidenceJudge（每批 ≤8 候选）一次完成支持/反驳/去留/定级，输出经确定性合同校验（keep 必须引用支持事实、ID 必须可见、维护性候选不得 CRITICAL、LOCATION 不能单独支持），违规重试/二分拆批，单候选最终失败 fail-closed 不输出。旧 Supervisor 图迁移到 `services/agent/legacy/supervisor_graph/`,仅作历史参考,不作为默认路径、feature flag 或 eval profile 回退。
 
-风险规则仍包含 24 个具体 `RiskTag` + `GENERAL_REVIEW`，但 RiskTag 不再决定 Reviewer、Direct/ReAct 或知识注入；它暂时只作为任务排序兼容信息。知识注入由 Full task 的 Plan 按 reviewer 选择专项主题，失败时只注入 BASE。风险规则只消费
-path/diff-text 变化方向；普通 diff 默认全选 task，100/10 配置只作为超大 diff 的更严格上限。
-风险规则直接生成 `TaskRiskPrior`，再由 `ReviewCoveragePlanner` 组合基础覆盖、风险增强
-和 ReAct assignment 预算；Risk 只能增加/升级 Reviewer，不能排除基础覆盖。内部 State 保存
-`risk_priors` 和 `review_coverage_plan`，不增加产品输出字段；候选证据画像由运行时捕获的 Artifact 与引用验证结果派生。
+Reviewer 分派和知识注入完全由 Full task 的 Plan 决定；Plan 失败时只注入 BASE，并沿用基础 Reviewer 覆盖策略。
+任务选择只消费 DirectGate、diff 规模和确定性任务上限，不依赖额外的风险分类模型。内部 State
+保存 `task_routes`、`plan_units`、`task_plans` 和 `review_assignments`，不增加产品输出字段。
 
 ---
 
@@ -106,7 +104,7 @@ Codeguard/
     │   │   ├── llm/client.py      # LLM 工厂(openai/Codex/mock)+ 重试 + mock 假数据
     │   │   ├── tools/             # ★工具调用(智能层侧)。tool_client(同步 HTTP)+ definitions(LangChain 工具)
     │   │   ├── pipeline/orchestrator.py   # 多阶段管线编排(审查唯一入口)
-    │   │   ├── pipeline/risk/             # ★任务拆分、风险规则、路由与排序
+    │   │   ├── pipeline/tasks.py          # ★任务拆分、DirectGate 与规模路由
     │   │   ├── pipeline/context/          # ★图谱符号上下文与事实预算
     │   │   ├── pipeline/reviewers/        # ★三路发现者、工具协调与 prompt 构造
     │   │   ├── pipeline/planning.py       # ★OCR 式 PlanUnit、Reviewer 与知识主题规划
@@ -148,7 +146,7 @@ Codeguard/
 5. **工具会话(可选)**:配置 `CODEGUARD_TOOL_SERVER_URL` 且非 mock 时,CLI 为本次 diff 创建 Java 工具会话;否则走无工具直连基准。
 6. **`pipeline/orchestrator.py:PipelineOrchestrator.run`** 是审查唯一门面,内部构建 `pipeline/graph.py` 的 ADR-032 LangGraph:
    - `PRModeClassifier` 先按规模选择 whole-diff、file task 或 hunk task；所有规模都进入统一 task 管线。
-   - TaskBuilder 后执行确定性 `TaskRoute(DirectGate)`；Direct task 独立直审，Full task 进入 `RiskTriage → TaskRank → Plan → ReviewCoverage`。
+   - TaskBuilder 后执行确定性 `TaskRoute(DirectGate)`；Direct task 独立直审，Full task 进入 `TaskSelection → Plan → ReviewPlan`。
    - `Plan` 按 PlanUnit 并发生成 Reviewer、审查重点和知识主题；LARGE 模式同文件 hunk 复用文件级 Plan。
    - `[Summary]` 对 TaskRank 选中范围产出可选变更摘要。
    - `ContextProvider` 构造只读 `ContextBundle`。
@@ -245,8 +243,6 @@ python -m evals.runner --profile eval-codeguard-full --runs 1   # 完整档单�
 | `CODEGUARD_EVIDENCE_MODE` | `full` | 证据开关;`off` 跳过取证,候选由 DirectJudge 直接终审(无证据链消融基线档) |
 | `CODEGUARD_MAX_REVIEW_TASKS` | `100` | 仅作为大 diff 的更严格总任务上限 |
 | `CODEGUARD_MAX_TASKS_PER_FILE` | `10` | 仅作为大 diff 的更严格单文件上限 |
-| `CODEGUARD_MAX_REACT_TASKS` | `20` | 普通/大 diff 选中范围内允许使用 ReAct 的 task 上限；其余 Direct |
-| `CODEGUARD_FORCE_REACT` | `false` | 评测/诊断开关；有工具时让已选 assignment 进入 ReAct 候选，仍受 `MAX_REACT_TASKS` 约束且不改变 Reviewer 覆盖 |
 | `CODEGUARD_TRACE_ENABLED` | `false` | 历史本地 HTML Trace；仅在传 `--trace` 或显式设为 true 时运行 |
 | `LANGSMITH_TRACING` | `false` | LangSmith 标准开关；设为 true 后由 LangGraph/LangChain 自动追踪 |
 | `LANGSMITH_PROJECT` | `codeguard` | LangSmith 追踪项目名；需同时设置 `LANGSMITH_API_KEY` |

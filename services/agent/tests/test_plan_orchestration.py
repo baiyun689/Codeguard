@@ -9,7 +9,7 @@ from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
 from codeguard_agent.pipeline.knowledge.selector import select_knowledge
 from codeguard_agent.models.knowledge import KnowledgeBudget
 from codeguard_agent.pipeline.planning import build_plan_units, validate_plan
-from codeguard_agent.pipeline.risk.task_prep import classify_task_route
+from codeguard_agent.pipeline.tasks import classify_task_route
 
 
 def _task(task_id: str, file: str, patch: str) -> ReviewTask:
@@ -55,7 +55,7 @@ def test_plan_validation_rejects_cross_reviewer_topics():
     assert any("invalid_topic" in item for item in diagnostics)
 
 
-def test_explicit_plan_topics_do_not_use_risk_prior():
+def test_explicit_plan_topics_are_selected():
     bundle = select_knowledge(
         reviewer=ReviewerKind.THREAT_MODEL,
         requested_topics=("AUTHORIZATION",),

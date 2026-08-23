@@ -13,7 +13,6 @@ def test_reviewer_branch_never_writes_evidence_fields():
     out = node(
         {
             "review_tasks": [],
-            "risk_priors": {},
             "task_selection": TaskSelection(selected_task_ids=[]),
         }
     )

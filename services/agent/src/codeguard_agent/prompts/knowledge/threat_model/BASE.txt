@@ -26,7 +26,7 @@
 [Do not infer]
 - 禁止从类名/方法名推断安全属性（如名字含 "Safe" 不代表安全）
 - 禁止从 Knowledge 示例代码推断当前仓库存在同样的问题
-- 禁止因为某个 RiskTag 被命中就假设对应漏洞存在
+- 禁止因为某个知识主题被选择就假设对应漏洞存在
 
 [Candidate quality]
 候选至少应说明：root cause（代码中的错误机制）、trigger（触发条件）、observable consequence（外部可观察后果）、fix location（修改位置）。

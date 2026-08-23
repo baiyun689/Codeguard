@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
 
         llm = build_llm(settings)
         logger.info(
-            "审查方式:ADR-032/038 ReviewCouncil(summary → task/risk/context → "
+            "审查方式:ADR-032/038 ReviewCouncil(summary → task/plan/context → "
             "discover×3 → coordinator → evidence_verifier → council_judge → causal_merge)"
         )
         # 裁决模型(优先异源+低温,供 EvidenceJudge 与 causal_merge 使用;误报验证也复用)。
@@ -150,8 +150,6 @@ def main(argv: list[str] | None = None) -> int:
             review_budget=ReviewBudget(
                 max_tasks_to_review=settings.max_review_tasks,
                 max_tasks_per_file=settings.max_tasks_per_file,
-                max_react_assignments=settings.max_react_assignments,
-                force_react=settings.force_react,
             ),
             checkpoint_backend=settings.checkpoint_backend,
             checkpoint_db=settings.checkpoint_db,

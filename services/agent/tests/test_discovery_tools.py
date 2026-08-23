@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Event, Lock
 
-from codeguard_agent.pipeline.risk.discovery import (
+from codeguard_agent.pipeline.discovery import (
     COMPLETE_PATCH_RESULT,
     REPEATED_TOOL_RESULT,
     CoordinatedDiscoveryToolClient,

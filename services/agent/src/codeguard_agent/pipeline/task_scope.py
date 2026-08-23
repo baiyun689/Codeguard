@@ -68,13 +68,13 @@ class LargeDiffPlan:
         marker = "...(大 diff 单任务 patch 已截断)"
         return patch[: LARGE_TASK_PATCH_CHARS - len(marker)] + marker
 
-    def coverage_notice(self, selection: TaskSelection) -> str:
+    def limit_notice(self, selection: TaskSelection) -> str:
         if not self.active:
             return ""
         selected = len(selection.selected_task_ids)
         skipped = max(0, self.total_tasks - selected)
         return (
-            f"大变更降级审查：共 {self.total_tasks} 个任务，本次按风险审查 {selected} 个，"
+            f"大变更降级审查：共 {self.total_tasks} 个任务，本次执行 {selected} 个，"
             f"跳过 {skipped} 个；结果不代表完整覆盖，建议拆分 PR。"
         )
 

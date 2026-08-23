@@ -75,7 +75,7 @@ class ExpectedIssue(BaseModel):
     note: str = Field(default="", description="给人看的说明,如'用户输入直接拼进 SQL'")
     root_cause: str = Field(default="", description="与措辞无关的规范化根因")
     cwe: str = Field(default="", description="可选 CWE 编号")
-    risk_tag: str = Field(default="", description="可选 Codeguard RiskTag")
+    risk_tag: str = Field(default="", description="可选缺陷分类标签")
     evidence_anchors: list[str] = Field(
         default_factory=list,
         description="可接受的符号、source/sink 或源码位置锚点",

@@ -1,11 +1,4 @@
-"""任务准备纯函数。
-
-职责：
-- build_tasks：解析 unified diff → 每 hunk 一个 ReviewTask；无 hunk（含删除文件、
-  纯重命名）退化为文件级 fallback task。不判断风险、不读仓库文件、不调 LLM。
-- triage_tasks：调用风险规则目录，直接产出风险先验和规则诊断。
-- rank_tasks：按 TaskRiskPrior 排序并应用预算。
-"""
+"""任务拆分、DirectGate 与 diff 规模路由的纯函数。"""
 
 from __future__ import annotations
 
@@ -18,14 +11,7 @@ from codeguard_agent.models.tasks import (
     ReviewBudget,
     ReviewMode,
     ReviewTask,
-    SkippedTask,
-    TaskSelection,
-    TaskRiskPrior,
     TaskRoute,
-)
-from codeguard_agent.pipeline.risk.rules.catalog import (
-    TriageResult,
-    triage_tasks as _triage_tasks,
 )
 
 logger = logging.getLogger("codeguard")
@@ -378,100 +364,6 @@ def build_whole_diff_task(diff_text: str) -> list[ReviewTask]:
             patch_complete=False,
         )
     ] if diff_text.strip() else []
-
-
-def triage_tasks(
-    tasks: list[ReviewTask], *, rules_enabled: bool = True
-) -> TriageResult:
-    """按注册表聚合风险信号并保留规则失败诊断。
-
-    rules_enabled=False 时全部 UNCLASSIFIED(triage 消融档)。
-    """
-    return _triage_tasks(tasks, rules_enabled=rules_enabled)
-
-
-def _is_production_path(path: str) -> bool:
-    """Prefer source files over tests, docs, generated and build output."""
-    normalized = _norm(path)
-    non_production_markers = (
-        "/test/",
-        "/tests/",
-        "/docs/",
-        "/generated/",
-        "/build/",
-        "/target/",
-    )
-    if normalized.startswith(("test/", "tests/", "docs/", "generated/")) or any(
-        marker in normalized for marker in non_production_markers
-    ):
-        return False
-    return True
-
-
-def rank_tasks(
-    tasks: list[ReviewTask],
-    priors: dict[str, TaskRiskPrior],
-    budget: ReviewBudget,
-) -> TaskSelection:
-    """按确定性风险优先级选择任务，不把排序分数写回共享状态。"""
-
-    def rank_key(task: ReviewTask) -> tuple[int, float, int, int, str]:
-        prior = priors.get(task.id)
-        hypotheses = prior.hypotheses if prior is not None else ()
-        has_deleted_evidence = any(
-            "text:deleted:" in hypothesis.source for hypothesis in hypotheses
-        )
-        return (
-            -max((hypothesis.review_priority for hypothesis in hypotheses), default=0),
-            -max(
-                (hypothesis.match_confidence for hypothesis in hypotheses), default=0.0
-            ),
-            -int(_is_production_path(task.file)),
-            -int(has_deleted_evidence),
-            task.id,
-        )
-
-    ranked = sorted(tasks, key=rank_key)
-    selected: list[str] = []
-    skipped: list[tuple[ReviewTask, str]] = []
-    selected_per_file: dict[str, int] = {}
-
-    for task in ranked:
-        if (
-            budget.max_tasks_to_review is not None
-            and len(selected) >= budget.max_tasks_to_review
-        ):
-            skipped.append((task, "total_limit"))
-            continue
-        file_key = _norm(task.file)
-        if (
-            budget.max_tasks_per_file is not None
-            and selected_per_file.get(file_key, 0) >= budget.max_tasks_per_file
-        ):
-            skipped.append((task, "per_file_limit"))
-            continue
-        selected.append(task.id)
-        selected_per_file[file_key] = selected_per_file.get(file_key, 0) + 1
-
-    return TaskSelection(
-        selected_task_ids=selected,
-        skipped_tasks=[
-            SkippedTask(
-                task_id=task.id,
-                reason=reason,
-                review_priority=max(
-                    (
-                        hypothesis.review_priority
-                        for hypothesis in (
-                            priors[task.id].hypotheses if task.id in priors else ()
-                        )
-                    ),
-                    default=0,
-                ),
-            )
-            for task, reason in skipped
-        ],
-    )
 
 
 def diff_metrics(diff_text: str) -> DiffMetrics:

@@ -51,27 +51,23 @@ def test_evidence_mode_invalid_falls_back_to_full(monkeypatch):
 def test_phase2_budget_defaults(monkeypatch):
     monkeypatch.delenv("CODEGUARD_MAX_REVIEW_TASKS", raising=False)
     monkeypatch.delenv("CODEGUARD_MAX_TASKS_PER_FILE", raising=False)
-    monkeypatch.delenv("CODEGUARD_MAX_REACT_TASKS", raising=False)
 
     settings = Settings.from_env()
 
     assert settings.max_review_tasks == 100
     assert settings.max_tasks_per_file == 10
-    assert settings.max_react_assignments == 20
     assert settings.graph_build_timeout_seconds == 120
 
 
 def test_phase2_budget_env_override(monkeypatch):
     monkeypatch.setenv("CODEGUARD_MAX_REVIEW_TASKS", "17")
     monkeypatch.setenv("CODEGUARD_MAX_TASKS_PER_FILE", "3")
-    monkeypatch.setenv("CODEGUARD_MAX_REACT_TASKS", "30")
     monkeypatch.setenv("CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS", "240")
 
     settings = Settings.from_env()
 
     assert settings.max_review_tasks == 17
     assert settings.max_tasks_per_file == 3
-    assert settings.max_react_assignments == 30
     assert settings.graph_build_timeout_seconds == 240
 
 
@@ -100,9 +96,6 @@ def test_local_html_trace_can_be_explicitly_enabled(monkeypatch, value):
         ("CODEGUARD_MAX_TASKS_PER_FILE", "0"),
         ("CODEGUARD_MAX_TASKS_PER_FILE", "-1"),
         ("CODEGUARD_MAX_TASKS_PER_FILE", "many"),
-        ("CODEGUARD_MAX_REACT_TASKS", "0"),
-        ("CODEGUARD_MAX_REACT_TASKS", "-1"),
-        ("CODEGUARD_MAX_REACT_TASKS", "many"),
         ("CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS", "0"),
         ("CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS", "many"),
     ],

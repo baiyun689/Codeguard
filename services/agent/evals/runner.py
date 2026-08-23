@@ -447,9 +447,8 @@ def main(argv: list[str] | None = None) -> int:
     # 以便工具会话用该用例自带的 repo_path。
     # enable_supervisor 由 profile 控制(默认关):受控对照档保持确定性全派、不引入路由
     # 非确定性;仅 pipeline-supervisor 观测档置开(见 design D9)。
-    # CODEGUARD_FORCE_REACT 与 CLI 同语义:诊断/验证时强制 ReAct(仍受预算约束)。
     orchestrator = PipelineOrchestrator(
-        review_budget=ReviewBudget(force_react=settings.force_react)
+        review_budget=ReviewBudget()
     )
     direct_prompt_path = (
         Path(__file__).resolve().parents[1]
@@ -520,7 +519,6 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 allow_direct_fallback=not profile.strict_tools,
                 evidence_mode=profile.evidence_mode,
-                triage_enabled=profile.triage != "off",
                 evidence_revision=case_revision,
                 trace_enabled=settings.trace_enabled,
                 trace_dir=settings.trace_dir,

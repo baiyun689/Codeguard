@@ -13,7 +13,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from codeguard_agent.models.tasks import ReviewTask, TaskContextBundle, TaskRiskPrior
+from codeguard_agent.models.tasks import ReviewTask, TaskContextBundle
 
 logger = logging.getLogger("codeguard")
 
@@ -96,7 +96,6 @@ def build_reviewer_user_prompt(
     *,
     task: ReviewTask,
     summary: str = "",
-    risk_prior: TaskRiskPrior | None = None,
     context_bundle: TaskContextBundle | None = None,
     task_knowledge: str = "",
     plan_objectives: tuple[str, ...] = (),
@@ -138,22 +137,6 @@ def build_reviewer_user_prompt(
         _text(task.patch),
         "  </task_patch>",
     ])
-    if risk_prior is not None:
-        parts.extend([
-            (
-                '  <risk_prior role="routing_prior_not_evidence" '
-                f'coverage="{_attr(risk_prior.coverage.value)}">'
-            ),
-        ])
-        for hypothesis in risk_prior.hypotheses:
-            parts.append(
-                f'    <risk_hypothesis source="{_attr(hypothesis.source)}" '
-                f'tag="{_attr(hypothesis.tag.value)}" '
-                f'match_confidence="{hypothesis.match_confidence:.2f}" '
-                f'review_priority="{hypothesis.review_priority}">'
-                f"{_text(hypothesis.reason)}</risk_hypothesis>"
-            )
-        parts.append("  </risk_prior>")
     if context_bundle is not None:
         parts.append(
             "  <prefetched_context "

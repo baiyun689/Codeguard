@@ -435,9 +435,9 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
         },
     )
     node("diff_task_builder", {"review_tasks": [{"id": "task-1"}]})
-    node("risk_triage", {"risk_priors": {"task-1": {}}})
-    node("task_rank", {"task_selection": {"selected_task_ids": ["task-1"]}})
-    node("review_coverage", {"review_coverage_plan": {"assignments": []}})
+    node("task_selection", {"task_selection": {"selected_task_ids": ["task-1"]}})
+    node("plan", {"task_plans": {}})
+    node("review_plan", {"review_assignments": {"tasks": []}})
     node("summary", {"diff_summary": "summary"})
     node("context_provider", {"task_context_bundles": {"task-1": {}}})
     for reviewer in (
@@ -461,9 +461,11 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
     assert [stage["code_name"] for stage in view["main_stages"]] == [
         "classify_mode",
         "diff_task_builder",
-        "risk_triage",
-        "task_rank",
-        "review_coverage",
+        "task_route",
+        "direct_task_review",
+        "task_selection",
+        "plan",
+        "review_plan",
         "summary",
         "context_provider",
         "review_council",
@@ -491,7 +493,7 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
         "evidence_verifier",
         "council_judge",
     }
-    assert {"review_tasks", "risk_priors", "task_selection", "candidate_relations"} <= set(
+    assert {"review_tasks", "task_selection", "candidate_relations"} <= set(
         view["state_writes"]
     )
 
@@ -679,9 +681,9 @@ def test_trace_view_shows_small_direct_fallback_to_file_pipeline():
             },
         ),
         *pair(5, "file_task_builder", {"review_tasks": [{"id": "file-task"}]}),
-        *pair(7, "risk_triage", {"risk_priors": {}}),
-        *pair(9, "task_rank", {"task_selection": {}}),
-        *pair(11, "review_coverage", {"review_coverage_plan": {}}),
+            *pair(7, "task_selection", {"task_selection": {}}),
+            *pair(9, "plan", {"task_plans": {}}),
+            *pair(11, "review_plan", {"review_assignments": {}}),
         *pair(13, "context_provider", {"task_context_bundles": {}}),
     ]
     view = build_trace_view(
@@ -696,9 +698,9 @@ def test_trace_view_shows_small_direct_fallback_to_file_pipeline():
         "classify_mode",
         "direct_review",
         "file_task_builder",
-        "risk_triage",
-        "task_rank",
-        "review_coverage",
+        "task_route",
+        "direct_task_review",
+        "task_selection",
     ]
     assert view["routing"]["initial_mode"] == "small"
     assert view["routing"]["effective_mode"] == "medium"
@@ -1324,8 +1326,8 @@ class TestPhaseMapping:
     def test_all_nodes_have_phase(self):
         expected = {
             "summary", "classify_mode", "direct_review", "file_task_builder",
-            "diff_task_builder", "task_route", "direct_task_review", "risk_triage",
-            "task_rank", "plan", "review_coverage",
+            "diff_task_builder", "task_route", "direct_task_review", "task_selection",
+            "plan", "review_plan",
             "context_provider",
             "discover_threat_model", "discover_behavior", "discover_maintainability",
             "discovery_collector", "council_coordinator",

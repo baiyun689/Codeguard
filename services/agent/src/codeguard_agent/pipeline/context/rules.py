@@ -6,7 +6,7 @@ import re
 
 from codeguard_agent.models.council import ContextFact
 from codeguard_agent.models.tasks import ReviewTask
-from codeguard_agent.pipeline.risk.task_prep import _hunk_span
+from codeguard_agent.pipeline.tasks import _hunk_span
 
 
 def normalize_path(path: str) -> str:

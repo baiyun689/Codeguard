@@ -17,7 +17,7 @@ from codeguard_agent.models.tasks import (
     TaskAgentPlan,
     TaskRoute,
     TaskReviewPlan,
-    ReviewCoveragePlan,
+    ReviewAssignments,
 )
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.engines import DirectEngine
@@ -202,15 +202,14 @@ def plan_coverage(
     plan_units: list[PlanUnit],
     plans: dict[str, TaskAgentPlan],
     tools_available: bool,
-) -> ReviewCoveragePlan:
-    """将 Plan 的 reviewer 选择适配到现有 Council coverage 黑板。"""
+) -> ReviewAssignments:
+    """将 Plan 的 reviewer 选择转换为 task → reviewer 执行计划。"""
     unit_by_task = {
         task_id: unit
         for unit in plan_units
         for task_id in unit.task_ids
     }
     task_plans: list[TaskReviewPlan] = []
-    assignment_count = 0
     for task in tasks:
         if task.id not in selection_ids or routes.get(task.id, TaskRoute(task_id=task.id, route="full")).route != "full":
             continue
@@ -223,13 +222,10 @@ def plan_coverage(
                 reviewer=reviewer_plan.reviewer,
                 tier=ReviewTier.REACT if tools_available else ReviewTier.DIRECT,
                 reasons=(AssignmentReason.PLAN_SELECTED,),
-                hypothesis_tags=(),
             )
             for reviewer_plan in plan.reviewer_plans
         )
-        assignment_count += len(assignments)
         task_plans.append(TaskReviewPlan(task_id=task.id, assignments=assignments))
-    return ReviewCoveragePlan(
+    return ReviewAssignments(
         tasks=tuple(task_plans),
-        baseline_assignments=assignment_count,
     )

@@ -21,7 +21,7 @@ from codeguard_agent.pipeline.engines import (
 )
 from codeguard_agent.pipeline.evidence.ledger import EvidenceCatalogBuilder
 from codeguard_agent.pipeline.reviewers.reviewers import build_reviewer_user_prompt
-from codeguard_agent.pipeline.risk.discovery import (
+from codeguard_agent.pipeline.discovery import (
     COMPLETE_PATCH_RESULT,
     REPEATED_TOOL_RESULT,
     CoordinatedDiscoveryToolClient,

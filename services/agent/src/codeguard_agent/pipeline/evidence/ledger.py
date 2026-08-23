@@ -24,7 +24,7 @@ from codeguard_agent.models.evidence import (
 )
 from codeguard_agent.models.schemas import EvidenceRole
 from codeguard_agent.pipeline.evidence.graph_response import summarize_graph
-from codeguard_agent.pipeline.risk.discovery import (
+from codeguard_agent.pipeline.discovery import (
     COMPLETE_PATCH_RESULT,
     REPEATED_TOOL_RESULT,
 )
