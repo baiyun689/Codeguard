@@ -87,6 +87,21 @@ class DegradationReport(BaseModel):
         return self.total_degradations == 0
 
 
+class TraceArtifactMeta(BaseModel):
+    """Trace 中的 Artifact 索引；原文通过 payload_hash 单独寻址。"""
+
+    artifact_id: str
+    call_id: str = ""
+    tool: str = ""
+    arguments: dict[str, str] = Field(default_factory=dict)
+    status: str = ""
+    capture_mode: str = ""
+    payload_hash: str
+    preview: str = ""
+    preview_truncated: bool = False
+    replayed_from_artifact_id: str = ""
+
+
 class TraceReport(BaseModel):
     """一次审查的完整追踪报告。"""
 
@@ -95,3 +110,5 @@ class TraceReport(BaseModel):
     events: list[TraceEvent] = Field(default_factory=list)
     summary: TraceSummary = Field(default_factory=TraceSummary)
     degradation: DegradationReport = Field(default_factory=DegradationReport)
+    artifacts: dict[str, TraceArtifactMeta] = Field(default_factory=dict)
+    payload_store: dict[str, str] = Field(default_factory=dict)

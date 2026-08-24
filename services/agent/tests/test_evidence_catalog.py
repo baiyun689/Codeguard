@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+
 from codeguard_agent.models.council import ContextFact
 from codeguard_agent.models.evidence import (
     ArtifactAvailability,
@@ -19,7 +21,10 @@ from codeguard_agent.pipeline.engines import (
     ToolAgentEngine,
     _gathered_context_from_records,
 )
-from codeguard_agent.pipeline.evidence.ledger import EvidenceCatalogBuilder
+from codeguard_agent.pipeline.evidence.ledger import (
+    EvidenceCatalogBuilder,
+    capture_tool_records,
+)
 from codeguard_agent.pipeline.reviewers.reviewers import build_reviewer_user_prompt
 from codeguard_agent.pipeline.discovery import (
     COMPLETE_PATCH_RESULT,
@@ -53,6 +58,7 @@ def _record(
     status: str = "complete",
     call_id: str = "call-1",
     resolved_output: str = "",
+    reused_from_call_id: str = "",
 ) -> DiscoveryToolRecord:
     return DiscoveryToolRecord(
         call_id=call_id,
@@ -62,6 +68,7 @@ def _record(
         duration_ms=1.0,
         status=status,
         reuse_key="get_file_content:{}",
+        reused_from_call_id=reused_from_call_id,
         resolved_output=resolved_output,
     )
 
@@ -204,6 +211,37 @@ def test_追加工具记录_无法识别状态映射为_invalid():
     assert artifact.availability is ArtifactAvailability.INVALID
 
 
+def test_capture_tool_records_只向_state_暴露引用不暴露原始输出():
+    catalog = _Builder().build()
+    records = [
+        _record(call_id="call-1", output="SECRET RAW PAYLOAD"),
+        _record(
+            call_id="call-2",
+            output=REPEATED_TOOL_RESULT,
+            status="reused",
+            resolved_output="SECRET RAW PAYLOAD",
+            reused_from_call_id="call-1",
+        ),
+        _record(
+            call_id="call-3",
+            output=COMPLETE_PATCH_RESULT,
+            status="reused",
+            reused_from_call_id="task_patch",
+        ),
+    ]
+
+    batch = capture_tool_records(catalog, records)
+
+    assert len(batch.trace_refs) == 3
+    assert batch.trace_refs[0].artifact_id
+    assert batch.trace_refs[1].artifact_id == batch.trace_refs[0].artifact_id
+    assert batch.trace_refs[1].reused_from_artifact_id == batch.trace_refs[0].artifact_id
+    assert batch.trace_refs[2].artifact_id == catalog.alias_to_artifact_id["P01"]
+    assert "output" not in batch.trace_refs[0].model_dump()
+    artifact = batch.catalog.artifacts[batch.trace_refs[0].artifact_id]
+    assert artifact.payload == "SECRET RAW PAYLOAD"
+
+
 # ── reused 解析到首次真实 payload ──────────────────────────────────────
 
 
@@ -214,6 +252,29 @@ class _FakeDelegate:
     def get_file_content(self, _path):
         self.calls += 1
         return ToolResponse(success=True, result="REAL CONTENT")
+
+    def inspect_change_impact(self, _symbol_id):
+        self.calls += 1
+        return ToolResponse(success=True, result=json.dumps({
+            "schema_version": 2,
+            "outcome": "found",
+            "coverage": "complete",
+            "source_scope": "MAIN",
+            "subject_symbol_id": "java:A#m()",
+            "symbols": [{
+                "id": "java:A#m()", "kind": "method", "source_set": "MAIN",
+            }],
+            "relationships": [{
+                "sourceId": "java:B#call()", "targetId": "java:A#m()",
+                "kind": "calls", "file": "B.java", "line": 1,
+                "source_set": "MAIN", "resolution": "RESOLVED",
+                "verbose_diagnostic": "must stay out of reviewer context",
+            }],
+            "unresolved_relationships": [],
+            "unresolved_count": 0,
+            "limitations": [],
+            "snapshot_main_coverage": "partial",
+        }, ensure_ascii=False))
 
 
 def test_共享协调器_跨任务复用_返回真实内容且记录指向首次调用():
@@ -231,6 +292,40 @@ def test_共享协调器_跨任务复用_返回真实内容且记录指向首次
     assert record_b.status == "reused"
     assert record_b.resolved_output == "REAL CONTENT"
     assert record_b.reused_from_call_id == record_a.call_id
+
+
+def test_图谱工具给_reviewer_摘要但记录保留原始响应():
+    client = CoordinatedDiscoveryToolClient(
+        _FakeDelegate(), DiscoveryToolCoordinator()
+    )
+
+    response = client.inspect_change_impact("java:A#m()")
+
+    reviewer_payload = json.loads(response.result.split("\n\n[证据编号", 1)[0])
+    record = client.trace_records[-1]
+    raw_payload = json.loads(record.resolved_output)
+    assert reviewer_payload["outcome"] == "found"
+    assert "snapshot_main_coverage" not in reviewer_payload
+    assert "verbose_diagnostic" not in reviewer_payload["relationships"][0]
+    assert raw_payload["snapshot_main_coverage"] == "partial"
+    assert raw_payload["relationships"][0]["verbose_diagnostic"].startswith("must")
+
+
+def test_无目录降级上下文_图谱记录仍只暴露摘要():
+    raw = _FakeDelegate().inspect_change_impact("java:A#m()").result
+    contexts = _gathered_context_from_records([
+        _record(
+            tool="inspect_change_impact",
+            arguments={"symbol_id": "java:A#m()"},
+            output=raw,
+            resolved_output=raw,
+        )
+    ])
+
+    assert len(contexts) == 1
+    payload = json.loads(contexts[0].content)
+    assert payload["outcome"] == "found"
+    assert "snapshot_main_coverage" not in payload
 
 
 def test_同一客户端二次调用_返回短标记_但_record_解析真实payload():

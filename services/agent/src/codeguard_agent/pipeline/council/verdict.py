@@ -26,7 +26,11 @@ from codeguard_agent.models.evidence import (
 )
 from codeguard_agent.models.schemas import Issue, Severity
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
-from codeguard_agent.pipeline.evidence.graph_response import summarize_graph
+from codeguard_agent.pipeline.evidence.projection import (
+    GRAPH_TOOLS,
+    ProjectionAudience,
+    project_tool_payload,
+)
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
 
 logger = logging.getLogger("codeguard")
@@ -36,7 +40,6 @@ _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
 _JUDGE_BATCH_SIZE = 8
 _JUDGE_MAX_PARALLEL_BATCHES = 4
 _FILE_PAYLOAD_MAX_CHARS = 2000
-_GRAPH_TOOLS = ("inspect_change_impact", "inspect_security_path", "inspect_structure")
 
 
 def _stable_json(value: object) -> str:
@@ -80,8 +83,12 @@ def _evidence_item_payload(
             elif dossier.candidate.line not in dossier.task.changed_lines:
                 limitations.append("candidate_line_unknown")
             content = evidence.content
-        elif evidence.tool in _GRAPH_TOOLS:
-            content = summarize_graph(evidence.content)
+        elif evidence.tool in GRAPH_TOOLS:
+            content = project_tool_payload(
+                evidence.tool,
+                evidence.content,
+                ProjectionAudience.JUDGE,
+            ).content
         else:
             content = evidence.content[:_FILE_PAYLOAD_MAX_CHARS]
             if len(evidence.content) > _FILE_PAYLOAD_MAX_CHARS:
@@ -91,7 +98,7 @@ def _evidence_item_payload(
         items.append({
             "evidence_id": fact_id,
             "source_kind": evidence.source_kind.value,
-            "declared_role": _role_of(evidence.artifact_id, dossier).value,
+            "declared_role": evidence.declared_role.value,
             "tool": evidence.tool,
             "arguments": evidence.arguments,
             "content": content,
@@ -143,10 +150,18 @@ def _judge_payload(
 # ── 输出确定性校验(源文档 §8.4 + 修正⑤) ───────────────────────────────
 
 
-def _role_of(artifact_id: str, dossier: CandidateDossier) -> EvidenceRole:
+def _role_of(
+    artifact_id: str,
+    dossier: CandidateDossier,
+    verification: CandidateVerification | None = None,
+) -> EvidenceRole:
     for ref in dossier.candidate.evidence_refs:
         if ref.artifact_id == artifact_id:
             return ref.declared_role
+    if verification is not None:
+        for evidence in verification.valid_evidence:
+            if evidence.artifact_id == artifact_id:
+                return evidence.declared_role
     return EvidenceRole.MECHANISM  # 自动 patch 引用
 
 
@@ -155,6 +170,7 @@ def _validate_assessment(
     *,
     dossier: CandidateDossier,
     fact_map: dict[str, str],
+    verification: CandidateVerification,
     violations: list[str],
 ) -> EvidenceJudgeAssessment | None:
     """单候选裁决合同校验;违约返回 None(该候选 fail-closed)。"""
@@ -177,7 +193,7 @@ def _validate_assessment(
         # 修正⑤:LOCATION 只说明位置,不能单独满足 keep 的支持要求。
         artifact_ids = [fact_map[fid] for fid in evidence_ids]
         if artifact_ids and all(
-            _role_of(artifact_id, dossier) is EvidenceRole.LOCATION
+            _role_of(artifact_id, dossier, verification) is EvidenceRole.LOCATION
             for artifact_id in artifact_ids
         ):
             violations.append("evidence_all_location")
@@ -300,6 +316,7 @@ def _judge_chunk(
             item,
             dossier=dossier,
             fact_map=fact_map[dossier.candidate.id],
+            verification=verifications[dossier.candidate.id],
             violations=violations,
         )
         outcomes.append(

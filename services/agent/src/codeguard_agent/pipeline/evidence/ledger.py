@@ -21,9 +21,15 @@ from codeguard_agent.models.evidence import (
     EvidenceRefError,
     EvidenceRefErrorReason,
     EvidenceSourceKind,
+    ToolCaptureBatch,
+    ToolTraceRef,
 )
 from codeguard_agent.models.schemas import EvidenceRole
-from codeguard_agent.pipeline.evidence.graph_response import summarize_graph
+from codeguard_agent.pipeline.evidence.projection import (
+    GRAPH_TOOLS,
+    ProjectionAudience,
+    project_tool_payload,
+)
 from codeguard_agent.pipeline.discovery import (
     COMPLETE_PATCH_RESULT,
     REPEATED_TOOL_RESULT,
@@ -36,7 +42,6 @@ _TOOL_STATUS_MAP = {
     "not_found": ArtifactAvailability.MISSING,
 }
 
-_GRAPH_TOOLS = ("inspect_change_impact", "inspect_security_path", "inspect_structure")
 _CATALOG_MAX_CHARS = 12000
 _CATALOG_PAYLOAD_MAX_CHARS = 2000
 
@@ -101,11 +106,44 @@ class EvidenceCatalogBuilder:
           Artifact,供该任务候选引用;
         - failed/rejected/not_found 也留 Artifact 供 Trace,默认不作支持证据。
         """
-        for record in records or ():
-            output = str(getattr(record, "output", ""))
-            status = str(getattr(record, "status", "complete"))
-            if output in {COMPLETE_PATCH_RESULT, REPEATED_TOOL_RESULT}:
-                continue
+        return capture_tool_records(catalog, records).catalog
+
+
+def capture_tool_records(
+    catalog: EvidenceCatalog,
+    records: Sequence[Any],
+) -> ToolCaptureBatch:
+    """原始记录落入 Ledger，并只向外返回不含 payload 的 Trace 引用。"""
+    call_to_artifact = {
+        artifact.call_id: artifact.id
+        for artifact in catalog.artifacts.values()
+        if artifact.call_id
+    }
+    patch_artifact_id = catalog.alias_to_artifact_id.get("P01", "")
+    trace_refs: list[ToolTraceRef] = []
+    for record in records or ():
+        output = str(getattr(record, "output", ""))
+        status = str(getattr(record, "status", "complete"))
+        call_id = str(getattr(record, "call_id", ""))
+        reused_from_call_id = str(
+            getattr(record, "reused_from_call_id", "")
+        )
+        arguments = {
+            key: value
+            for key, value in dict(
+                getattr(record, "arguments", {}) or {}
+            ).items()
+            if isinstance(value, str)
+        }
+        reused_from_artifact_id = call_to_artifact.get(
+            reused_from_call_id, ""
+        )
+        artifact_id = ""
+        if output == COMPLETE_PATCH_RESULT:
+            artifact_id = patch_artifact_id
+        elif output == REPEATED_TOOL_RESULT:
+            artifact_id = reused_from_artifact_id
+        else:
             if status == "reused":
                 capture_mode = EvidenceCaptureMode.REUSED
                 availability = ArtifactAvailability.AVAILABLE
@@ -114,19 +152,21 @@ class EvidenceCatalogBuilder:
                 availability = _TOOL_STATUS_MAP.get(
                     status, ArtifactAvailability.INVALID
                 )
-            payload = str(getattr(record, "resolved_output", "") or output)
-            arguments = dict(getattr(record, "arguments", {}) or {})
+            payload = str(
+                getattr(record, "resolved_output", "") or output
+            )
             artifact = EvidenceArtifact.build(
                 task_id=catalog.task_id,
                 reviewer=catalog.reviewer,
                 revision=catalog.revision,
                 source_kind=EvidenceSourceKind.TOOL_CALL,
                 tool=str(getattr(record, "tool", "")),
-                arguments={k: v for k, v in arguments.items() if isinstance(v, str)},
+                arguments=arguments,
                 payload=payload,
                 availability=availability,
                 capture_mode=capture_mode,
-                call_id=str(getattr(record, "call_id", "")),
+                call_id=call_id,
+                reused_from_artifact_id=reused_from_artifact_id,
             )
             tool_count = sum(
                 1
@@ -134,8 +174,24 @@ class EvidenceCatalogBuilder:
                 if item.source_kind is EvidenceSourceKind.TOOL_CALL
             )
             catalog.artifacts[artifact.id] = artifact
-            catalog.alias_to_artifact_id[f"T{tool_count + 1:02d}"] = artifact.id
-        return catalog
+            catalog.alias_to_artifact_id[
+                f"T{tool_count + 1:02d}"
+            ] = artifact.id
+            artifact_id = artifact.id
+            if call_id:
+                call_to_artifact[call_id] = artifact.id
+        trace_refs.append(ToolTraceRef(
+            call_id=call_id,
+            artifact_id=artifact_id,
+            tool=str(getattr(record, "tool", "")),
+            arguments=arguments,
+            status=status,
+            duration_ms=float(getattr(record, "duration_ms", 0.0)),
+            reuse_key=str(getattr(record, "reuse_key", "")),
+            reused_from_call_id=reused_from_call_id,
+            reused_from_artifact_id=reused_from_artifact_id,
+        ))
+    return ToolCaptureBatch(catalog=catalog, trace_refs=trace_refs)
 
 
 def bind_discovered_issue(
@@ -249,8 +305,13 @@ def _citeable(artifact: EvidenceArtifact) -> bool:
 
 def _catalog_payload(artifact: EvidenceArtifact) -> str:
     """Catalog 内单条 payload 预算:图摘要化、文件截 2000 字符(修正③)。"""
-    if artifact.tool in _GRAPH_TOOLS:
-        return summarize_graph(artifact.payload)
+    if artifact.tool in GRAPH_TOOLS:
+        return project_tool_payload(
+            artifact.tool,
+            artifact.payload,
+            ProjectionAudience.REVIEWER,
+            arguments=artifact.arguments,
+        ).content
     truncated = len(artifact.payload) > _CATALOG_PAYLOAD_MAX_CHARS
     return (
         artifact.payload[:_CATALOG_PAYLOAD_MAX_CHARS]

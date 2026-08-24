@@ -46,8 +46,8 @@ _NODE_TITLES: dict[str, str] = {
     "discovery_collector": "发现结果汇总",
     "council_coordinator": "委员会协调",
     "evidence_verifier": "证据验证",
-    "council_judge": "委员会裁决",
-    "causal_merge": "因果语义合并",
+    "council_judge": "结果裁决",
+    "causal_merge": "语义合并",
     "direct_judge": "直接裁决",
 }
 _COORDINATION_NODES = {
@@ -59,6 +59,13 @@ _COORDINATION_NODES = {
 }
 
 
+def _event_state_write(event: TraceEvent | None) -> Any:
+    """读取归一化 State patch，同时兼容尚未迁移的旧 Trace。"""
+    if event is None:
+        return None
+    return event.detail.get("state_write", event.detail.get("output"))
+
+
 def build_trace_view(report: TraceReport) -> dict[str, Any]:
     """构建不复制大字段内容的 Dashboard 视图索引。"""
     events_by_sequence = {
@@ -68,8 +75,10 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
     node_steps = _pair_events(report.events, "node_start", "node_end")
     routing = _routing_view(report.events)
     llm_steps = _pair_events(report.events, "llm_start", "llm_end")
-    tool_steps = _tool_event_steps(report.events)
-    application_tool_steps = _application_tool_steps(report.events, tool_steps)
+    tool_steps = _tool_event_steps(report.events, report.artifacts)
+    application_tool_steps = _application_tool_steps(
+        report.events, tool_steps, report.artifacts
+    )
     main_placeholders = _missing_main_steps(node_steps, routing)
     node_steps_with_placeholders = node_steps + main_placeholders
     visible_node_steps = [
@@ -154,7 +163,7 @@ def _routing_view(events: Iterable[TraceEvent]) -> dict[str, Any]:
     for event in sorted(events, key=lambda item: item.sequence):
         if event.event_type != "node_end":
             continue
-        output = event.detail.get("output")
+        output = _event_state_write(event)
         if not isinstance(output, dict):
             continue
         candidate = output.get("review_route")
@@ -307,7 +316,7 @@ def _step_from_pair(
 def _node_state_summary(code_name: str, event: TraceEvent | None) -> str:
     if event is None:
         return ""
-    output = event.detail.get("output")
+    output = _event_state_write(event)
     if not isinstance(output, dict):
         return ""
     if code_name == "classify_mode":
@@ -349,7 +358,7 @@ def _evidence_batch_metrics(event: TraceEvent | None) -> dict[str, Any]:
     """
     if event is None:
         return {}
-    output = event.detail.get("output")
+    output = _event_state_write(event)
     if not isinstance(output, dict):
         return {}
     traces = output.get("council_trace")
@@ -371,6 +380,7 @@ def _evidence_batch_metrics(event: TraceEvent | None) -> dict[str, Any]:
 
 def _tool_event_steps(
     events: Iterable[TraceEvent],
+    artifacts: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     starts = {
         event.run_id: event
@@ -387,20 +397,21 @@ def _tool_event_steps(
         if event.event_type != "tool_start":
             continue
         end = ends.get(event.run_id)
-        result.append(_tool_step(event, end))
+        result.append(_tool_step(event, end, artifacts or {}))
     for event in events:
         if (
             event.event_type not in {"tool_end", "tool_error"}
             or event.run_id in starts
         ):
             continue
-        result.append(_tool_step(None, event))
+        result.append(_tool_step(None, event, artifacts or {}))
     return result
 
 
 def _application_tool_steps(
     events: Iterable[TraceEvent],
     native_tool_steps: list[dict[str, Any]],
+    artifacts: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """从节点输出恢复未进入 LangChain 事件流的真实工具调用。
 
@@ -431,7 +442,7 @@ def _application_tool_steps(
     for event in event_list:
         if event.event_type != "node_end":
             continue
-        output = event.detail.get("output")
+        output = _event_state_write(event)
         if not isinstance(output, dict):
             continue
         reviewer_root = _reviewer_root_for_event(event)
@@ -460,6 +471,13 @@ def _application_tool_steps(
                     continue
                 if status != "reused":
                     native_keys.add(dedup_key)
+                artifact_id = str(item.get("artifact_id") or "")
+                artifact = (artifacts or {}).get(artifact_id)
+                preview = (
+                    artifact.preview
+                    if artifact is not None
+                    else item.get("output")
+                )
                 result.append(
                     {
                         "id": f"application-tool-record:{event.sequence}:{index}",
@@ -478,13 +496,22 @@ def _application_tool_steps(
                         ),
                         "status": status,
                         "summary": _application_tool_summary(
-                            tool_name, item.get("output"), status
+                            tool_name, preview, status
                         ),
                         "input": arguments,
-                        "output": item.get("output"),
+                        "output": preview,
+                        "artifact_id": artifact_id,
+                        "payload_hash": (
+                            artifact.payload_hash
+                            if artifact is not None
+                            else ""
+                        ),
                         "reuse_key": str(item.get("reuse_key") or ""),
                         "reused_from_call_id": str(
                             item.get("reused_from_call_id") or ""
+                        ),
+                        "reused_from_artifact_id": str(
+                            item.get("reused_from_artifact_id") or ""
                         ),
                     }
                 )
@@ -532,6 +559,9 @@ def _application_tool_steps(
                     "reused_from_call_id": str(
                         detail.get("reused_from_call_id") or ""
                     ),
+                    "reused_from_artifact_id": str(
+                        detail.get("reused_from_artifact_id") or ""
+                    ),
                 }
             )
     return result
@@ -564,6 +594,7 @@ def _application_tool_summary(tool: str, output: Any, status: str) -> str:
 def _tool_step(
     start: TraceEvent | None,
     end: TraceEvent | None,
+    artifacts: dict[str, Any],
 ) -> dict[str, Any]:
     event = start or end
     assert event is not None
@@ -576,6 +607,11 @@ def _tool_step(
         else 0.0
     )
     tool_name = str(event.detail.get("tool_name") or event.node_name)
+    artifact_id = str(end.detail.get("artifact_id") or "") if end else ""
+    artifact = artifacts.get(artifact_id)
+    legacy_output = None
+    if end is not None:
+        legacy_output = end.detail.get("output", end.detail.get("result"))
     return {
         "id": f"tool:{run_id or sequence}",
         "sequence": sequence,
@@ -597,6 +633,10 @@ def _tool_step(
             else "missing"
         ),
         "summary": end.summary if end is not None else event.summary,
+        "input": start.detail.get("input") if start is not None else None,
+        "output": artifact.preview if artifact is not None else legacy_output,
+        "artifact_id": artifact_id,
+        "payload_hash": artifact.payload_hash if artifact is not None else "",
     }
 
 
@@ -656,7 +696,7 @@ def _state_only_node_steps(
         if step["id"] in visible_ids or step["end_sequence"] is None:
             continue
         event = events_by_sequence.get(step["end_sequence"])
-        output = event.detail.get("output") if event is not None else None
+        output = _event_state_write(event)
         if not isinstance(output, dict) or not output:
             continue
         state_step = dict(step)
@@ -731,11 +771,12 @@ def _main_stages(
 
     stages.append({
         "id": "main:review_council",
-        "title": "审查委员会",
+        "title": "多维审查",
         "code_name": "review_council",
         "status": review_council_step["status"],
         "step_id": review_council_step["id"],
         "sequence": review_council_step["sequence"],
+        "duration_ms": review_council_step.get("duration_ms", 0.0),
         "summary": review_council_step["summary"],
     })
     if "discovery_collector" in by_name:
@@ -746,17 +787,18 @@ def _main_stages(
         ))
     stages.append({
         "id": "main:coordination_loop",
-        "title": "协调与证据",
+        "title": "证据处理",
         "code_name": "coordination_loop",
         "status": coordination_loop_step["status"],
         "step_id": coordination_loop_step["id"],
         "sequence": coordination_loop_step["sequence"],
+        "duration_ms": coordination_loop_step.get("duration_ms", 0.0),
         "summary": coordination_loop_step["summary"],
         "metrics": coordination_loop_step.get("metrics", {}),
     })
     judge_stage = _main_stage(
         "council_judge",
-        "委员会裁决",
+            "结果裁决",
         by_name.get("council_judge"),
     )
     if "discovery_collector" in by_name and "council_judge" not in by_name:
@@ -772,7 +814,7 @@ def _main_stages(
     if causal_candidates:
         causal_stage = _main_stage(
             "causal_merge",
-            "因果语义合并",
+            "语义合并",
             causal_candidates,
         )
         causal_summary = decision_summary.get("causal_merge") or {}
@@ -799,14 +841,17 @@ def _review_council_step(
             default=0,
         ),
         "kind": "group",
-        "title": "审查委员会",
+        "title": "多维审查",
         "code_name": "review_council",
         "node_path": "review_council",
         "invocation_id": "",
         "pair_id": "",
         "start_sequence": None,
         "end_sequence": None,
-        "duration_ms": 0.0,
+        "duration_ms": max(
+            (float(step.get("duration_ms") or 0.0) for step in discoverers),
+            default=0.0,
+        ),
         "status": (
             "complete"
             if discoverers
@@ -844,8 +889,8 @@ def _coordination_loop_step(
             1
             for event in events
             if event.event_type == "node_end"
-            and isinstance(event.detail.get("output"), dict)
-            and event.detail["output"].get("council_route")
+            and isinstance(_event_state_write(event), dict)
+            and _event_state_write(event).get("council_route")
         )
     coordinator_count = sum(
         1
@@ -876,7 +921,7 @@ def _coordination_loop_step(
             default=0,
         ),
         "kind": "group",
-        "title": "协调与证据闭环",
+        "title": "证据处理",
         "code_name": "coordination_loop",
         "node_path": "coordination_loop",
         "invocation_id": "",
@@ -916,7 +961,7 @@ def _latest_node_output(
     for event in sorted(events, key=lambda item: item.sequence):
         if event.event_type != "node_end" or event.node_name != node_name:
             continue
-        candidate = event.detail.get("output")
+        candidate = _event_state_write(event)
         if isinstance(candidate, dict):
             output = candidate
     return output
@@ -1130,6 +1175,7 @@ def _main_stage(
         "status": step["status"] if step is not None else "missing",
         "step_id": step["id"] if step is not None else None,
         "sequence": step["sequence"] if step is not None else 0,
+        "duration_ms": step["duration_ms"] if step is not None else 0.0,
         "summary": step["summary"] if step is not None else "未采集到该节点",
     }
 
@@ -1203,7 +1249,7 @@ def _state_writes(
         if step["kind"] != "node" or step["end_sequence"] is None:
             continue
         event = events_by_sequence[step["end_sequence"]]
-        output = event.detail.get("output")
+        output = _event_state_write(event)
         if not isinstance(output, dict):
             continue
         for field_name in output:

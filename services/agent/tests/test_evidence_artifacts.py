@@ -97,6 +97,17 @@ def test_build_与_内容寻址一致():
     assert art.limitations == ()
 
 
+def test_replay来源参与寻址_避免与原artifact碰撞():
+    original = _artifact(payload="same response")
+    replay = _artifact(
+        payload="same response",
+        replayed_from_artifact_id=original.id,
+    )
+
+    assert replay.id != original.id
+    assert replay.replayed_from_artifact_id == original.id
+
+
 def test_merge_reducer_合并左右字典():
     a = _artifact()
     b = _artifact(task_id="task-2")

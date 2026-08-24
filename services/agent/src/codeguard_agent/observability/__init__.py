@@ -7,6 +7,7 @@
 from codeguard_agent.observability.models import (
     NodeStats,
     TokenUsage,
+    TraceArtifactMeta,
     TraceEvent,
     TraceReport,
     TraceSummary,
@@ -15,6 +16,7 @@ from codeguard_agent.observability.models import (
 __all__ = [
     "NodeStats",
     "TokenUsage",
+    "TraceArtifactMeta",
     "TraceEvent",
     "TraceReport",
     "TraceSummary",

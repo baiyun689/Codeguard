@@ -62,23 +62,27 @@ def compute_artifact_id(
     tool: str,
     arguments: dict[str, str],
     payload: str,
+    *,
+    provenance_id: str = "",
 ) -> str:
     """内容寻址 Artifact ID。
 
     相同 revision/task/来源/工具/参数/payload 得到相同 ID;
     payload 或 revision 改变会生成新 ID。ID 不可被 LLM 猜测,
     短别名(T01 等)只在一次合成内有效,离开发现子图即绑定为内部 ID。
+    Replay 使用原 Artifact ID 作为 provenance_id，避免一次新捕获覆盖原记录。
     """
-    seed = "\0".join(
-        [
-            revision,
-            task_id,
-            source_kind.value,
-            tool,
-            stable_json(arguments),
-            payload_digest(payload),
-        ]
-    )
+    identity_parts = [
+        revision,
+        task_id,
+        source_kind.value,
+        tool,
+        stable_json(arguments),
+        payload_digest(payload),
+    ]
+    if provenance_id:
+        identity_parts.append(provenance_id)
+    seed = "\0".join(identity_parts)
     return "ev-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
 
 
@@ -105,6 +109,9 @@ class EvidenceArtifact(BaseModel):
     reused_from_artifact_id: str = Field(
         default="", description="reused 时指向首次 Artifact,不复制 payload"
     )
+    replayed_from_artifact_id: str = Field(
+        default="", description="Replay Artifact 指向被重放的原 Artifact"
+    )
     limitations: tuple[str, ...] = Field(
         default_factory=tuple, description="范围/截断等限制声明"
     )
@@ -124,12 +131,19 @@ class EvidenceArtifact(BaseModel):
         arguments: dict[str, str] | None = None,
         call_id: str = "",
         reused_from_artifact_id: str = "",
+        replayed_from_artifact_id: str = "",
         limitations: tuple[str, ...] = (),
     ) -> "EvidenceArtifact":
         """按内容寻址规则构造 Artifact(id/payload_hash 由输入计算,不手填)。"""
         args = dict(arguments or {})
         artifact_id = compute_artifact_id(
-            revision, task_id, source_kind, tool, args, payload
+            revision,
+            task_id,
+            source_kind,
+            tool,
+            args,
+            payload,
+            provenance_id=replayed_from_artifact_id,
         )
         return cls(
             id=artifact_id,
@@ -145,6 +159,7 @@ class EvidenceArtifact(BaseModel):
             capture_mode=capture_mode,
             call_id=call_id,
             reused_from_artifact_id=reused_from_artifact_id,
+            replayed_from_artifact_id=replayed_from_artifact_id,
             limitations=limitations,
         )
 
@@ -194,6 +209,27 @@ class EvidenceCatalog(BaseModel):
         return self._aliases_of(EvidenceSourceKind.TOOL_CALL)
 
 
+class ToolTraceRef(BaseModel):
+    """进入 LangGraph State 的紧凑工具调用引用，不携带工具原文。"""
+
+    call_id: str
+    artifact_id: str = ""
+    tool: str
+    arguments: dict[str, str] = Field(default_factory=dict)
+    status: str
+    duration_ms: float = 0.0
+    reuse_key: str = ""
+    reused_from_call_id: str = ""
+    reused_from_artifact_id: str = ""
+
+
+class ToolCaptureBatch(BaseModel):
+    """一次工具记录捕获的证据目录与紧凑 Trace 引用。"""
+
+    catalog: EvidenceCatalog
+    trace_refs: list[ToolTraceRef] = Field(default_factory=list)
+
+
 # ── Candidate 引用模型(源文档 §4.5) ──
 
 
@@ -236,6 +272,7 @@ class VerifiedEvidence(BaseModel):
     source_kind: EvidenceSourceKind
     tool: str = ""
     arguments: dict[str, str] = Field(default_factory=dict)
+    declared_role: EvidenceRole = EvidenceRole.MECHANISM
     content: str
     validation_status: EvidenceValidationStatus
     limitations: tuple[str, ...] = ()
@@ -266,6 +303,7 @@ class CandidateVerification(BaseModel):
 class VerificationBatch(BaseModel):
     candidates: dict[str, CandidateVerification] = Field(default_factory=dict)
     replayed_artifact_ids: list[str] = Field(default_factory=list)
+    replayed_artifacts: dict[str, EvidenceArtifact] = Field(default_factory=dict)
     trace: list[tuple[str, str]] = Field(default_factory=list)
 
 

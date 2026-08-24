@@ -9,6 +9,13 @@ import re
 import tempfile
 from pathlib import Path
 
+from codeguard_agent.models.evidence import (
+    ArtifactAvailability,
+    EvidenceArtifact,
+    EvidenceCaptureMode,
+    EvidenceSourceKind,
+)
+from codeguard_agent.observability.artifacts import normalize_trace_report
 from codeguard_agent.observability.collector import (
     _NODE_PHASE_MAP,
     _TraceCollector,
@@ -28,6 +35,10 @@ from codeguard_agent.observability.serialization import (
     serialize_trace_value,
 )
 from codeguard_agent.observability.view_model import build_trace_view
+from codeguard_agent.pipeline.evidence.projection import (
+    ProjectionAudience,
+    project_tool_payload,
+)
 
 
 def _flow_event(
@@ -275,6 +286,7 @@ def test_trace_view_groups_reviewer_react_steps_and_state_writes():
     assert view["main_stages"][3]["summary"] == (
         "协调 2 次，证据验证 1 次，路由 2 次"
     )
+    assert view["main_stages"][0]["duration_ms"] == 10.0
     threat = next(
         item
         for item in view["reviewer_sections"]
@@ -292,6 +304,201 @@ def test_trace_view_groups_reviewer_react_steps_and_state_writes():
     assert tool_step["duration_ms"] == 10.0
     assert view["state_writes"]["raw_candidate_issues"][0]["step_id"]
     assert view["integrity"]["missing_end_count"] == 0
+
+
+def test_trace_normalization_stores_identical_raw_payload_once_and_events_only_reference_it():
+    raw = json.dumps({
+        "schema_version": 2,
+        "outcome": "found",
+        "coverage": "complete",
+        "source_scope": "MAIN",
+        "subject_symbol_id": "java:A#m()",
+        "symbols": [{"id": "java:A#m()", "source_set": "MAIN"}],
+        "relationships": [],
+        "unresolved_relationships": [],
+        "unresolved_count": 0,
+        "limitations": [],
+        "private_diagnostic": "RAW_SENTINEL_123",
+    })
+    artifacts = {}
+    for task_id, call_id in (("task-1", "call-1"), ("task-2", "call-2")):
+        artifact = EvidenceArtifact.build(
+            task_id=task_id,
+            reviewer="behavior",
+            revision="rev",
+            source_kind=EvidenceSourceKind.TOOL_CALL,
+            tool="inspect_change_impact",
+            arguments={"symbol_id": "java:A#m()"},
+            payload=raw,
+            availability=ArtifactAvailability.AVAILABLE,
+            capture_mode=EvidenceCaptureMode.EXECUTED,
+            call_id=call_id,
+        )
+        artifacts[artifact.id] = artifact
+    projected = project_tool_payload(
+        "inspect_change_impact", raw, ProjectionAudience.REVIEWER
+    ).content
+    target_artifact_id = list(artifacts)[1]
+    report = TraceReport(
+        run_id="single-payload",
+        timestamp="2026-08-24T00:00:00",
+        events=[
+            _flow_event(
+                1, "node_end", "discover_behavior", "discover_behavior", "node-1",
+                detail={"output": {"tool_trace_records": [{
+                    "call_id": "call-1",
+                    "artifact_id": target_artifact_id,
+                    "tool": "inspect_change_impact",
+                    "arguments": {"symbol_id": "java:A#m()"},
+                    "status": "complete",
+                    "duration_ms": 3.0,
+                    "output": raw,
+                    "resolved_output": raw,
+                }]}, "input": {}},
+            ),
+            _flow_event(
+                2, "tool_start", "discover_behavior", "discover_behavior", "tool-1",
+                detail={
+                    "tool_name": "inspect_change_impact",
+                    "input": {"symbol_id": "java:A#m()"},
+                },
+            ),
+            _flow_event(
+                3, "tool_end", "discover_behavior", "discover_behavior", "tool-1",
+                detail={
+                    "tool_name": "inspect_change_impact",
+                    "output": projected,
+                },
+            ),
+            _flow_event(
+                4, "llm_start", "model", "discover_behavior/model", "llm-1",
+                detail={"messages": [{
+                    "role": "tool",
+                    "name": "inspect_change_impact",
+                    "tool_call_id": "native-call",
+                    "content": projected,
+                }]},
+            ),
+        ],
+    )
+
+    normalize_trace_report(report, artifacts)
+
+    assert len(report.payload_store) == 1
+    assert len(report.artifacts) == 2
+    assert all(
+        meta.payload_hash in report.payload_store
+        for meta in report.artifacts.values()
+    )
+    serialized_events = json.dumps(
+        [event.model_dump(mode="json") for event in report.events]
+    )
+    assert "RAW_SENTINEL_123" not in serialized_events
+    assert "resolved_output" not in serialized_events
+    assert '"output"' not in serialized_events
+    assert "state_write" in report.events[0].detail
+    assert report.events[2].detail["artifact_id"] == target_artifact_id
+    tool_message = report.events[3].detail["messages"][0]
+    assert tool_message["artifact_id"] == ""
+    assert tool_message["call_id"] == "native-call"
+    assert tool_message["status"] == "unresolved"
+    whole_report = json.dumps(report.model_dump(mode="json"))
+    assert whole_report.count("RAW_SENTINEL_123") == 1
+    html = render_dashboard(report)
+    assert html.count("RAW_SENTINEL_123") == 1
+    assert "原始响应" in html
+    assert "payload_store" in html
+    view = build_trace_view(report)
+    behavior = next(
+        section
+        for section in view["reviewer_sections"]
+        if section["key"] == "behavior"
+    )
+    tool_steps = [view["steps"][item] for item in behavior["tool_step_ids"]]
+    assert len(tool_steps) == 1
+    assert tool_steps[0]["artifact_id"]
+
+
+def test_trace_normalization_uses_parent_run_to_disambiguate_same_payload_tasks():
+    raw = json.dumps({
+        "schema_version": 2,
+        "outcome": "found",
+        "coverage": "complete",
+        "source_scope": "MAIN",
+        "subject_symbol_id": "java:A#m()",
+        "symbols": [{"id": "java:A#m()", "source_set": "MAIN"}],
+        "relationships": [],
+        "unresolved_relationships": [],
+        "unresolved_count": 0,
+        "limitations": [],
+    })
+    artifacts = {}
+    ids = []
+    for task_id in ("task-a", "task-b"):
+        artifact = EvidenceArtifact.build(
+            task_id=task_id,
+            reviewer="behavior",
+            revision="rev",
+            source_kind=EvidenceSourceKind.TOOL_CALL,
+            tool="inspect_structure",
+            arguments={"symbol_id": "java:A#m()"},
+            payload=raw,
+            availability=ArtifactAvailability.AVAILABLE,
+            capture_mode=EvidenceCaptureMode.EXECUTED,
+            call_id=f"call-{task_id}",
+        )
+        artifacts[artifact.id] = artifact
+        ids.append(artifact.id)
+    events = []
+    for offset, (wrapper, artifact_id) in enumerate(
+        (("wrapper-a", ids[0]), ("wrapper-b", ids[1]))
+    ):
+        start = _flow_event(
+            2 + offset * 3,
+            "tool_start",
+            "inspect_structure",
+            "discover_behavior/tools",
+            f"native-{offset}",
+            detail={
+                "tool_name": "inspect_structure",
+                "input": {"symbol_id": "java:A#m()"},
+            },
+        ).model_copy(update={"parent_ids": [wrapper]})
+        events.extend([
+            _flow_event(
+                1 + offset * 3,
+                "node_end",
+                "discover_behavior",
+                "discover_behavior",
+                wrapper,
+                detail={"output": {"tool_trace_records": [{
+                    "call_id": f"call-task-{'a' if offset == 0 else 'b'}",
+                    "artifact_id": artifact_id,
+                    "tool": "inspect_structure",
+                    "arguments": {"symbol_id": "java:A#m()"},
+                    "status": "complete",
+                }]}},
+            ),
+            start,
+            _flow_event(
+                3 + offset * 3,
+                "tool_end",
+                "inspect_structure",
+                "discover_behavior/tools",
+                f"native-{offset}",
+                detail={"tool_name": "inspect_structure", "output": raw},
+            ),
+        ])
+    report = TraceReport(
+        run_id="same-payload-tasks",
+        timestamp="2026-08-24T00:00:00",
+        events=events,
+    )
+
+    normalize_trace_report(report, artifacts)
+
+    tool_ends = [event for event in report.events if event.event_type == "tool_end"]
+    assert [event.detail["artifact_id"] for event in tool_ends] == ids
 
 
 def test_trace_view_summarizes_judge_and_causal_merge_results():
@@ -967,6 +1174,7 @@ def test_trace_view_keeps_each_reviewer_tool_record_including_reuse():
                                 "status": "reused",
                                 "reuse_key": "impact:service",
                                 "reused_from_call_id": "call-1",
+                                "reused_from_artifact_id": "artifact-1",
                             },
                         ]
                     }
@@ -989,6 +1197,31 @@ def test_trace_view_keeps_each_reviewer_tool_record_including_reuse():
     assert [step["status"] for step in tool_steps] == ["complete", "reused"]
     assert tool_steps[1]["reuse_key"] == "impact:service"
     assert tool_steps[1]["reused_from_call_id"] == "call-1"
+    assert tool_steps[1]["reused_from_artifact_id"] == "artifact-1"
+
+
+def test_trace_view_keeps_legacy_native_tool_output_without_artifact_index():
+    report = TraceReport(
+        run_id="legacy-tool-output",
+        timestamp="2026-08-24T00:00:00",
+        events=[
+            _flow_event(
+                1, "tool_start", "get_file_content", "discover_behavior/tools",
+                "legacy-tool", detail={"input": {"file_path": "src/A.java"}},
+            ),
+            _flow_event(
+                2, "tool_end", "get_file_content", "discover_behavior/tools",
+                "legacy-tool", detail={"output": "class A {}"},
+            ),
+        ],
+    )
+
+    view = build_trace_view(report)
+    tool_step = next(
+        step for step in view["steps"].values() if step["kind"] == "tool"
+    )
+
+    assert tool_step["output"] == "class A {}"
 
 
 def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
@@ -1855,6 +2088,17 @@ class TestDashboard:
         assert "renderToolPayloads" in template
         assert "工具入参" in template
         assert "工具输出" in template
+
+    def test_trace_layout_shows_main_duration_and_collapses_reviewer_tools(self):
+        template = _dashboard_template()
+
+        assert "min-width:max-content" not in template
+        assert "grid-template-columns:repeat(auto-fit" in template
+        assert "main-duration" in template
+        assert 'details class="reviewer-tools"' in template
+        assert "reviewer-tools-body" in template
+        assert '"coordination_loop","council_judge"' in template
+        assert "stage-status" in template
 
     def test_preserves_reading_position_for_local_updates(self):
         template = _dashboard_template()

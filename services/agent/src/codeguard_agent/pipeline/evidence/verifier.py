@@ -14,11 +14,13 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from codeguard_agent.models.evidence import (
     ArtifactAvailability,
     CandidateVerification,
     EvidenceArtifact,
+    EvidenceCaptureMode,
     EvidenceGap,
     EvidenceRefError,
     EvidenceRefErrorReason,
@@ -48,6 +50,7 @@ class _ArtifactHealth:
     status: EvidenceValidationStatus
     content: str
     limitations: tuple[str, ...] = ()
+    artifact_id: str = ""
 
 
 def _stable_json(value: object) -> str:
@@ -176,6 +179,26 @@ def _health_tool_artifact(
         return result
     raw, limitation = _execute_replay(tool_client, artifact.tool, artifact.arguments)
     batch.replayed_artifact_ids.append(artifact.id)
+    replayed_artifact = EvidenceArtifact.build(
+        task_id=artifact.task_id,
+        reviewer=artifact.reviewer,
+        revision=revision,
+        source_kind=EvidenceSourceKind.TOOL_CALL,
+        tool=artifact.tool,
+        arguments=artifact.arguments,
+        payload=(raw if raw else _stable_json({
+            "error": limitation or "replay_empty",
+        })),
+        availability=(
+            ArtifactAvailability.AVAILABLE
+            if not limitation
+            else ArtifactAvailability.FAILED
+        ),
+        capture_mode=EvidenceCaptureMode.EXECUTED,
+        call_id=f"evidence-replay-{uuid4()}",
+        replayed_from_artifact_id=artifact.id,
+    )
+    batch.replayed_artifacts[replayed_artifact.id] = replayed_artifact
     if raw and not limitation:
         if artifact.tool in _GRAPH_TOOLS:
             graph = validate_graph_payload(
@@ -183,12 +206,23 @@ def _health_tool_artifact(
                 tool=artifact.tool,
                 expected_subject=str(artifact.arguments.get("symbol_id", "")),
             )
-            result = _ArtifactHealth(graph.status, raw, graph.limitations)
+            result = _ArtifactHealth(
+                graph.status,
+                raw,
+                graph.limitations,
+                replayed_artifact.id,
+            )
         else:
-            result = _ArtifactHealth(EvidenceValidationStatus.VALID, raw)
+            result = _ArtifactHealth(
+                EvidenceValidationStatus.VALID,
+                raw,
+                artifact_id=replayed_artifact.id,
+            )
         event = f"evidence_replay_{result.status.value}"
         batch.trace.append((event, _stable_json({
-            "artifact_id": artifact.id,
+            "artifact_id": replayed_artifact.id,
+            "call_id": replayed_artifact.call_id,
+            "replayed_from_artifact_id": artifact.id,
             "tool": artifact.tool,
             "limitations": list(result.limitations),
         })))
@@ -196,7 +230,12 @@ def _health_tool_artifact(
         return result
     batch.trace.append(
         ("evidence_replay_failed", _stable_json({
-            "artifact_id": artifact.id, "tool": artifact.tool,
+            "artifact_id": (
+                replayed_artifact.id
+            ),
+            "call_id": replayed_artifact.call_id,
+            "replayed_from_artifact_id": artifact.id,
+            "tool": artifact.tool,
             "limitation": limitation or "replay_empty",
         }))
     )
@@ -205,6 +244,7 @@ def _health_tool_artifact(
         EvidenceValidationStatus.UNAVAILABLE,
         artifact.payload,
         tuple(dict.fromkeys(limitations)),
+        replayed_artifact.id,
     )
     replay_cache[artifact.id] = result
     return result
@@ -265,6 +305,7 @@ def _verify_candidate(
                 VerifiedEvidence(
                     artifact_id=artifact.id,
                     source_kind=artifact.source_kind,
+                    declared_role=ref.declared_role,
                     content=artifact.payload,
                     validation_status=EvidenceValidationStatus.VALID,
                 )
@@ -292,6 +333,7 @@ def _verify_candidate(
                     source_kind=artifact.source_kind,
                     tool=artifact.tool,
                     arguments=dict(artifact.arguments),
+                    declared_role=ref.declared_role,
                     content=artifact.payload,
                     validation_status=status,
                     limitations=tuple(artifact.limitations),
@@ -315,7 +357,7 @@ def _verify_candidate(
         if health.status is EvidenceValidationStatus.UNAVAILABLE:
             evidence_gaps.append(
                 EvidenceGap(
-                    artifact_id=artifact.id,
+                    artifact_id=health.artifact_id or artifact.id,
                     tool=artifact.tool,
                     arguments=dict(artifact.arguments),
                     declared_role=ref.declared_role,
@@ -331,10 +373,11 @@ def _verify_candidate(
         source_kinds.add(EvidenceSourceKind.TOOL_CALL)
         valid_evidence.append(
             VerifiedEvidence(
-                artifact_id=artifact.id,
+                artifact_id=health.artifact_id or artifact.id,
                 source_kind=artifact.source_kind,
                 tool=artifact.tool,
                 arguments=dict(artifact.arguments),
+                declared_role=ref.declared_role,
                 content=health.content,
                 validation_status=health.status,
                 limitations=health.limitations,

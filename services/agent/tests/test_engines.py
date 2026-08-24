@@ -333,7 +333,10 @@ def test_严格工具档递归失败不混入无工具直连结果():
 
     assert outcome.result.summary == "基于图谱事实收束"
     assert outcome.execution_events == ["react_bounded_synthesis"]
-    assert outcome.tool_trace_records[0].output == "A#m() 被 Controller 调用"
+    trace_ref = outcome.tool_trace_records[0]
+    assert trace_ref.tool == "inspect_change_impact"
+    assert trace_ref.status == "complete"
+    assert "output" not in trace_ref.model_dump()
 
 
 def test_严格工具档递归且无事实时仍失败():

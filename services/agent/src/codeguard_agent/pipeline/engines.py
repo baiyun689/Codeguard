@@ -17,6 +17,7 @@ from time import sleep
 from typing import Any
 
 from codeguard_agent.llm.client import invoke_with_retry
+from codeguard_agent.models.evidence import ToolTraceRef
 from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.pipeline.discovery import (
     COMPLETE_PATCH_RESULT,
@@ -183,7 +184,9 @@ class ToolAgentEngine(ReviewEngine):
                     self._recursion_limit,
                     len(gathered),
                 )
-                catalog = _extend_catalog(evidence_catalog, tool_records)
+                catalog, trace_refs = _capture_records(
+                    evidence_catalog, tool_records
+                )
                 synthesis = DirectEngine().review(
                     llm,
                     system_prompt=system_prompt,
@@ -193,7 +196,7 @@ class ToolAgentEngine(ReviewEngine):
                     structured_method=structured_method,
                     result_schema=result_schema,
                 )
-                synthesis.tool_trace_records.extend(tool_records)
+                synthesis.tool_trace_records.extend(trace_refs)
                 synthesis.execution_events.append("react_bounded_synthesis")
                 synthesis.evidence_catalog = catalog
                 return synthesis
@@ -214,8 +217,10 @@ class ToolAgentEngine(ReviewEngine):
                 structured_method=structured_method,
             )
             tool_records = list(getattr(self._tool_client, "trace_records", ()))
-            catalog = _extend_catalog(evidence_catalog, tool_records)
-            fallback.tool_trace_records.extend(tool_records)
+            catalog, trace_refs = _capture_records(
+                evidence_catalog, tool_records
+            )
+            fallback.tool_trace_records.extend(trace_refs)
             # ReAct 异常降级 Direct 时保留已捕获目录,不丢已取得的工具事实。
             fallback.evidence_catalog = catalog
             return fallback
@@ -224,7 +229,7 @@ class ToolAgentEngine(ReviewEngine):
         # 改为主动用 DirectEngine.with_structured_output 做最终收口。
         tool_records = list(getattr(self._tool_client, "trace_records", ()))
         gathered = _extract_gathered_context(raw, tool_records=tool_records)
-        catalog = _extend_catalog(evidence_catalog, tool_records)
+        catalog, trace_refs = _capture_records(evidence_catalog, tool_records)
         synthesis = DirectEngine().review(
             llm,
             system_prompt=system_prompt,
@@ -234,7 +239,7 @@ class ToolAgentEngine(ReviewEngine):
             structured_method=structured_method,
             result_schema=result_schema,
         )
-        synthesis.tool_trace_records.extend(tool_records)
+        synthesis.tool_trace_records.extend(trace_refs)
         synthesis.execution_events.append("react_two_phase_synthesis")
         synthesis.evidence_catalog = catalog
         return synthesis
@@ -372,16 +377,37 @@ def _synthesis_prompt(user_prompt: str, catalog: Any, gathered: list[GatheredCon
     return user_prompt
 
 
-def _extend_catalog(catalog: Any, tool_records: Any) -> Any:
-    """把工具记录追加进证据目录;无初始目录时返回 None(目录非必需)。
+def _capture_records(catalog: Any, tool_records: Any) -> tuple[Any, list[ToolTraceRef]]:
+    """原文进入 Ledger；引擎产出只携带紧凑工具引用。
 
     延迟导入避免无工具路径携带 ledger 依赖。
     """
-    if catalog is None:
-        return None
-    from codeguard_agent.pipeline.evidence.ledger import EvidenceCatalogBuilder
+    if catalog is not None:
+        from codeguard_agent.pipeline.evidence.ledger import capture_tool_records
 
-    return EvidenceCatalogBuilder().append_tool_records(catalog, tool_records)
+        batch = capture_tool_records(catalog, tool_records)
+        return batch.catalog, batch.trace_refs
+    refs = [
+        ToolTraceRef(
+            call_id=str(getattr(record, "call_id", "")),
+            tool=str(getattr(record, "tool", "")),
+            arguments={
+                key: value
+                for key, value in dict(
+                    getattr(record, "arguments", {}) or {}
+                ).items()
+                if isinstance(value, str)
+            },
+            status=str(getattr(record, "status", "complete")),
+            duration_ms=float(getattr(record, "duration_ms", 0.0)),
+            reuse_key=str(getattr(record, "reuse_key", "")),
+            reused_from_call_id=str(
+                getattr(record, "reused_from_call_id", "")
+            ),
+        )
+        for record in tool_records or ()
+    ]
+    return None, refs
 
 
 def _gathered_context_from_records(tool_records: Any) -> list[GatheredContext]:
@@ -400,6 +426,17 @@ def _gathered_context_from_records(tool_records: Any) -> list[GatheredContext]:
             if not resolved:
                 continue
             output = resolved
+        from codeguard_agent.pipeline.evidence.projection import (
+            ProjectionAudience,
+            project_tool_payload,
+        )
+
+        output = project_tool_payload(
+            tool_name,
+            output,
+            ProjectionAudience.REVIEWER,
+            arguments=arguments,
+        ).content
         key = canonical_tool_key(tool_name, arguments)
         if key in seen:
             continue

@@ -10,6 +10,10 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
+from codeguard_agent.pipeline.evidence.projection import (
+    ProjectionAudience,
+    project_tool_payload,
+)
 from codeguard_agent.tools.tool_client import ToolResponse
 
 DISCOVERY_GATEWAY_TOOLS = frozenset({
@@ -28,7 +32,30 @@ ALIAS_TAG = "[证据编号 {alias}]"  # 证据目录短别名回显(Evidence Led
 ToolKey = tuple[str, str]
 
 
-def _alias_echo(response: ToolResponse, alias: str) -> ToolResponse:
+def _reviewer_response(
+    tool: str,
+    response: ToolResponse,
+    arguments: dict[str, Any] | None = None,
+) -> ToolResponse:
+    """把已捕获的原始工具响应投影成 Reviewer 所需视图。"""
+    if not response.success:
+        return response
+    raw = response.result or ""
+    projection = project_tool_payload(
+        tool,
+        raw,
+        ProjectionAudience.REVIEWER,
+        arguments=_canonical_arguments(arguments or {}),
+    )
+    return ToolResponse(success=True, result=projection.content)
+
+
+def _alias_echo(
+    tool: str,
+    response: ToolResponse,
+    alias: str,
+    arguments: dict[str, Any] | None = None,
+) -> ToolResponse:
     """把证据编号回显进返回给 LLM 的文本;record 保留原始 payload 不污染。
 
     空结果不附加编号(无内容可引用,不占 T 编号语义)。"""
@@ -38,7 +65,7 @@ def _alias_echo(response: ToolResponse, alias: str) -> ToolResponse:
             success=False,
             error=f"{error}\n\n{ALIAS_TAG.format(alias=alias)}",
         )
-    text = (response.result or "").strip()
+    text = (_reviewer_response(tool, response, arguments).result or "").strip()
     if not text:
         return response
     return ToolResponse(success=True, result=f"{text}\n\n{ALIAS_TAG.format(alias=alias)}")
@@ -231,7 +258,9 @@ class CoordinatedDiscoveryToolClient:
                 )
                 return repeated
             self._record(tool_name, arguments, response, started)
-            return _alias_echo(response, self._next_t_alias())
+            return _alias_echo(
+                tool_name, response, self._next_t_alias(), arguments
+            )
 
         try:
             assert future is not None
@@ -255,8 +284,10 @@ class CoordinatedDiscoveryToolClient:
             with self._lock:
                 self._in_flight.pop(key, None)
             if not coordinator_reused:
-                return _alias_echo(response, self._next_t_alias())
-            return response
+                return _alias_echo(
+                    tool_name, response, self._next_t_alias(), arguments
+                )
+            return _reviewer_response(tool_name, response, arguments)
         except BaseException as exc:
             if future is not None and not future.done():
                 future.set_exception(exc)
@@ -342,7 +373,9 @@ class CoordinatedDiscoveryToolClient:
                 "reused",
                 reused_from_call_id="task_patch",
             )
-            return _alias_echo(response, "P01")
+            return _alias_echo(
+                "get_file_content", response, "P01", {"file_path": file_path}
+            )
         return self._invoke(
             "get_file_content",
             {"file_path": file_path},

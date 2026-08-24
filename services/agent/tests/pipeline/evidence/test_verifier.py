@@ -346,11 +346,25 @@ def test_失败artifact_重放后重新校验为_valid():
         tool_client=_FakeToolClient(_graph_payload()),
     )
     verification = batch.candidates["c1"]
+    assert len(batch.replayed_artifacts) == 1
+    replayed = next(iter(batch.replayed_artifacts.values()))
     graph_items = [
-        item for item in verification.valid_evidence if item.artifact_id == graph.id
+        item
+        for item in verification.valid_evidence
+        if item.artifact_id == replayed.id
     ]
     assert graph_items[0].validation_status is EvidenceValidationStatus.VALID
     assert "evidence_replay_valid" in [event for event, _ in batch.trace]
+    assert replayed.payload == _graph_payload()
+    assert replayed.replayed_from_artifact_id == graph.id
+    assert replayed.call_id.startswith("evidence-replay-")
+    replay_trace = next(
+        json.loads(detail)
+        for event, detail in batch.trace
+        if event == "evidence_replay_valid"
+    )
+    assert replay_trace["artifact_id"] == replayed.id
+    assert replay_trace["replayed_from_artifact_id"] == graph.id
 
 
 def test_失败artifact_白名单空_形成_gap():
@@ -381,6 +395,10 @@ def test_重放失败_形成_gap_不作为反证():
     verification = batch.candidates["c1"]
     assert verification.evidence_gaps
     assert any("replay" in lim for lim in verification.evidence_gaps[0].limitations)
+    assert len(batch.replayed_artifacts) == 1
+    replayed = next(iter(batch.replayed_artifacts.values()))
+    assert replayed.availability is ArtifactAvailability.FAILED
+    assert verification.evidence_gaps[0].artifact_id == replayed.id
 
 
 def test_revision_mismatch_触发重放():

@@ -176,6 +176,14 @@ class PipelineOrchestrator:
                 try:
                     report = tracer.finalize()
                     _inject_degradation(report, final_state)
+                    from codeguard_agent.observability.artifacts import (
+                        normalize_trace_report,
+                    )
+
+                    normalize_trace_report(
+                        report,
+                        final_state.get("evidence_artifacts") or {},
+                    )
                     render_dashboard_file(report, trace_dir, _run_id)
                 except Exception:
                     logger.warning("追踪报告生成失败", exc_info=True)

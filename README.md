@@ -61,6 +61,8 @@ Reviewer 输出先经过统一候选定位护栏：系统只接受当前 task �
 
 schema v2 只返回当前 `source_scope` 的 `symbols`、`relationships` 和 `unresolved_relationships`，不再重复输出 MAIN/TEST/GENERATED 专用数组；响应中的每项 `source_set` 必须与 scope 一致。
 
+工具原始响应由 Evidence Ledger 完整保存；Reviewer 和 Judge 对三个图谱工具只消费确定性结构化摘要，避免重复字段和诊断噪声占用上下文。Trace 事件只记录调用与 Artifact 引用，独立 HTML 按内容哈希单份保存原始响应，默认展示压缩预览并允许折叠查看原文。
+
 安全路径查询只沿已解析关系传播；未解析调用只有在目标名称直接命中敏感 sink 时才返回关系明细。普通未解析调用仅汇总数量并保持 `partial`，不会膨胀安全工具输出，也不会被误判为完整未发现。
 
 证据阶段采用 Evidence Ledger：工具调用、预取上下文与 task patch 由运行时代码捕获为内容寻址 Artifact（P01/Cxx/Txx 短编号），审查员只输出编号引用（`evidence_refs`），离开发现子图即绑定为内部稳定 ID——LLM 无法伪造、改写或重新填写证据。EvidenceVerifier 全部确定性、零 LLM、正常路径零重放：只做 Artifact 健康检查（patch 摘要一致、图响应 subject/scope/status 护栏、coverage partial 保留正事实）、guard 注解扫描与引用范围核对；终审由批量 EvidenceJudge 承担。`evidence_mode=off` 时仍可作为无证据消融基线。开启本地 HTML Trace 后，主流程会呈现 PR 规模、task 路由、Plan、Reviewer、知识主题和工具步骤；按模式未执行的阶段标记为”按设计跳过”。

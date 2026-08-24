@@ -214,12 +214,18 @@ def _make_engine(state: ReviewState | ReviewerState, tool_client=None) -> Review
     return DirectEngine()
 
 
-def _extend_catalog_from_client(catalog: Any, coordinated_client: Any) -> Any:
-    """ReAct 失败降级直连时,把已捕获的工具记录并入目录(不丢已取得的工具事实)。"""
+def _capture_catalog_from_client(
+    catalog: Any,
+    coordinated_client: Any,
+) -> tuple[Any, list[Any]]:
+    """ReAct 降级时保留原始 Artifact，只向 State 返回紧凑引用。"""
     records = list(getattr(coordinated_client, "trace_records", ()))
     if catalog is None or not records:
-        return catalog
-    return EvidenceCatalogBuilder().append_tool_records(catalog, records)
+        return catalog, []
+    from codeguard_agent.pipeline.evidence.ledger import capture_tool_records
+
+    batch = capture_tool_records(catalog, records)
+    return batch.catalog, list(batch.trace_refs)
 
 
 def _scope_plan(state: ReviewState) -> LargeDiffPlan:
@@ -769,9 +775,11 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                         "council_trace": review_traces,
                     }
                 outcome = _direct_fallback(state)
-                outcome.evidence_catalog = _extend_catalog_from_client(
+                catalog, trace_refs = _capture_catalog_from_client(
                     outcome.evidence_catalog, effective_tool_client
                 )
+                outcome.evidence_catalog = catalog
+                outcome.tool_trace_records.extend(trace_refs)
                 degraded_to_direct = True
             else:
                 if (
@@ -791,9 +799,11 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                         )
                     )
                     outcome = _direct_fallback(state)
-                    outcome.evidence_catalog = _extend_catalog_from_client(
+                    catalog, trace_refs = _capture_catalog_from_client(
                         outcome.evidence_catalog, effective_tool_client
                     )
+                    outcome.evidence_catalog = catalog
+                    outcome.tool_trace_records.extend(trace_refs)
                     degraded_to_direct = True
                 else:
                     logger.warning("[%s] 发现者失败,跳过: %s", reviewer.name, exc)
@@ -1250,13 +1260,16 @@ def _evidence_verifier_node(tool_client=None, judge_llm=None):
                 "enabled_evidence_tools", state.get("enabled_tools")
             ),
         )
-        return {
+        result: dict[str, Any] = {
             "candidate_verifications": batch.candidates,
             "council_trace": [
                 CouncilTrace(node="evidence_verifier", event=event, detail=detail)
                 for event, detail in batch.trace
             ],
         }
+        if batch.replayed_artifacts:
+            result["evidence_artifacts"] = batch.replayed_artifacts
+        return result
 
     return _node
 
