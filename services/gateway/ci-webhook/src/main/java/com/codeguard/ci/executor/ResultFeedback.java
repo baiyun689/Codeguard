@@ -102,7 +102,7 @@ public class ResultFeedback {
             sb.append("| ").append(severityIcon(sev)).append(" ").append(sev)
               .append(" | ").append(i.path("type").asText())
               .append(" | ").append(i.path("file").asText())
-              .append(" | ").append(i.path("line").asInt())
+              .append(" | ").append(i.path("line").asInt() > 0 ? i.path("line").asInt() : "-")
               .append(" | ").append(ellipsis(i.path("message").asText(), 80))
               .append(" |\n");
             switch (sev) {
@@ -198,7 +198,7 @@ public class ResultFeedback {
             for (String line : body.split("\n")) {
                 if (line.startsWith("-")) continue;
                 if (line.startsWith("+") || line.startsWith(" ")) {
-                    if (newLine == absoluteLine) return newLine;
+                    if (line.startsWith("+") && newLine == absoluteLine) return newLine;
                     newLine++;
                 }
             }
@@ -220,7 +220,11 @@ public class ResultFeedback {
 
         for (JsonNode issue : criticals) {
             try {
-                int absoluteLine = Math.max(issue.path("line").asInt(), 1);
+                int absoluteLine = issue.path("line").asInt();
+                if (absoluteLine <= 0) {
+                    failedIssues.add(formatSummaryIssue(issue));
+                    continue;
+                }
                 int diffLine = mapToDiffLine(job.getDiffText(), issue.path("file").asText(), absoluteLine);
                 String body = String.format("🔴 **%s**: %s\n\n建议: %s",
                     issue.path("type").asText(),
@@ -232,22 +236,14 @@ public class ResultFeedback {
                         diffLine,
                         body, job.getInstallationId());
                     if (!ok) {
-                        failedIssues.add(String.format("- `%s:%d` **%s**: %s",
-                            issue.path("file").asText(), absoluteLine,
-                            issue.path("type").asText(), issue.path("message").asText()));
+                        failedIssues.add(formatSummaryIssue(issue));
                     }
                 } else {
-                    failedIssues.add(String.format("- `%s:%d` **%s**: %s",
-                        issue.path("file").asText(), absoluteLine,
-                        issue.path("type").asText(), issue.path("message").asText()));
+                    failedIssues.add(formatSummaryIssue(issue));
                 }
             } catch (Exception e) {
                 log.warn("行级评论失败: {}", e.getMessage());
-                failedIssues.add(String.format("- `%s:%d` **%s**: %s",
-                    issue.path("file").asText(),
-                    Math.max(issue.path("line").asInt(), 1),
-                    issue.path("type").asText(),
-                    issue.path("message").asText()));
+                failedIssues.add(formatSummaryIssue(issue));
             }
         }
 
@@ -263,6 +259,15 @@ public class ResultFeedback {
                 log.error("降级评论也失败了: {}", e.getMessage());
             }
         }
+    }
+
+    private static String formatSummaryIssue(JsonNode issue) {
+        int line = issue.path("line").asInt();
+        String location = line > 0
+            ? issue.path("file").asText() + ":" + line
+            : issue.path("file").asText();
+        return String.format("- `%s` **%s**: %s",
+            location, issue.path("type").asText(), issue.path("message").asText());
     }
 
     private String severityIcon(String sev) {

@@ -18,7 +18,7 @@ git diff → PRModeClassifier → FileTaskBuilder/HunkTaskBuilder
          ├─ direct task → DirectTaskReview
          └─ full task → TaskSelection → PlanUnit(按文件复用)
               → Plan → ReviewPlan → [Summary] → ContextProvider → task-scoped Discover
-              → CouncilCoordinator → EvidenceVerifier(账本验证,零 LLM)
+              → CandidateLocator → CouncilCoordinator → EvidenceVerifier(账本验证,零 LLM)
               → CouncilJudge(批量 EvidenceJudge)→ ReviewResult
 ```
 
@@ -66,6 +66,7 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 - **ContextProvider**:在 ReviewCouncil 前构造轻量 `ContextBundle`,只产出事实、来源与截断标记,不判断"是不是问题"。
 - **大 diff 降级**:仅在超过 5000 行时，Python 确定性收紧为最多 20 个任务、每文件 3 个、每任务上下文 2000 字符；普通 diff 全选 Full task。Plan 不引入新的总 Token 预算，成本由 task 粒度、同文件 Plan 复用、并发限制、超时和现有重试控制。Java 不重复判断。
 - **Plan 与 ReviewCouncilSubgraph**:Full task 按 PlanUnit 并发执行结构化 Plan；Plan 显式选择 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent`、审查重点和知识主题，不选择工具。三个 task-scoped 发现者 fan-out 产出 raw `CandidateIssue`;Reviewer 固定持有 `inspect_security_path` / `inspect_change_impact` / `inspect_structure`，这些专属工具负责发现隐藏的跨文件安全、行为和结构问题。user prompt 携带 Plan 重点、预取事实和 Plan 选中的 BASE+专项 knowledge bundle。`CouncilCoordinator` 在显式 fan-in 后构建局部候选块并保守归并。
+- **CandidateLocator(节点内定位护栏)**:Full 与 Direct 的 `DiscoveredIssue` 在绑定稳定候选 ID 前统一校验 `location_snippet`。只允许当前 task 新增行中的 1～5 行连续原文；唯一匹配可修正 Reviewer 行号，合法原行号可兜底，其余按 task 每批最多 8 条调用 LLM 重新提取片段并确定性复验。最终失败保留为 `line=0` 文件级候选，并向 Judge 暴露 `candidate_location_unresolved` 限制；该步骤不新增 LangGraph 节点，定位片段也不进入产品输出或证据账本。
 - **发现者工具协调**:`pipeline/discovery_tools.py` 在单次 review 的单个 reviewer node 内按规范化工具参数执行 single-flight/cache；不同 task 首次复用完整结果，同一 ReAct 对话重复调用只返回短标记，最终 gathered context 也按相同 canonical key 去重，三个发现者之间及跨 review 不共享。只有未被大 diff 策略截断的完整新增文件 patch 才可代替 `get_file_content`。
 - **EvidenceVerifier(证据账本验证,零 LLM)**:审查员只从运行时捕获的 `<evidence_catalog>` 里选编号(`evidence_refs` 最多 3 条，patch=P01 自动绑定)，离开发现子图即绑定为内容寻址 artifact ID——LLM 无法伪造、改写或重新填写证据。Verifier 只证明 Artifact 真实、可用、属于候选范围：patch 摘要一致、图响应 subject/scope/status/coverage 护栏（`MAIN/TEST/GENERATED` 分类，生产查询不消费 TEST 关系，测试事实不能证明生产可达/影响/severity）、guard 注解扫描确定性反证、引用范围核对；仅异常 Artifact 进入重放队列且受 `enabled_evidence_tools` 白名单约束，重放失败只产生限制、不作反证。
 - **CouncilJudge(批量证据裁决)**:每批 ≤8 候选、最多 4 批并行，一次完成支持/反驳/去留/定级。Patch 可以证明局部代码机制，但不能自动证明跨文件调用、生产可达性或外部契约；定位事实（LOCATION）不能单独证明缺陷成立；未找到保护不等于证明保护不存在。输出经确定性合同校验（keep 必须引用 ≥1 支持事实、引用 ID 必须属于候选可见范围、supporting/counter 不得重叠、维护性候选不得 CRITICAL），违规重试/二分拆批，单候选最终失败 fail-closed 不输出。Judge 不补证、不按标签直定级，也不接受 LLM 直接选择危险等级。
@@ -108,6 +109,7 @@ Codeguard/
     │   │   ├── pipeline/context/          # ★图谱符号上下文与事实预算
     │   │   ├── pipeline/reviewers/        # ★三路发现者、工具协调与 prompt 构造
     │   │   ├── pipeline/planning.py       # ★OCR 式 PlanUnit、Reviewer 与知识主题规划
+    │   │   ├── pipeline/location.py       # ★候选新增行定位校验与批量重定位
     │   │   ├── pipeline/evidence/         # ★证据账本:注册/绑定/目录渲染、健康检查/图护栏/异常重放、guard 扫描
     │   │   ├── pipeline/council/          # ★候选归并、裁决与过程指标
     │   │   ├── pipeline/summary/          # 可选变更摘要阶段
@@ -150,7 +152,7 @@ Codeguard/
    - `Plan` 按 PlanUnit 并发生成 Reviewer、审查重点和知识主题；LARGE 模式同文件 hunk 复用文件级 Plan。
    - `[Summary]` 对 TaskRank 选中范围产出可选变更摘要。
    - `ContextProvider` 构造只读 `ContextBundle`。
-   - `ReviewCouncil` 并行运行 task-scoped 发现者 Agent；没有匹配任务的 reviewer 记录 `no_tasks_routed`。
+   - `ReviewCouncil` 并行运行 task-scoped 发现者 Agent；没有匹配任务的 reviewer 记录 `no_tasks_routed`。发现结果在绑定候选 ID 前经过统一新增行定位校验，必要时按 task 批量重定位。
    - `CouncilCoordinator` 完成三路 fan-in 和保守归并。
    - `EvidenceVerifier → CouncilJudge` 完成证据账本验证(健康检查/图护栏/异常重放,零 LLM)与批量证据裁决(支持/反驳/去留/定级,合同校验 fail-closed)。
    - `CouncilRunStats` 从稳定 survivor candidate 映射与结构化 request/finding/verdict/trace 派生，进入 eval/report/archive，不进入产品输出。

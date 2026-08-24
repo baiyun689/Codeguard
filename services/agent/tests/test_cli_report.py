@@ -77,3 +77,34 @@ def test_不带report_不生成报告(tmp_path, monkeypatch, capsys):
     assert not (tmp_path / "reports").exists()
     out = capsys.readouterr().out
     assert "报告已写入" not in out
+
+
+def test_文件级问题不在终端或markdown展示零行号(capsys):
+    result = ReviewResult(
+        summary="定位待人工确认",
+        issues=[
+            Issue(
+                severity=Severity.WARNING,
+                file="src/App.java",
+                line=0,
+                type="文件级问题",
+                message="问题成立但无法唯一定位到新增行",
+            )
+        ],
+    )
+
+    cli._print_result(result)
+    terminal = capsys.readouterr().out
+    markdown = cli.render_review_report(
+        result,
+        repo=".",
+        base="HEAD",
+        model="mock",
+        duration_s=0,
+        diff_text=_DIFF,
+    )
+
+    assert "位置:src/App.java\n" in terminal
+    assert "src/App.java:0" not in terminal
+    assert "`src/App.java`" in markdown
+    assert "src/App.java:0" not in markdown

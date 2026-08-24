@@ -11,8 +11,8 @@ Codeguard 接收 GitHub Pull Request 事件，由 Python 审查委员会分析�
 - 从安全、行为正确性和可维护性三个维度审查 Pull Request。
 - 内置 OpenAI 兼容 LLM 代理网关，按 model 名自动路由到 DeepSeek/Claude/千问，支持降级链、Resilience4j 熔断/限流/重试。
 - Python Agent 无需持有 LLM 提供商密钥——所有密钥集中由 LLM Proxy 管理。
-- 先按风险对变更片段进行路由，再由任务级专业审查员分析。
-- 向审查员显式提供当前任务的摘要、风险画像、AST、敏感 API、调用方和代码指标，并标明来源、范围、截断及不可用原因。
+- 按 diff 规模构建 task，经确定性 DirectGate 路由后，由 Plan 为 Full task 选择专业审查员与知识主题。
+- 向审查员显式提供当前任务的摘要、Plan 目标、AST、敏感 API、调用方和代码指标，并标明来源、范围、截断及不可用原因。
 - 在单个审查员范围内合并并发和重复工具调用，避免重复文件读取和重复上下文注入；不同审查员保持隔离。
 - 证据所有权在运行时：工具调用、上下文与 patch 由运行时代码捕获为内容寻址 Artifact（证据账本），审查员只输出短编号引用，无法伪造证据；验证器零 LLM 证明证据真实可用，批量 EvidenceJudge 一次完成支持/反驳/去留/定级。
 - 通过 GitHub Check Run、Diff Annotation 和高置信度严重问题评论反馈结果。
@@ -41,8 +41,9 @@ GitHub pull_request Webhook
         v
 Python Agent
   PR 规模路由(small/medium/large) -> Diff 任务 -> Task 级 DirectGate
-  -> Full task PlanUnit -> Reviewer 分派 -> 工具/证据 -> Judge
-  -> 三路发现者(并行) -> 归并 -> 证据验证(账本健康/图护栏/异常重放,零 LLM)
+  -> Full task PlanUnit -> Reviewer 分派 -> 三路发现者(并行)
+  -> 候选定位校验/必要时批量重定位 -> 归并
+  -> 证据验证(账本健康/图护栏/异常重放,零 LLM)
   -> 批量 EvidenceJudge 终审(evidence_mode=off 时跳过取证直接终审)
   LLM 调用经 LLM Proxy 或直连提供商
         |
@@ -53,6 +54,8 @@ GitHub Check Run、Diff Annotation 和 PR 评论
 Python Agent 负责审查推理与编排。Java Gateway 拆为三个独立服务：LLM Proxy 负责多提供商路由和韧性策略（协议转发，不做语义判断），Tool Server 负责确定性代码事实采集和文件访问护栏，CI Webhook 负责 GitHub 事件接入和审查作业调度。
 
 Full task 先由 OCR 式 PlanUnit 并发生成审查计划：Plan 选择 ThreatModelAgent、BehaviorAgent、MaintainabilityAgent、具体审查目标和按 reviewer 划分的知识主题，不负责工具调用或最终裁决。三个发现者分别固定使用 inspect_security_path、inspect_change_impact、inspect_structure 等专属工具；这些工具用于发现当前 diff 表面看不到的跨文件安全、行为和结构问题。LARGE 模式同文件 hunk 复用一次文件级 Plan。DirectGate 只由确定性 task 规则决定，低风险文档/注释 task 才走 Direct，其余进入 Full。
+
+Reviewer 输出先经过统一候选定位护栏：系统只接受当前 task 新增行中的唯一原文片段，片段与行号冲突时以确定性匹配结果为准；无法确认的候选按 task 批量请求 LLM 重新提取片段并再次确定性复验。最终仍无法定位时保留为 `line=0` 的文件级问题，不把定位失败误判为问题不成立，也不会发布到错误的 GitHub 行内位置。Direct 与 Full 共用同一规则。
 
 配置工具服务后，每次审查会按精确 revision 异步构建完整、只读的 Java `ProjectSnapshot`，缓存全部源码、JavaParser AST、符号索引和 Spring 感知语义图。ContextProvider 只注入变更所属的稳定 `symbol_id`；三路发现者分别通过 `inspect_security_path`、`inspect_change_impact`、`inspect_structure` 查询有限局部子图，取证验证阶段复用同一快照。图谱明确区分 `confirmed/not_found/unknown`，并将 `MAIN/TEST/GENERATED` 来源贯穿节点、关系、coverage 和工具结果：生产状态只由非测试事实确定，测试关系作为独立上下文返回，不能单独证明生产可达或提高严重度。静态分析未知不会被解释为不可达。
 

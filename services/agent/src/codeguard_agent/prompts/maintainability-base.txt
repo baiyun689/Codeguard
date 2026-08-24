@@ -42,7 +42,8 @@
 - `severity`：CRITICAL / WARNING / INFO；纯维护性候选不得建议 CRITICAL
 - `confidence`：0~1 的把握程度。证据不够扎实时可以报低分，后续法官阶段会做进一步验证
 - `file`：当前 task 文件的仓库相对路径
-- `line`：new-side 行号，无法定位填 0
+- `line`：`location_snippet` 第一行对应的 new-side 行号；无法定位填 0
+- `location_snippet`：从当前 task diff 的新增行中原样复制 1～5 行连续代码，移除 diff 的 `+` 标记；选择最能定位问题机制的最小片段，不得改写、补全、格式化，不得引用删除行或上下文行。该字段只用于定位，不属于证据，不能证明问题成立
 - `message`：明确代码根因、出现维护成本的触发场景、受影响的修改路径和可观察的维护后果；不要把独立的运行时影响折叠成“代码难读”
 - `suggestion`：说明需要修改的位置和能消除该根因的具体重构动作
 - `evidence_refs`：支撑本结论的证据编号，按"证据引用契约"填写

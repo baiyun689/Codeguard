@@ -115,6 +115,7 @@ class _FakeJudgeLLM:
     def __init__(self, result):
         self._result = result
         self.calls = 0
+        self.payloads = []
 
     def with_structured_output(self, _schema, method=None):
         return self
@@ -123,6 +124,7 @@ class _FakeJudgeLLM:
         self.calls += 1
         user = messages[1][1]
         payload = json.loads(user)
+        self.payloads.append(payload)
         candidates = payload.get("candidates") if isinstance(payload, dict) else None
         count = len(candidates) if isinstance(candidates, list) else 1
         if count > 1:
@@ -141,6 +143,25 @@ def _assessment(cid: str, action: str = "keep", severity: Severity | None = Seve
         evidence_ids=evidence if evidence is not None else ["F001", "F002"],
         reason="patch 与文件事实均支持",
     )
+
+
+def test_file_level_candidate_exposes_unresolved_location_limitation():
+    candidate = _candidate("c-location").model_copy(update={"line": 0})
+    llm = _FakeJudgeLLM(EvidenceJudgeBatch(
+        assessments=[_assessment("c-location")]
+    ))
+
+    judge_with_evidence(
+        _assembly([candidate]),
+        {"c-location": _verification("c-location")},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+
+    limitations = llm.payloads[0]["candidates"][0]["evidence"][0]["limitations"]
+    assert "candidate_location_unresolved" in limitations
 
 
 # ── 批量裁决基本路径 ───────────────────────────────────────────────────

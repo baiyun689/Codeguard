@@ -25,7 +25,7 @@ from codeguard_agent.models.council import (
     CouncilTrace,
     MAX_CANDIDATES_PER_AGENT,
 )
-from codeguard_agent.models.schemas import DiscoveryReviewResult, ReviewResult
+from codeguard_agent.models.schemas import DiscoveryReviewResult, Issue, ReviewResult
 from codeguard_agent.models.tasks import (
     ContextStatus,
     ReviewBudget,
@@ -51,6 +51,7 @@ from codeguard_agent.pipeline.discovery import (
 )
 from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
 from codeguard_agent.pipeline.knowledge.selector import select_knowledge
+from codeguard_agent.pipeline.location import locate_issues
 from codeguard_agent.models.knowledge import KnowledgeBudget
 from codeguard_agent.pipeline.task_scope import LargeDiffPlan, plan_large_diff
 from codeguard_agent.pipeline.planning import (
@@ -1060,7 +1061,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         candidates = []
         rejected_mismatched: list[str] = []
         rejected_noise = 0
-        accepted_count = 0
+        accepted_pairs: list[tuple[str, Any]] = []
         for task_id, issue in kept_pairs:
             task = task_by_id[task_id]
             if not task_prep.file_matches_task(issue.file, task):
@@ -1069,8 +1070,35 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             if task_prep.is_noise_issue(issue.file, issue.type, issue.message):
                 rejected_noise += 1
                 continue
+            accepted_pairs.append((task_id, issue))
 
-            accepted_count += 1
+        located_by_index: dict[int, Any] = {}
+        for task_id in dict.fromkeys(item[0] for item in accepted_pairs):
+            pair_indexes = [
+                index
+                for index, (candidate_task_id, _issue) in enumerate(accepted_pairs)
+                if candidate_task_id == task_id
+            ]
+            location_batch = locate_issues(
+                [accepted_pairs[index][1] for index in pair_indexes],
+                task_by_id[task_id],
+                llm=llm,
+                structured_method=state.get("structured_method", "function_calling"),
+                max_retries=state.get("max_retries", 3),
+            )
+            for pair_index, located_issue in zip(
+                pair_indexes, location_batch.issues, strict=True
+            ):
+                located_by_index[pair_index] = located_issue
+            trace.extend(
+                CouncilTrace(node=reviewer.source_agent, event=event, detail=detail)
+                for event, detail in location_batch.trace
+            )
+
+        for pair_index, (task_id, _issue) in enumerate(accepted_pairs):
+            accepted_count = pair_index + 1
+            task = task_by_id[task_id]
+            issue = located_by_index[pair_index]
             # 短别名引用绑定为内部 artifact ID;无效引用留痕并退化 patch-only。
             catalog = catalog_by_task.get(task_id)
             if catalog is None:
@@ -1383,14 +1411,16 @@ def _direct_task_review_node(llm):
                 reviewer_name="direct_task",
                 max_retries=state.get("max_retries", 3),
                 structured_method=state.get("structured_method", "function_calling"),
-                result_schema=ReviewResult,
+                result_schema=DiscoveryReviewResult,
             )
             return outcome.result.issues
 
         results = run_bounded_parallel(tasks, review_one, max_workers=8)
-        issues = []
+        issues: list[Issue] = []
         rejected = 0
+        location_trace: list[CouncilTrace] = []
         for task, result in zip(tasks, results):
+            accepted = []
             for issue in result or []:
                 if not task_prep.file_matches_task(issue.file, task):
                     rejected += 1
@@ -1398,7 +1428,30 @@ def _direct_task_review_node(llm):
                 if task_prep.is_noise_issue(issue.file, issue.type, issue.message):
                     rejected += 1
                     continue
-                issues.append(issue)
+                accepted.append(issue)
+            location_batch = locate_issues(
+                accepted,
+                task,
+                llm=llm,
+                structured_method=state.get("structured_method", "function_calling"),
+                max_retries=state.get("max_retries", 3),
+            )
+            issues.extend(
+                Issue(
+                    severity=issue.severity,
+                    file=issue.file,
+                    line=issue.line,
+                    type=issue.type,
+                    message=issue.message,
+                    suggestion=issue.suggestion,
+                    confidence=issue.confidence,
+                )
+                for issue in location_batch.issues
+            )
+            location_trace.extend(
+                CouncilTrace(node="direct_task_review", event=event, detail=detail)
+                for event, detail in location_batch.trace
+            )
         return {
             "direct_final_issues": issues,
             "council_trace": [
@@ -1409,7 +1462,8 @@ def _direct_task_review_node(llm):
                         f"tasks={len(tasks)} issues={len(issues)} "
                         f"rejected={rejected}"
                     ),
-                )
+                ),
+                *location_trace,
             ],
         }
 

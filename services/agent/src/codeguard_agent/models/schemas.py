@@ -81,6 +81,10 @@ class DiscoveredIssue(BaseModel):
     severity: Severity = Field(description="严重级别")
     file: str = Field(description="问题所在文件路径")
     line: int = Field(default=0, description="问题所在行号,0 表示无法定位到具体行")
+    location_snippet: str = Field(
+        default="",
+        description="从当前 task 新增行原样复制的连续代码片段，仅用于定位",
+    )
     type: str = Field(description="问题类型")
     message: str = Field(description="问题描述")
     suggestion: str = Field(default="", description="修复建议,可选")

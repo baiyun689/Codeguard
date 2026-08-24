@@ -11,10 +11,10 @@ Codeguard receives GitHub pull request events, analyzes the exact code change wi
 - Reviews pull requests for security, behavioral, and maintainability risks.
 - Built-in OpenAI-compatible LLM proxy gateway automatically routes model names to DeepSeek/Claude/Qwen with fallback chains and Resilience4j circuit breaker / rate limiter / retry.
 - Python Agent holds no provider API keys—all credentials are centralized in the LLM Proxy.
-- Routes changed hunks by risk before running task-scoped specialist reviewers.
-- Gives reviewers explicit task-scoped summaries, risk profiles, AST, sensitive APIs, callers, and metrics, including source, scope, truncation, and unavailable reasons.
+- Builds tasks from diff size, applies a deterministic DirectGate, and lets Plan select specialist reviewers and knowledge topics for Full tasks.
+- Gives reviewers explicit task-scoped summaries, Plan objectives, AST, sensitive APIs, callers, and metrics, including source, scope, truncation, and unavailable reasons.
 - Coalesces concurrent and repeated tool calls within one reviewer to avoid duplicate file reads and context injection while keeping reviewers isolated.
-- Plans and gathers supporting, counter, and severity evidence before producing a verdict.
+- Captures patch, prefetched context, and tool results in an Evidence Ledger; reviewers reference immutable artifacts and a deterministic verifier plus batched EvidenceJudge produce the verdict.
 - Publishes Check Runs, diff annotations, and high-confidence critical comments to GitHub.
 - Verifies webhook signatures and deduplicates jobs by repository, pull request, and commit SHA.
 - Persists jobs in MySQL and restores unfinished work after a restart (tests use H2 in MySQL-compatibility mode).
@@ -40,8 +40,10 @@ GitHub pull_request webhook
         |
         v
 Python Agent
-  PR size routing (small/medium/large) -> diff tasks -> risk routing
-  -> specialist discovery -> evidence -> council verdict
+  PR size routing (small/medium/large) -> diff tasks -> task DirectGate
+  -> Full-task PlanUnits -> specialist discovery
+  -> deterministic candidate location / bounded batch relocation
+  -> coordination -> evidence verification -> batched council verdict
   LLM calls routed through LLM Proxy or direct to provider
         |
         v
@@ -50,7 +52,9 @@ GitHub Check Run, annotations, and pull request comments
 
 The Python Agent owns review reasoning and orchestration. The Java Gateway is three independent services: LLM Proxy handles multi-provider routing and resilience (protocol forwarding, no semantic judgment), Tool Server collects deterministic code facts with file-access guardrails, and CI Webhook manages GitHub event ingestion and review job scheduling.
 
-During discovery, the system prompt defines stable context semantics and the tool-use gate. Each task's actual patch, risk profile, prefetched facts, availability status, and tag knowledge are injected dynamically in the user message. A reviewer must skip tools when those facts are sufficient. Concurrent tasks within one reviewer may share review-scoped tool results, but no cache is shared with another reviewer or another review.
+For Full tasks, OCR-style PlanUnits select ThreatModelAgent, BehaviorAgent, MaintainabilityAgent, concrete objectives, and reviewer-owned knowledge topics; Plan does not choose tools or make verdicts. During discovery, each task's patch, Plan objectives, prefetched facts, availability status, and knowledge bundle are injected dynamically. A reviewer must skip tools when those facts are sufficient. Concurrent tasks within one reviewer may share review-scoped tool results, but no cache is shared with another reviewer or another review.
+
+Before stable candidate IDs are created, Full and Direct findings pass through the same location guardrail. The system accepts only a unique, verbatim one-to-five-line snippet from added task lines. Invalid locations are relocated in bounded LLM batches and deterministically verified again; unresolved findings remain file-level with `line=0`, so a location failure does not erase a valid concern or create a misplaced GitHub inline comment.
 
 The three discoverers collect raw candidates by ID only. After fan-in, CouncilCoordinator builds connected candidate blocks from full Git paths and local positions, and runs conservative structured-LLM deduplication with at most eight parallel calls. A group removes duplicates only when it has high confidence and satisfies the same-root-cause, same-impact, and single-fix criteria; invalid, low-confidence, or failed results preserve every candidate.
 

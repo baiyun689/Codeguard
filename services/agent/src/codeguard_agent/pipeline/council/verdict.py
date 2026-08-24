@@ -75,10 +75,9 @@ def _evidence_item_payload(
     for evidence in verification.valid_evidence:
         limitations = list(evidence.limitations)
         if evidence.source_kind is EvidenceSourceKind.TASK_PATCH:
-            if (
-                dossier.candidate.line > 0
-                and dossier.candidate.line not in dossier.task.changed_lines
-            ):
+            if dossier.candidate.line <= 0:
+                limitations.append("candidate_location_unresolved")
+            elif dossier.candidate.line not in dossier.task.changed_lines:
                 limitations.append("candidate_line_unknown")
             content = evidence.content
         elif evidence.tool in _GRAPH_TOOLS:

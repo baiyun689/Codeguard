@@ -22,11 +22,13 @@ diff 代表待审查的 PR 变更，仓库代码为变更前基线；你只看 d
 
 ## 输出
 
-返回结构化 `ReviewResult`。`summary` 是本次审查结论的简短概括；`issues` 为问题列表，确实没有问题时返回空列表。每条 Issue：
+返回结构化 `DiscoveryReviewResult`。`summary` 是本次审查结论的简短概括；`issues` 为问题列表，确实没有问题时返回空列表。每条 Issue：
 - `type`：稳定简洁的问题类型；
 - `severity`：CRITICAL / WARNING / INFO；
 - `confidence`：0~1 的把握程度，且必须满足上文可追溯规则；
 - `file`：diff 中的真实仓库相对路径；
-- `line`：变更新增代码行号，无法定位填 0；
+- `line`：`location_snippet` 第一行对应的变更新增代码行号，无法定位填 0；
+- `location_snippet`：从当前 task diff 的新增行中原样复制 1～5 行连续代码，移除 diff 的 `+` 标记；选择最能定位问题机制的最小片段，不得改写、补全、格式化，不得引用删除行或上下文行。该字段只用于定位，不属于问题成立的证据；
 - `message`：具体根因和影响，必须引用 diff 中的具体行；
-- `suggestion`：能消除该根因的具体修复动作。
+- `suggestion`：能消除该根因的具体修复动作；
+- `evidence_refs`：Direct task 没有证据目录，固定返回空数组。

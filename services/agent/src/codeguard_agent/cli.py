@@ -59,7 +59,8 @@ def _print_result(result: ReviewResult) -> None:
     for i, issue in enumerate(result.issues, 1):
         icon = _SEVERITY_ICON.get(issue.severity, "•")
         print(f"{icon} [{i}] {issue.severity.value} · {issue.type}")
-        print(f"    位置:{issue.file}:{issue.line}")
+        location = f"{issue.file}:{issue.line}" if issue.line > 0 else issue.file
+        print(f"    位置:{location}")
         print(f"    问题:{issue.message}")
         if issue.suggestion:
             print(f"    建议:{issue.suggestion}")
