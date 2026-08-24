@@ -101,6 +101,9 @@ body{display:flex;flex-direction:column;overflow:hidden}
 .reviewer-tools>summary:before{content:"▶";display:inline-block;margin-right:7px;font-size:9px}
 .reviewer-tools[open]>summary:before{content:"▼"}.reviewer-tools-body{padding:9px 9px 1px}
 .reviewer-tools-body .step:last-child{margin-bottom:10px}
+.route-branch{display:block;width:100%;margin-top:9px;padding:7px 8px;border:1px dashed var(--orange);
+  border-radius:7px;background:#211a0f;color:var(--orange);text-align:left;cursor:pointer;font-size:10px}
+.route-branch:hover{background:#302310}.branch-duration{float:right;color:var(--dim)}
 .inspect-head{padding:15px;border-bottom:1px solid var(--line);position:sticky;
   top:0;background:#0e1526;z-index:4}.inspect-head h2{margin:4px 0 2px;font-size:17px}
 .inspect-tabs{display:flex;overflow:auto;padding:8px 10px;border-bottom:1px solid var(--line)}
@@ -191,7 +194,7 @@ try{
   var DATA=JSON.parse(document.getElementById("trace-data").textContent);
   var VIEW=DATA.view||{},EVENTS=DATA.events||[],STEPS=VIEW.steps||{};
   var EVENTS_BY_SEQUENCE={},activeView="flow",selectedStepId=null;
-  var selectedRawSequence=null,inspectorTab="changes",viewPositions={};
+  var selectedRawSequence=null,inspectorTab="changes",viewPositions={},openDisclosures={};
   EVENTS.forEach(function(event){EVENTS_BY_SEQUENCE[event.sequence]=event});
   selectedStepId=initialStepId();
   bindGlobalControls();
@@ -280,6 +283,16 @@ function bindRenderedControls(){
       selectedRawSequence=Number(element.getAttribute("data-raw-sequence"))
     })}
   });
+  document.querySelectorAll("details[data-disclosure-id]").forEach(function(element){
+    var disclosureId=element.getAttribute("data-disclosure-id");
+    element.open=Boolean(openDisclosures[disclosureId]);
+    element.onclick=function(event){event.stopPropagation()};
+    element.ontoggle=function(){openDisclosures[disclosureId]=element.open};
+  });
+  document.querySelectorAll("[data-route-branch-step-id]").forEach(function(element){
+    element.onclick=function(event){event.stopPropagation();selectStep(
+      element.getAttribute("data-route-branch-step-id"))}
+  });
   var previous=document.getElementById("previous-step");
   var next=document.getElementById("next-step");
   if(previous)previous.onclick=function(){moveSelection(-1)};
@@ -323,8 +336,7 @@ function renderActiveView(){
 function renderFlow(){
   document.getElementById("trace-outline").innerHTML=renderOutline();
   document.getElementById("trace-story").innerHTML=renderMainFlow()+
-    (VIEW.reviewer_sections||[]).map(renderReviewerSection).join("")+
-    renderCoordinationSection()
+    (VIEW.reviewer_sections||[]).map(renderReviewerSection).join("")
 }
 function renderOutline(){
   var html='<div class="outline-title">审查目录</div>'+
@@ -333,13 +345,11 @@ function renderOutline(){
     html+='<button data-outline-target="reviewer-'+esc(section.key)+'">'+
       esc(section.title)+' <small>('+section.step_ids.length+')</small></button>'
   });
-  html+='<button data-outline-target="coordination">证据处理</button>';
   return html
 }
 function renderMainFlow(){
   var stages=(VIEW.main_stages||[]).filter(function(stage){
-    return ["discovery_collector","coordination_loop","council_judge",
-      "causal_merge"].indexOf(stage.code_name)<0;
+    return ["discovery_collector"].indexOf(stage.code_name)<0;
   }),routing=VIEW.routing||{},metrics=routing.metrics||{},
     thresholds=routing.thresholds||{};
   var routeSummary=routing.initial_mode?
@@ -367,12 +377,16 @@ function renderMainFlow(){
       var skipped=stage.status==="skipped"?" skipped":"";
       var statusLabel=stage.status==="complete"?"已完成":stage.status==="skipped"?"已跳过":
         stage.status==="failed"?"失败":"未采集";
+      var branch=stage.branch?'<button class="route-branch" data-route-branch-step-id="'+
+        esc(stage.branch.step_id)+'">'+esc(stage.branch.title)+' · '+
+        esc(stage.branch.summary)+'<span class="branch-duration">耗时 '+
+        formatMs(stage.branch.duration_ms||0)+'</span></button>':"";
       return'<div class="main-stage'+selected+missing+failed+skipped+'"'+
         (stage.step_id?' data-step-id="'+esc(stage.step_id)+'"':"")+'>'+
         '<span class="seq">#'+String(index+1).padStart(2,"0")+'</span>'+
         '<div class="title">'+esc(stage.title)+'<span class="stage-status">'+statusLabel+'</span></div><div class="code">'+
         esc(stage.code_name)+'</div><div class="summary">'+esc(stage.summary)+'</div>'+
-        '<div class="main-duration">耗时 '+formatMs(stage.duration_ms||0)+'</div></div>'+
+        '<div class="main-duration">耗时 '+formatMs(stage.duration_ms||0)+'</div>'+branch+'</div>'+
         (index<stages.length-1?'<div class="arrow">→</div>':"")
     }).join("")+'</div></section>'
 }
@@ -382,7 +396,7 @@ function renderReviewerSection(section){
   var visibleReviewIds=visibleIds.filter(function(stepId){return !STEPS[stepId]||STEPS[stepId].kind!=="tool"});
   var cards=visibleReviewIds.map(function(stepId){return renderStepCard(STEPS[stepId])}).join("");
   var toolCards=visibleToolIds.map(function(stepId){return renderStepCard(STEPS[stepId])}).join("");
-  var tools=toolCards?'<details class="reviewer-tools"><summary>工具调用 · '+
+  var tools=toolCards?'<details class="reviewer-tools" data-disclosure-id="reviewer-tools:'+esc(section.key)+'"><summary>工具调用 · '+
     visibleToolIds.length+' 次</summary><div class="reviewer-tools-body">'+
     toolCards+'</div></details>':'';
   return'<section class="story-section" id="reviewer-'+esc(section.key)+'">'+
@@ -391,14 +405,6 @@ function renderReviewerSection(section){
     '工具调用 '+section.tool_call_count+' 次 · '+
     visibleIds.length+' / '+section.step_ids.length+' 步</span></header>'+
     (cards||(!tools?'<div class="empty">没有匹配的执行步骤</div>':""))+tools+'</section>'
-}
-function renderCoordinationSection(){
-  var ids=(VIEW.coordination_steps||[]).filter(stepMatchesSearch);
-  return'<section class="story-section" id="coordination"><header class="section-head">'+
-    '<span><h2>证据处理明细</h2><div class="code">ReviewCouncil shared path</div></span>'+
-    '<span>'+ids.length+' 步</span></header>'+
-    (ids.length?ids.map(function(id){return renderStepCard(STEPS[id])}).join(""):
-      '<div class="empty">本次执行没有进入证据或挑战闭环</div>')+'</section>'
 }
 function stepMatchesSearch(stepId){
   var query=document.getElementById("search").value.toLowerCase();
@@ -435,11 +441,14 @@ function renderToolPayloads(input,output,step){
   var reuseInfo=reused?'<div class="step-summary">复用自 call '+
     esc(step.reused_from_call_id||"-")+' / artifact '+
     esc(step.reused_from_artifact_id||"-")+'</div>':'';
-  var original=raw!==undefined&&raw!==null?'<details class="tool-payload"><summary>'+
+  var original=raw!==undefined&&raw!==null?'<details class="tool-payload" data-disclosure-id="'+
+    esc(step.id)+':raw"><summary>'+
     '原始响应 · '+esc(countValue(raw))+'</summary>'+renderJsonTree(raw)+'</details>':'';
-  var outputDetails=reused?'':'<details class="tool-payload"><summary>工具输出 · '+
+  var outputDetails=reused?'':'<details class="tool-payload" data-disclosure-id="'+
+    esc(step.id)+':output"><summary>工具输出 · '+
     esc(countValue(output))+'</summary>'+renderJsonTree(output)+'</details>'+original;
-  return'<div class="tool-payloads"><details class="tool-payload"><summary>'+
+  return'<div class="tool-payloads"><details class="tool-payload" data-disclosure-id="'+
+    esc(step.id)+':input"><summary>'+
     '工具入参 · '+esc(countValue(input))+'</summary>'+renderJsonTree(input)+
     '</details>'+reuseInfo+outputDetails+'</div>'
 }

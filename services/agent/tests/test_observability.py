@@ -280,12 +280,10 @@ def test_trace_view_groups_reviewer_react_steps_and_state_writes():
         "summary",
         "symbol_resolution",
         "review_council",
-        "coordination_loop",
+        "council_coordinator",
+        "evidence_verifier",
         "council_judge",
     ]
-    assert view["main_stages"][3]["summary"] == (
-        "协调 2 次，证据验证 1 次，路由 2 次"
-    )
     assert view["main_stages"][0]["duration_ms"] == 10.0
     threat = next(
         item
@@ -669,14 +667,14 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
         "classify_mode",
         "diff_task_builder",
         "task_route",
-        "direct_task_review",
         "task_selection",
         "plan",
         "review_plan",
         "summary",
         "symbol_resolution",
         "review_council",
-        "coordination_loop",
+        "council_coordinator",
+        "evidence_verifier",
         "council_judge",
     ]
     assert view["routing"] == {
@@ -692,17 +690,41 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
         and section["tool_step_ids"] == []
         for section in view["reviewer_sections"]
     )
-    assert {
-        view["steps"][step_id]["code_name"]
-        for step_id in view["coordination_steps"]
-    } == {
-        "council_coordinator",
-        "evidence_verifier",
-        "council_judge",
-    }
+    assert "coordination_steps" not in view
     assert {"review_tasks", "task_selection", "candidate_relations"} <= set(
         view["state_writes"]
     )
+
+
+def test_trace_view_renders_direct_review_as_task_route_branch():
+    events = [
+        _flow_event(1, "node_start", "classify_mode", "classify_mode", "mode"),
+        _flow_event(2, "node_end", "classify_mode", "classify_mode", "mode"),
+        _flow_event(3, "node_start", "task_route", "task_route", "route"),
+        _flow_event(
+            4,
+            "node_end",
+            "task_route",
+            "task_route",
+            "route",
+            detail={"output": {"task_routes": {"task-a": {"route": "direct"}}}},
+        ),
+        _flow_event(5, "node_start", "direct_task_review", "direct_task_review", "direct"),
+        _flow_event(6, "node_end", "direct_task_review", "direct_task_review", "direct"),
+    ]
+
+    view = build_trace_view(
+        TraceReport(run_id="direct-branch", timestamp="2026-08-24T00:00:00", events=events)
+    )
+
+    assert "direct_task_review" not in [
+        stage["code_name"] for stage in view["main_stages"]
+    ]
+    route_stage = next(
+        stage for stage in view["main_stages"] if stage["code_name"] == "task_route"
+    )
+    assert route_stage["branch"]["title"] == "Direct 分支审查"
+    assert route_stage["branch"]["step_id"] == "node:direct"
 
 
 def test_trace_view_marks_small_pipeline_stages_as_intentionally_skipped():
@@ -906,8 +928,8 @@ def test_trace_view_shows_small_direct_fallback_to_file_pipeline():
         "direct_review",
         "file_task_builder",
         "task_route",
-        "direct_task_review",
         "task_selection",
+        "plan",
     ]
     assert view["routing"]["initial_mode"] == "small"
     assert view["routing"]["effective_mode"] == "medium"
@@ -1282,9 +1304,10 @@ def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
 
     view = build_trace_view(report)
     tool_steps = [
-        view["steps"][step_id]
-        for step_id in view["coordination_steps"]
-        if view["steps"][step_id]["kind"] == "tool"
+        step
+        for step in view["steps"].values()
+        if step["kind"] == "tool"
+        and step["node_path"].startswith("evidence_verifier/")
     ]
 
     assert [step["status"] for step in tool_steps] == ["complete", "reused"]
@@ -2098,7 +2121,10 @@ class TestDashboard:
         assert "main-duration" in template
         assert 'details class="reviewer-tools"' in template
         assert "reviewer-tools-body" in template
-        assert '"coordination_loop","council_judge"' in template
+        assert "data-route-branch-step-id" in template
+        assert "data-disclosure-id" in template
+        assert "openDisclosures" in template
+        assert "证据处理明细" not in template
         assert "stage-status" in template
 
     def test_preserves_reading_position_for_local_updates(self):

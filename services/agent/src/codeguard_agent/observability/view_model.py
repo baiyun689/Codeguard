@@ -35,8 +35,8 @@ _NODE_TITLES: dict[str, str] = {
     "task_route": "Task 路由",
     "direct_task_review": "Direct Task 审查",
     "task_selection": "任务选择",
-    "plan": "审查计划",
-    "review_plan": "审查计划",
+    "plan": "审查规划",
+    "review_plan": "审查分配",
     "symbol_resolution": "符号解析",
     "discover_threat_model": "安全候选发现",
     "discover_behavior": "行为候选发现",
@@ -44,7 +44,7 @@ _NODE_TITLES: dict[str, str] = {
     "prepare": "准备审查",
     "collect": "汇总候选问题",
     "discovery_collector": "发现结果汇总",
-    "council_coordinator": "委员会协调",
+    "council_coordinator": "候选汇总",
     "evidence_verifier": "证据验证",
     "council_judge": "结果裁决",
     "causal_merge": "语义合并",
@@ -96,26 +96,10 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
         and not routing.get("fallback", False)
         and routing.get("outcome") == "completed"
     )
-    discovery_only = any(
-        step["code_name"] == "discovery_collector"
-        for step in node_steps
-    )
     decision_summary = _decision_summary(report.events)
     review_council_step = _review_council_step(
         node_steps,
         skip_reason="small 模式按设计跳过" if small_complete else "",
-    )
-    coordination_loop_step = _coordination_loop_step(
-        node_steps,
-        report.events,
-        decision_summary=decision_summary,
-        skip_reason=(
-            "small 模式按设计跳过"
-            if small_complete
-            else "discovery_only 模式按设计跳过"
-            if discovery_only
-            else ""
-        ),
     )
     steps = _index_steps(
         visible_node_steps
@@ -124,20 +108,17 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
         + tool_steps
         + application_tool_steps
         + [review_council_step]
-        + [coordination_loop_step]
     )
     degradation = report.degradation
     return {
         "main_stages": _main_stages(
             node_steps_with_placeholders,
             review_council_step,
-            coordination_loop_step,
             routing,
             decision_summary=decision_summary,
         ),
         "routing": routing,
         "reviewer_sections": _reviewer_sections(steps),
-        "coordination_steps": _coordination_steps(steps),
         "decision_summary": decision_summary,
         "steps": steps,
         "state_writes": _state_writes(steps, events_by_sequence),
@@ -310,6 +291,9 @@ def _step_from_pair(
         "status": "complete" if start is not None and end is not None else "missing",
         "summary": summary,
         "metrics": metrics,
+        "direct_task_count": _direct_task_count_from_event(end)
+        if code_name == "task_route"
+        else 0,
     }
 
 
@@ -717,7 +701,6 @@ def _index_steps(
 def _main_stages(
     node_steps: list[dict[str, Any]],
     review_council_step: dict[str, Any],
-    coordination_loop_step: dict[str, Any],
     routing: dict[str, Any],
     *,
     decision_summary: dict[str, Any] | None = None,
@@ -747,7 +730,7 @@ def _main_stages(
                 builder = "diff_task_builder"
         if builder in {"file_task_builder", "diff_task_builder"} and builder in by_name:
             stages.append(_main_stage(builder, _NODE_TITLES[builder], by_name[builder]))
-        for code_name in ("task_route", "direct_task_review", "task_selection", "plan", "review_plan"):
+        for code_name in ("task_route", "task_selection", "plan", "review_plan"):
             if code_name in by_name:
                 stages.append(_main_stage(
                     code_name,
@@ -785,20 +768,16 @@ def _main_stages(
             _NODE_TITLES["discovery_collector"],
             by_name["discovery_collector"],
         ))
-    stages.append({
-        "id": "main:coordination_loop",
-        "title": "证据处理",
-        "code_name": "coordination_loop",
-        "status": coordination_loop_step["status"],
-        "step_id": coordination_loop_step["id"],
-        "sequence": coordination_loop_step["sequence"],
-        "duration_ms": coordination_loop_step.get("duration_ms", 0.0),
-        "summary": coordination_loop_step["summary"],
-        "metrics": coordination_loop_step.get("metrics", {}),
-    })
+    for code_name in ("council_coordinator", "evidence_verifier", "direct_judge"):
+        if code_name in by_name:
+            stages.append(_main_stage(
+                code_name,
+                _NODE_TITLES[code_name],
+                by_name[code_name],
+            ))
     judge_stage = _main_stage(
         "council_judge",
-            "结果裁决",
+        "结果裁决",
         by_name.get("council_judge"),
     )
     if "discovery_collector" in by_name and "council_judge" not in by_name:
@@ -809,7 +788,8 @@ def _main_stages(
     if judge_summary.get("candidate_count"):
         judge_stage["summary"] = _judge_summary(judge_summary)
         judge_stage["metrics"] = judge_summary
-    stages.append(judge_stage)
+    if "council_judge" in by_name or "discovery_collector" in by_name:
+        stages.append(judge_stage)
     causal_candidates = by_name.get("causal_merge")
     if causal_candidates:
         causal_stage = _main_stage(
@@ -821,7 +801,52 @@ def _main_stages(
         causal_stage["summary"] = _causal_merge_summary(causal_summary)
         causal_stage["metrics"] = causal_summary
         stages.append(causal_stage)
+    _attach_direct_task_branch(stages, by_name)
     return stages
+
+
+def _attach_direct_task_branch(
+    stages: list[dict[str, Any]],
+    by_name: dict[str, list[dict[str, Any]]],
+) -> None:
+    """将真实的 Direct 审查作为 TaskRoute 的条件分支展示。"""
+    route_steps = by_name.get("task_route") or []
+    direct_steps = by_name.get("direct_task_review") or []
+    if not route_steps or not direct_steps or _direct_task_count(route_steps) == 0:
+        return
+    route_stage = next(
+        (stage for stage in stages if stage["code_name"] == "task_route"),
+        None,
+    )
+    if route_stage is None:
+        return
+    step = direct_steps[0]
+    route_stage["branch"] = {
+        "title": "Direct 分支审查",
+        "step_id": step["id"],
+        "summary": step["summary"],
+        "duration_ms": step["duration_ms"],
+    }
+
+
+def _direct_task_count(route_steps: Iterable[dict[str, Any]]) -> int:
+    return max(
+        (int(step.get("direct_task_count") or 0) for step in route_steps),
+        default=0,
+    )
+
+
+def _direct_task_count_from_event(event: TraceEvent | None) -> int:
+    output = _event_state_write(event)
+    if not isinstance(output, dict):
+        return 0
+    routes = output.get("task_routes")
+    if not isinstance(routes, dict):
+        return 0
+    return sum(
+        isinstance(route, dict) and route.get("route") == "direct"
+        for route in routes.values()
+    )
 
 
 def _review_council_step(
@@ -864,80 +889,6 @@ def _review_council_step(
             if discoverers
             else skip_reason or "未采集到审查员执行"
         ),
-    }
-
-
-def _coordination_loop_step(
-    node_steps: list[dict[str, Any]],
-    events: Iterable[TraceEvent],
-    *,
-    decision_summary: dict[str, Any] | None = None,
-    skip_reason: str = "",
-) -> dict[str, Any]:
-    coordination = [
-        step
-        for step in node_steps
-        if step["code_name"] in _COORDINATION_NODES
-    ]
-    route_count = sum(
-        1
-        for event in events
-        if event.event_type == "route_decision"
-    )
-    if route_count == 0:
-        route_count = sum(
-            1
-            for event in events
-            if event.event_type == "node_end"
-            and isinstance(_event_state_write(event), dict)
-            and _event_state_write(event).get("council_route")
-        )
-    coordinator_count = sum(
-        1
-        for step in coordination
-        if step["code_name"] == "council_coordinator"
-    )
-    evidence_count = sum(
-        1
-        for step in coordination
-        if step["code_name"] == "evidence_verifier"
-    )
-    summary_parts = [
-        f"协调 {coordinator_count} 次",
-        f"证据验证 {evidence_count} 次",
-        f"路由 {route_count} 次",
-    ]
-    decision_summary = decision_summary or {}
-    judge = decision_summary.get("judge") or {}
-    causal = decision_summary.get("causal_merge") or {}
-    if judge.get("candidate_count"):
-        summary_parts.append(_judge_summary(judge))
-    if causal.get("survivor_count") or causal.get("final_issue_count"):
-        summary_parts.append(_causal_merge_summary(causal))
-    return {
-        "id": "group:coordination_loop",
-        "sequence": min(
-            (step["sequence"] for step in coordination),
-            default=0,
-        ),
-        "kind": "group",
-        "title": "证据处理",
-        "code_name": "coordination_loop",
-        "node_path": "coordination_loop",
-        "invocation_id": "",
-        "pair_id": "",
-        "start_sequence": None,
-        "end_sequence": None,
-        "duration_ms": sum(step["duration_ms"] for step in coordination),
-        "status": (
-            "complete"
-            if coordination
-            else "skipped"
-            if skip_reason
-            else "missing"
-        ),
-        "summary": "，".join(summary_parts) if coordination else skip_reason,
-        "metrics": decision_summary,
     }
 
 
@@ -1225,19 +1176,6 @@ def _reviewer_sections(
             ),
         })
     return sections
-
-
-def _coordination_steps(
-    steps: dict[str, dict[str, Any]],
-) -> list[str]:
-    return [
-        step["id"]
-        for step in steps.values()
-        if (
-            step["code_name"] in _COORDINATION_NODES
-            or str(step["node_path"]).split("/", 1)[0] in _COORDINATION_NODES
-        )
-    ]
 
 
 def _state_writes(
