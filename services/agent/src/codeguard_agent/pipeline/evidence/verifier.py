@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from codeguard_agent.models.evidence import (
     ArtifactAvailability,
     CandidateVerification,
@@ -30,6 +32,7 @@ from codeguard_agent.models.evidence import (
     VerifiedEvidence,
     payload_digest,
 )
+from codeguard_agent.models.tasks import ResolvedSymbol
 from codeguard_agent.pipeline.evidence.graph_response import validate_graph_payload
 from codeguard_agent.pipeline.evidence.guard_scan import scan_guard_content
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
@@ -311,8 +314,11 @@ def _verify_candidate(
                 )
             )
             continue
-        if artifact.source_kind is EvidenceSourceKind.PREFETCHED_CONTEXT:
-            if artifact.availability is not ArtifactAvailability.AVAILABLE:
+        if artifact.source_kind is EvidenceSourceKind.SYMBOL_CONTEXT:
+            if (
+                artifact.availability is not ArtifactAvailability.AVAILABLE
+                or artifact.payload_hash != payload_digest(artifact.payload)
+            ):
                 invalid_references.append(
                     EvidenceRefError(
                         alias="",
@@ -321,12 +327,33 @@ def _verify_candidate(
                     )
                 )
                 continue
+            try:
+                symbol = ResolvedSymbol.model_validate_json(artifact.payload)
+                symbol_argument = artifact.arguments.get("symbol_id", "")
+                same_file = symbol.file.replace("\\", "/").lower() == (
+                    dossier.task.file.replace("\\", "/").lower()
+                )
+                overlaps_change = any(
+                    symbol.start_line <= line <= symbol.end_line
+                    for line in dossier.task.changed_lines
+                )
+                if symbol_argument != symbol.symbol_id or not same_file or not overlaps_change:
+                    raise ValueError("symbol_scope_mismatch")
+            except (ValueError, ValidationError) as exc:
+                invalid_references.append(
+                    EvidenceRefError(
+                        alias="",
+                        reason=EvidenceRefErrorReason.ARTIFACT_UNAVAILABLE,
+                        detail=f"invalid_symbol_context:{exc}",
+                    )
+                )
+                continue
             status = (
                 EvidenceValidationStatus.LIMITED
                 if artifact.limitations
                 else EvidenceValidationStatus.VALID
             )
-            source_kinds.add(EvidenceSourceKind.PREFETCHED_CONTEXT)
+            source_kinds.add(EvidenceSourceKind.SYMBOL_CONTEXT)
             valid_evidence.append(
                 VerifiedEvidence(
                     artifact_id=artifact.id,
@@ -498,7 +525,7 @@ def verify_evidence(
     for artifact in artifacts.values():
         if artifact.source_kind is EvidenceSourceKind.TASK_PATCH:
             source_counts["patch"] += 1
-        elif artifact.source_kind is EvidenceSourceKind.PREFETCHED_CONTEXT:
+        elif artifact.source_kind is EvidenceSourceKind.SYMBOL_CONTEXT:
             source_counts["context"] += 1
         else:
             source_counts["tool"] += 1

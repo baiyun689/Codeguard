@@ -36,7 +36,9 @@ def test_strict_tool_profile_allows_policy_selected_direct_tasks() -> None:
     failures, warnings = _strict_tool_failures(
         [type("Trace", (), {"status": "failed", "tool": "inspect_structure", "content": ""})()],
         {
-            "context_diagnostics": {"symbol_context": "graph_coverage_partial"},
+            "symbol_resolution_diagnostics": {
+                "symbol_resolution": "graph_coverage_partial"
+            },
             "council": {
                 "react_degraded_empty_count": 1,
                 "direct_tier_task_count": 2,
@@ -44,7 +46,7 @@ def test_strict_tool_profile_allows_policy_selected_direct_tasks() -> None:
         },
     )
 
-    assert "symbol_context:graph_coverage_partial" in failures
+    assert "symbol_resolution:graph_coverage_partial" in failures
     assert "tool_failed:inspect_structure" in failures
     assert "react_degraded_empty_count=1" in failures
     assert "direct_tier_task_count=2" not in failures
@@ -61,7 +63,7 @@ def test_strict_tool_agent_misuse_is_warning_not_fatal() -> None:
                 "content": "Error: 文件类型不可读(仅限源码文件): src/.../references",
             })(),
         ],
-        {"context_diagnostics": {}, "council": {}},
+        {"symbol_resolution_diagnostics": {}, "council": {}},
     )
 
     assert failures == []

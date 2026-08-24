@@ -13,7 +13,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from codeguard_agent.models.tasks import ReviewTask, TaskContextBundle
+from codeguard_agent.models.tasks import ReviewTask, TaskSymbolContext
 
 logger = logging.getLogger("codeguard")
 
@@ -78,12 +78,6 @@ def build_reviewer_system_prompt(reviewer: Reviewer) -> str:
     ])
 
 
-_FACT_SCOPES = {
-    "ast_structure": "current_file",
-    "symbol_context": "current_file",
-}
-
-
 def _attr(value: object) -> str:
     return escape(str(value), quote=True)
 
@@ -96,7 +90,7 @@ def build_reviewer_user_prompt(
     *,
     task: ReviewTask,
     summary: str = "",
-    context_bundle: TaskContextBundle | None = None,
+    symbol_context: TaskSymbolContext | None = None,
     task_knowledge: str = "",
     plan_objectives: tuple[str, ...] = (),
     task_scope: str = "current_hunk",
@@ -105,11 +99,11 @@ def build_reviewer_user_prompt(
     """把本次 task 的动态值统一渲染进 user 消息。
 
     task_scope: "current_hunk"（hunk 级审查）或 "current_file"（文件级审查）。
-    catalog:证据目录(EvidenceCatalog);非 None 时给 task_patch/上下文 fact
+    catalog:证据目录(EvidenceCatalog);非 None 时给 task_patch/符号事实
     渲染 evidence_id 短别名,供审查员按编号引用证据(Evidence Ledger)。
     """
     patch_alias = catalog.patch_alias() if catalog is not None else ""
-    fact_aliases = catalog.context_aliases() if catalog is not None else []
+    fact_aliases = catalog.symbol_aliases() if catalog is not None else []
     coverage = (
         "full_new_file"
         if task.patch_complete
@@ -137,35 +131,29 @@ def build_reviewer_user_prompt(
         _text(task.patch),
         "  </task_patch>",
     ])
-    if context_bundle is not None:
+    if symbol_context is not None:
         parts.append(
-            "  <prefetched_context "
-            f'bundle_truncated="{str(context_bundle.truncated).lower()}">'
+            "  <symbol_context "
+            f'status="{_attr(symbol_context.status.value)}" '
+            f'truncated="{str(symbol_context.truncated).lower()}">'
         )
-        for idx, fact in enumerate(context_bundle.facts):
-            scope = _FACT_SCOPES.get(fact.kind, "task_scoped")
+        for idx, symbol in enumerate(symbol_context.symbols):
             fact_alias = fact_aliases[idx] if idx < len(fact_aliases) else ""
             parts.extend([
                 (
-                    f'    <fact kind="{_attr(fact.kind)}" '
-                    f'source="{_attr(fact.source)}" scope="{_attr(scope)}" '
-                    f'truncated="{str(fact.truncated).lower()}"'
+                    f'    <symbol symbol_id="{_attr(symbol.symbol_id)}" '
+                    f'kind="{_attr(symbol.kind)}" source_set="{_attr(symbol.source_set)}" '
+                    f'file="{_attr(symbol.file)}" start_line="{symbol.start_line}" '
+                    f'end_line="{symbol.end_line}"'
                     + (f' evidence_id="{_attr(fact_alias)}"' if fact_alias else "")
                     + ">"
                 ),
-                _text(fact.content),
-                "    </fact>",
+                _text(symbol.model_dump_json()),
+                "    </symbol>",
             ])
-        parts.append("  </prefetched_context>")
-        if context_bundle.statuses:
-            parts.append("  <context_status>")
-            for status in context_bundle.statuses:
-                parts.append(
-                    f'    <item kind="{_attr(status.kind)}" '
-                    f'status="{_attr(status.status)}" '
-                    f'reason="{_attr(status.reason)}"/>'
-                )
-            parts.append("  </context_status>")
+        for limitation in symbol_context.limitations:
+            parts.append(f"    <limitation>{_text(limitation)}</limitation>")
+        parts.append("  </symbol_context>")
     if task_knowledge.strip():
         parts.extend([
             '  <knowledge_bundle role="methodology_not_repository_fact">',
@@ -195,19 +183,12 @@ def build_reviewer_user_prompt(
         "      scope=\"current_file\" 时包含该文件在本次 PR 中的全部变更块，"
         "      但仍不包含文件未变更的部分。",
         "",
-        "  - <prefetched_context>: 工具预取的代码事实，帮你减少反复查工具。每个 <fact> 的属性含义:",
-        "      kind:   事实类型——symbol_context(当前变更所属的稳定 symbol_id、声明、注解和局部控制流)",
-        "      source: 产生该事实的工具名(resolve_change_context)",
-        "      scope:  事实的覆盖范围——task_scoped 是当前任务文件内的事实；cross_file 是跨文件获取的外部事实，"
-        "              只能作为辅助证据，不能作为新 Issue 的定位。current_file 限定在当前文件。",
-        "      truncated: true 表示内容因长度限制被截断，可考虑用工具补全",
-        "      注意: prefetched_context 是你在拿到 task patch 之前就预先获取的，可能覆盖了更广的范围。"
-        "      以 task patch 为准——Issue 必须落在 task patch 的变更行上，不要因为看到了整个文件的 AST 或"
-        "      所有 sensitive API 就把 Issue 定位到未变更的代码。",
-        "",
-        "  - <context_status>: 各类上下文获取的结果状态: ok=已获取, unavailable=工具不可用(如未注册该工具), "
-        "      empty=查询无结果(如当前文件无敏感API命中)。empty 和 unavailable 的上下文在当前审查中不可用，"
-        "      不要假设它们的内容；但也不需要为「无法获取」而反复调用工具。",
+        "  - <symbol_context>: 系统把当前 task 的变更行解析到的稳定项目符号。",
+        "      每个 <symbol> 提供可直接传给专属 inspect 工具的 symbol_id，以及声明范围、注解、",
+        "      source_set 和局部控制流。它只描述当前变更属于哪个符号，不包含跨文件影响结论。",
+        "      status=resolved 表示至少解析到一个符号；not_found 表示完整查询范围内未定位到符号；",
+        "      unavailable/invalid 表示本轮无法形成符号事实。不得自行猜测或编造 symbol_id。",
+        "      truncated=true 只表示符号集合受限，已展示的每个 symbol 对象仍然完整。",
         "",
         "  - <knowledge_bundle role=\"methodology_not_repository_fact\">:",
         "      它由当前审查员稳定的 BASE 方法论和 Plan 按 task 重点选出的少量专项检查组成。",

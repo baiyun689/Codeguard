@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from codeguard_agent.models.council import CandidateIssue
-from codeguard_agent.models.tasks import ReviewTask, TaskContextBundle
+from codeguard_agent.models.tasks import ReviewTask, TaskSymbolContext
 from codeguard_agent.pipeline import tasks as task_prep
 
 @dataclass(frozen=True)
@@ -20,7 +20,7 @@ class CandidateDossier:
 
     candidate: CandidateIssue
     task: ReviewTask
-    context_bundle: TaskContextBundle | None
+    symbol_context: TaskSymbolContext | None
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,7 @@ def _stable_json(detail: dict[str, object]) -> str:
 def assemble_dossiers(
     candidates: Sequence[CandidateIssue],
     tasks: Sequence[ReviewTask],
-    bundles: Mapping[str, TaskContextBundle],
+    symbol_contexts: Mapping[str, TaskSymbolContext],
 ) -> DossierAssembly:
     """把 graph state 关联为候选级只读快照，并显式保留绑定失败。"""
     tasks_by_id: dict[str, list[ReviewTask]] = {}
@@ -95,7 +95,7 @@ def assemble_dossiers(
             CandidateDossier(
                 candidate=candidate,
                 task=task,
-                context_bundle=bundles.get(task.id),
+                symbol_context=symbol_contexts.get(task.id),
             )
         )
     return DossierAssembly(tuple(dossiers), tuple(failures), tuple(trace))

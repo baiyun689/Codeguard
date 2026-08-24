@@ -1,14 +1,13 @@
 """guard_scan 确定性反证扫描测试(Evidence Ledger 保留的确定性反证)。"""
 from __future__ import annotations
 
-import json
-
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.models.tasks import (
-    ContextFact,
+    ResolvedSymbol,
     ReviewTask,
-    TaskContextBundle,
+    SymbolResolutionStatus,
+    TaskSymbolContext,
 )
 from codeguard_agent.pipeline.evidence.guard_scan import scan_guard_content
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
@@ -40,90 +39,25 @@ def _dossier_for_method(
         claim=f"{method} lacks authorization guard",
         confidence=0.8,
     )
-    bundle = TaskContextBundle(
+    context = TaskSymbolContext(
         task_id=task.id,
-        facts=[
-            ContextFact(
-                source="tool:resolve_change_context",
-                kind="symbol_context",
-                content=json.dumps(
-                    {
-                        "file": task.file,
-                        "file_id": f"file:{task.file}",
-                        "symbol_id": f"java:Service#{method}()",
-                        "kind": "method",
-                        "start_line": start_line,
-                        "end_line": end_line,
-                        "signature": f"public void {method}()",
-                        "annotations": [] if annotations is None else annotations,
-                        "control_flow": [],
-                        "resolution": "resolved",
-                    },
-                    sort_keys=True,
-                ),
-            )
-        ],
+        status=SymbolResolutionStatus.RESOLVED,
+        symbols=(
+            ResolvedSymbol(
+                file=task.file,
+                symbol_id=f"java:Service#{method}()",
+                kind="method",
+                start_line=start_line,
+                end_line=end_line,
+                signature=f"public void {method}()",
+                annotations=tuple(annotations or ()),
+                source_set="MAIN",
+            ),
+        ),
     )
     return CandidateDossier(
-        candidate=candidate, task=task, context_bundle=bundle
+        candidate=candidate, task=task, symbol_context=context
     )
-
-
-def _ast_fallback_dossier(hunk_header: str) -> CandidateDossier:
-    """构造只有 ast_structure fact(legacy 兜底)的 dossier,无 symbol_context。"""
-    task = ReviewTask(
-        id="src/Service.java#h0",
-        file="src/Service.java",
-        hunk_header=hunk_header,
-        patch="+public void update() { save(); }",
-        changed_lines=[10],
-    )
-    candidate = CandidateIssue(
-        id="c1",
-        task_id=task.id,
-        source_agent="threat_model",
-        file=task.file,
-        line=10,
-        type="authorization",
-        severity_proposal=Severity.WARNING,
-        claim="update lacks authorization guard",
-        confidence=0.8,
-    )
-    bundle = TaskContextBundle(
-        task_id=task.id,
-        facts=[
-            ContextFact(
-                source="tool:get_diff_ast",
-                kind="ast_structure",
-                content=(
-                    "AST for: src/Service.java\n"
-                    "  class: Service\n"
-                    "    public void update() [L9-L12]"
-                ),
-            )
-        ],
-    )
-    return CandidateDossier(
-        candidate=candidate, task=task, context_bundle=bundle
-    )
-
-
-# 12 行文件:update() 位于 1-based 第 10 行(ast_structure 兜底声明的 [L9-L12] 区间内),
-# 其上一行带 @PreAuthorize。
-_METHOD_GUARD_FILE = (
-    "public class Service {\n"
-    "    private int a = 1;\n"
-    "    private int b = 2;\n"
-    "    private int c = 3;\n"
-    "    private int d = 4;\n"
-    "    private int e = 5;\n"
-    "    private int f = 6;\n"
-    "    private int g = 7;\n"
-    "    @PreAuthorize(\"hasRole('ADMIN')\")\n"
-    "    public void update() { save(); }\n"
-    "    }\n"
-    "}"
-)
 
 
 def test_scan_guard_detects_preauthorize():
@@ -218,17 +152,3 @@ def test_scan_guard_detects_class_level_guard():
     observation = scan_guard_content(dossier, content, "threat_model")
     assert observation is not None
     assert "所属类声明" in observation
-
-
-def test_scan_guard_legacy_ast_structure_fallback_resolves_candidate_method():
-    # 无 method 类 symbol_context,只有 ast_structure fact:
-    # _resolved_method 走 _METHOD_RANGE 匹配 + task_span 过滤兜底,命中方法声明块 guard。
-    dossier = _ast_fallback_dossier("@@ -9,3 +9,3 @@")
-    observation = scan_guard_content(dossier, _METHOD_GUARD_FILE, "threat_model")
-    assert observation is not None
-
-
-def test_scan_guard_legacy_ast_structure_fallback_filters_outside_task_span():
-    # task_span 不覆盖 ast 声明的 [L9-L12] 区间时兜底不命中 → 不产出。
-    dossier = _ast_fallback_dossier("@@ -50,3 +50,3 @@")
-    assert scan_guard_content(dossier, _METHOD_GUARD_FILE, "threat_model") is None

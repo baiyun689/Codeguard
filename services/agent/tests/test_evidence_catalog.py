@@ -8,14 +8,18 @@ from __future__ import annotations
 
 import json
 
-from codeguard_agent.models.council import ContextFact
 from codeguard_agent.models.evidence import (
     ArtifactAvailability,
     EvidenceCaptureMode,
     EvidenceSourceKind,
 )
 from codeguard_agent.models.schemas import EvidenceRole, ReviewResult, Severity
-from codeguard_agent.models.tasks import ReviewTask, TaskContextBundle
+from codeguard_agent.models.tasks import (
+    ResolvedSymbol,
+    ReviewTask,
+    SymbolResolutionStatus,
+    TaskSymbolContext,
+)
 from codeguard_agent.pipeline.engines import (
     DirectEngine,
     ToolAgentEngine,
@@ -42,12 +46,25 @@ def _task() -> ReviewTask:
     return ReviewTask(id="task-1", file="src/A.java", patch="+    exec(cmd);\n")
 
 
-def _bundle(*facts: ContextFact, truncated: bool = False) -> TaskContextBundle:
-    return TaskContextBundle(task_id="task-1", facts=list(facts), truncated=truncated)
+def _bundle(*symbols: ResolvedSymbol, truncated: bool = False) -> TaskSymbolContext:
+    return TaskSymbolContext(
+        task_id="task-1",
+        symbols=tuple(symbols),
+        status=SymbolResolutionStatus.RESOLVED,
+        truncated=truncated,
+    )
 
 
-def _fact(source: str, content: str, truncated: bool = False) -> ContextFact:
-    return ContextFact(source=source, kind="symbol_context", content=content, truncated=truncated)
+def _fact(source: str, content: str, truncated: bool = False) -> ResolvedSymbol:
+    del source, truncated
+    return ResolvedSymbol(
+        file="src/A.java",
+        symbol_id=content,
+        kind="method",
+        start_line=1,
+        end_line=2,
+        source_set="MAIN",
+    )
 
 
 def _record(
@@ -79,7 +96,7 @@ class _Builder:
 
     def build(self, bundle=None):
         return self._builder.build_initial(
-            task=_task(), context_bundle=bundle, reviewer="threat_model", revision=REV
+            task=_task(), symbol_context=bundle, reviewer="threat_model", revision=REV
         )
 
     def append(self, catalog, records):
@@ -106,27 +123,29 @@ def test_初始目录_逐条注册上下文为_Cxx():
         _fact("resolve_change_context", "symbol B"),
     )
     catalog = _Builder().build(bundle)
-    aliases = catalog.context_aliases()
+    aliases = catalog.symbol_aliases()
     assert aliases == ["C01", "C02"]
     first = catalog.artifacts[catalog.alias_to_artifact_id["C01"]]
-    assert first.source_kind is EvidenceSourceKind.PREFETCHED_CONTEXT
+    assert first.source_kind is EvidenceSourceKind.SYMBOL_CONTEXT
     assert first.tool == "resolve_change_context"
-    assert first.payload == "symbol A"
+    assert '"symbol_id":"symbol A"' in first.payload
     assert first.availability is ArtifactAvailability.AVAILABLE
 
 
 def test_初始目录_空_bundle_仅_patch():
     catalog = _Builder().build(None)
-    assert catalog.context_aliases() == []
+    assert catalog.symbol_aliases() == []
     assert len(catalog.artifacts) == 1
 
 
 def test_初始目录_截断事实保持可用并带限制声明():
-    bundle = _bundle(_fact("resolve_change_context", "symbol A", truncated=True))
+    bundle = _bundle(_fact("resolve_change_context", "symbol A"), truncated=True).model_copy(
+        update={"limitations": ("symbol_context_truncated",)}
+    )
     catalog = _Builder().build(bundle)
     art = catalog.artifacts[catalog.alias_to_artifact_id["C01"]]
     assert art.availability is ArtifactAvailability.AVAILABLE
-    assert art.limitations == ("context_truncated",)
+    assert art.limitations == ("symbol_context_truncated",)
 
 
 # ── append_tool_records:Txx ────────────────────────────────────────────
@@ -365,7 +384,7 @@ def test_gathered_context_复用记录携带真实payload():
 def test_用户提示词_带目录时渲染_evidence_id():
     bundle = _bundle(_fact("resolve_change_context", "symbol A"))
     catalog = _Builder().build(bundle)
-    prompt = build_reviewer_user_prompt(task=_task(), context_bundle=bundle, catalog=catalog)
+    prompt = build_reviewer_user_prompt(task=_task(), symbol_context=bundle, catalog=catalog)
     assert 'evidence_id="P01"' in prompt
     assert 'evidence_id="C01"' in prompt
 

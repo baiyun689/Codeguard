@@ -1,6 +1,6 @@
 """证据目录构建与候选引用绑定(Evidence Ledger 的运行时注册入口)。
 
-把 patch(P01)、预取上下文(Cxx)、真实工具结果(Txx)注册为内容寻址
+把 patch(P01)、符号解析事实(Cxx)、真实工具结果(Txx)注册为内容寻址
 Artifact 并分配短别名;发现者输出短编号后,在离开发现子图前绑定为
 内部稳定 artifact ID。LLM 只选择编号,不生产证据内容。
 
@@ -53,11 +53,11 @@ class EvidenceCatalogBuilder:
         self,
         *,
         task: Any,
-        context_bundle: Any,
+        symbol_context: Any,
         reviewer: str,
         revision: str,
     ) -> EvidenceCatalog:
-        """创建含 P01(当前 task patch)与 Cxx(预取上下文事实)的初始目录。
+        """创建含 P01(当前 task patch)与 Cxx(稳定符号事实)的初始目录。
 
         patch Artifact 不调用 Gateway、不重放;截断事实标 PARTIAL 并带限制声明。
         """
@@ -75,19 +75,19 @@ class EvidenceCatalogBuilder:
         catalog.artifacts[patch_artifact.id] = patch_artifact
         catalog.alias_to_artifact_id["P01"] = patch_artifact.id
 
-        facts = context_bundle.facts if context_bundle is not None else []
-        for idx, fact in enumerate(facts, start=1):
-            truncated = bool(getattr(fact, "truncated", False))
+        symbols = symbol_context.symbols if symbol_context is not None else []
+        for idx, symbol in enumerate(symbols, start=1):
             artifact = EvidenceArtifact.build(
                 task_id=task.id,
                 reviewer=reviewer,
                 revision=revision,
-                source_kind=EvidenceSourceKind.PREFETCHED_CONTEXT,
-                tool=str(getattr(fact, "source", "")),
-                payload=str(getattr(fact, "content", "")),
+                source_kind=EvidenceSourceKind.SYMBOL_CONTEXT,
+                tool="resolve_change_context",
+                arguments={"symbol_id": symbol.symbol_id},
+                payload=symbol.model_dump_json(),
                 availability=ArtifactAvailability.AVAILABLE,
                 capture_mode=EvidenceCaptureMode.GENERATED,
-                limitations=("context_truncated",) if truncated else (),
+                limitations=tuple(symbol_context.limitations),
             )
             catalog.artifacts[artifact.id] = artifact
             catalog.alias_to_artifact_id[f"C{idx:02d}"] = artifact.id
@@ -337,7 +337,7 @@ def render_evidence_catalog(
             '<artifact id="P01" source="task_patch" citeable="true" '
             'ref="task_patch_tag"/>'
         )
-    for alias in (*catalog.context_aliases(), *catalog.tool_aliases()):
+    for alias in (*catalog.symbol_aliases(), *catalog.tool_aliases()):
         artifact = catalog.artifacts[catalog.alias_to_artifact_id[alias]]
         block = (
             f'<artifact id="{alias}" source="{artifact.source_kind.value}" '

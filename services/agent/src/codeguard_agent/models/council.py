@@ -73,22 +73,6 @@ class Verdict:
     supported: bool = False  # keep 且引用 ≥1 支持事实(Evidence Ledger 支持覆盖口径)
 
 
-class ContextFact(BaseModel):
-    """ContextProvider 收集到的一段事实。"""
-
-    source: str = Field(description="事实来源,如 diff/tool:get_file_content")
-    kind: str = Field(description="事实类型,如 symbol_context/ast_structure")
-    content: str = Field(description="事实内容")
-    truncated: bool = Field(default=False, description="内容是否因预算被截断")
-
-
-class ContextBundle(BaseModel):
-    """ReviewCouncil 共享的只读上下文包。"""
-
-    changed_files: list[str] = Field(default_factory=list)
-    facts: list[ContextFact] = Field(default_factory=list)
-
-
 class CandidateIssue(BaseModel):
     """发现者 Agent 写入共享黑板的候选问题。
 

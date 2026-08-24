@@ -174,7 +174,9 @@ def _strict_tool_failures(trace: list, metadata: dict) -> tuple[list[str], list[
     """
     failures: list[str] = []
     warnings: list[str] = []
-    for name, detail in (metadata.get("context_diagnostics") or {}).items():
+    for name, detail in (
+        metadata.get("symbol_resolution_diagnostics") or {}
+    ).items():
         if detail and any(marker in str(detail) for marker in _INFRA_FAILURE_MARKERS):
             failures.append(f"{name}:{detail}")
         elif detail:

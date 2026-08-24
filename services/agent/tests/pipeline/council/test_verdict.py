@@ -98,7 +98,7 @@ def _verification(cid: str, eligible: bool = True) -> CandidateVerification:
 
 def _assembly(candidates: list[CandidateIssue]) -> DossierAssembly:
     dossiers = [
-        CandidateDossier(candidate=candidate, task=_task(), context_bundle=None)
+        CandidateDossier(candidate=candidate, task=_task(), symbol_context=None)
         for candidate in candidates
     ]
     return DossierAssembly(tuple(dossiers), (), ())

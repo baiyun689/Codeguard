@@ -34,7 +34,7 @@ _NODE_PHASE_MAP: dict[str, str] = {
     "task_selection": "task_routing",
     "plan": "task_routing",
     "review_plan": "task_routing",
-    "context_provider": "outer_graph",
+    "symbol_resolution": "outer_graph",
     "discover_threat_model": "reviewer_subgraph",
     "discover_behavior": "reviewer_subgraph",
     "discover_maintainability": "reviewer_subgraph",

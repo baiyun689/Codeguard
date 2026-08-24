@@ -59,7 +59,7 @@ def compute_council_run_stats(
         item.source_kind is EvidenceSourceKind.TASK_PATCH for item in artifact_items
     )
     context_count = sum(
-        item.source_kind is EvidenceSourceKind.PREFETCHED_CONTEXT
+        item.source_kind is EvidenceSourceKind.SYMBOL_CONTEXT
         for item in artifact_items
     )
     tool_count = sum(
@@ -84,7 +84,7 @@ def compute_council_run_stats(
             ungrounded += 1
         if EvidenceSourceKind.TOOL_CALL in kinds:
             tool_backed += 1
-        elif EvidenceSourceKind.PREFETCHED_CONTEXT in kinds:
+        elif EvidenceSourceKind.SYMBOL_CONTEXT in kinds:
             context_backed += 1
         else:
             patch_only += 1

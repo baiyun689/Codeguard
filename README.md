@@ -57,7 +57,7 @@ Full task 先由 OCR 式 PlanUnit 并发生成审查计划：Plan 选择 ThreatM
 
 Reviewer 输出先经过统一候选定位护栏：系统只接受当前 task 新增行中的唯一原文片段，片段与行号冲突时以确定性匹配结果为准；无法确认的候选按 task 批量请求 LLM 重新提取片段并再次确定性复验。最终仍无法定位时保留为 `line=0` 的文件级问题，不把定位失败误判为问题不成立，也不会发布到错误的 GitHub 行内位置。Direct 与 Full 共用同一规则。
 
-配置工具服务后，每次审查会按精确 revision 异步构建完整、只读的 Java `ProjectSnapshot`，缓存全部源码、JavaParser AST、符号索引和 Spring 感知语义图。ContextProvider 只注入变更所属的稳定 `symbol_id`；三路发现者分别通过 `inspect_security_path`、`inspect_change_impact`、`inspect_structure` 查询有限局部子图，取证验证阶段复用同一快照。图谱查询使用 v2 `found/not_found/indeterminate` outcome 与查询级 coverage：已解析关系可证明存在，只有 `not_found + complete` 才能证明声明范围内未找到，`indeterminate + partial` 只形成不可引用的证据缺口。`MAIN/TEST/GENERATED` 来源贯穿节点、关系和工具结果，测试关系不能单独证明生产可达或提高严重度。
+配置工具服务后，每次审查会按精确 revision 异步构建完整、只读的 Java `ProjectSnapshot`，缓存全部源码、JavaParser AST、符号索引和 Spring 感知语义图。SymbolResolution 将 Full task 的变更行确定性解析为稳定 `symbol_id`；三路发现者分别通过 `inspect_security_path`、`inspect_change_impact`、`inspect_structure` 查询有限局部子图，取证验证阶段复用同一快照。图谱查询使用 v2 `found/not_found/indeterminate` outcome 与查询级 coverage：已解析关系可证明存在，只有 `not_found + complete` 才能证明声明范围内未找到，`indeterminate + partial` 只形成不可引用的证据缺口。`MAIN/TEST/GENERATED` 来源贯穿节点、关系和工具结果，测试关系不能单独证明生产可达或提高严重度。
 
 schema v2 只返回当前 `source_scope` 的 `symbols`、`relationships` 和 `unresolved_relationships`，不再重复输出 MAIN/TEST/GENERATED 专用数组；响应中的每项 `source_set` 必须与 scope 一致。
 

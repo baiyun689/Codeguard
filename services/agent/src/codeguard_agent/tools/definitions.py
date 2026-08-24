@@ -47,7 +47,7 @@ def make_security_path_tool(client: ToolClient):
         func=_inspect_security_path,
         name="inspect_security_path",
         description=(
-            "按 prefetched_context 给出的稳定 symbol_id 查询安全路径：方法/构造器返回"
+            "按 symbol_context 给出的稳定 symbol_id 查询安全路径：方法/构造器返回"
             "框架入口与敏感调用链；字段返回读写它的方法并标记敏感字段类型；类型返回"
             "内部方法的敏感调用与继承者；并附解析限制。不得自行编造 symbol_id 或文件名。"
         ),
@@ -65,7 +65,7 @@ def make_change_impact_tool(client: ToolClient):
         func=_inspect_change_impact,
         name="inspect_change_impact",
         description=(
-            "按 prefetched_context 给出的稳定 symbol_id 查询影响面：方法/构造器返回"
+            "按 symbol_context 给出的稳定 symbol_id 查询影响面：方法/构造器返回"
             "调用方、框架入口与继承覆盖；字段返回读写它的方法；类型返回继承/实现它的"
             "类型；并附解析覆盖状态。不得用惯用类名猜测路径。"
         ),
@@ -83,7 +83,7 @@ def make_structure_tool(client: ToolClient):
         func=_inspect_structure,
         name="inspect_structure",
         description=(
-            "按 prefetched_context 给出的稳定 symbol_id 查询声明、调用耦合、"
+            "按 symbol_context 给出的稳定 symbol_id 查询声明、调用耦合、"
             "继承和字段关系。度量与关系必须结合当前 diff 解读。"
         ),
     )

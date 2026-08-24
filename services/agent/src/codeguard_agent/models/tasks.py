@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, Field, StrictInt
-
-from codeguard_agent.models.council import ContextFact
-
+from pydantic import BaseModel, Field, StrictInt, model_validator
 
 class ReviewerKind(str, Enum):
     """发现者的稳定 source_agent 标识。"""
@@ -164,18 +161,42 @@ class TaskSelection(BaseModel):
     skipped_tasks: list[SkippedTask] = Field(default_factory=list)
 
 
-class ContextStatus(BaseModel):
-    """某类预取上下文没有形成事实时的实际状态。"""
+class SymbolResolutionStatus(str, Enum):
+    """变更位置到项目符号的确定性解析结果。"""
 
+    RESOLVED = "resolved"
+    NOT_FOUND = "not_found"
+    UNAVAILABLE = "unavailable"
+    INVALID = "invalid"
+
+
+class ResolvedSymbol(BaseModel):
+    """当前 task 变更行所属的稳定项目符号。"""
+
+    file: str
+    symbol_id: str
     kind: str
-    status: Literal["skipped", "failed", "unavailable"]
-    reason: str
+    start_line: StrictInt = Field(ge=1)
+    end_line: StrictInt = Field(ge=1)
+    signature: str = ""
+    annotations: tuple[str, ...] = ()
+    control_flow: tuple[str, ...] = ()
+    source_set: Literal["MAIN", "TEST", "GENERATED"]
 
 
-class TaskContextBundle(BaseModel):
-    """按任务构建的上下文包。"""
+class TaskSymbolContext(BaseModel):
+    """一个 Full task 的符号解析结果；不承载摘要、知识或图谱查询事实。"""
 
     task_id: str
-    facts: list[ContextFact] = Field(default_factory=list)
-    statuses: list[ContextStatus] = Field(default_factory=list)
+    symbols: tuple[ResolvedSymbol, ...] = ()
+    status: SymbolResolutionStatus
+    limitations: tuple[str, ...] = ()
     truncated: bool = False
+
+    @model_validator(mode="after")
+    def validate_status_contract(self) -> Self:
+        if self.status is SymbolResolutionStatus.RESOLVED and not self.symbols:
+            raise ValueError("resolved symbol context must contain symbols")
+        if self.status is not SymbolResolutionStatus.RESOLVED and self.symbols:
+            raise ValueError("non-resolved symbol context cannot contain symbols")
+        return self

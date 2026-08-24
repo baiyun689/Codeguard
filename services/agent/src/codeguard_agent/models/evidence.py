@@ -23,7 +23,7 @@ class EvidenceSourceKind(str, Enum):
     """Artifact 的证据来源。"""
 
     TASK_PATCH = "task_patch"          # 当前 task 的 diff patch(P01,自动绑定)
-    PREFETCHED_CONTEXT = "prefetched_context"  # context_provider 预取事实(Cxx)
+    SYMBOL_CONTEXT = "symbol_context"  # 变更位置解析得到的稳定符号事实(Cxx)
     TOOL_CALL = "tool_call"            # 本次真实调用 Gateway 工具(Txx)
 
 
@@ -40,7 +40,7 @@ class ArtifactAvailability(str, Enum):
 class EvidenceCaptureMode(str, Enum):
     """Artifact 的捕获方式。"""
 
-    GENERATED = "generated"   # patch/context 由管线确定性生成
+    GENERATED = "generated"   # patch/symbol context 由管线确定性生成
     EXECUTED = "executed"     # 本次真实调用 Gateway
     REUSED = "reused"         # 复用本 review 已有真实结果
 
@@ -200,9 +200,9 @@ class EvidenceCatalog(BaseModel):
         aliases = self._aliases_of(EvidenceSourceKind.TASK_PATCH)
         return aliases[0] if aliases else ""
 
-    def context_aliases(self) -> list[str]:
-        """上下文 Artifact 的别名(C01...),保持注册顺序。"""
-        return self._aliases_of(EvidenceSourceKind.PREFETCHED_CONTEXT)
+    def symbol_aliases(self) -> list[str]:
+        """符号解析 Artifact 的别名(C01...),保持注册顺序。"""
+        return self._aliases_of(EvidenceSourceKind.SYMBOL_CONTEXT)
 
     def tool_aliases(self) -> list[str]:
         """工具 Artifact 的别名(T01...),保持首次出现顺序。"""

@@ -57,7 +57,7 @@ profiles:
     tools: []
 
   # ADR-032 smoke:默认 ReviewCouncil 编排的零工具轻量冒烟档。
-  # 用于确认 summary? → context_provider → review_council → self_checker 可执行。
+  # 用于确认 summary? → symbol_resolution → review_council → judge 可执行。
   adr-032-smoke:
     mode: pipeline
     orchestration: adr-032

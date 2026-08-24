@@ -80,17 +80,17 @@ def _flow_report_fixture() -> TraceReport:
         _flow_event(
             3,
             "node_start",
-            "context_provider",
-            "context_provider",
+            "symbol_resolution",
+            "symbol_resolution",
             "context-run",
         ),
         _flow_event(
             4,
             "node_end",
-            "context_provider",
-            "context_provider",
+            "symbol_resolution",
+            "symbol_resolution",
             "context-run",
-            detail={"output": {"context_bundle": {"facts": []}}},
+            detail={"output": {"task_symbol_contexts": {}}},
         ),
         _flow_event(
             5,
@@ -278,7 +278,7 @@ def test_trace_view_groups_reviewer_react_steps_and_state_writes():
 
     assert [item["code_name"] for item in view["main_stages"]] == [
         "summary",
-        "context_provider",
+        "symbol_resolution",
         "review_council",
         "coordination_loop",
         "council_judge",
@@ -597,7 +597,7 @@ def test_trace_view_main_stages_resolve_without_copying_state_values():
         for stage in view["main_stages"]
     )
     assert view["steps"]["group:review_council"]["kind"] == "group"
-    assert {"diff_summary", "context_bundle", "candidate_facts", "final_issues"} <= set(
+    assert {"diff_summary", "task_symbol_contexts", "candidate_facts", "final_issues"} <= set(
         view["state_writes"]
     )
     assert all(
@@ -646,7 +646,7 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
     node("plan", {"task_plans": {}})
     node("review_plan", {"review_assignments": {"tasks": []}})
     node("summary", {"diff_summary": "summary"})
-    node("context_provider", {"task_context_bundles": {"task-1": {}}})
+    node("symbol_resolution", {"task_symbol_contexts": {"task-1": {}}})
     for reviewer in (
         "discover_threat_model",
         "discover_behavior",
@@ -674,7 +674,7 @@ def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
         "plan",
         "review_plan",
         "summary",
-        "context_provider",
+        "symbol_resolution",
         "review_council",
         "coordination_loop",
         "council_judge",
@@ -891,7 +891,7 @@ def test_trace_view_shows_small_direct_fallback_to_file_pipeline():
             *pair(7, "task_selection", {"task_selection": {}}),
             *pair(9, "plan", {"task_plans": {}}),
             *pair(11, "review_plan", {"review_assignments": {}}),
-        *pair(13, "context_provider", {"task_context_bundles": {}}),
+        *pair(13, "symbol_resolution", {"task_symbol_contexts": {}}),
     ]
     view = build_trace_view(
         TraceReport(
@@ -1562,7 +1562,7 @@ class TestPhaseMapping:
             "summary", "classify_mode", "direct_review", "file_task_builder",
             "diff_task_builder", "task_route", "direct_task_review", "task_selection",
             "plan", "review_plan",
-            "context_provider",
+            "symbol_resolution",
             "discover_threat_model", "discover_behavior", "discover_maintainability",
             "discovery_collector", "council_coordinator",
             "evidence_verifier", "direct_judge", "council_judge", "causal_merge",
@@ -1727,10 +1727,10 @@ class TestCollectorLineage:
         collector = _TraceCollector("trace-run")
         start = _chain_event(
             "on_chain_start",
-            name="context_provider",
+            name="symbol_resolution",
             run_id="context-run",
             parent_ids=["graph-root"],
-            node_name="context_provider",
+            node_name="symbol_resolution",
             data={
                 "input": {
                     "diff_text": "actual diff",
@@ -1740,15 +1740,15 @@ class TestCollectorLineage:
         )
         end = _chain_event(
             "on_chain_end",
-            name="context_provider",
+            name="symbol_resolution",
             run_id="context-run",
             parent_ids=["graph-root"],
-            node_name="context_provider",
+            node_name="symbol_resolution",
             data={
                 "input": start["data"]["input"],
                 "output": {
-                    "context_bundle": {
-                        "facts": [{"content": "fact text"}],
+                    "task_symbol_contexts": {
+                        "task-1": {"symbols": [{"symbol_id": "java:A#m()"}]},
                     }
                 },
             },
@@ -1760,8 +1760,9 @@ class TestCollectorLineage:
 
         assert events[0].detail["input"]["diff_text"] == "actual diff"
         assert (
-            events[1].detail["output"]["context_bundle"]["facts"][0]["content"]
-            == "fact text"
+            events[1].detail["output"]["task_symbol_contexts"]["task-1"]
+            ["symbols"][0]["symbol_id"]
+            == "java:A#m()"
         )
 
     def test_llm_and_tool_events_attach_to_nearest_node_and_keep_full_data(self):

@@ -37,7 +37,7 @@ _NODE_TITLES: dict[str, str] = {
     "task_selection": "任务选择",
     "plan": "审查计划",
     "review_plan": "审查计划",
-    "context_provider": "上下文构建",
+    "symbol_resolution": "符号解析",
     "discover_threat_model": "安全候选发现",
     "discover_behavior": "行为候选发现",
     "discover_maintainability": "可维护性候选发现",
@@ -666,7 +666,7 @@ def _is_visible_node_step(step: dict[str, Any]) -> bool:
         "plan",
         "review_plan",
         "summary",
-        "context_provider",
+        "symbol_resolution",
         "discovery_collector",
         "council_judge",
     }:
@@ -764,9 +764,9 @@ def _main_stages(
                 stages.append(_main_stage(code_name, title, by_name[code_name]))
     stages.append(_main_stage("summary", "变更摘要", by_name.get("summary")))
     stages.append(_main_stage(
-        "context_provider",
-        "上下文构建",
-        by_name.get("context_provider"),
+        "symbol_resolution",
+        "符号解析",
+        by_name.get("symbol_resolution"),
     ))
 
     stages.append({
@@ -1108,7 +1108,7 @@ def _missing_main_steps(
             "plan",
             "review_plan",
             "summary",
-            "context_provider",
+            "symbol_resolution",
             "council_judge",
         )
     elif "classify_mode" in present:
@@ -1117,17 +1117,17 @@ def _missing_main_steps(
             "task_selection",
             "review_plan",
             "summary",
-            "context_provider",
+            "symbol_resolution",
             "council_judge",
         )
     else:
-        expected = ("summary", "context_provider", "council_judge")
+        expected = ("summary", "symbol_resolution", "council_judge")
     for index, code_name in enumerate(expected, start=1):
         if code_name in present:
             continue
         configured_skip = (
             code_name == "summary"
-            and "context_provider" in present
+            and "symbol_resolution" in present
             and "summary" not in present
         )
         discovery_skip = discovery_only and code_name == "council_judge"

@@ -17,7 +17,12 @@ from codeguard_agent.models.evidence import (
     EvidenceValidationStatus,
 )
 from codeguard_agent.models.schemas import EvidenceRole, Severity
-from codeguard_agent.models.tasks import ContextFact, ReviewTask, TaskContextBundle
+from codeguard_agent.models.tasks import (
+    ResolvedSymbol,
+    ReviewTask,
+    SymbolResolutionStatus,
+    TaskSymbolContext,
+)
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 from codeguard_agent.pipeline.evidence.verifier import verify_evidence
 from codeguard_agent.tools.tool_client import ToolResponse
@@ -50,8 +55,10 @@ def _candidate(*artifact_ids: str) -> CandidateIssue:
     )
 
 
-def _dossier(candidate: CandidateIssue, bundle: TaskContextBundle | None = None) -> CandidateDossier:
-    return CandidateDossier(candidate=candidate, task=_task(), context_bundle=bundle)
+def _dossier(
+    candidate: CandidateIssue, context: TaskSymbolContext | None = None
+) -> CandidateDossier:
+    return CandidateDossier(candidate=candidate, task=_task(), symbol_context=context)
 
 
 def _patch_artifact(payload: str = "+    exec(cmd);\n") -> EvidenceArtifact:
@@ -164,13 +171,22 @@ def test_patch_hash_篡改_ungrounded_不可裁决():
 
 def test_context_fact_partial_标_limited():
     patch = _patch_artifact()
+    symbol = ResolvedSymbol(
+        file="src/A.java",
+        symbol_id="java:A#m()",
+        kind="method",
+        start_line=1,
+        end_line=2,
+        source_set="MAIN",
+    )
     context = EvidenceArtifact.build(
         task_id=TASK_ID, reviewer="threat_model", revision=REV,
-        source_kind=EvidenceSourceKind.PREFETCHED_CONTEXT,
-        tool="resolve_change_context", payload="symbol A",
+        source_kind=EvidenceSourceKind.SYMBOL_CONTEXT,
+        tool="resolve_change_context", payload=symbol.model_dump_json(),
+        arguments={"symbol_id": symbol.symbol_id},
         availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.GENERATED,
-        limitations=("context_truncated",),
+        limitations=("symbol_context_truncated",),
     )
     batch = _verify(_candidate(patch.id, context.id), {patch.id: patch, context.id: context})
     verification = batch.candidates["c1"]
@@ -180,7 +196,41 @@ def test_context_fact_partial_标_limited():
         if item.artifact_id == context.id
     ]
     assert context_items[0].validation_status is EvidenceValidationStatus.LIMITED
-    assert "context_truncated" in context_items[0].limitations
+    assert "symbol_context_truncated" in context_items[0].limitations
+
+
+def test_symbol_context_scope_mismatch_is_invalid():
+    patch = _patch_artifact()
+    symbol = ResolvedSymbol(
+        file="src/Other.java",
+        symbol_id="java:Other#m()",
+        kind="method",
+        start_line=1,
+        end_line=2,
+        source_set="MAIN",
+    )
+    context = EvidenceArtifact.build(
+        task_id=TASK_ID,
+        reviewer="threat_model",
+        revision=REV,
+        source_kind=EvidenceSourceKind.SYMBOL_CONTEXT,
+        tool="resolve_change_context",
+        arguments={"symbol_id": symbol.symbol_id},
+        payload=symbol.model_dump_json(),
+        availability=ArtifactAvailability.AVAILABLE,
+        capture_mode=EvidenceCaptureMode.GENERATED,
+    )
+
+    batch = _verify(
+        _candidate(patch.id, context.id),
+        {patch.id: patch, context.id: context},
+    )
+
+    verification = batch.candidates["c1"]
+    assert any(
+        item.detail.startswith("invalid_symbol_context:symbol_scope_mismatch")
+        for item in verification.invalid_references
+    )
 
 
 def test_文件工具_complete_valid():
@@ -455,35 +505,29 @@ def test_重放后仍_indeterminate_形成_gap_不升级():
 # ── guard 扫描与引用范围 ───────────────────────────────────────────────
 
 
-def _guard_bundle(annotation: str = "PreAuthorize") -> TaskContextBundle:
-    return TaskContextBundle(
+def _guard_context(annotation: str = "PreAuthorize") -> TaskSymbolContext:
+    return TaskSymbolContext(
         task_id=TASK_ID,
-        facts=[
-            ContextFact(
-                source="tool:resolve_change_context",
-                kind="symbol_context",
-                content=json.dumps(
-                    {
-                        "file": "src/A.java",
-                        "symbol_id": "java:A#m()",
-                        "kind": "method",
-                        "start_line": 1,
-                        "end_line": 2,
-                        "signature": "public void m()",
-                        "annotations": [annotation],
-                        "resolution": "resolved",
-                    },
-                    sort_keys=True,
-                ),
-            )
-        ],
+        status=SymbolResolutionStatus.RESOLVED,
+        symbols=(
+            ResolvedSymbol(
+                file="src/A.java",
+                symbol_id="java:A#m()",
+                kind="method",
+                start_line=1,
+                end_line=2,
+                signature="public void m()",
+                annotations=(annotation,),
+                source_set="MAIN",
+            ),
+        ),
     )
 
 
 def _verify_with_bundle(candidate: CandidateIssue, annotation: str):
     patch = _patch_artifact()
     batch = verify_evidence(
-        [_dossier(candidate, bundle=_guard_bundle(annotation))],
+        [_dossier(candidate, context=_guard_context(annotation))],
         artifacts={patch.id: patch},
         tool_client=None,
         revision=REV,

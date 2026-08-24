@@ -7,17 +7,14 @@
 
 from __future__ import annotations
 
-import json
 import re
 
 from codeguard_agent.models.tasks import ReviewerKind
-from codeguard_agent.pipeline.context import rules as context_rules
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 
 _AUTHZ_ANNOTATIONS = ("PreAuthorize", "PostAuthorize", "Secured", "RolesAllowed")
 
-# 以下四个私有函数自 agent.py 原样迁移(docstring 与语义逐行保留,旧副本待 T12 删除):
-# 扫描锚定被审方法(dossier 的 symbol_context 方法解析 + legacy ast_structure 兜底),
+# 扫描锚定被审方法(dossier 的强类型 symbol_context),
 # 不按"文件首个方法"直扫,避免多方法文件误报/漏报与字段初始化器劫持锚点。
 
 
@@ -81,54 +78,25 @@ def _strip_comments_and_strings(source: str) -> str:
     return "".join(result)
 
 
-_METHOD_RANGE = re.compile(r"\b(\w+)\([^)]*\).*\[L(\d+)-L(\d+)\]\s*$")
-
-
 def _resolved_method(dossier: CandidateDossier) -> tuple[str, int, int, str] | None:
-    bundle = dossier.context_bundle
-    if bundle is None:
+    context = dossier.symbol_context
+    if context is None:
         return None
-    for context_fact in bundle.facts:
-        if context_fact.kind == "symbol_context" and not context_fact.truncated:
-            try:
-                payload = json.loads(context_fact.content)
-                if payload.get("kind") not in {"method", "constructor"}:
-                    continue
-                symbol_id = str(payload.get("symbol_id", ""))
-                method_name = symbol_id.rsplit("#", 1)[-1].split("(", 1)[0]
-                return (
-                    method_name,
-                    int(payload.get("start_line", 0)),
-                    int(payload.get("end_line", 0)),
-                    " ".join(
-                        [
-                            *(
-                                f"@{name}"
-                                for name in payload.get("annotations", [])
-                            ),
-                            str(payload.get("signature", "")),
-                        ]
-                    ).strip(),
-                )
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
-        if context_fact.kind != "ast_structure" or context_fact.truncated:
+    for symbol in context.symbols:
+        if symbol.kind not in {"method", "constructor"}:
             continue
-        legacy_method_name = context_rules.resolve_method_name(
-            context_fact.content, dossier.task
+        method_name = symbol.symbol_id.rsplit("#", 1)[-1].split("(", 1)[0]
+        return (
+            method_name,
+            symbol.start_line,
+            symbol.end_line,
+            " ".join(
+                [
+                    *(f"@{name}" for name in symbol.annotations),
+                    symbol.signature,
+                ]
+            ).strip(),
         )
-        if legacy_method_name is None:
-            continue
-        task_span = context_rules._task_span(dossier.task)
-        if task_span is None:
-            return None
-        for line in context_fact.content.splitlines():
-            match = _METHOD_RANGE.search(line.strip())
-            if not match or match.group(1) != legacy_method_name:
-                continue
-            start, end = int(match.group(2)), int(match.group(3))
-            if start <= task_span[1] and end >= task_span[0]:
-                return legacy_method_name, start, end, line.strip()
     return None
 
 

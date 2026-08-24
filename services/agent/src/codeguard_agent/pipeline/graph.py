@@ -7,7 +7,6 @@ large 构建 hunk task。所有 task 经过 DirectGate，Full task 进入 Plan�
 
 from __future__ import annotations
 
-import json
 import logging
 import operator
 from pathlib import Path
@@ -16,8 +15,6 @@ from typing import Annotated, Any, Literal, TypedDict
 from codeguard_agent.llm.client import mock_review_result
 from codeguard_agent.models.council import (
     CandidateIssue,
-    ContextBundle,
-    ContextFact,
     CausalComparison,
     CausalMergeGroup,
     CausalProfile,
@@ -27,14 +24,13 @@ from codeguard_agent.models.council import (
 )
 from codeguard_agent.models.schemas import DiscoveryReviewResult, Issue, ReviewResult
 from codeguard_agent.models.tasks import (
-    ContextStatus,
     ReviewBudget,
     ReviewMode,
     ReviewRoute,
     ReviewRouteThresholds,
     ReviewerKind,
     ReviewTask,
-    TaskContextBundle,
+    TaskSymbolContext,
     ReviewAssignments,
     SkippedTask,
     TaskSelection,
@@ -42,7 +38,6 @@ from codeguard_agent.models.tasks import (
     TaskAgentPlan,
     TaskRoute,
 )
-from codeguard_agent.pipeline.context import rules as context_rules
 from codeguard_agent.pipeline import tasks as task_prep
 from codeguard_agent.pipeline.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.discovery import (
@@ -74,7 +69,7 @@ from codeguard_agent.pipeline.evidence.ledger import (
     bind_discovered_issue,
 )
 from codeguard_agent.pipeline.evidence.planner import assemble_dossiers
-from codeguard_agent.pipeline.context.provider import provide_context
+from codeguard_agent.pipeline.symbols import resolve_task_symbols
 from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
     Reviewer,
@@ -145,8 +140,7 @@ class ReviewState(TypedDict, total=False):
 
     # --- Working: 跨节点传递、会影响后续决策的审查工作集 ---
     diff_summary: str
-    context_bundle: ContextBundle
-    task_context_bundles: dict[str, TaskContextBundle]
+    task_symbol_contexts: dict[str, TaskSymbolContext]
     raw_candidate_issues: Annotated[list[CandidateIssue], collect_candidate_reducer]
     candidate_issues: list[CandidateIssue]
     candidate_verifications: dict[str, Any]
@@ -163,7 +157,7 @@ class ReviewState(TypedDict, total=False):
     summary: str
 
     # --- Diagnostics: Trace / eval 数据，不属于产品输出 ---
-    context_diagnostics: dict[str, str]
+    symbol_resolution_diagnostics: dict[str, str]
     council_stats: CouncilRunStats
     council_trace: Annotated[list[CouncilTrace], operator.add]
     truncated_candidates: Annotated[int, operator.add]
@@ -185,7 +179,7 @@ class ReviewerState(TypedDict, total=False):
     plan_objectives: tuple[str, ...]
     knowledge_topics: tuple[str, ...]
     review_task: ReviewTask
-    task_context_bundle: TaskContextBundle
+    task_symbol_context: TaskSymbolContext
     tier: str
     task_scope: str  # "current_hunk" | "current_file"
     review_tool_client: Any
@@ -572,8 +566,8 @@ def _review_plan_node(tool_client=None):
     return _node
 
 
-def _context_provider_node(tool_client):
-    """为选中任务装配图谱解析后的稳定符号上下文。"""
+def _symbol_resolution_node(tool_client):
+    """把选中 Full task 的变更行批量解析为稳定项目符号。"""
 
     def _node(state: ReviewState) -> dict:
         scope = _scope_plan(state)
@@ -581,96 +575,40 @@ def _context_provider_node(tool_client):
         selected_ids = set(selection.selected_task_ids) if selection is not None else set()
         all_tasks: list[ReviewTask] = state.get("review_tasks") or []
         tasks = [task for task in all_tasks if task.id in selected_ids]
-        change_locations: list[dict[str, object]] = [
-            {"file": task.file, "lines": task.changed_lines}
-            for task in tasks
-        ]
-        context_result = provide_context(
-            _selected_diff(state, scope),
+        resolution = resolve_task_symbols(
+            tasks,
             tool_client=tool_client,
-            change_locations=change_locations,
+            max_chars_per_task=scope.effective_budget.max_context_chars_per_task,
         )
-        bundle = context_result.bundle
-
-        budget = scope.effective_budget
-        symbol_facts: list[tuple[ContextFact, dict[str, Any]]] = []
-        for fact in bundle.facts:
-            if fact.kind != "symbol_context":
-                continue
-            try:
-                symbol_facts.append((fact, json.loads(fact.content)))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
-
-        task_bundles: dict[str, TaskContextBundle] = {}
         trace: list[CouncilTrace] = [
             CouncilTrace(
-                node="context_provider",
-                event="bundle_created",
-                detail=f"facts={len(bundle.facts)} tasks={len(tasks)}",
+                node="symbol_resolution",
+                event="resolution_completed",
+                detail=(
+                    f"tasks={len(tasks)} "
+                    f"resolved={sum(bool(item.symbols) for item in resolution.contexts.values())} "
+                    f"symbols={sum(len(item.symbols) for item in resolution.contexts.values())}"
+                ),
             )
         ]
         for task in tasks:
-            task_start = min(task.changed_lines) if task.changed_lines else 0
-            task_end = max(task.changed_lines) if task.changed_lines else 0
-            facts = [
-                fact
-                for fact, item in symbol_facts
-                if context_rules.normalize_path(str(item.get("file", "")))
-                == context_rules.normalize_path(task.file)
-                and (
-                    not task.changed_lines
-                    or (
-                        int(item.get("start_line", 0)) <= task_end
-                        and int(item.get("end_line", 0)) >= task_start
-                    )
-                )
-            ]
-            statuses: list[ContextStatus] = []
-            if not facts:
-                failure = context_result.diagnostics.get("symbol_context")
-                statuses.append(
-                    ContextStatus(
-                        kind="symbol_context",
-                        status="failed" if failure else "unavailable",
-                        reason=(
-                            failure
-                            or (
-                                "tool_server_not_configured"
-                                if tool_client is None
-                                else "no_resolved_symbol_for_current_hunk"
-                            )
-                        ),
-                    )
-                )
-
-            facts, truncated = context_rules.truncate_task_facts(
-                facts, budget.max_context_chars_per_task
-            )
-            task_bundles[task.id] = TaskContextBundle(
-                task_id=task.id,
-                facts=facts,
-                statuses=statuses,
-                truncated=truncated,
-            )
+            context = resolution.contexts[task.id]
             trace.append(
                 CouncilTrace(
-                    node="context_provider",
-                    event="task_bundle_filled",
+                    node="symbol_resolution",
+                    event="task_symbols_resolved",
                     detail=(
-                        f"task={task.id} facts={len(facts)} "
-                        f"symbol_context={bool(facts)} "
-                        f"diagnostic={context_result.diagnostics.get('symbol_context', '')} "
-                        f"truncated={truncated}"
+                        f"task={task.id} status={context.status.value} "
+                        f"symbols={len(context.symbols)} "
+                        f"limitations={','.join(context.limitations)} "
+                        f"truncated={context.truncated}"
                     ),
                 )
             )
 
         return {
-            "context_bundle": bundle,
-            "context_diagnostics": dict(context_result.diagnostics),
-            "task_context_bundles": task_bundles,
-
+            "task_symbol_contexts": resolution.contexts,
+            "symbol_resolution_diagnostics": dict(resolution.diagnostics),
             "council_trace": trace,
         }
 
@@ -704,10 +642,10 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
         review_task = state.get("review_task")
         if review_task is None:
             raise ValueError("review_task is required for task-scoped discovery")
-        # 注册 P01/Cxx:patch 与预取上下文成为一等证据(Evidence Ledger)。
+        # 注册 P01/Cxx：patch 与稳定符号事实成为一等证据(Evidence Ledger)。
         catalog = EvidenceCatalogBuilder().build_initial(
             task=review_task,
-            context_bundle=state.get("task_context_bundle"),
+            symbol_context=state.get("task_symbol_context"),
             reviewer=reviewer.source_agent,
             revision=state.get("evidence_revision", ""),
         )
@@ -715,7 +653,7 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
             "user_prompt": build_reviewer_user_prompt(
                 task=review_task,
                 summary=state.get("diff_summary", ""),
-                context_bundle=state.get("task_context_bundle"),
+                symbol_context=state.get("task_symbol_context"),
                 task_knowledge=state.get("task_knowledge", ""),
                 plan_objectives=state.get("plan_objectives", ()),
                 task_scope=state.get("task_scope", "current_hunk"),
@@ -958,7 +896,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
 
         # 每个路由到的 task 独立调用，task 间并发派发。
         task_by_id = {t.id: t for t in tasks}
-        task_context_bundles = state.get("task_context_bundles") or {}
+        task_symbol_contexts = state.get("task_symbol_contexts") or {}
         task_plans = state.get("task_plans") or {}
         plan_units = state.get("plan_units") or []
         plan_unit_by_task = {
@@ -979,7 +917,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 }
             )
             tier = "react" if tool_client is not None else "direct"
-            bundle = task_context_bundles.get(task_id)
+            symbol_context = task_symbol_contexts.get(task_id)
 
             catalog = KnowledgeCatalog()
             budget = KnowledgeBudget()
@@ -1016,7 +954,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     "react_recursion_limit": state.get("react_recursion_limit", 24),
                     "allow_direct_fallback": False,
                     "review_task": scoped_task,
-                    "task_context_bundle": bundle,
+                    "task_symbol_context": symbol_context,
                     "task_knowledge": task_knowledge,
                     "plan_objectives": reviewer_plan.objectives if reviewer_plan else (),
                     "knowledge_topics": reviewer_plan.knowledge_topics if reviewer_plan else (),
@@ -1114,7 +1052,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             if catalog is None:
                 catalog = EvidenceCatalogBuilder().build_initial(
                     task=task,
-                    context_bundle=task_context_bundles.get(task_id),
+                    symbol_context=task_symbol_contexts.get(task_id),
                     reviewer=reviewer.source_agent,
                     revision=state.get("evidence_revision", ""),
                 )
@@ -1240,7 +1178,7 @@ def _assemble_state_dossiers(state: ReviewState):
     return assemble_dossiers(
         state.get("candidate_issues") or [],
         state.get("review_tasks") or [],
-        state.get("task_context_bundles") or {},
+        state.get("task_symbol_contexts") or {},
     )
 
 
@@ -1595,7 +1533,7 @@ def build_review_graph(
           ├─ small  → direct_review → END
           ├─ medium → file_task_builder → task_route → task_selection → plan → review_plan
           └─ large  → diff_task_builder → task_route → task_selection → plan → review_plan → summary?
-                       → context_provider → discover_*(×3)
+                       → symbol_resolution → discover_*(×3)
                        → council_coordinator(fan-in)
                          ├─ evidence_mode=full → evidence_verifier
                          │    → council_judge → causal_merge → END
@@ -1623,7 +1561,7 @@ def build_review_graph(
     g.add_node("task_selection", _task_selection_node())
     g.add_node("plan", _plan_node(llm))
     g.add_node("review_plan", _review_plan_node(tool_client))
-    g.add_node("context_provider", _context_provider_node(tool_client))
+    g.add_node("symbol_resolution", _symbol_resolution_node(tool_client))
     for reviewer in DEFAULT_REVIEWERS:
         g.add_node(
             _discover_node_name(reviewer),
@@ -1694,13 +1632,13 @@ def build_review_graph(
     if enable_summary:
         g.add_node("summary", _summary_node(llm))
         g.add_edge("review_plan", "summary")
-        g.add_edge("summary", "context_provider")
+        g.add_edge("summary", "symbol_resolution")
     else:
-        g.add_edge("review_plan", "context_provider")
+        g.add_edge("review_plan", "symbol_resolution")
 
     for reviewer in DEFAULT_REVIEWERS:
         node_name = _discover_node_name(reviewer)
-        g.add_edge("context_provider", node_name)
+        g.add_edge("symbol_resolution", node_name)
         if discovery_only:
             g.add_edge(node_name, "discovery_collector")
         else:

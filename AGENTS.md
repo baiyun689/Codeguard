@@ -17,7 +17,7 @@ git diff → PRModeClassifier → FileTaskBuilder/HunkTaskBuilder
          → TaskRoute(DirectGate)
          ├─ direct task → DirectTaskReview
          └─ full task → TaskSelection → PlanUnit(按文件复用)
-              → Plan → ReviewPlan → [Summary] → ContextProvider → task-scoped Discover
+              → Plan → ReviewPlan → [Summary] → SymbolResolution → task-scoped Discover
               → CandidateLocator → CouncilCoordinator → EvidenceVerifier(账本验证,零 LLM)
               → CouncilJudge(批量 EvidenceJudge)→ ReviewResult
 ```
@@ -55,15 +55,15 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 ```
 默认(无工具):git diff → task 构建/DirectGate → Plan → Reviewer 直连 → 证据账本验证 → 批量 Judge → 打印
 默认(有工具):配置 CODEGUARD_TOOL_SERVER_URL 后,Tool Server 按 revision 构建完整 Java ProjectSnapshot；
-              Full task 经 Plan 选择 Reviewer，ContextProvider 注入 symbol_context，三路发现者分别使用
+              Full task 经 Plan 选择 Reviewer，SymbolResolution 注入稳定 symbol context，三路发现者分别使用
               inspect_security_path / inspect_change_impact / inspect_structure，工具结果由运行时捕获为 Txx Artifact 进账
 ```
 
 默认节点:
 
-- **Summary 阶段(可选)**:在 TaskRank 后对选中任务范围产出变更摘要,作为 ContextBundle 和 ReviewCouncil 的共享背景。由 `CODEGUARD_ENABLE_SUMMARY` 控制(默认开)。摘要模块通过显式输入/输出函数与 LangGraph 交互,不再依赖可变的共享 `PipelineContext`。
+- **Summary 阶段(可选)**:在 TaskRank 后对选中任务范围产出变更摘要,作为 ReviewCouncil 的导航背景。由 `CODEGUARD_ENABLE_SUMMARY` 控制(默认开)。摘要不进入 Evidence Ledger,也不作为候选成立依据。
 - **PR 规模与 Task 路由**:`PRModeClassifier` 只按 diff 体量选择 task 粒度：SMALL 整个 diff 一个 task，MEDIUM 按文件建 task，LARGE 按 hunk 建 task。TaskBuilder 之后由确定性 DirectGate 逐 task 决定 direct/full；低风险文档/注释任务走 Direct，其余默认 Full。SMALL 不再绕过统一管线。LARGE 同一文件的 Full hunk 共享一个 PlanUnit，Plan 只调用一次；HTML Trace 展示 TaskRoute、DirectTaskReview 和 Plan。
-- **ContextProvider**:在 ReviewCouncil 前构造轻量 `ContextBundle`,只产出事实、来源与截断标记,不判断"是不是问题"。
+- **SymbolResolution**:在 ReviewCouncil 前把 Full task 的变更文件与行号批量解析为强类型 `TaskSymbolContext`。它只提供稳定 `symbol_id`、声明范围、注解、局部控制流和来源集合，供领域工具、Evidence Ledger 与 guard 扫描使用；不负责摘要、知识选择、Reviewer 分派、深层图谱查询或问题判断。
 - **大 diff 降级**:仅在超过 5000 行时，Python 确定性收紧为最多 20 个任务、每文件 3 个、每任务上下文 2000 字符；普通 diff 全选 Full task。Plan 不引入新的总 Token 预算，成本由 task 粒度、同文件 Plan 复用、并发限制、超时和现有重试控制。Java 不重复判断。
 - **Plan 与 ReviewCouncilSubgraph**:Full task 按 PlanUnit 并发执行结构化 Plan；Plan 显式选择 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent`、审查重点和知识主题，不选择工具。三个 task-scoped 发现者 fan-out 产出 raw `CandidateIssue`;Reviewer 固定持有 `inspect_security_path` / `inspect_change_impact` / `inspect_structure`，这些专属工具负责发现隐藏的跨文件安全、行为和结构问题。user prompt 携带 Plan 重点、预取事实和 Plan 选中的 BASE+专项 knowledge bundle。`CouncilCoordinator` 在显式 fan-in 后构建局部候选块并保守归并。
 - **安全路径查询边界**:`inspect_security_path` 只沿已解析调用关系执行最多三层传播；未解析调用仅在目标名称直接命中敏感 sink 时进入 `unresolved_relationships`。普通未解析调用不作为安全事实且不输出关系明细，但会汇总进 `unresolved_count` 并保持 `partial`，避免通用解析噪声膨胀响应，也不把无法遍历的下游误判为完整缺席。
@@ -109,7 +109,7 @@ Codeguard/
     │   │   ├── tools/             # ★工具调用(智能层侧)。tool_client(同步 HTTP)+ definitions(LangChain 工具)
     │   │   ├── pipeline/orchestrator.py   # 多阶段管线编排(审查唯一入口)
     │   │   ├── pipeline/tasks.py          # ★任务拆分、DirectGate 与规模路由
-    │   │   ├── pipeline/context/          # ★图谱符号上下文与事实预算
+    │   │   ├── pipeline/symbols/          # ★Full task 变更位置到稳定项目符号的解析
     │   │   ├── pipeline/reviewers/        # ★三路发现者、工具协调与 prompt 构造
     │   │   ├── pipeline/planning/         # ★OCR 式 PlanUnit、Reviewer 与知识主题规划
     │   │   ├── pipeline/location/         # ★候选新增行定位校验与批量重定位
@@ -154,7 +154,7 @@ Codeguard/
    - TaskBuilder 后执行确定性 `TaskRoute(DirectGate)`；Direct task 独立直审，Full task 进入 `TaskSelection → Plan → ReviewPlan`。
    - `Plan` 按 PlanUnit 并发生成 Reviewer、审查重点和知识主题；LARGE 模式同文件 hunk 复用文件级 Plan。
    - `[Summary]` 对 TaskRank 选中范围产出可选变更摘要。
-   - `ContextProvider` 构造只读 `ContextBundle`。
+   - `SymbolResolution` 把选中 Full task 的变更行解析为只读 `TaskSymbolContext`。
    - `ReviewCouncil` 并行运行 task-scoped 发现者 Agent；没有匹配任务的 reviewer 记录 `no_tasks_routed`。发现结果在绑定候选 ID 前经过统一新增行定位校验，必要时按 task 批量重定位。
    - `CouncilCoordinator` 完成三路 fan-in 和保守归并。
    - `EvidenceVerifier → CouncilJudge` 完成证据账本验证(健康检查/图护栏/异常重放,零 LLM)与批量证据裁决(支持/反驳/去留/定级,合同校验 fail-closed)。
@@ -244,7 +244,7 @@ python -m evals.runner --profile eval-codeguard-full --runs 1   # 完整档单�
 | `CODEGUARD_STRUCTURED_METHOD` | `function_calling` | 结构化输出方式 |
 | `CODEGUARD_DISABLE_THINKING` | `false` | 用 DeepSeek 推理模型时设 `true` |
 | `CODEGUARD_MAX_RETRIES` | `3` | LLM 调用重试次数 |
-| `CODEGUARD_ENABLE_SUMMARY` | `true` | ADR-032 选中范围摘要开关;关闭则 TaskRank 后直接进入 ContextProvider |
+| `CODEGUARD_ENABLE_SUMMARY` | `true` | ADR-032 选中范围摘要开关;关闭则 ReviewPlan 后直接进入 SymbolResolution |
 | `CODEGUARD_EVIDENCE_MODE` | `full` | 证据开关;`off` 跳过取证,候选由 DirectJudge 直接终审(无证据链消融基线档) |
 | `CODEGUARD_MAX_REVIEW_TASKS` | `100` | 仅作为大 diff 的更严格总任务上限 |
 | `CODEGUARD_MAX_TASKS_PER_FILE` | `10` | 仅作为大 diff 的更严格单文件上限 |

@@ -1,7 +1,7 @@
 """审查编排器门面。
 
 内部执行 ReviewCouncil 图：
-summary? → context_provider → review_council → council_judge → END。
+summary? → symbol_resolution → review_council → council_judge → END。
 对外返回稳定的 `ReviewResult`。
 """
 
@@ -204,8 +204,8 @@ class PipelineOrchestrator:
                 metadata_sink["council"] = stats.model_dump()
             else:
                 metadata_sink["council"] = stats
-            metadata_sink["context_diagnostics"] = dict(
-                final_state.get("context_diagnostics") or {}
+            metadata_sink["symbol_resolution_diagnostics"] = dict(
+                final_state.get("symbol_resolution_diagnostics") or {}
             )
 
         return ReviewResult(

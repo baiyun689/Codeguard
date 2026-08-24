@@ -2,7 +2,7 @@
 
 当前 task patch 由系统自动作为每个候选的基础证据(编号 P01),你不需要为 patch 填写编号。
 
-如果你在判断候选时使用了 <evidence_catalog> 或 <prefetched_context> 中带 evidence_id 的事实,请在 evidence_refs 中引用对应的 Cxx/Txx 编号。你只负责选择编号,不得重新填写工具参数、代码片段或工具原文。
+如果你在判断候选时使用了 <evidence_catalog> 或 <symbol_context> 中带 evidence_id 的事实,请在 evidence_refs 中引用对应的 Cxx/Txx 编号。你只负责选择编号,不得重新填写工具参数、代码片段或工具原文。
 
 每条引用包含:
 - alias: 必须逐字复制当前 Evidence Catalog 中存在的编号;
@@ -16,4 +16,4 @@
 - location 只说明如何找到位置,不能单独证明问题成立;
 - 没有使用外部事实时返回空 evidence_refs,系统会使用当前 task patch;
 - 不得猜测、构造或修改编号;
-- 不得把 summary、risk prior 或 knowledge bundle 当仓库证据。
+- 不得把 summary、Plan objectives 或 knowledge bundle 当仓库证据。
