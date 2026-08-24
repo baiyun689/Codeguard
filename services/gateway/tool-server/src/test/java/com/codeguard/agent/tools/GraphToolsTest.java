@@ -69,7 +69,7 @@ class GraphToolsTest {
     }
 
     @Test
-    void testOnlyCallerIsSeparatedFromProductionImpact(@TempDir Path repo) throws Exception {
+    void testOnlyCallerIsExcludedFromMainCanonicalResult(@TempDir Path repo) throws Exception {
         Path mainRoot = repo.resolve("src/main/java/demo");
         Path testRoot = repo.resolve("src/test/java/demo");
         Files.createDirectories(mainRoot);
@@ -93,11 +93,12 @@ class GraphToolsTest {
 
         assertTrue(impact.isSuccess(), impact.getError());
         assertTrue(payload.path("relationships").isEmpty(), impact.getResult());
-        assertFalse(payload.path("test_relationships").isEmpty(), impact.getResult());
-        assertTrue(payload.path("test_relationships").toString()
-                .contains("ServiceTest.java"), impact.getResult());
-        assertTrue(payload.path("test_relationships").get(0)
-                .path("source_set").asText().equals("TEST"), impact.getResult());
+        assertFalse(payload.has("main_symbols"), impact.getResult());
+        assertFalse(payload.has("test_symbols"), impact.getResult());
+        assertFalse(payload.has("generated_symbols"), impact.getResult());
+        assertFalse(payload.has("main_relationships"), impact.getResult());
+        assertFalse(payload.has("test_relationships"), impact.getResult());
+        assertFalse(payload.has("generated_relationships"), impact.getResult());
         assertTrue(payload.path("outcome").asText().equals("not_found"), impact.getResult());
         assertTrue(payload.path("coverage").asText().equals("complete"), impact.getResult());
         assertTrue(payload.path("source_scope").asText().equals("MAIN"), impact.getResult());
@@ -127,7 +128,9 @@ class GraphToolsTest {
         assertTrue(payload.path("outcome").asText().equals("found"), impact.getResult());
         assertTrue(payload.path("source_scope").asText().equals("TEST"), impact.getResult());
         assertFalse(payload.path("relationships").isEmpty(), impact.getResult());
-        assertFalse(payload.path("test_relationships").isEmpty(), impact.getResult());
+        assertTrue(payload.path("relationships").get(0)
+                .path("source_set").asText().equals("TEST"), impact.getResult());
+        assertFalse(payload.has("test_relationships"), impact.getResult());
     }
 
     @Test

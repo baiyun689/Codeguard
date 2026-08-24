@@ -88,7 +88,7 @@ def _graph_payload(
         "coverage": coverage,
         "source_scope": source_scope,
         "subject_symbol_id": subject,
-        "symbols": [{"id": subject, "kind": "method"}],
+        "symbols": [{"id": subject, "kind": "method", "source_set": source_scope}],
         "relationships": relationships if relationships is not None else [
             {"sourceId": "java:A#m()", "targetId": "java:B#exec()", "kind": "calls",
              "file": "A.java", "line": 1, "source_set": "MAIN",
@@ -224,18 +224,36 @@ def test_图响应_subject_mismatch_invalid():
     assert "graph_subject_mismatch" in verification.invalid_references[0].detail
 
 
-def test_图响应_test_only_confirmation_invalid():
+def test_图响应_legacy_scope_fields_protocol_invalid():
     patch = _patch_artifact()
-    payload = json.loads(_graph_payload(relationships=[]))
-    payload["test_relationships"] = [{
-        "sourceId": "java:A#m()", "targetId": "java:T#t()", "kind": "calls",
-        "file": "A.java", "line": 1, "source_set": "TEST",
-    }]
+    legacy_fields = (
+        "main_symbols", "test_symbols", "generated_symbols",
+        "main_relationships", "test_relationships", "generated_relationships",
+    )
+    for field in legacy_fields:
+        payload = json.loads(_graph_payload())
+        payload[field] = []
+        graph = _graph_artifact(json.dumps(payload, ensure_ascii=False))
+        batch = _verify(
+            _candidate(patch.id, graph.id),
+            {patch.id: patch, graph.id: graph},
+        )
+        verification = batch.candidates["c1"]
+        assert verification.grounding_status == "partially_grounded"
+        assert verification.invalid_references
+        assert "graph_legacy_scope_fields" in verification.invalid_references[0].detail
+
+
+def test_图响应_symbol_scope_mismatch_invalid():
+    patch = _patch_artifact()
+    payload = json.loads(_graph_payload())
+    payload["symbols"][0]["source_set"] = "TEST"
     graph = _graph_artifact(json.dumps(payload, ensure_ascii=False))
     batch = _verify(_candidate(patch.id, graph.id), {patch.id: patch, graph.id: graph})
     verification = batch.candidates["c1"]
     assert verification.grounding_status == "partially_grounded"
     assert verification.invalid_references
+    assert "graph_symbol_scope_mismatch" in verification.invalid_references[0].detail
 
 
 def test_图响应_coverage_partial_limited_保留正事实():

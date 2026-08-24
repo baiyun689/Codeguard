@@ -20,13 +20,16 @@ _GRAPH_HEADER_KEYS = (
     "schema_version", "outcome", "coverage", "source_scope",
     "subject_symbol_id", "unresolved_count", "limitations",
 )
-_GRAPH_SYMBOL_KEYS = ("id", "kind", "file", "startLine", "endLine")
+_GRAPH_SYMBOL_KEYS = (
+    "id", "kind", "file", "startLine", "endLine", "source_set",
+)
 _GRAPH_RELATION_KEYS = (
     "sourceId", "targetId", "kind", "file", "line", "source_set", "resolution",
 )
-_GRAPH_FALLBACK_KEYS = (
+_LEGACY_SCOPE_KEYS = frozenset({
+    "main_symbols", "test_symbols", "generated_symbols",
     "main_relationships", "test_relationships", "generated_relationships",
-)
+})
 
 _VALID_SOURCE_SCOPES = {"MAIN", "TEST", "GENERATED"}
 _GRAPH_SCHEMA_VERSION = 2
@@ -42,9 +45,8 @@ class GraphValidation:
 def summarize_graph(raw: str) -> str:
     """对 inspect_* 图响应做确定性结构化压缩(零 LLM)。
 
-    主 relationships 非空时丢弃四个 fallback 数组(体积减半以上);
-    主数组为空(not_found + test 边透传场景)时补 fallback 数组,
-    裁决层才能判断不足而不是瞎判。非 JSON 按上限截断兜底。
+    v2 只消费当前 source_scope 的 canonical symbols/relationships；
+    非 JSON 按上限截断兜底。
     """
     try:
         payload = json.loads(raw)
@@ -65,15 +67,6 @@ def summarize_graph(raw: str) -> str:
         for rel in payload.get("relationships") or []
         if isinstance(rel, dict)
     ]
-    if not relations:
-        for key in _GRAPH_FALLBACK_KEYS:
-            extra = [
-                {k: rel.get(k) for k in _GRAPH_RELATION_KEYS if k in rel}
-                for rel in payload.get(key) or []
-                if isinstance(rel, dict)
-            ]
-            if extra:
-                summary[key] = extra
     summary["symbols"] = symbols
     summary["relationships"] = relations
     return _fit_graph_summary(json.dumps(summary, ensure_ascii=False))
@@ -131,6 +124,11 @@ def validate_graph_payload(
             EvidenceValidationStatus.INVALID,
             ("graph_protocol_mismatch",),
         )
+    if _LEGACY_SCOPE_KEYS.intersection(payload):
+        return GraphValidation(
+            EvidenceValidationStatus.INVALID,
+            ("graph_legacy_scope_fields",),
+        )
 
     raw_limitations = payload.get("limitations")
     if not isinstance(raw_limitations, list) or any(
@@ -153,7 +151,6 @@ def validate_graph_payload(
     relationships = payload.get("relationships")
     unresolved_relationships = payload.get("unresolved_relationships")
     unresolved_count = payload.get("unresolved_count")
-    test_relationships = payload.get("test_relationships")
     symbols = payload.get("symbols")
     if source_scope not in _VALID_SOURCE_SCOPES:
         return GraphValidation(
@@ -164,6 +161,18 @@ def validate_graph_payload(
         return GraphValidation(
             EvidenceValidationStatus.INVALID,
             ("invalid_graph_relationships",),
+        )
+    if (
+        not isinstance(symbols, list)
+        or any(
+            not isinstance(item, dict)
+            or str(item.get("source_set", "")).upper() != source_scope
+            for item in symbols
+        )
+    ):
+        return GraphValidation(
+            EvidenceValidationStatus.INVALID,
+            ("graph_symbol_scope_mismatch",),
         )
     if any(
         not isinstance(item, dict)
@@ -191,16 +200,6 @@ def validate_graph_payload(
             EvidenceValidationStatus.INVALID,
             ("invalid_graph_unresolved_relationships",),
         )
-    if isinstance(test_relationships, list) and any(
-        str(item.get("source_set", "")).upper() != "TEST"
-        for item in test_relationships
-        if isinstance(item, dict)
-    ):
-        return GraphValidation(
-            EvidenceValidationStatus.INVALID,
-            ("graph_source_scope_mismatch",),
-        )
-
     valid_combination = (outcome, coverage) in {
         ("found", "complete"),
         ("found", "partial"),
@@ -230,19 +229,6 @@ def validate_graph_payload(
             EvidenceValidationStatus.INVALID,
             ("graph_non_found_with_relationships",),
         )
-    if (
-        tool in {"inspect_change_impact", "inspect_security_path"}
-        and source_scope in {"MAIN", "GENERATED"}
-        and outcome == "found"
-        and not relationships
-        and isinstance(test_relationships, list)
-        and bool(test_relationships)
-    ):
-        return GraphValidation(
-            EvidenceValidationStatus.INVALID,
-            ("graph_test_only_confirmation",),
-        )
-
     if outcome == "indeterminate":
         return GraphValidation(
             EvidenceValidationStatus.UNAVAILABLE,

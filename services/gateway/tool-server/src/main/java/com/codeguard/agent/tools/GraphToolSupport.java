@@ -135,70 +135,26 @@ final class GraphToolSupport {
         try {
             ObjectNode root = JSON.createObjectNode();
             List<GraphNode> uniqueNodes = uniqueNodes(nodes);
-            List<GraphNode> mainNodes = uniqueNodes.stream()
-                    .filter(node -> node.sourceSet() == SourceSet.MAIN)
+            List<GraphNode> primaryNodes = uniqueNodes.stream()
+                    .filter(node -> node.sourceSet() == sourceScope)
                     .toList();
-            List<GraphNode> testNodes = uniqueNodes.stream()
-                    .filter(node -> node.sourceSet() == SourceSet.TEST)
+            List<GraphEdge> primaryEdges = edges.stream()
+                    .filter(edge -> edge.sourceSet() == sourceScope)
                     .toList();
-            List<GraphNode> generatedNodes = uniqueNodes.stream()
-                    .filter(node -> node.sourceSet() == SourceSet.GENERATED)
-                    .toList();
-            List<GraphEdge> mainEdges = edges.stream()
-                    .filter(edge -> edge.sourceSet() == SourceSet.MAIN)
-                    .toList();
-            List<GraphEdge> testEdges = edges.stream()
-                    .filter(edge -> edge.sourceSet() == SourceSet.TEST)
-                    .toList();
-            List<GraphEdge> generatedEdges = edges.stream()
-                    .filter(edge -> edge.sourceSet() == SourceSet.GENERATED)
-                    .toList();
-            List<GraphNode> primaryNodes = switch (sourceScope) {
-                case MAIN -> mainNodes;
-                case TEST -> testNodes;
-                case GENERATED -> generatedNodes;
-            };
-            List<GraphEdge> primaryEdges = switch (sourceScope) {
-                case MAIN -> mainEdges;
-                case TEST -> testEdges;
-                case GENERATED -> generatedEdges;
-            };
-
-            List<GraphEdge> resolvedMainEdges = resolved(mainEdges);
-            List<GraphEdge> resolvedTestEdges = resolved(testEdges);
-            List<GraphEdge> resolvedGeneratedEdges = resolved(generatedEdges);
             List<GraphEdge> resolvedPrimaryEdges = resolved(primaryEdges);
             List<GraphEdge> unresolvedPrimaryEdges = unresolved(primaryEdges);
             int totalUnresolvedCount = unresolvedPrimaryEdges.size()
                     + Math.max(0, suppressedUnresolvedCount);
 
-            List<GraphNode> boundedMainNodes =
-                    mainNodes.stream().limit(MAX_SYMBOLS).toList();
-            List<GraphNode> boundedTestNodes =
-                    testNodes.stream().limit(MAX_SYMBOLS).toList();
-            List<GraphNode> boundedGeneratedNodes =
-                    generatedNodes.stream().limit(MAX_SYMBOLS).toList();
-            List<GraphEdge> boundedMainEdges =
-                    resolvedMainEdges.stream().limit(MAX_RELATIONSHIPS).toList();
-            List<GraphEdge> boundedTestEdges =
-                    resolvedTestEdges.stream().limit(MAX_RELATIONSHIPS).toList();
-            List<GraphEdge> boundedGeneratedEdges =
-                    resolvedGeneratedEdges.stream().limit(MAX_RELATIONSHIPS).toList();
+            List<GraphNode> boundedPrimaryNodes =
+                    primaryNodes.stream().limit(MAX_SYMBOLS).toList();
+            List<GraphEdge> boundedPrimaryEdges =
+                    resolvedPrimaryEdges.stream().limit(MAX_RELATIONSHIPS).toList();
             List<GraphEdge> boundedUnresolvedEdges = unresolvedPrimaryEdges.stream()
                     .limit(MAX_UNRESOLVED_RELATIONSHIPS)
                     .toList();
-            boolean mainTruncated = boundedMainNodes.size() < mainNodes.size()
-                    || boundedMainEdges.size() < resolvedMainEdges.size();
-            boolean testTruncated = boundedTestNodes.size() < testNodes.size()
-                    || boundedTestEdges.size() < resolvedTestEdges.size();
-            boolean generatedTruncated =
-                    boundedGeneratedNodes.size() < generatedNodes.size()
-                            || boundedGeneratedEdges.size() < resolvedGeneratedEdges.size();
-            boolean primaryTruncated = switch (sourceScope) {
-                case MAIN -> mainTruncated;
-                case TEST -> testTruncated;
-                case GENERATED -> generatedTruncated;
-            };
+            boolean primaryTruncated = boundedPrimaryNodes.size() < primaryNodes.size()
+                    || boundedPrimaryEdges.size() < resolvedPrimaryEdges.size();
             boolean subjectExists = snapshot.graph().node(subject).isPresent();
             boolean found = !resolvedPrimaryEdges.isEmpty()
                     || (subjectAloneIsFact && !primaryNodes.isEmpty());
@@ -222,24 +178,10 @@ final class GraphToolSupport {
             root.put("snapshot_generated_coverage",
                     snapshot.coverageStatus(SourceSet.GENERATED));
             root.put("subject_symbol_id", subject);
-            root.set("symbols", JSON.valueToTree(switch (sourceScope) {
-                case MAIN -> boundedMainNodes;
-                case TEST -> boundedTestNodes;
-                case GENERATED -> boundedGeneratedNodes;
-            }));
-            root.set("main_symbols", JSON.valueToTree(boundedMainNodes));
-            root.set("test_symbols", JSON.valueToTree(boundedTestNodes));
-            root.set("generated_symbols", JSON.valueToTree(boundedGeneratedNodes));
-            root.set("relationships", JSON.valueToTree(switch (sourceScope) {
-                case MAIN -> boundedMainEdges;
-                case TEST -> boundedTestEdges;
-                case GENERATED -> boundedGeneratedEdges;
-            }));
+            root.set("symbols", JSON.valueToTree(boundedPrimaryNodes));
+            root.set("relationships", JSON.valueToTree(boundedPrimaryEdges));
             root.set("unresolved_relationships", JSON.valueToTree(boundedUnresolvedEdges));
             root.put("unresolved_count", totalUnresolvedCount);
-            root.set("main_relationships", JSON.valueToTree(boundedMainEdges));
-            root.set("test_relationships", JSON.valueToTree(boundedTestEdges));
-            root.set("generated_relationships", JSON.valueToTree(boundedGeneratedEdges));
             ArrayNode allLimitations = root.putArray("limitations");
             queryDiagnostics.forEach(allLimitations::add);
             limitations.forEach(allLimitations::add);
@@ -256,15 +198,6 @@ final class GraphToolSupport {
             }
             if (primaryTruncated) {
                 allLimitations.add("result_truncated");
-            }
-            if (sourceScope != SourceSet.MAIN && mainTruncated) {
-                allLimitations.add("main_result_truncated");
-            }
-            if (sourceScope != SourceSet.TEST && testTruncated) {
-                allLimitations.add("test_result_truncated");
-            }
-            if (sourceScope != SourceSet.GENERATED && generatedTruncated) {
-                allLimitations.add("generated_result_truncated");
             }
             return ToolResult.ok(JSON.writeValueAsString(root));
         } catch (Exception exception) {
