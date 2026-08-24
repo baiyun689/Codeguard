@@ -59,33 +59,25 @@ public final class GetFileContentTool implements AgentTool {
             return ToolResult.error("文件路径不能为空");
         }
 
-        // 显式拒绝 .. ——规范化校验已能拦穿越,这里再给一条更可读的早返回。
-        if (filePath.contains("..")) {
-            return ToolResult.error("不允许包含 .. 的路径: " + filePath);
-        }
-
         final Path fullPath;
         try {
-            fullPath = sandbox.resolveWithinRepo(filePath);
-        } catch (SecurityException e) {
+            fullPath = sandbox.resolveReadableFile(filePath);
+        } catch (FileAccessSandbox.AccessException e) {
             return ToolResult.error(e.getMessage());
-        }
-
-        // 护栏放宽(design.md D5):授权从"仅 diff 改动文件"改为"repo 根内 + 源码扩展名白名单",
-        // 使审查员能读 get_repo_map 指向的 diff 之外定义文件;非源码/配置/密钥类型仍拒。
-        if (!sandbox.isReadableSource(filePath)) {
-            return ToolResult.error("文件类型不可读(仅限源码文件): " + filePath);
         }
 
         if (snapshot != null) {
             try {
                 ProjectSnapshot value = GraphToolSupport.await(snapshot);
-                String normalized = filePath.replace('\\', '/');
-                if (!context.getAllowedFiles().contains(normalized)
-                        && !value.sources().containsKey(normalized)) {
+                String requestedPath = filePath.replace('\\', '/');
+                String realRelativePath = sandbox.getRealRepoRoot()
+                        .relativize(fullPath).toString().replace('\\', '/');
+                if (!context.getAllowedFiles().contains(requestedPath)
+                        && !context.getAllowedFiles().contains(realRelativePath)
+                        && !value.sources().containsKey(realRelativePath)) {
                     return ToolResult.error("unconfirmed_path: " + filePath);
                 }
-                String cached = value.sources().get(normalized);
+                String cached = value.sources().get(realRelativePath);
                 if (cached != null) {
                     long size = cached.getBytes(StandardCharsets.UTF_8).length;
                     if (size > MAX_FILE_SIZE_BYTES) {
@@ -93,17 +85,11 @@ public final class GetFileContentTool implements AgentTool {
                                 "文件过大 (" + size + " 字节,上限 "
                                         + MAX_FILE_SIZE_BYTES + "),请聚焦具体方法/片段再查");
                     }
-                    return ToolResult.ok("文件: " + normalized + "\n" + cached);
+                    return ToolResult.ok("文件: " + requestedPath + "\n" + cached);
                 }
             } catch (Exception exception) {
                 return ToolResult.error("graph_unavailable: " + exception.getMessage());
             }
-        }
-
-        if (!Files.isRegularFile(fullPath)) {
-            return ToolResult.error(snapshot == null
-                    ? "文件不存在: " + filePath
-                    : "unconfirmed_path: " + filePath);
         }
 
         try {

@@ -154,7 +154,7 @@ def test_创建会话_把_revision_传给客户端(monkeypatch):
 
     monkeypatch.setattr(httpx, "Client", _FakeClient)
     client = create_tool_session(
-        "http://toolserver", "/repo", ["a.java"], revision="abc:def"
+        "http://toolserver", "/repo", ["a.java"], revision="abc:def", token="test-token"
     )
     assert captured["json"]["revision"] == "abc:def"
     assert client.revision == "abc:def"

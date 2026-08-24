@@ -59,6 +59,8 @@ class Settings:
     disable_thinking: bool  # 是否禁用思考模式(DeepSeek 等推理模型需要)
     # 阶段 3:Java 工具服务地址。非空 → 发现者走 ReAct(可调工具);空 → 走直连基准。
     tool_server_url: str = ""
+    # Java Tool Server 的内部鉴权 Token。仅在配置 tool_server_url 时需要。
+    tool_server_token: str = ""
     # 首次语义工具调用需要等待 Java 异步 ProjectSnapshot 构建完成；客户端预算
     # 与 Gateway 使用同一配置，并在调用处额外留出网络缓冲。
     graph_build_timeout_seconds: int = 120
@@ -152,6 +154,7 @@ class Settings:
             structured_method=structured_method,
             disable_thinking=disable_thinking,
             tool_server_url=os.environ.get("CODEGUARD_TOOL_SERVER_URL", "").strip(),
+            tool_server_token=os.environ.get("CODEGUARD_TOOL_SERVER_TOKEN", "").strip(),
             graph_build_timeout_seconds=graph_build_timeout_seconds,
             enable_summary=enable_summary,
             evidence_mode=evidence_mode,

@@ -65,7 +65,7 @@ class GraphToolsTest {
         ToolResult missing = tool.execute("GuessedController.java", context);
 
         assertFalse(missing.isSuccess());
-        assertTrue(missing.getError().contains("unconfirmed_path"), missing.getError());
+        assertEquals("missing_file", missing.getError());
     }
 
     @Test

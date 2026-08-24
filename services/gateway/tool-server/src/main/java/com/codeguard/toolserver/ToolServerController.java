@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
@@ -32,9 +33,11 @@ public final class ToolServerController {
 
     private static final Logger log = LoggerFactory.getLogger(ToolServerController.class);
     private static final String SESSION_HEADER = "X-Session-Id";
+    private static final String TOOL_TOKEN_HEADER = "X-Codeguard-Tool-Token";
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final ToolSessionManager sessionManager;
+    private final String toolServerToken;
     private final GatewayMetrics metrics;
 
     public ToolServerController() {
@@ -47,20 +50,33 @@ public final class ToolServerController {
 
     public ToolServerController(GatewayMetrics metrics, GatewaySettings settings) {
         this.metrics = metrics;
+        this.toolServerToken = settings.toolServerToken();
         this.sessionManager = new ToolSessionManager(
                 new com.codeguard.agent.graph.ProjectSnapshotManager(
                         settings.graphCacheMaxSnapshots(),
                         settings.graphCacheTtl(),
-                        settings.graphBuildTimeout()));
+                        settings.graphBuildTimeout()),
+                new WorkspaceAccessPolicy(settings.toolAllowedRoots()));
         metrics.gaugeToolSessions(sessionManager, ToolSessionManager::activeSessionCount);
     }
 
     public void registerRoutes(Javalin app) {
+        app.before("/api/v1/tools/*", this::requireToolToken);
         app.post("/api/v1/tools/session", this::handleCreateSession);
         app.delete("/api/v1/tools/session/{sessionId}", this::handleDeleteSession);
         // 通用分发:{name} 形参承接所有工具名。session 已由更具体的上面两条路由抢先匹配。
         app.post("/api/v1/tools/{name}", this::handleToolCall);
         log.info("工具服务端点已注册");
+    }
+
+    private void requireToolToken(Context ctx) {
+        String supplied = ctx.header(TOOL_TOKEN_HEADER);
+        if (supplied == null || !MessageDigest.isEqual(
+                toolServerToken.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                supplied.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
+            ctx.status(401).json(error("unauthorized"));
+            ctx.skipRemainingHandlers();
+        }
     }
 
     private void handleCreateSession(Context ctx) {
@@ -84,6 +100,8 @@ public final class ToolServerController {
             ObjectNode resp = success(null);
             resp.put("session_id", sessionId);
             ctx.json(resp);
+        } catch (WorkspaceAccessPolicy.RejectedWorkspaceException e) {
+            ctx.status(400).json(error(e.getMessage()));
         } catch (Exception e) {
             log.error("创建会话失败", e);
             ctx.json(error("创建会话失败: " + e.getMessage()));

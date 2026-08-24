@@ -36,13 +36,14 @@ public final class ToolSessionManager {
 
     private final ConcurrentHashMap<String, Session> sessions = new ConcurrentHashMap<>();
     private final ProjectSnapshotManager snapshotManager;
+    private final WorkspaceAccessPolicy workspaceAccessPolicy;
 
-    public ToolSessionManager() {
-        this(new ProjectSnapshotManager());
-    }
-
-    ToolSessionManager(ProjectSnapshotManager snapshotManager) {
+    ToolSessionManager(
+            ProjectSnapshotManager snapshotManager,
+            WorkspaceAccessPolicy workspaceAccessPolicy
+    ) {
         this.snapshotManager = snapshotManager;
+        this.workspaceAccessPolicy = workspaceAccessPolicy;
     }
 
     /** 单次审查会话:不可变的范围信息 + 工具实例 + 创建时间。 */
@@ -109,9 +110,10 @@ public final class ToolSessionManager {
 
     public String create(Path repoRoot, Set<String> allowedFiles, String revision) {
         cleanupExpired();
+        Path approvedRoot = workspaceAccessPolicy.requireReviewRepository(repoRoot);
         String id = UUID.randomUUID().toString();
         sessions.put(id, new Session(
-                id, repoRoot, allowedFiles, revision, snapshotManager));
+                id, approvedRoot, allowedFiles, revision, snapshotManager));
         return id;
     }
 

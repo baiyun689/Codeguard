@@ -17,7 +17,7 @@ from codeguard_agent.tools.tool_client import (
 
 
 def _mock_client(handler) -> ToolClient:
-    client = ToolClient("http://toolserver", "sess-1")
+    client = ToolClient("http://toolserver", "sess-1", token="test-token")
     # 替换内部 httpx.Client 为带 MockTransport 的实例(绕过真实网络)。
     client._client = httpx.Client(transport=httpx.MockTransport(handler))  # noqa: SLF001
     return client
@@ -26,6 +26,7 @@ def _mock_client(handler) -> ToolClient:
 def test_成功信封_映射为_result():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["X-Session-Id"] == "sess-1"
+        assert request.headers["X-Codeguard-Tool-Token"] == "test-token"
         assert request.url.path == "/api/v1/tools/get_file_content"
         return httpx.Response(200, json={"success": True, "result": "文件内容"})
 
@@ -104,7 +105,7 @@ def test_创建会话失败_抛出_runtimeerror(monkeypatch):
 
     monkeypatch.setattr(httpx, "Client", _FakeClient)
     try:
-        create_tool_session("http://toolserver", "/repo", ["a.java"])
+        create_tool_session("http://toolserver", "/repo", ["a.java"], token="test-token")
         assert False, "应抛出 RuntimeError"
     except RuntimeError as e:
         assert "缺少 repo_path" in str(e)
@@ -131,3 +132,11 @@ def test_销毁会话_即使删除失败也关闭本地连接():
 def test_tool_response_默认空输出():
     assert ToolResponse(success=True).as_tool_output() == ""
     assert ToolResponse(success=False).as_tool_output() == "Error: unknown error"
+
+
+def test_创建会话缺少_token_快速失败():
+    try:
+        create_tool_session("http://toolserver", "/repo", ["a.java"])
+        assert False, "应抛出 RuntimeError"
+    except RuntimeError as error:
+        assert "CODEGUARD_TOOL_SERVER_TOKEN" in str(error)

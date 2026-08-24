@@ -136,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
                     allowed_files,
                     timeout=settings.graph_build_timeout_seconds + 15,
                     revision=evidence_revision,
+                    token=settings.tool_server_token,
                 )
                 logger.info(
                     "已创建工具会话(%s),审查员走 ReAct;允许文件 %d 个",

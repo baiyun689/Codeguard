@@ -239,6 +239,8 @@ Deployment settings:
 | `CODEGUARD_IMAGE_TAG` | `latest` | Image tag under `ghcr.io/baiyun689/codeguard` |
 | `CODEGUARD_HOST_PORT` | `9090` | Host port mapped to the container's CI webhook port `8080` |
 | `CODEGUARD_TOOL_HOST_PORT` | `9092` | Loopback-only host port mapped to the container's Tool Server port `9090` |
+| `CODEGUARD_TOOL_SERVER_TOKEN` | required | Shared internal token for the Python Agent and Tool Server |
+| `CODEGUARD_TOOL_ALLOWED_ROOTS` | fixed by Compose | Comma-separated parent directories allowed to create Git workspace sessions |
 | `CODEGUARD_WEBHOOK_SECRET` | required | Secret used to verify GitHub webhook signatures |
 | `CODEGUARD_GITHUB_APP_ID` | required | GitHub App ID used for installation authentication |
 | `CODEGUARD_GITHUB_PRIVATE_KEY_FILE` | `./secrets/github-app.pem` | Host path to the App private key mounted by Compose |

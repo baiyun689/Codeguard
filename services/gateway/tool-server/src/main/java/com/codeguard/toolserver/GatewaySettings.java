@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 
 public record GatewaySettings(
@@ -24,7 +26,9 @@ public record GatewaySettings(
     double webhookRateLimit,
     int graphCacheMaxSnapshots,
     Duration graphCacheTtl,
-    Duration graphBuildTimeout
+    Duration graphBuildTimeout,
+    String toolServerToken,
+    List<Path> toolAllowedRoots
 ) {
     public static GatewaySettings fromEnv() {
         return from(System.getenv(), Path.of(System.getProperty("java.io.tmpdir", "/tmp")));
@@ -49,7 +53,9 @@ public record GatewaySettings(
             nonNegativeDouble(env, "CODEGUARD_WEBHOOK_RATE_LIMIT", 0.5),
             positiveInt(env, "CODEGUARD_GRAPH_CACHE_MAX_SNAPSHOTS", 4),
             Duration.ofMinutes(positiveInt(env, "CODEGUARD_GRAPH_CACHE_TTL_MINUTES", 30)),
-            Duration.ofSeconds(positiveInt(env, "CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS", 120)));
+            Duration.ofSeconds(positiveInt(env, "CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS", 120)),
+            required(env, "CODEGUARD_TOOL_SERVER_TOKEN"),
+            toolAllowedRoots(env, tempDir));
     }
 
     private static String githubPrivateKey(Map<String, String> env) {
@@ -65,6 +71,31 @@ public record GatewaySettings(
             throw new IllegalArgumentException(
                 "无法读取 CODEGUARD_GITHUB_PRIVATE_KEY_FILE: " + file, error);
         }
+    }
+
+    private static String required(Map<String, String> env, String name) {
+        String value = env.getOrDefault(name, "").trim();
+        if (value.isEmpty()) {
+            throw new IllegalArgumentException(name + " 不能为空");
+        }
+        return value;
+    }
+
+    private static List<Path> toolAllowedRoots(Map<String, String> env, Path tempDir) {
+        String configured = env.getOrDefault("CODEGUARD_TOOL_ALLOWED_ROOTS", "").trim();
+        if (configured.isEmpty()) {
+            return List.of(Path.of(env.getOrDefault(
+                    "CODEGUARD_WORKSPACE_DIR", tempDir.resolve("codeguard-jobs").toString())));
+        }
+        List<Path> roots = Arrays.stream(configured.split(","))
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .map(Path::of)
+                .toList();
+        if (roots.isEmpty()) {
+            throw new IllegalArgumentException("CODEGUARD_TOOL_ALLOWED_ROOTS 不能为空");
+        }
+        return roots;
     }
 
     private static int positiveInt(Map<String, String> env, String name, int fallback) {

@@ -30,6 +30,13 @@ def test_default_settings_has_no_evidence_round_config():
     assert not hasattr(settings, "max_evidence_rounds")
 
 
+def test_tool_server_token_is_loaded_from_environment(monkeypatch):
+    monkeypatch.setenv("CODEGUARD_TOOL_SERVER_TOKEN", "tool-token")
+    monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
+
+    assert Settings.from_env().tool_server_token == "tool-token"
+
+
 def test_evidence_mode_defaults_to_full(monkeypatch):
     monkeypatch.delenv("CODEGUARD_EVIDENCE_MODE", raising=False)
     monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)

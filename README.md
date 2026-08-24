@@ -181,9 +181,12 @@ Python Agent：
 ```dotenv
 CODEGUARD_HOST_PORT=8080
 CODEGUARD_TOOL_HOST_PORT=9092
+# 随机长字符串；本机 Agent 连接 Tool Server 时也必须使用同一值。
+CODEGUARD_TOOL_SERVER_TOKEN=请自行生成随机值
 ```
 
-Tool Server 不应暴露到公网。Gateway 的 Webhook 映射端口提供明文 HTTP，不直接提供
+Tool Server 不应暴露到公网；即使仅绑定回环地址，所有工具请求仍必须携带
+`X-Codeguard-Tool-Token`。Gateway 的 Webhook 映射端口提供明文 HTTP，不直接提供
 TLS。生产环境必须由反向代理终止 HTTPS，并将 `/webhooks/github` 转发到该宿主机端口；
 公开 Webhook 地址应为 `https://your-host.example/webhooks/github`。不要将 GitHub
 Webhook 直接指向映射端口。
@@ -296,6 +299,8 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 | `CODEGUARD_IMAGE_TAG` | `latest` | `ghcr.io/baiyun689/codeguard` 下的镜像标签 |
 | `CODEGUARD_HOST_PORT` | `9090` | 映射到容器 CI Webhook 端口 `8080` 的宿主机端口 |
 | `CODEGUARD_TOOL_HOST_PORT` | `9092` | 仅绑定 `127.0.0.1`、映射到容器 Tool Server 端口 `9090` 的宿主机端口 |
+| `CODEGUARD_TOOL_SERVER_TOKEN` | 必填 | Python Agent 与 Tool Server 的内部共享 Token |
+| `CODEGUARD_TOOL_ALLOWED_ROOTS` | Compose 固定 | 可创建工具会话的 Git 工作区父目录，逗号分隔 |
 | `CODEGUARD_WEBHOOK_SECRET` | 必填 | 校验 GitHub Webhook 签名的 Secret |
 | `CODEGUARD_GITHUB_APP_ID` | 必填 | 用于 installation 认证的 GitHub App ID |
 | `CODEGUARD_GITHUB_PRIVATE_KEY_FILE` | `./secrets/github-app.pem` | Compose 挂载的 App 私钥宿主机路径 |

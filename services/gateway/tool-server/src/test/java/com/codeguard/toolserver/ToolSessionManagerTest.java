@@ -2,15 +2,18 @@ package com.codeguard.toolserver;
 
 import com.codeguard.toolserver.ToolSessionManager.Session;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -18,9 +21,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class ToolSessionManagerTest {
 
+    private ToolSessionManager managerFor(Path allowedRoot) {
+        return new ToolSessionManager(
+                new com.codeguard.agent.graph.ProjectSnapshotManager(),
+                new WorkspaceAccessPolicy(java.util.List.of(allowedRoot)));
+    }
+
+    private static void gitWorktree(Path repository) throws Exception {
+        Files.createDirectories(repository.resolve(".git"));
+    }
+
     @Test
-    void createAndGetSession(@TempDir Path repo) {
-        ToolSessionManager mgr = new ToolSessionManager();
+    void createAndGetSession(@TempDir Path repo) throws Exception {
+        gitWorktree(repo);
+        ToolSessionManager mgr = managerFor(repo);
         String id = mgr.create(repo, Set.of("src/App.java"));
 
         assertNotNull(id);
@@ -40,14 +54,15 @@ class ToolSessionManagerTest {
 
     @Test
     void missingSessionReturnsNull() {
-        ToolSessionManager mgr = new ToolSessionManager();
+        ToolSessionManager mgr = managerFor(Path.of(System.getProperty("java.io.tmpdir")));
         assertNull(mgr.get(null));
         assertNull(mgr.get("nonexistent"));
     }
 
     @Test
-    void removeSession(@TempDir Path repo) {
-        ToolSessionManager mgr = new ToolSessionManager();
+    void removeSession(@TempDir Path repo) throws Exception {
+        gitWorktree(repo);
+        ToolSessionManager mgr = managerFor(repo);
         String id = mgr.create(repo, Set.of());
         assertNotNull(mgr.get(id));
 
@@ -56,12 +71,45 @@ class ToolSessionManagerTest {
     }
 
     @Test
-    void contextCarriesScope(@TempDir Path repo) {
-        ToolSessionManager mgr = new ToolSessionManager();
+    void contextCarriesScope(@TempDir Path repo) throws Exception {
+        gitWorktree(repo);
+        ToolSessionManager mgr = managerFor(repo);
         String id = mgr.create(repo, Set.of("a.java", "b.java"));
         Session s = mgr.get(id);
 
         assertTrue(s.getContext().getAllowedFiles().contains("a.java"));
         assertSame(s.getContext(), mgr.get(id).getContext());
+    }
+
+    @Test
+    void rejectsRepositoryOutsideAllowedWorkspace(@TempDir Path root, @TempDir Path outside)
+            throws Exception {
+        gitWorktree(outside);
+        ToolSessionManager manager = managerFor(root);
+
+        assertThrows(WorkspaceAccessPolicy.RejectedWorkspaceException.class,
+                () -> manager.create(outside, Set.of(), "head"));
+    }
+
+    @Test
+    void rejectsRepositoryLinkThatResolvesOutsideAllowedWorkspace(
+            @TempDir Path root,
+            @TempDir Path outside
+    ) throws Exception {
+        gitWorktree(outside);
+        Path linkedRepository = root.resolve("linked-repository");
+        createSymbolicLink(linkedRepository, outside);
+        ToolSessionManager manager = managerFor(root);
+
+        assertThrows(WorkspaceAccessPolicy.RejectedWorkspaceException.class,
+                () -> manager.create(linkedRepository, Set.of(), "head"));
+    }
+
+    private static void createSymbolicLink(Path link, Path target) throws Exception {
+        try {
+            Files.createSymbolicLink(link, target);
+        } catch (java.nio.file.FileSystemException | UnsupportedOperationException exception) {
+            Assumptions.assumeTrue(false, "当前系统不允许测试创建符号链接");
+        }
     }
 }

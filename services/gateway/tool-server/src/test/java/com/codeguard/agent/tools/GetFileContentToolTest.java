@@ -3,11 +3,13 @@ package com.codeguard.agent.tools;
 import com.codeguard.agent.core.AgentContext;
 import com.codeguard.agent.core.ToolResult;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.CompletableFuture;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -16,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * get_file_content 工具 + 文件访问护栏的工程正确性测试。
- * 重点覆盖 spec 的护栏场景:正常读取 + 四类拒绝(穿越 / 范围外 / 超大 / 不存在)。
+ * 重点覆盖真实路径护栏：链接可留在仓库内，但绝不能逃出仓库。
  */
 class GetFileContentToolTest {
 
@@ -47,7 +49,7 @@ class GetFileContentToolTest {
         ToolResult r = toolFor(repo, allowed).execute("../secret.txt", ctx(repo, allowed));
 
         assertFalse(r.isSuccess());
-        assertTrue(r.getError().contains(".."));
+        assertEquals("rejected_path_outside_repository", r.getError());
     }
 
     @Test
@@ -92,7 +94,7 @@ class GetFileContentToolTest {
         ToolResult r = toolFor(repo, allowed).execute(".env", ctx(repo, allowed));
 
         assertFalse(r.isSuccess());
-        assertTrue(r.getError().contains("源码"));
+        assertEquals("rejected_file_type", r.getError());
     }
 
     @Test
@@ -114,7 +116,7 @@ class GetFileContentToolTest {
         ToolResult r = toolFor(repo, allowed).execute("src/Ghost.java", ctx(repo, allowed));
 
         assertFalse(r.isSuccess());
-        assertTrue(r.getError().contains("不存在"));
+        assertEquals("missing_file", r.getError());
     }
 
     @Test
@@ -123,6 +125,78 @@ class GetFileContentToolTest {
         ToolResult r = toolFor(repo, allowed).execute("  ", ctx(repo, allowed));
 
         assertFalse(r.isSuccess());
+    }
+
+    @Test
+    void followsSymlinkThatStillResolvesInsideRepository(@TempDir Path repo) throws IOException {
+        Path target = repo.resolve("src/Real.java");
+        Files.createDirectories(target.getParent());
+        Files.writeString(target, "class Real {}");
+        Path link = repo.resolve("src/Linked.java");
+        createSymbolicLink(link, Path.of("Real.java"));
+
+        ToolResult result = toolFor(repo, Set.of()).execute("src/Linked.java", ctx(repo, Set.of()));
+
+        assertTrue(result.isSuccess());
+        assertTrue(result.getResult().contains("class Real {}"));
+    }
+
+    @Test
+    void readsRepositoryInternalSymlinkThroughSnapshot(@TempDir Path repo) throws Exception {
+        Path target = repo.resolve("src/Real.java");
+        Files.createDirectories(target.getParent());
+        Files.writeString(target, "class Real {}");
+        Path link = repo.resolve("src/Linked.java");
+        createSymbolicLink(link, Path.of("Real.java"));
+        CompletableFuture<com.codeguard.agent.graph.ProjectSnapshot> snapshot =
+                new com.codeguard.agent.graph.ProjectSnapshotManager()
+                        .getOrBuild(com.codeguard.agent.graph.ProjectKey.of(repo, "test"));
+        GetFileContentTool tool = new GetFileContentTool(new FileAccessSandbox(repo), snapshot);
+
+        ToolResult result = tool.execute("src/Linked.java", ctx(repo, Set.of()));
+
+        assertTrue(result.isSuccess(), result.getError());
+        assertTrue(result.getResult().contains("class Real {}"));
+    }
+
+    @Test
+    void rejectsSymlinkThatResolvesOutsideRepository(@TempDir Path repo, @TempDir Path outside)
+            throws IOException {
+        Path target = outside.resolve("Secret.java");
+        Files.writeString(target, "class Secret {}");
+        Path link = repo.resolve("src/Linked.java");
+        Files.createDirectories(link.getParent());
+        createSymbolicLink(link, target);
+
+        ToolResult result = toolFor(repo, Set.of()).execute("src/Linked.java", ctx(repo, Set.of()));
+
+        assertFalse(result.isSuccess());
+        assertEquals("rejected_path_outside_repository", result.getError());
+        assertFalse(result.getError().contains(outside.toString()));
+    }
+
+    @Test
+    void rejectsFileUnderParentDirectorySymlinkOutsideRepository(
+            @TempDir Path repo,
+            @TempDir Path outside
+    ) throws IOException {
+        Path target = outside.resolve("External.java");
+        Files.writeString(target, "class External {}");
+        Path linkDirectory = repo.resolve("src");
+        createSymbolicLink(linkDirectory, outside);
+
+        ToolResult result = toolFor(repo, Set.of()).execute("src/External.java", ctx(repo, Set.of()));
+
+        assertFalse(result.isSuccess());
+        assertEquals("rejected_path_outside_repository", result.getError());
+    }
+
+    private static void createSymbolicLink(Path link, Path target) throws IOException {
+        try {
+            Files.createSymbolicLink(link, target);
+        } catch (java.nio.file.FileSystemException | UnsupportedOperationException exception) {
+            Assumptions.assumeTrue(false, "当前系统不允许测试创建符号链接");
+        }
     }
 
 }

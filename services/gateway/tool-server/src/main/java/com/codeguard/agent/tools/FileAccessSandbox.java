@@ -1,5 +1,7 @@
 package com.codeguard.agent.tools;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Set;
 
@@ -15,8 +17,8 @@ import java.util.Set;
  * 护栏已放宽:审查员可读取 repo 根内任意源码文件(受扩展名白名单约束),
  * 不再限制为仅 diff 文件。仍保留路径穿越防御与(由 {@link GetFileContentTool} 施加的)大小上限。
  * <p>
- * 路径比对统一规范化为相对仓库根的**正斜杠**相对路径,以兼容 Windows 反斜杠。
- * 本类只做"判定",不读文件;读取与大小限制由 {@link GetFileContentTool} 负责。
+ * 路径校验基于真实路径而非词法路径：允许链接指向仓库内文件，但链接最终落点不能逃出仓库。
+ * 本类只做授权判定，不读文件内容；读取与大小限制由 {@link GetFileContentTool} 负责。
  */
 public final class FileAccessSandbox {
 
@@ -28,36 +30,60 @@ public final class FileAccessSandbox {
             "xml", "yml", "yaml", "properties", "toml", "json", "gradle", "mf");
 
     private final Path repoRoot;
+    private final Path realRepoRoot;
 
     public FileAccessSandbox(Path repoRoot) {
         this.repoRoot = repoRoot.normalize().toAbsolutePath();
-    }
-
-    /**
-     * 把相对路径解析为仓库内的绝对路径,并校验未穿越出仓库根。
-     *
-     * @return 仓库内的规范化绝对路径
-     * @throws SecurityException 路径穿越(规范化后逃逸出仓库根)
-     */
-    public Path resolveWithinRepo(String relativePath) throws SecurityException {
-        Path resolved = repoRoot.resolve(relativePath).normalize().toAbsolutePath();
-        if (!resolved.startsWith(repoRoot)) {
-            throw new SecurityException("路径超出仓库范围: " + relativePath);
-        }
-        return resolved;
-    }
-
-    /**
-     * 该相对路径是否为 repo 根内、可读的源码文件(穿越防御 + 源码扩展名白名单)。
-     * 这是放宽后 get_file_content 的读授权判据(design.md D5)。
-     */
-    public boolean isReadableSource(String relativePath) {
-        Path resolved;
         try {
-            resolved = resolveWithinRepo(relativePath);
-        } catch (SecurityException e) {
-            return false;
+            this.realRepoRoot = this.repoRoot.toRealPath();
+        } catch (IOException exception) {
+            throw new IllegalArgumentException("审查仓库不可访问", exception);
         }
+    }
+
+    /**
+     * 解析一个允许读取的文件。所有调用方必须使用本方法，不能先解析、再自行补校验。
+     *
+     * @return 最终可读取文件的真实路径
+     */
+    public Path resolveReadableFile(String relativePath) throws AccessException {
+        if (relativePath == null || relativePath.isBlank()) {
+            throw new AccessException("rejected_invalid_path");
+        }
+        final Path requested;
+        try {
+            requested = Path.of(relativePath.trim());
+        } catch (Exception exception) {
+            throw new AccessException("rejected_invalid_path");
+        }
+        if (requested.isAbsolute()) {
+            throw new AccessException("rejected_invalid_path");
+        }
+        Path lexical = repoRoot.resolve(requested).normalize().toAbsolutePath();
+        if (!lexical.startsWith(repoRoot)) {
+            throw new AccessException("rejected_path_outside_repository");
+        }
+        final Path real;
+        try {
+            real = lexical.toRealPath();
+        } catch (java.nio.file.NoSuchFileException exception) {
+            throw new AccessException("missing_file");
+        } catch (IOException exception) {
+            throw new AccessException("rejected_invalid_path");
+        }
+        if (!real.startsWith(realRepoRoot)) {
+            throw new AccessException("rejected_path_outside_repository");
+        }
+        if (!Files.isRegularFile(real)) {
+            throw new AccessException("missing_file");
+        }
+        if (!hasReadableExtension(real)) {
+            throw new AccessException("rejected_file_type");
+        }
+        return real;
+    }
+
+    private static boolean hasReadableExtension(Path resolved) {
         String name = resolved.getFileName().toString();
         int dot = name.lastIndexOf('.');
         if (dot < 0 || dot == name.length() - 1) {
@@ -68,5 +94,16 @@ public final class FileAccessSandbox {
 
     public Path getRepoRoot() {
         return repoRoot;
+    }
+
+    public Path getRealRepoRoot() {
+        return realRepoRoot;
+    }
+
+    /** 稳定的工具错误码，避免把外部路径或 IO 细节暴露给 Agent。 */
+    public static final class AccessException extends Exception {
+        public AccessException(String code) {
+            super(code);
+        }
     }
 }

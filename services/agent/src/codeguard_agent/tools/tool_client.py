@@ -46,10 +46,12 @@ class ToolClient:
         session_id: str,
         timeout: float = 30.0,
         revision: str = "",
+        token: str = "",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._session_id = session_id
         self._revision = revision
+        self._token = token
         self._client = httpx.Client(timeout=timeout)
 
     @property
@@ -66,7 +68,10 @@ class ToolClient:
         try:
             resp = self._client.post(
                 f"{self._base_url}/api/v1/tools/{name}",
-                headers={"X-Session-Id": self._session_id},
+                headers={
+                    "X-Session-Id": self._session_id,
+                    "X-Codeguard-Tool-Token": self._token,
+                },
                 json=payload,
             )
             resp.raise_for_status()
@@ -101,7 +106,10 @@ class ToolClient:
 
     def delete_session(self) -> None:
         """请求服务端释放本会话(复用同一连接)。"""
-        self._client.delete(f"{self._base_url}/api/v1/tools/session/{self._session_id}")
+        self._client.delete(
+            f"{self._base_url}/api/v1/tools/session/{self._session_id}",
+            headers={"X-Codeguard-Tool-Token": self._token},
+        )
 
     def close(self) -> None:
         self._client.close()
@@ -113,11 +121,14 @@ def create_tool_session(
     allowed_files: list[str],
     timeout: float = 30.0,
     revision: str = "",
+    token: str = "",
 ) -> ToolClient:
     """在 Java 工具服务上创建会话,返回绑定该会话的 ToolClient。
     repo_path 应为绝对路径(Java 侧据此解析文件相对路径并做沙箱校验)。
     失败时抛 RuntimeError,由调用方决定是否回退到无工具直连。
     """
+    if not token:
+        raise RuntimeError("CODEGUARD_TOOL_SERVER_TOKEN 未配置")
     normalized = base_url.rstrip("/")
     payload = {
         "repo_path": repo_path,
@@ -125,7 +136,11 @@ def create_tool_session(
         "revision": revision,
     }
     with httpx.Client(timeout=timeout) as client:
-        resp = client.post(f"{normalized}/api/v1/tools/session", json=payload)
+        resp = client.post(
+            f"{normalized}/api/v1/tools/session",
+            headers={"X-Codeguard-Tool-Token": token},
+            json=payload,
+        )
         resp.raise_for_status()
         data = resp.json()
 
@@ -134,7 +149,7 @@ def create_tool_session(
     session_id = data.get("session_id")
     if not session_id:
         raise RuntimeError("创建工具会话失败:返回缺少 session_id")
-    return ToolClient(normalized, str(session_id), timeout=timeout, revision=revision)
+    return ToolClient(normalized, str(session_id), timeout=timeout, revision=revision, token=token)
 
 
 def destroy_tool_session(client: ToolClient) -> None:

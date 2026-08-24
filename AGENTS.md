@@ -100,7 +100,7 @@ Codeguard/
     │   ├── src/codeguard_agent/
     │   │   ├── __main__.py        # python -m codeguard_agent 入口
     │   │   ├── cli.py             # 命令行:review 子命令、结果打印、退出码、工具会话建/销
-    │   │   ├── config.py          # Settings:从环境变量/.env 读配置(含 CODEGUARD_TOOL_SERVER_URL)
+    │   │   ├── config.py          # Settings:从环境变量/.env 读配置(含 Tool Server URL/Token)
     │   │   ├── models/schemas.py  # ★产品输出结构:Severity / Issue / ReviewResult / DiscoveredIssue(evidence_refs)
     │   │   ├── models/evidence.py # ★证据账本:Artifact/Catalog/Ref/Verifier/Judge 模型
     │   │   ├── models/council.py  # ★内部结构:CandidateIssue / Verdict / Trace/Stats
@@ -235,6 +235,8 @@ python -m evals.runner --profile eval-codeguard-full --runs 1   # 完整档单�
 | `CODEGUARD_IMAGE_TAG` | `latest` | Compose 部署使用的 `ghcr.io/baiyun689/codeguard` 镜像标签 |
 | `CODEGUARD_HOST_PORT` | `9090` | Compose 发布到宿主机的 Webhook 端口；映射到容器内 CI 服务 8080 |
 | `CODEGUARD_TOOL_HOST_PORT` | `9092` | Compose 仅绑定 `127.0.0.1` 的 Tool Server 宿主机端口；映射到容器内 9090 |
+| `CODEGUARD_TOOL_SERVER_TOKEN` | 必填 | Agent 与 Tool Server 的内部请求 Token；缺失时 Gateway 拒绝启动 |
+| `CODEGUARD_TOOL_ALLOWED_ROOTS` | Compose 固定 | 允许 Tool Server 创建 Git 会话的工作区父目录列表 |
 | `CODEGUARD_WEBHOOK_SECRET` | 空(Compose 必填) | GitHub App webhook HMAC 验签密钥 |
 | `CODEGUARD_GITHUB_APP_ID` | 空(Compose 必填) | 用于 installation 认证和结果回写的 GitHub App ID |
 | `CODEGUARD_GITHUB_PRIVATE_KEY_FILE` | `./secrets/github-app.pem` | GitHub App 私钥的宿主机路径；Compose 以只读 secret 挂载 |

@@ -16,26 +16,39 @@ class GatewaySettingsTest {
     Path tempDir;
 
     @Test
-    void appliesDocumentedDefaults() {
-        GatewaySettings settings = GatewaySettings.from(Map.of(), Path.of("tmp"));
+    void appliesDocumentedDefaults() throws IOException {
+        Path workspace = tempDir.resolve("codeguard-jobs");
+        Files.createDirectories(workspace);
+        GatewaySettings settings = GatewaySettings.from(
+                Map.of("CODEGUARD_TOOL_SERVER_TOKEN", "test-token"), tempDir);
 
         assertEquals(2, settings.maxConcurrentReviews());
         assertEquals(Duration.ofSeconds(600), settings.reviewTimeout());
         assertEquals(Duration.ofSeconds(30), settings.retryDelay());
         assertEquals(Duration.ofSeconds(30), settings.shutdownGrace());
-        assertEquals(Path.of("tmp", "codeguard-jobs"), settings.workspaceDir());
+        assertEquals(workspace, settings.workspaceDir());
         assertEquals("jdbc:mysql://localhost:3306/codeguard", settings.jobDbUrl());
         assertEquals("codeguard", settings.jobDbUser());
         assertEquals("codeguard", settings.jobDbPassword());
         assertEquals(4, settings.graphCacheMaxSnapshots());
         assertEquals(Duration.ofMinutes(30), settings.graphCacheTtl());
         assertEquals(Duration.ofSeconds(120), settings.graphBuildTimeout());
+        assertEquals("test-token", settings.toolServerToken());
+        assertEquals(java.util.List.of(workspace), settings.toolAllowedRoots());
+    }
+
+    @Test
+    void rejectsMissingToolServerToken() {
+        assertThrows(IllegalArgumentException.class,
+                () -> GatewaySettings.from(Map.of(), tempDir));
     }
 
     @Test
     void rejectsNonPositiveConcurrencyAtStartup() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-            () -> GatewaySettings.from(Map.of("CODEGUARD_MAX_CONCURRENT_REVIEWS", "0"), Path.of("tmp")));
+            () -> GatewaySettings.from(Map.of(
+                    "CODEGUARD_MAX_CONCURRENT_REVIEWS", "0",
+                    "CODEGUARD_TOOL_SERVER_TOKEN", "test-token"), tempDir));
         assertTrue(error.getMessage().contains("CODEGUARD_MAX_CONCURRENT_REVIEWS"));
     }
 
@@ -45,7 +58,8 @@ class GatewaySettingsTest {
         Files.writeString(pem, "file-key");
 
         GatewaySettings settings = GatewaySettings.from(Map.of(
-            "CODEGUARD_GITHUB_PRIVATE_KEY_FILE", pem.toString()), tempDir);
+            "CODEGUARD_GITHUB_PRIVATE_KEY_FILE", pem.toString(),
+            "CODEGUARD_TOOL_SERVER_TOKEN", "test-token"), tempDir);
 
         assertEquals("file-key", settings.githubPrivateKey());
     }
@@ -57,7 +71,8 @@ class GatewaySettingsTest {
 
         GatewaySettings settings = GatewaySettings.from(Map.of(
             "CODEGUARD_GITHUB_PRIVATE_KEY_FILE", pem.toString(),
-            "CODEGUARD_GITHUB_PRIVATE_KEY", "inline-key"), tempDir);
+            "CODEGUARD_GITHUB_PRIVATE_KEY", "inline-key",
+            "CODEGUARD_TOOL_SERVER_TOKEN", "test-token"), tempDir);
 
         assertEquals("file-key", settings.githubPrivateKey());
     }
@@ -68,15 +83,18 @@ class GatewaySettingsTest {
         Files.writeString(empty, " ");
 
         assertThrows(IllegalArgumentException.class, () -> GatewaySettings.from(
-            Map.of("CODEGUARD_GITHUB_PRIVATE_KEY_FILE", tempDir.resolve("missing.pem").toString()), tempDir));
+            Map.of("CODEGUARD_GITHUB_PRIVATE_KEY_FILE", tempDir.resolve("missing.pem").toString(),
+                "CODEGUARD_TOOL_SERVER_TOKEN", "test-token"), tempDir));
         assertThrows(IllegalArgumentException.class, () -> GatewaySettings.from(
-            Map.of("CODEGUARD_GITHUB_PRIVATE_KEY_FILE", empty.toString()), tempDir));
+            Map.of("CODEGUARD_GITHUB_PRIVATE_KEY_FILE", empty.toString(),
+                "CODEGUARD_TOOL_SERVER_TOKEN", "test-token"), tempDir));
     }
 
     @Test
     void keepsInlinePrivateKeyCompatibility() {
         GatewaySettings settings = GatewaySettings.from(
-            Map.of("CODEGUARD_GITHUB_PRIVATE_KEY", "inline-key"), tempDir);
+            Map.of("CODEGUARD_GITHUB_PRIVATE_KEY", "inline-key",
+                "CODEGUARD_TOOL_SERVER_TOKEN", "test-token"), tempDir);
 
         assertEquals("inline-key", settings.githubPrivateKey());
     }
