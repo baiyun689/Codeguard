@@ -2138,6 +2138,19 @@ class TestDashboard:
         assert html.strip().startswith("<!DOCTYPE html>")
         assert "</html>" in html
 
+    def test_rendered_dashboard_does_not_reference_undeclared_trace_global(self):
+        report = TraceReport(
+            run_id="tool-payload-dashboard",
+            timestamp="2026-08-24T00:00:00",
+            events=[],
+            summary=TraceSummary(),
+        )
+
+        html = render_dashboard(report)
+
+        assert "TRACE." not in html
+        assert "DATA.payload_store" in html
+
     def test_render_dashboard_file(self):
         """验证写文件功能。"""
         report = TraceReport(

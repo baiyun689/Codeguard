@@ -429,8 +429,8 @@ function renderStepCard(step){
     (step.kind==="tool"?renderToolPayloads(input,output,step):"")+'</div>'
 }
 function renderToolPayloads(input,output,step){
-  var artifact=step&&step.artifact_id?(TRACE.artifacts||{})[step.artifact_id]:null;
-  var raw=artifact?(TRACE.payload_store||{})[artifact.payload_hash]:null;
+  var artifact=step&&step.artifact_id?(DATA.artifacts||{})[step.artifact_id]:null;
+  var raw=artifact?(DATA.payload_store||{})[artifact.payload_hash]:null;
   var reused=step&&step.status==="reused";
   var reuseInfo=reused?'<div class="step-summary">复用自 call '+
     esc(step.reused_from_call_id||"-")+' / artifact '+
