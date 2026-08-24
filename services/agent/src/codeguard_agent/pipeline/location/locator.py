@@ -19,7 +19,7 @@ LocationStatus = Literal["verified", "corrected", "relocated", "file_level"]
 _HUNK_HEADER = re.compile(
     r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@"
 )
-_PROMPT_FILE = Path(__file__).resolve().parents[1] / "prompts" / "candidate-relocation.txt"
+_PROMPT_FILE = Path(__file__).resolve().parents[2] / "prompts" / "candidate-relocation.txt"
 _RELOCATION_BATCH_SIZE = 8
 
 

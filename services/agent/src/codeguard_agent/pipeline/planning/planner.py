@@ -25,9 +25,7 @@ from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
 
 logger = logging.getLogger("codeguard")
 
-_PROMPT = (
-    Path(__file__).resolve().parents[1] / "prompts" / "review-plan.txt"
-)
+_PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "review-plan.txt"
 _DEFAULT_REVIEWERS = (
     ReviewerKind.THREAT_MODEL,
     ReviewerKind.BEHAVIOR,

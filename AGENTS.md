@@ -108,8 +108,8 @@ Codeguard/
     │   │   ├── pipeline/tasks.py          # ★任务拆分、DirectGate 与规模路由
     │   │   ├── pipeline/context/          # ★图谱符号上下文与事实预算
     │   │   ├── pipeline/reviewers/        # ★三路发现者、工具协调与 prompt 构造
-    │   │   ├── pipeline/planning.py       # ★OCR 式 PlanUnit、Reviewer 与知识主题规划
-    │   │   ├── pipeline/location.py       # ★候选新增行定位校验与批量重定位
+    │   │   ├── pipeline/planning/         # ★OCR 式 PlanUnit、Reviewer 与知识主题规划
+    │   │   ├── pipeline/location/         # ★候选新增行定位校验与批量重定位
     │   │   ├── pipeline/evidence/         # ★证据账本:注册/绑定/目录渲染、健康检查/图护栏/异常重放、guard 扫描
     │   │   ├── pipeline/council/          # ★候选归并、裁决与过程指标
     │   │   ├── pipeline/summary/          # 可选变更摘要阶段
