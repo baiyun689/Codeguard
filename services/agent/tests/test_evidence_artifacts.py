@@ -11,8 +11,8 @@ import hashlib
 import httpx
 
 from codeguard_agent.models.evidence import (
+    ArtifactAvailability,
     EvidenceArtifact,
-    EvidenceArtifactStatus,
     EvidenceCaptureMode,
     EvidenceSourceKind,
     compute_artifact_id,
@@ -37,7 +37,7 @@ def _artifact(**overrides) -> EvidenceArtifact:
         tool="get_file_content",
         arguments={"file_path": "src/A.java"},
         payload="public void run() {\n    exec(cmd);\n}\n",
-        status=EvidenceArtifactStatus.COMPLETE,
+        availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.EXECUTED,
     )
     defaults.update(overrides)
@@ -105,8 +105,11 @@ def test_merge_reducer_合并左右字典():
     assert merge_evidence_artifacts(None, {a.id: a})[a.id] is a
     assert merge_evidence_artifacts({a.id: a}, None)[a.id] is a
     # 同 ID 后写覆盖
-    c = _artifact(status=EvidenceArtifactStatus.FAILED)
-    assert merge_evidence_artifacts({a.id: a}, {a.id: c})[a.id].status is EvidenceArtifactStatus.FAILED
+    c = _artifact(availability=ArtifactAvailability.FAILED)
+    assert (
+        merge_evidence_artifacts({a.id: a}, {a.id: c})[a.id].availability
+        is ArtifactAvailability.FAILED
+    )
 
 
 def test_tool_client_保存_revision():

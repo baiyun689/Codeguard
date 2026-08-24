@@ -263,10 +263,10 @@ def render_report(
             "### 证据账本(Evidence Ledger)",
             "",
             "Artifact = 运行时捕获的证据(patch P01 / 预取上下文 Cxx / 工具 Txx,reused 为跨任务复用)；",
-            "引用 = 候选引用经验证后的 valid/limited/invalid 数；重放 = 异常 Artifact 的重放请求/确认/失败数。",
+            "引用 = 候选引用经验证后的 valid/limited/invalid 数；重放 = 请求/valid/limited/失败数。",
             "",
-            "| 用例 | Artifact(p/c/t/reused) | 引用(v/l/i) | 重放(rq/cf/fl) | Judge(批/失败/无支持drop) |",
-            "|---|---|---|---|---|",
+            "| 用例 | Artifact(p/c/t/reused) | 引用(v/l/i) | 缺口(g/gi) | 重放(rq/v/l/f) | Judge(批/失败/无支持drop) |",
+            "|---|---|---|---|---|---|",
         ]
         for o in council_rows:
             c = o.council_trace
@@ -275,8 +275,9 @@ def render_report(
                 f"{c.patch_artifact_count}/{c.context_artifact_count}/"
                 f"{c.tool_artifact_count}/{c.reused_artifact_count} | "
                 f"{c.valid_reference_count}/{c.limited_reference_count}/{c.invalid_reference_count} | "
-                f"{c.replay_requested_count}/{c.replay_confirmed_count}/"
-                f"{c.replay_requested_count - c.replay_confirmed_count} | "
+                f"{c.evidence_gap_count}/{c.graph_indeterminate_count} | "
+                f"{c.replay_requested_count}/{c.replay_valid_count}/"
+                f"{c.replay_limited_count}/{c.replay_failed_count} | "
                 f"{c.judge_batch_call_count}/{c.judge_failed_candidate_count}/"
                 f"{c.judge_no_support_drop_count} |"
             )

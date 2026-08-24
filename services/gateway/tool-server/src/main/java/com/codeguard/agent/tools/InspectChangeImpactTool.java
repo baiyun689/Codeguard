@@ -86,6 +86,8 @@ public final class InspectChangeImpactTool implements AgentTool {
                     frontier = next;
                 }
                 relationships.addAll(value.graph().incoming(symbol, GraphEdgeKind.OVERRIDES));
+                relationships.addAll(GraphToolSupport.potentialUnresolvedCallers(
+                        value, symbol, sourceScope));
             }
             List<GraphNode> nodes = new ArrayList<>();
             value.graph().node(symbol).ifPresent(nodes::add);

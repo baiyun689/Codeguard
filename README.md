@@ -57,7 +57,7 @@ Full task 先由 OCR 式 PlanUnit 并发生成审查计划：Plan 选择 ThreatM
 
 Reviewer 输出先经过统一候选定位护栏：系统只接受当前 task 新增行中的唯一原文片段，片段与行号冲突时以确定性匹配结果为准；无法确认的候选按 task 批量请求 LLM 重新提取片段并再次确定性复验。最终仍无法定位时保留为 `line=0` 的文件级问题，不把定位失败误判为问题不成立，也不会发布到错误的 GitHub 行内位置。Direct 与 Full 共用同一规则。
 
-配置工具服务后，每次审查会按精确 revision 异步构建完整、只读的 Java `ProjectSnapshot`，缓存全部源码、JavaParser AST、符号索引和 Spring 感知语义图。ContextProvider 只注入变更所属的稳定 `symbol_id`；三路发现者分别通过 `inspect_security_path`、`inspect_change_impact`、`inspect_structure` 查询有限局部子图，取证验证阶段复用同一快照。图谱明确区分 `confirmed/not_found/unknown`，并将 `MAIN/TEST/GENERATED` 来源贯穿节点、关系、coverage 和工具结果：生产状态只由非测试事实确定，测试关系作为独立上下文返回，不能单独证明生产可达或提高严重度。静态分析未知不会被解释为不可达。
+配置工具服务后，每次审查会按精确 revision 异步构建完整、只读的 Java `ProjectSnapshot`，缓存全部源码、JavaParser AST、符号索引和 Spring 感知语义图。ContextProvider 只注入变更所属的稳定 `symbol_id`；三路发现者分别通过 `inspect_security_path`、`inspect_change_impact`、`inspect_structure` 查询有限局部子图，取证验证阶段复用同一快照。图谱查询使用 v2 `found/not_found/indeterminate` outcome 与查询级 coverage：已解析关系可证明存在，只有 `not_found + complete` 才能证明声明范围内未找到，`indeterminate + partial` 只形成不可引用的证据缺口。`MAIN/TEST/GENERATED` 来源贯穿节点、关系和工具结果，测试关系不能单独证明生产可达或提高严重度。
 
 证据阶段采用 Evidence Ledger：工具调用、预取上下文与 task patch 由运行时代码捕获为内容寻址 Artifact（P01/Cxx/Txx 短编号），审查员只输出编号引用（`evidence_refs`），离开发现子图即绑定为内部稳定 ID——LLM 无法伪造、改写或重新填写证据。EvidenceVerifier 全部确定性、零 LLM、正常路径零重放：只做 Artifact 健康检查（patch 摘要一致、图响应 subject/scope/status 护栏、coverage partial 保留正事实）、guard 注解扫描与引用范围核对；终审由批量 EvidenceJudge 承担。`evidence_mode=off` 时仍可作为无证据消融基线。开启本地 HTML Trace 后，主流程会呈现 PR 规模、task 路由、Plan、Reviewer、知识主题和工具步骤；按模式未执行的阶段标记为”按设计跳过”。
 

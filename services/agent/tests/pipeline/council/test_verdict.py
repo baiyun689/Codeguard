@@ -5,10 +5,11 @@ import json
 
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.evidence import (
+    ArtifactAvailability,
     CandidateVerification,
     EvidenceArtifact,
-    EvidenceArtifactStatus,
     EvidenceCaptureMode,
+    EvidenceGap,
     EvidenceJudgeAssessment,
     EvidenceJudgeBatch,
     EvidenceRef,
@@ -56,7 +57,7 @@ def _patch_artifact() -> EvidenceArtifact:
     return EvidenceArtifact.build(
         task_id=TASK_ID, reviewer="threat_model", revision=REV,
         source_kind=EvidenceSourceKind.TASK_PATCH, payload="+    exec(cmd);\n",
-        status=EvidenceArtifactStatus.COMPLETE,
+        availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.GENERATED,
         arguments={"file_path": "src/A.java"},
     )
@@ -68,7 +69,7 @@ def _tool_artifact() -> EvidenceArtifact:
         source_kind=EvidenceSourceKind.TOOL_CALL, tool="get_file_content",
         arguments={"file_path": "src/A.java"},
         payload="class A { void m() { exec(cmd); } }",
-        status=EvidenceArtifactStatus.COMPLETE,
+        availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.EXECUTED,
     )
 
@@ -162,6 +163,38 @@ def test_file_level_candidate_exposes_unresolved_location_limitation():
 
     limitations = llm.payloads[0]["candidates"][0]["evidence"][0]["limitations"]
     assert "candidate_location_unresolved" in limitations
+
+
+def test_evidence_gap_is_visible_but_has_no_evidence_id():
+    candidate = _candidate("c-gap")
+    verification = _verification("c-gap").model_copy(update={
+        "evidence_gaps": [
+            EvidenceGap(
+                artifact_id="ev-gap",
+                tool="inspect_change_impact",
+                arguments={"symbol_id": "java:A#m()"},
+                declared_role=EvidenceRole.REACHABILITY,
+                reason="graph_indeterminate",
+                limitations=("graph_coverage_partial",),
+            )
+        ]
+    })
+    llm = _FakeJudgeLLM(EvidenceJudgeBatch(
+        assessments=[_assessment("c-gap")]
+    ))
+
+    judge_with_evidence(
+        _assembly([candidate]),
+        {"c-gap": verification},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+
+    gap = llm.payloads[0]["candidates"][0]["evidence_gaps"][0]
+    assert gap["reason"] == "graph_indeterminate"
+    assert "evidence_id" not in gap
 
 
 # ── 批量裁决基本路径 ───────────────────────────────────────────────────

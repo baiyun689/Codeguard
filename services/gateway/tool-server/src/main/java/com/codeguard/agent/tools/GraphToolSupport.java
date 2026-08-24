@@ -2,6 +2,7 @@ package com.codeguard.agent.tools;
 
 import com.codeguard.agent.core.ToolResult;
 import com.codeguard.agent.graph.GraphEdge;
+import com.codeguard.agent.graph.GraphEdgeKind;
 import com.codeguard.agent.graph.GraphNode;
 import com.codeguard.agent.graph.ProjectSnapshot;
 import com.codeguard.agent.graph.ResolutionStatus;
@@ -12,7 +13,9 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -21,6 +24,8 @@ final class GraphToolSupport {
     private static final long BUILD_TIMEOUT_SECONDS = 120;
     private static final int MAX_SYMBOLS = 100;
     private static final int MAX_RELATIONSHIPS = 200;
+    private static final int MAX_UNRESOLVED_RELATIONSHIPS = 20;
+    private static final int SCHEMA_VERSION = 2;
 
     private GraphToolSupport() {}
 
@@ -49,6 +54,23 @@ final class GraphToolSupport {
 
     static boolean inScope(GraphEdge edge, SourceSet sourceScope) {
         return edge.sourceSet() == sourceScope;
+    }
+
+    static List<GraphEdge> potentialUnresolvedCallers(
+            ProjectSnapshot snapshot,
+            String subject,
+            SourceSet sourceScope
+    ) {
+        String unresolvedTarget = unresolvedMethodTarget(subject);
+        if (unresolvedTarget.isBlank()) {
+            return List.of();
+        }
+        return snapshot.graph().edges().stream()
+                .filter(edge -> edge.sourceSet() == sourceScope)
+                .filter(edge -> edge.kind() == GraphEdgeKind.CALLS)
+                .filter(edge -> edge.resolution() != ResolutionStatus.RESOLVED)
+                .filter(edge -> unresolvedTarget.equals(edge.targetId()))
+                .toList();
     }
 
     static ToolResult facts(
@@ -90,13 +112,14 @@ final class GraphToolSupport {
     ) {
         try {
             ObjectNode root = JSON.createObjectNode();
-            List<GraphNode> mainNodes = nodes.stream()
+            List<GraphNode> uniqueNodes = uniqueNodes(nodes);
+            List<GraphNode> mainNodes = uniqueNodes.stream()
                     .filter(node -> node.sourceSet() == SourceSet.MAIN)
                     .toList();
-            List<GraphNode> testNodes = nodes.stream()
+            List<GraphNode> testNodes = uniqueNodes.stream()
                     .filter(node -> node.sourceSet() == SourceSet.TEST)
                     .toList();
-            List<GraphNode> generatedNodes = nodes.stream()
+            List<GraphNode> generatedNodes = uniqueNodes.stream()
                     .filter(node -> node.sourceSet() == SourceSet.GENERATED)
                     .toList();
             List<GraphEdge> mainEdges = edges.stream()
@@ -119,6 +142,12 @@ final class GraphToolSupport {
                 case GENERATED -> generatedEdges;
             };
 
+            List<GraphEdge> resolvedMainEdges = resolved(mainEdges);
+            List<GraphEdge> resolvedTestEdges = resolved(testEdges);
+            List<GraphEdge> resolvedGeneratedEdges = resolved(generatedEdges);
+            List<GraphEdge> resolvedPrimaryEdges = resolved(primaryEdges);
+            List<GraphEdge> unresolvedPrimaryEdges = unresolved(primaryEdges);
+
             List<GraphNode> boundedMainNodes =
                     mainNodes.stream().limit(MAX_SYMBOLS).toList();
             List<GraphNode> boundedTestNodes =
@@ -126,39 +155,48 @@ final class GraphToolSupport {
             List<GraphNode> boundedGeneratedNodes =
                     generatedNodes.stream().limit(MAX_SYMBOLS).toList();
             List<GraphEdge> boundedMainEdges =
-                    mainEdges.stream().limit(MAX_RELATIONSHIPS).toList();
+                    resolvedMainEdges.stream().limit(MAX_RELATIONSHIPS).toList();
             List<GraphEdge> boundedTestEdges =
-                    testEdges.stream().limit(MAX_RELATIONSHIPS).toList();
+                    resolvedTestEdges.stream().limit(MAX_RELATIONSHIPS).toList();
             List<GraphEdge> boundedGeneratedEdges =
-                    generatedEdges.stream().limit(MAX_RELATIONSHIPS).toList();
+                    resolvedGeneratedEdges.stream().limit(MAX_RELATIONSHIPS).toList();
+            List<GraphEdge> boundedUnresolvedEdges = unresolvedPrimaryEdges.stream()
+                    .limit(MAX_UNRESOLVED_RELATIONSHIPS)
+                    .toList();
             boolean mainTruncated = boundedMainNodes.size() < mainNodes.size()
-                    || boundedMainEdges.size() < mainEdges.size();
+                    || boundedMainEdges.size() < resolvedMainEdges.size();
             boolean testTruncated = boundedTestNodes.size() < testNodes.size()
-                    || boundedTestEdges.size() < testEdges.size();
+                    || boundedTestEdges.size() < resolvedTestEdges.size();
             boolean generatedTruncated =
                     boundedGeneratedNodes.size() < generatedNodes.size()
-                            || boundedGeneratedEdges.size() < generatedEdges.size();
+                            || boundedGeneratedEdges.size() < resolvedGeneratedEdges.size();
             boolean primaryTruncated = switch (sourceScope) {
                 case MAIN -> mainTruncated;
                 case TEST -> testTruncated;
                 case GENERATED -> generatedTruncated;
             };
-            boolean found = !primaryEdges.isEmpty()
+            boolean subjectExists = snapshot.graph().node(subject).isPresent();
+            boolean found = !resolvedPrimaryEdges.isEmpty()
                     || (subjectAloneIsFact && !primaryNodes.isEmpty());
-            boolean locallyResolved = primaryEdges.stream()
-                    .allMatch(edge -> edge.resolution() == ResolutionStatus.RESOLVED);
-            boolean completeCoverage = !primaryTruncated
-                    && locallyResolved
-                    && "complete".equals(snapshot.coverageStatus(sourceScope));
-            root.put("status", found && locallyResolved ? "confirmed" : (
-                    !found && completeCoverage ? "not_found" : "unknown"));
+            List<String> queryDiagnostics = queryDiagnostics(
+                    snapshot, subject, sourceScope);
+            boolean completeCoverage = subjectExists
+                    && !primaryTruncated
+                    && unresolvedPrimaryEdges.isEmpty()
+                    && queryDiagnostics.isEmpty();
+            String outcome = found
+                    ? "found"
+                    : (completeCoverage ? "not_found" : "indeterminate");
+            root.put("schema_version", SCHEMA_VERSION);
+            root.put("outcome", outcome);
             root.put("coverage", completeCoverage ? "complete" : "partial");
             root.put("source_scope", sourceScope.name());
-            root.put("production_coverage",
+            root.put("snapshot_production_coverage",
                     snapshot.productionComplete() ? "complete" : "partial");
-            root.put("main_coverage", snapshot.coverageStatus(SourceSet.MAIN));
-            root.put("test_coverage", snapshot.coverageStatus(SourceSet.TEST));
-            root.put("generated_coverage", snapshot.coverageStatus(SourceSet.GENERATED));
+            root.put("snapshot_main_coverage", snapshot.coverageStatus(SourceSet.MAIN));
+            root.put("snapshot_test_coverage", snapshot.coverageStatus(SourceSet.TEST));
+            root.put("snapshot_generated_coverage",
+                    snapshot.coverageStatus(SourceSet.GENERATED));
             root.put("subject_symbol_id", subject);
             root.set("symbols", JSON.valueToTree(switch (sourceScope) {
                 case MAIN -> boundedMainNodes;
@@ -173,12 +211,20 @@ final class GraphToolSupport {
                 case TEST -> boundedTestEdges;
                 case GENERATED -> boundedGeneratedEdges;
             }));
+            root.set("unresolved_relationships", JSON.valueToTree(boundedUnresolvedEdges));
+            root.put("unresolved_count", unresolvedPrimaryEdges.size());
             root.set("main_relationships", JSON.valueToTree(boundedMainEdges));
             root.set("test_relationships", JSON.valueToTree(boundedTestEdges));
             root.set("generated_relationships", JSON.valueToTree(boundedGeneratedEdges));
             ArrayNode allLimitations = root.putArray("limitations");
-            snapshot.diagnosticsFor(sourceScope).forEach(allLimitations::add);
+            queryDiagnostics.forEach(allLimitations::add);
             limitations.forEach(allLimitations::add);
+            if (!subjectExists) {
+                allLimitations.add("subject_not_found");
+            }
+            if (!unresolvedPrimaryEdges.isEmpty()) {
+                allLimitations.add("unresolved_relationships:" + unresolvedPrimaryEdges.size());
+            }
             if (primaryTruncated) {
                 allLimitations.add("result_truncated");
             }
@@ -195,5 +241,67 @@ final class GraphToolSupport {
         } catch (Exception exception) {
             return ToolResult.error("graph_result_error: " + exception.getMessage());
         }
+    }
+
+    private static List<GraphNode> uniqueNodes(Collection<GraphNode> nodes) {
+        Map<String, GraphNode> byId = new LinkedHashMap<>();
+        nodes.forEach(node -> byId.putIfAbsent(node.id(), node));
+        return List.copyOf(byId.values());
+    }
+
+    private static List<GraphEdge> resolved(Collection<GraphEdge> edges) {
+        return edges.stream()
+                .filter(edge -> edge.resolution() == ResolutionStatus.RESOLVED)
+                .toList();
+    }
+
+    private static List<GraphEdge> unresolved(Collection<GraphEdge> edges) {
+        return edges.stream()
+                .filter(edge -> edge.resolution() != ResolutionStatus.RESOLVED)
+                .toList();
+    }
+
+    private static List<String> queryDiagnostics(
+            ProjectSnapshot snapshot,
+            String subject,
+            SourceSet sourceScope
+    ) {
+        String subjectFile = snapshot.graph().node(subject)
+                .map(GraphNode::file)
+                .orElse("");
+        return snapshot.diagnosticsFor(sourceScope).stream()
+                .filter(diagnostic -> diagnostic.startsWith("scan_failed: ")
+                        || (!subjectFile.isBlank()
+                        && diagnostic.startsWith(subjectFile + ":")))
+                .toList();
+    }
+
+    private static String unresolvedMethodTarget(String subject) {
+        int ownerSeparator = subject.indexOf('#');
+        int parametersStart = subject.indexOf('(', ownerSeparator + 1);
+        int parametersEnd = subject.lastIndexOf(')');
+        if (ownerSeparator < 0 || parametersStart < 0 || parametersEnd < parametersStart) {
+            return "";
+        }
+        String method = subject.substring(ownerSeparator + 1, parametersStart);
+        String parameters = subject.substring(parametersStart + 1, parametersEnd).trim();
+        int arity = parameters.isEmpty() ? 0 : topLevelParameterCount(parameters);
+        return "unresolved:method:" + method + "/" + arity;
+    }
+
+    private static int topLevelParameterCount(String parameters) {
+        int count = 1;
+        int genericDepth = 0;
+        for (int index = 0; index < parameters.length(); index++) {
+            char current = parameters.charAt(index);
+            if (current == '<') {
+                genericDepth++;
+            } else if (current == '>') {
+                genericDepth = Math.max(0, genericDepth - 1);
+            } else if (current == ',' && genericDepth == 0) {
+                count++;
+            }
+        }
+        return count;
     }
 }

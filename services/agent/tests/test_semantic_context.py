@@ -27,7 +27,8 @@ class _GraphClient:
             True,
             json.dumps(
                 {
-                    "status": "confirmed",
+                    "schema_version": 2,
+                    "outcome": "found",
                     "coverage": "complete",
                     "contexts": [
                         {

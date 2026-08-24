@@ -185,8 +185,10 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
                 "valid_reference_count": 2,
                 "limited_reference_count": 1,
                 "invalid_reference_count": 1,
+                "evidence_gap_count": 1,
+                "graph_indeterminate_count": 1,
                 "replay_requested_count": 1,
-                "replay_confirmed_count": 1,
+                "replay_valid_count": 1,
                 "judge_batch_call_count": 1,
                 "judge_no_support_drop_count": 1,
             },
@@ -209,7 +211,7 @@ def test_报告_ReviewCouncil统计展示裁决与Phase5过程指标():
     assert "WARNING->CRITICAL=1" in out
     assert "证据请求" not in out
     assert "证据账本" in out
-    assert "| 1/1/1/0 | 2/1/1 | 1/1/0 |" in out
+    assert "| 1/1/1/0 | 2/1/1 | 1/1 | 1/1/0/0 |" in out
 
 
 def test_旧归档缺少Phase5字段时使用默认值而不报错():

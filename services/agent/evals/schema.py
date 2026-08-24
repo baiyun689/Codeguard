@@ -304,11 +304,15 @@ class CouncilTraceStats(BaseModel):
     candidate_tool_backed_count: int = Field(default=0, description="引用工具事实的候选数")
     candidate_ungrounded_count: int = Field(default=0, description="ungrounded 候选数")
     selected_reference_count: int = Field(default=0, description="候选引用总数(含自动 patch)")
-    valid_reference_count: int = Field(default=0, description="验证为 valid/replay_confirmed 的引用数")
+    valid_reference_count: int = Field(default=0, description="验证为 valid 的引用数")
     limited_reference_count: int = Field(default=0, description="验证为 limited 的引用数")
     invalid_reference_count: int = Field(default=0, description="无效引用数")
     replay_requested_count: int = Field(default=0, description="进入重放队列的 Artifact 数")
-    replay_confirmed_count: int = Field(default=0, description="重放确认的 Artifact 数")
+    replay_valid_count: int = Field(default=0, description="重放后 valid 的 Artifact 数")
+    replay_limited_count: int = Field(default=0, description="重放后 limited 的 Artifact 数")
+    replay_failed_count: int = Field(default=0, description="重放失败的 Artifact 数")
+    evidence_gap_count: int = Field(default=0, description="证据缺口数")
+    graph_indeterminate_count: int = Field(default=0, description="图谱无法得出事实的查询数")
     judge_batch_call_count: int = Field(default=0, description="批量 Judge LLM 调用次数")
     judge_failed_candidate_count: int = Field(
         default=0, description="Judge 失败/合同违约 fail-closed 的候选数"

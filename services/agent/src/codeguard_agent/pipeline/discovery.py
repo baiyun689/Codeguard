@@ -33,7 +33,11 @@ def _alias_echo(response: ToolResponse, alias: str) -> ToolResponse:
 
     空结果不附加编号(无内容可引用,不占 T 编号语义)。"""
     if not response.success:
-        return response
+        error = (response.error or "tool_failed").strip()
+        return ToolResponse(
+            success=False,
+            error=f"{error}\n\n{ALIAS_TAG.format(alias=alias)}",
+        )
     text = (response.result or "").strip()
     if not text:
         return response

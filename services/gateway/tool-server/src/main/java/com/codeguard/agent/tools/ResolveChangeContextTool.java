@@ -41,9 +41,11 @@ public final class ResolveChangeContextTool implements AgentTool {
             JsonNode request = GraphToolSupport.JSON.readTree(input);
             ObjectNode result = GraphToolSupport.JSON.createObjectNode();
             EnumSet<SourceSet> requestedSourceSets = EnumSet.noneOf(SourceSet.class);
+            Set<String> requestedFiles = new LinkedHashSet<>();
             for (JsonNode change : request.path("changes")) {
-                requestedSourceSets.add(
-                        SourceSet.fromPath(change.path("file").asText("")));
+                String file = change.path("file").asText("").replace('\\', '/');
+                requestedFiles.add(file);
+                requestedSourceSets.add(SourceSet.fromPath(file));
             }
             if (requestedSourceSets.isEmpty()) {
                 requestedSourceSets.add(SourceSet.MAIN);
@@ -51,29 +53,27 @@ public final class ResolveChangeContextTool implements AgentTool {
             SourceSet sourceScope = requestedSourceSets.size() == 1
                     ? requestedSourceSets.iterator().next()
                     : SourceSet.MAIN;
-            boolean completeCoverage = requestedSourceSets.stream()
-                    .allMatch(sourceSet ->
-                            "complete".equals(value.coverageStatus(sourceSet)));
             List<String> relevantDiagnostics = requestedSourceSets.stream()
                     .flatMap(sourceSet -> value.diagnosticsFor(sourceSet).stream())
+                    .filter(diagnostic -> diagnostic.startsWith("scan_failed: ")
+                            || requestedFiles.stream().anyMatch(
+                            file -> diagnostic.startsWith(file + ":")))
                     .distinct()
                     .toList();
             // 这里回答的是“变更行能否定位到项目符号”，不能因为项目中任意外部
-            // 调用未解析就把所有已定位符号降为 unknown。查询级工具仍会按具体
-            // 关系返回 unknown/partial；解析诊断则代表快照本身不完整。
-            result.put(
-                    "status",
-                    relevantDiagnostics.isEmpty() ? "confirmed" : "partial");
-            result.put("coverage", completeCoverage ? "complete" : "partial");
+            // 调用未解析不能污染所有已定位符号。inspect 查询工具会按本次
+            // 关系返回 outcome/coverage；这里的解析诊断只描述上下文快照。
+            result.put("schema_version", 2);
             result.put("source_scope", sourceScope.name());
             result.set(
                     "source_scopes",
                     GraphToolSupport.JSON.valueToTree(requestedSourceSets));
-            result.put("production_coverage",
+            result.put("snapshot_production_coverage",
                     value.productionComplete() ? "complete" : "partial");
-            result.put("main_coverage", value.coverageStatus(SourceSet.MAIN));
-            result.put("test_coverage", value.coverageStatus(SourceSet.TEST));
-            result.put("generated_coverage", value.coverageStatus(SourceSet.GENERATED));
+            result.put("snapshot_main_coverage", value.coverageStatus(SourceSet.MAIN));
+            result.put("snapshot_test_coverage", value.coverageStatus(SourceSet.TEST));
+            result.put("snapshot_generated_coverage",
+                    value.coverageStatus(SourceSet.GENERATED));
             ArrayNode contexts = result.putArray("contexts");
             for (JsonNode change : request.path("changes")) {
                 String file = change.path("file").asText("").replace('\\', '/');
@@ -100,6 +100,11 @@ public final class ResolveChangeContextTool implements AgentTool {
                     item.put("resolution", "resolved");
                 }
             }
+            boolean completeCoverage = relevantDiagnostics.isEmpty();
+            result.put("outcome", !contexts.isEmpty()
+                    ? "found"
+                    : (completeCoverage ? "not_found" : "indeterminate"));
+            result.put("coverage", completeCoverage ? "complete" : "partial");
             result.set(
                     "limitations",
                     GraphToolSupport.JSON.valueToTree(relevantDiagnostics));

@@ -14,7 +14,7 @@ Java Gateway 为每个精确 revision 构建不可变 `ProjectSnapshot`。快照
 
 节点包含文件、类型、方法、构造器、字段和框架入口；边包含声明、调用、字段读写、类型引用、继承、实现、重写、注解、注入、路由、事件和定时任务。每条边记录文件、行号、提取器以及 `resolved/ambiguous/unresolved`。
 
-工具结果统一给出 `confirmed/not_found/unknown`、coverage、provenance 和 limitations。只有完整覆盖下的 `not_found` 才是有限的缺席事实；解析失败、外部依赖、反射、动态代理和生成代码均为 `unknown`。局部结果最多返回 100 个符号和 200 条关系；发生截断时 coverage 为 `partial` 并携带 `result_truncated`。
+工具结果统一使用 schema v2 `outcome=found/not_found/indeterminate`、查询级 coverage、provenance 和 limitations。`found + partial` 只证明已解析关系存在；只有 `not_found + complete` 才是有限的缺席事实；解析不足且没有可用关系时返回 `indeterminate + partial`。局部结果最多返回 100 个符号和 200 条已解析关系，未解析关系独立限量输出；发生截断时 coverage 为 `partial` 并携带 `result_truncated`。
 
 ## 工具分配
 
@@ -27,4 +27,4 @@ Java Gateway 为每个精确 revision 构建不可变 `ProjectSnapshot`。快照
 
 ## Evidence
 
-EvidenceStrategy 声明 `CURRENT_IMPLEMENTATION`、`UPSTREAM_REACHABILITY`、`FRAMEWORK_ENTRY_REACHABILITY`、`SECURITY_PATH`、`STRUCTURAL_METRICS`、`INHERITANCE_IMPACT` 等证据能力；EvidenceAgent 再映射到具体工具。`unknown`、partial、超时和无效图谱信封一律产生 insufficient，Java 不判断事实是否构成漏洞。
+EvidenceStrategy 声明 `CURRENT_IMPLEMENTATION`、`UPSTREAM_REACHABILITY`、`FRAMEWORK_ENTRY_REACHABILITY`、`SECURITY_PATH`、`STRUCTURAL_METRICS`、`INHERITANCE_IMPACT` 等证据能力；EvidenceAgent 再映射到具体工具。`indeterminate`、超时和无效图谱信封形成 EvidenceGap；`found + partial` 只保留已解析正向事实，Java 不判断事实是否构成漏洞。

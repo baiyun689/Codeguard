@@ -9,8 +9,8 @@ import json
 
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.evidence import (
+    ArtifactAvailability,
     EvidenceArtifact,
-    EvidenceArtifactStatus,
     EvidenceCaptureMode,
     EvidenceRef,
     EvidenceSourceKind,
@@ -58,7 +58,7 @@ def _patch_artifact(payload: str = "+    exec(cmd);\n") -> EvidenceArtifact:
     return EvidenceArtifact.build(
         task_id=TASK_ID, reviewer="threat_model", revision=REV,
         source_kind=EvidenceSourceKind.TASK_PATCH, payload=payload,
-        status=EvidenceArtifactStatus.COMPLETE,
+        availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.GENERATED,
         arguments={"file_path": "src/A.java"},
     )
@@ -69,7 +69,7 @@ def _file_artifact(payload: str = "class A { void m() { exec(cmd); } }") -> Evid
         task_id=TASK_ID, reviewer="threat_model", revision=REV,
         source_kind=EvidenceSourceKind.TOOL_CALL, tool="get_file_content",
         arguments={"file_path": "src/A.java"}, payload=payload,
-        status=EvidenceArtifactStatus.COMPLETE,
+        availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.EXECUTED,
     )
 
@@ -77,21 +77,25 @@ def _file_artifact(payload: str = "class A { void m() { exec(cmd); } }") -> Evid
 def _graph_payload(
     *,
     subject: str = "java:A#m()",
-    status: str = "confirmed",
-    coverage: str = "full",
+    outcome: str = "found",
+    coverage: str = "complete",
     source_scope: str = "MAIN",
     relationships: list | None = None,
 ) -> str:
     return json.dumps({
-        "status": status,
+        "schema_version": 2,
+        "outcome": outcome,
         "coverage": coverage,
         "source_scope": source_scope,
         "subject_symbol_id": subject,
         "symbols": [{"id": subject, "kind": "method"}],
         "relationships": relationships if relationships is not None else [
             {"sourceId": "java:A#m()", "targetId": "java:B#exec()", "kind": "calls",
-             "file": "A.java", "line": 1, "source_set": "MAIN"},
+             "file": "A.java", "line": 1, "source_set": "MAIN",
+             "resolution": "RESOLVED"},
         ],
+        "unresolved_relationships": [],
+        "unresolved_count": 0,
         "limitations": [],
     }, ensure_ascii=False)
 
@@ -100,13 +104,13 @@ def _graph_artifact(
     payload: str,
     *,
     revision: str = REV,
-    status: EvidenceArtifactStatus = EvidenceArtifactStatus.COMPLETE,
+    availability: ArtifactAvailability = ArtifactAvailability.AVAILABLE,
 ) -> EvidenceArtifact:
     return EvidenceArtifact.build(
         task_id=TASK_ID, reviewer="threat_model", revision=revision,
         source_kind=EvidenceSourceKind.TOOL_CALL, tool="inspect_change_impact",
         arguments={"symbol_id": "java:A#m()"}, payload=payload,
-        status=status, capture_mode=EvidenceCaptureMode.EXECUTED,
+        availability=availability, capture_mode=EvidenceCaptureMode.EXECUTED,
     )
 
 
@@ -164,7 +168,7 @@ def test_context_fact_partial_标_limited():
         task_id=TASK_ID, reviewer="threat_model", revision=REV,
         source_kind=EvidenceSourceKind.PREFETCHED_CONTEXT,
         tool="resolve_change_context", payload="symbol A",
-        status=EvidenceArtifactStatus.PARTIAL,
+        availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.GENERATED,
         limitations=("context_truncated",),
     )
@@ -247,12 +251,41 @@ def test_图响应_coverage_partial_limited_保留正事实():
     assert "graph_coverage_partial" in graph_items[0].limitations
 
 
+def test_图响应_not_found_complete_作为有效范围事实():
+    patch = _patch_artifact()
+    graph = _graph_artifact(_graph_payload(
+        outcome="not_found", coverage="complete", relationships=[]
+    ))
+    batch = _verify(_candidate(patch.id, graph.id), {patch.id: patch, graph.id: graph})
+    graph_items = [
+        item for item in batch.candidates["c1"].valid_evidence
+        if item.artifact_id == graph.id
+    ]
+    assert graph_items[0].validation_status is EvidenceValidationStatus.VALID
+
+
+def test_图响应_illegal_outcome_coverage_combination_invalid():
+    patch = _patch_artifact()
+    graph = _graph_artifact(_graph_payload(
+        outcome="not_found", coverage="partial", relationships=[]
+    ))
+    batch = _verify(_candidate(patch.id, graph.id), {patch.id: patch, graph.id: graph})
+    verification = batch.candidates["c1"]
+    assert verification.invalid_references
+    assert "invalid_graph_outcome_coverage" in verification.invalid_references[0].detail
+
+
 # ── 异常重放 ───────────────────────────────────────────────────────────
 
 
-def test_图响应_status_unknown_触发重放_确认后_replay_confirmed():
+def test_旧图响应协议直接_invalid_且不重放():
     patch = _patch_artifact()
-    graph = _graph_artifact(_graph_payload(status="unknown"))
+    graph = _graph_artifact(json.dumps({
+        "coverage": "partial",
+        "subject_symbol_id": "java:A#m()",
+        "source_scope": "MAIN",
+        "relationships": [],
+    }))
     client = _FakeToolClient(_graph_payload())
     batch = _verify(
         _candidate(patch.id, graph.id),
@@ -260,45 +293,76 @@ def test_图响应_status_unknown_触发重放_确认后_replay_confirmed():
         tool_client=client,
     )
     verification = batch.candidates["c1"]
-    assert graph.id in batch.replayed_artifact_ids
+    assert graph.id not in batch.replayed_artifact_ids
+    assert verification.invalid_references
+    assert "graph_protocol_mismatch" in verification.invalid_references[0].detail
+    assert client.calls == 0
+
+
+def test_indeterminate_不重放_形成_evidence_gap():
+    patch = _patch_artifact()
+    graph = _graph_artifact(_graph_payload(
+        outcome="indeterminate", coverage="partial", relationships=[]
+    ))
+    client = _FakeToolClient(_graph_payload())
+    batch = _verify(
+        _candidate(patch.id, graph.id),
+        {patch.id: patch, graph.id: graph},
+        tool_client=client,
+    )
+    verification = batch.candidates["c1"]
+    assert not any(item.artifact_id == graph.id for item in verification.valid_evidence)
+    assert verification.evidence_gaps[0].reason == "graph_indeterminate"
+    assert graph.id not in batch.replayed_artifact_ids
+    assert client.calls == 0
+
+
+def test_失败artifact_重放后重新校验为_valid():
+    patch = _patch_artifact()
+    graph = _graph_artifact(
+        _graph_payload(), availability=ArtifactAvailability.FAILED
+    )
+    batch = _verify(
+        _candidate(patch.id, graph.id),
+        {patch.id: patch, graph.id: graph},
+        tool_client=_FakeToolClient(_graph_payload()),
+    )
+    verification = batch.candidates["c1"]
     graph_items = [
         item for item in verification.valid_evidence if item.artifact_id == graph.id
     ]
-    assert graph_items[0].validation_status is EvidenceValidationStatus.REPLAY_CONFIRMED
-    assert client.calls == 1
+    assert graph_items[0].validation_status is EvidenceValidationStatus.VALID
+    assert "evidence_replay_valid" in [event for event, _ in batch.trace]
 
 
-def test_失败artifact_白名单空_禁止重放_limited():
+def test_失败artifact_白名单空_形成_gap():
     patch = _patch_artifact()
-    graph = _graph_artifact(_graph_payload(), status=EvidenceArtifactStatus.FAILED)
+    graph = _graph_artifact(
+        _graph_payload(), availability=ArtifactAvailability.FAILED
+    )
     batch = _verify(
         _candidate(patch.id, graph.id),
         {patch.id: patch, graph.id: graph},
         tool_client=_FakeToolClient(_graph_payload()),
         enabled_replay_tools=[],
     )
-    verification = batch.candidates["c1"]
-    graph_items = [
-        item for item in verification.valid_evidence if item.artifact_id == graph.id
-    ]
-    assert graph_items[0].validation_status is EvidenceValidationStatus.LIMITED
-    assert "replay_not_enabled" in graph_items[0].limitations
+    gap = batch.candidates["c1"].evidence_gaps[0]
+    assert "replay_not_enabled" in gap.limitations
 
 
-def test_重放失败_只产生限制_不作为反证():
+def test_重放失败_形成_gap_不作为反证():
     patch = _patch_artifact()
-    graph = _graph_artifact(_graph_payload(), status=EvidenceArtifactStatus.FAILED)
+    graph = _graph_artifact(
+        _graph_payload(), availability=ArtifactAvailability.FAILED
+    )
     batch = _verify(
         _candidate(patch.id, graph.id),
         {patch.id: patch, graph.id: graph},
         tool_client=_FakeToolClient("", success=False),
     )
     verification = batch.candidates["c1"]
-    graph_items = [
-        item for item in verification.valid_evidence if item.artifact_id == graph.id
-    ]
-    assert graph_items[0].validation_status is EvidenceValidationStatus.LIMITED
-    assert any("replay" in lim for lim in graph_items[0].limitations)
+    assert verification.evidence_gaps
+    assert any("replay" in lim for lim in verification.evidence_gaps[0].limitations)
 
 
 def test_revision_mismatch_触发重放():
@@ -315,7 +379,9 @@ def test_revision_mismatch_触发重放():
 
 def test_重放_相同调用全局只执行一次():
     patch = _patch_artifact()
-    graph = _graph_artifact(_graph_payload(status="unknown"))
+    graph = _graph_artifact(
+        _graph_payload(), availability=ArtifactAvailability.FAILED
+    )
     candidate_b = _candidate(patch.id, graph.id).model_copy(update={"id": "c2"})
     dossier_b = _dossier(candidate_b)
     client = _FakeToolClient(_graph_payload())
@@ -328,6 +394,26 @@ def test_重放_相同调用全局只执行一次():
     )
     assert batch.replayed_artifact_ids == [graph.id]
     assert client.calls == 1
+
+
+def test_重放后仍_indeterminate_形成_gap_不升级():
+    patch = _patch_artifact()
+    graph = _graph_artifact(
+        _graph_payload(), availability=ArtifactAvailability.FAILED
+    )
+    replay_payload = _graph_payload(
+        outcome="indeterminate", coverage="partial", relationships=[]
+    )
+    client = _FakeToolClient(replay_payload)
+    batch = _verify(
+        _candidate(patch.id, graph.id),
+        {patch.id: patch, graph.id: graph},
+        tool_client=client,
+    )
+    verification = batch.candidates["c1"]
+    assert verification.evidence_gaps[0].reason == "graph_indeterminate"
+    assert not any(item.artifact_id == graph.id for item in verification.valid_evidence)
+    assert "evidence_replay_unavailable" in [event for event, _ in batch.trace]
 
 
 # ── guard 扫描与引用范围 ───────────────────────────────────────────────

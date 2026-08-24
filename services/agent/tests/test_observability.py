@@ -897,7 +897,7 @@ def test_trace_view_builds_reviewer_tool_steps_from_node_output_without_native_e
                             {
                                 "tool": "inspect_change_impact",
                                 "arguments": {"symbol_id": "java:demo.OrderService"},
-                                "output": '{"status":"confirmed"}',
+                                "output": '{"schema_version":2,"outcome":"found","coverage":"complete"}',
                                 "call_id": "app-call-1",
                                 "duration_ms": 3.0,
                                 "status": "complete",
@@ -922,8 +922,9 @@ def test_trace_view_builds_reviewer_tool_steps_from_node_output_without_native_e
     assert behavior["tool_call_count"] == 1
     assert tool_step["code_name"] == "inspect_change_impact"
     assert tool_step["input"] == {"symbol_id": "java:demo.OrderService"}
-    assert tool_step["output"] == '{"status":"confirmed"}'
+    assert tool_step["output"] == '{"schema_version":2,"outcome":"found","coverage":"complete"}'
     assert tool_step["status"] == "complete"
+    assert "found/complete" in tool_step["summary"]
 
 
 def test_trace_view_keeps_each_reviewer_tool_record_including_reuse():
@@ -951,7 +952,7 @@ def test_trace_view_keeps_each_reviewer_tool_record_including_reuse():
                                 "call_id": "call-1",
                                 "tool": "inspect_change_impact",
                                 "arguments": {"symbol_id": "java:demo.Service"},
-                                "output": '{"status":"confirmed"}',
+                                "output": '{"schema_version":2,"outcome":"found","coverage":"complete"}',
                                 "duration_ms": 4.0,
                                 "status": "complete",
                                 "reuse_key": "impact:service",
@@ -1014,7 +1015,7 @@ def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
                             {
                                 "tool": "inspect_security_path",
                                 "arguments": {"symbol_id": "java:demo.Service"},
-                                "output": '{"status":"confirmed"}',
+                                "output": '{"schema_version":2,"outcome":"found","coverage":"complete"}',
                                 "call_id": "evidence-call-1",
                                 "duration_ms": 4.5,
                                 "status": "complete",
@@ -1035,7 +1036,7 @@ def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
                                         "evidence_id": "evidence-1",
                                         "reuse_key": "security:service",
                                         "reused_from_call_id": "evidence-call-1",
-                                        "output": '{"status":"confirmed"}',
+                                        "output": '{"schema_version":2,"outcome":"found","coverage":"complete"}',
                                     }
                                 ),
                             }
@@ -1058,7 +1059,7 @@ def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
     assert tool_steps[0]["pair_id"] == "evidence-call-1"
     assert tool_steps[0]["reuse_key"] == "security:service"
     assert tool_steps[1]["input"] == {"symbol_id": "java:demo.Service"}
-    assert tool_steps[1]["output"] == '{"status":"confirmed"}'
+    assert tool_steps[1]["output"] == '{"schema_version":2,"outcome":"found","coverage":"complete"}'
     assert tool_steps[1]["reuse_key"] == "security:service"
     assert tool_steps[1]["reused_from_call_id"] == "evidence-call-1"
 

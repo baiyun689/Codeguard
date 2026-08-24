@@ -234,7 +234,7 @@ def _artifact_tool_profile(artifacts: dict) -> list:
                 tool=artifact.tool,
                 args=key[1],
                 content=artifact.payload,
-                status=artifact.status.value,
+                status=artifact.availability.value,
             )
         )
     return items

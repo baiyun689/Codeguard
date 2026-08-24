@@ -27,15 +27,14 @@ class EvidenceSourceKind(str, Enum):
     TOOL_CALL = "tool_call"            # 本次真实调用 Gateway 工具(Txx)
 
 
-class EvidenceArtifactStatus(str, Enum):
-    """Artifact 健康状态。"""
+class ArtifactAvailability(str, Enum):
+    """Artifact 捕获可用性；内容边界由 limitations 独立表达。"""
 
-    COMPLETE = "complete"
-    PARTIAL = "partial"
-    UNKNOWN = "unknown"
+    AVAILABLE = "available"
     FAILED = "failed"
     REJECTED = "rejected"
-    NOT_FOUND = "not_found"
+    MISSING = "missing"
+    INVALID = "invalid"
 
 
 class EvidenceCaptureMode(str, Enum):
@@ -99,7 +98,7 @@ class EvidenceArtifact(BaseModel):
 
     payload: str = Field(description="原始事实内容")
     payload_hash: str = Field(description="payload 摘要")
-    status: EvidenceArtifactStatus = Field(description="健康状态")
+    availability: ArtifactAvailability = Field(description="捕获可用性")
     capture_mode: EvidenceCaptureMode = Field(description="捕获方式")
 
     call_id: str = Field(default="", description="Gateway 调用 ID")
@@ -119,7 +118,7 @@ class EvidenceArtifact(BaseModel):
         revision: str,
         source_kind: EvidenceSourceKind,
         payload: str,
-        status: EvidenceArtifactStatus,
+        availability: ArtifactAvailability,
         capture_mode: EvidenceCaptureMode,
         tool: str = "",
         arguments: dict[str, str] | None = None,
@@ -142,7 +141,7 @@ class EvidenceArtifact(BaseModel):
             arguments=args,
             payload=payload,
             payload_hash=payload_digest(payload),
-            status=status,
+            availability=availability,
             capture_mode=capture_mode,
             call_id=call_id,
             reused_from_artifact_id=reused_from_artifact_id,
@@ -226,7 +225,7 @@ class EvidenceRefError(BaseModel):
 class EvidenceValidationStatus(str, Enum):
     VALID = "valid"
     LIMITED = "limited"
-    REPLAY_CONFIRMED = "replay_confirmed"
+    UNAVAILABLE = "unavailable"
     INVALID = "invalid"
 
 
@@ -242,10 +241,22 @@ class VerifiedEvidence(BaseModel):
     limitations: tuple[str, ...] = ()
 
 
+class EvidenceGap(BaseModel):
+    """一次真实证据查询未能产生可引用事实。"""
+
+    artifact_id: str
+    tool: str = ""
+    arguments: dict[str, str] = Field(default_factory=dict)
+    declared_role: EvidenceRole
+    reason: str
+    limitations: tuple[str, ...] = ()
+
+
 class CandidateVerification(BaseModel):
     candidate_id: str
     source_kinds: set[EvidenceSourceKind] = Field(default_factory=set)
     valid_evidence: list[VerifiedEvidence] = Field(default_factory=list)
+    evidence_gaps: list[EvidenceGap] = Field(default_factory=list)
     invalid_references: list[EvidenceRefError] = Field(default_factory=list)
     grounding_status: Literal["grounded", "partially_grounded", "ungrounded"]
     eligible_for_judge: bool

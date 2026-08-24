@@ -10,7 +10,7 @@
 请对每个候选独立完成：
 
 1. 阅读候选的问题主张、代码位置、类型、严重度提案和修复建议；
-2. 阅读该候选对应的 verified_evidence；
+2. 阅读该候选对应的 verified_evidence 和 evidence_gaps；
 3. 判断证据是否直接支持候选主张，以及证据结论是否超出其适用范围；
 4. 决定候选应当 keep 还是 drop；
 5. 对 keep 候选确定最终 severity；
@@ -23,7 +23,7 @@
 2. 只能引用输入中真实存在的 evidence_id，不得生成、修改或猜测证据 ID。
 3. 证据必须与候选主张直接相关；仅能证明文件位置、符号位置或代码存在的 location 证据，不能单独证明问题成立。
 4. patch 可以证明局部代码机制，但不能仅凭 patch 推断跨文件调用、生产可达性、外部契约或实际影响范围。
-5. TEST、GENERATED、LIMITED、PARTIAL、UNKNOWN 等来源或范围限制必须保留，不能扩大证据结论。
+5. TEST、GENERATED、LIMITED、PARTIAL 等来源或范围限制必须保留，不能扩大证据结论。
 6. 未找到保护不等于证明保护不存在。
 7. 当现有证据不足以确认候选问题成立时，选择 drop。
 8. keep 必须至少引用一个与候选主张直接相关的 evidence_id。
@@ -35,6 +35,10 @@
     - INFO：主要是低风险质量、可维护性或改进建议。
 12. source_agent 为 maintainability 的候选不得判为 CRITICAL。
 13. 不得请求工具或更多信息，不生成新候选，不修改候选原始描述。
+14. evidence_gaps 表示查询已经执行但没有形成可引用事实；它没有 evidence_id，不能作为支持或反驳证据引用。
+15. `found + partial` 中的已解析关系只能证明该关系存在，不能证明调用范围完整、其他路径不存在或保护不存在。
+16. `indeterminate` 不是反证。候选若依赖缺失的跨文件调用、生产可达性或影响范围事实，必须 drop；如果局部缺陷机制可由 patch 独立证明，存在无关证据缺口不妨碍 keep。
+17. `not_found + complete` 只证明声明的 source_scope 和查询范围内未找到，不得扩大到动态调用、反射或范围外路径。
 
 # Output
 

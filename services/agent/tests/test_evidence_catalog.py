@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from codeguard_agent.models.council import ContextFact
 from codeguard_agent.models.evidence import (
-    EvidenceArtifactStatus,
+    ArtifactAvailability,
     EvidenceCaptureMode,
     EvidenceSourceKind,
 )
@@ -90,7 +90,7 @@ def test_初始目录_注册_patch_为_P01():
     assert patch_artifact.payload == "+    exec(cmd);\n"
     assert patch_artifact.arguments == {"file_path": "src/A.java"}
     assert patch_artifact.capture_mode is EvidenceCaptureMode.GENERATED
-    assert patch_artifact.status is EvidenceArtifactStatus.COMPLETE
+    assert patch_artifact.availability is ArtifactAvailability.AVAILABLE
 
 
 def test_初始目录_逐条注册上下文为_Cxx():
@@ -105,7 +105,7 @@ def test_初始目录_逐条注册上下文为_Cxx():
     assert first.source_kind is EvidenceSourceKind.PREFETCHED_CONTEXT
     assert first.tool == "resolve_change_context"
     assert first.payload == "symbol A"
-    assert first.status is EvidenceArtifactStatus.COMPLETE
+    assert first.availability is ArtifactAvailability.AVAILABLE
 
 
 def test_初始目录_空_bundle_仅_patch():
@@ -114,11 +114,11 @@ def test_初始目录_空_bundle_仅_patch():
     assert len(catalog.artifacts) == 1
 
 
-def test_初始目录_截断事实标_partial_并带限制声明():
+def test_初始目录_截断事实保持可用并带限制声明():
     bundle = _bundle(_fact("resolve_change_context", "symbol A", truncated=True))
     catalog = _Builder().build(bundle)
     art = catalog.artifacts[catalog.alias_to_artifact_id["C01"]]
-    assert art.status is EvidenceArtifactStatus.PARTIAL
+    assert art.availability is ArtifactAvailability.AVAILABLE
     assert art.limitations == ("context_truncated",)
 
 
@@ -172,7 +172,7 @@ def test_追加工具记录_跨任务复用_注册为_REUSED_artifact():
     assert catalog.tool_aliases() == ["T01"]
     artifact = catalog.artifacts[catalog.alias_to_artifact_id["T01"]]
     assert artifact.capture_mode is EvidenceCaptureMode.REUSED
-    assert artifact.status is EvidenceArtifactStatus.COMPLETE
+    assert artifact.availability is ArtifactAvailability.AVAILABLE
     assert artifact.reused_from_artifact_id == ""
 
 
@@ -184,12 +184,24 @@ def test_追加工具记录_失败状态映射():
         _record(call_id="f3", output="not found", status="not_found"),
     ]
     catalog = _Builder().append(catalog, records)
-    statuses = [catalog.artifacts[catalog.alias_to_artifact_id[f"T{i:02d}"]].status for i in (1, 2, 3)]
-    assert statuses == [
-        EvidenceArtifactStatus.FAILED,
-        EvidenceArtifactStatus.REJECTED,
-        EvidenceArtifactStatus.NOT_FOUND,
+    statuses = [
+        catalog.artifacts[catalog.alias_to_artifact_id[f"T{i:02d}"]].availability
+        for i in (1, 2, 3)
     ]
+    assert statuses == [
+        ArtifactAvailability.FAILED,
+        ArtifactAvailability.REJECTED,
+        ArtifactAvailability.MISSING,
+    ]
+
+
+def test_追加工具记录_无法识别状态映射为_invalid():
+    catalog = _Builder().append(
+        _Builder().build(),
+        [_record(call_id="invalid", status="unexpected")],
+    )
+    artifact = catalog.artifacts[catalog.alias_to_artifact_id["T01"]]
+    assert artifact.availability is ArtifactAvailability.INVALID
 
 
 # ── reused 解析到首次真实 payload ──────────────────────────────────────
@@ -291,6 +303,40 @@ def test_绑定器_role为枚举成员时不抛():
         EvidenceRole.MECHANISM,  # 自动 patch
         EvidenceRole.REACHABILITY,
     ]
+
+
+def test_绑定器保留失败工具引用供_verifier_重放():
+    from codeguard_agent.models.schemas import (
+        DiscoveredIssue,
+        EvidenceRefSelection,
+    )
+    from codeguard_agent.pipeline.evidence.ledger import bind_discovered_issue
+
+    catalog = _Builder().append(
+        _Builder().build(),
+        [_record(call_id="failed", output="HTTP 503", status="failed")],
+    )
+    issue = DiscoveredIssue(
+        severity=Severity.WARNING,
+        file="src/A.java",
+        line=1,
+        type="t",
+        message="m",
+        evidence_refs=[
+            EvidenceRefSelection(alias="T01", role=EvidenceRole.REACHABILITY)
+        ],
+    )
+
+    candidate = bind_discovered_issue(
+        issue,
+        task=_task(),
+        reviewer="threat_model",
+        catalog=catalog,
+        candidate_index=1,
+    )
+
+    assert candidate.evidence_ref_errors == []
+    assert candidate.evidence_refs[-1].artifact_id == catalog.alias_to_artifact_id["T01"]
 
 
 def test_用户提示词_无目录时不含_evidence_id():

@@ -85,10 +85,10 @@ def provide_context(
                             truncated=truncated,
                         )
                     )
-                if payload.get("status") in {"unknown", "partial"}:
+                if payload.get("coverage") == "partial":
                     diagnostics["symbol_context"] = "; ".join(
                         str(value) for value in payload.get("limitations", [])
-                    ) or f"graph_coverage_{payload.get('status')}"
+                    ) or f"graph_context_{payload.get('outcome', 'indeterminate')}"
             except (TypeError, ValueError, json.JSONDecodeError) as exc:
                 diagnostics["symbol_context"] = f"invalid_graph_response: {exc}"
 

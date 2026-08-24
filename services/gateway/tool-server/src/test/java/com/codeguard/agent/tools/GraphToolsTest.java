@@ -48,7 +48,8 @@ class GraphToolsTest {
                 .execute("java:demo.Service#run()", context);
         assertTrue(impact.isSuccess(), impact.getError());
         assertTrue(impact.getResult().contains("Caller.java"), impact.getResult());
-        assertTrue(impact.getResult().contains("\"status\":\"confirmed\""), impact.getResult());
+        assertTrue(impact.getResult().contains("\"schema_version\":2"), impact.getResult());
+        assertTrue(impact.getResult().contains("\"outcome\":\"found\""), impact.getResult());
     }
 
     @Test
@@ -96,7 +97,8 @@ class GraphToolsTest {
                 .contains("ServiceTest.java"), impact.getResult());
         assertTrue(payload.path("test_relationships").get(0)
                 .path("source_set").asText().equals("TEST"), impact.getResult());
-        assertTrue(payload.path("status").asText().equals("not_found"), impact.getResult());
+        assertTrue(payload.path("outcome").asText().equals("not_found"), impact.getResult());
+        assertTrue(payload.path("coverage").asText().equals("complete"), impact.getResult());
         assertTrue(payload.path("source_scope").asText().equals("MAIN"), impact.getResult());
     }
 
@@ -121,7 +123,7 @@ class GraphToolsTest {
                 .execute("java:demo.ServiceTest#helper()", context);
         JsonNode payload = GraphToolSupport.JSON.readTree(impact.getResult());
 
-        assertTrue(payload.path("status").asText().equals("confirmed"), impact.getResult());
+        assertTrue(payload.path("outcome").asText().equals("found"), impact.getResult());
         assertTrue(payload.path("source_scope").asText().equals("TEST"), impact.getResult());
         assertFalse(payload.path("relationships").isEmpty(), impact.getResult());
         assertFalse(payload.path("test_relationships").isEmpty(), impact.getResult());
@@ -236,7 +238,7 @@ class GraphToolsTest {
     }
 
     @Test
-    void unresolvedProjectNeverReportsConfirmedAbsence(@TempDir Path repo) throws Exception {
+    void missingSubjectProducesIndeterminateQuery(@TempDir Path repo) throws Exception {
         Files.writeString(repo.resolve("Partial.java"), """
                 class Partial {
                     void run() { unknownTarget.execute(); }
@@ -254,9 +256,9 @@ class GraphToolsTest {
                 """, context);
 
         assertTrue(impact.isSuccess(), impact.getError());
-        assertTrue(impact.getResult().contains("\"status\":\"unknown\""), impact.getResult());
+        assertTrue(impact.getResult().contains("\"outcome\":\"indeterminate\""), impact.getResult());
         assertTrue(impact.getResult().contains("\"coverage\":\"partial\""), impact.getResult());
-        assertTrue(contextResult.getResult().contains("\"status\":\"confirmed\""),
+        assertTrue(contextResult.getResult().contains("\"outcome\":\"found\""),
                 contextResult.getResult());
     }
 
@@ -280,8 +282,94 @@ class GraphToolsTest {
         ToolResult result = new InspectChangeImpactTool(snapshot)
                 .execute("java:LargeCaller#target()", context);
 
-        assertTrue(result.getResult().contains("\"status\":\"confirmed\""), result.getResult());
+        assertTrue(result.getResult().contains("\"outcome\":\"found\""), result.getResult());
         assertTrue(result.getResult().contains("\"coverage\":\"partial\""), result.getResult());
         assertTrue(result.getResult().contains("result_truncated"), result.getResult());
+    }
+
+    @Test
+    void unrelatedUnresolvedEdgeDoesNotPoisonResolvedQuery(@TempDir Path repo)
+            throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("Service.java"), """
+                package demo;
+                class Service { void run() {} }
+                """);
+        Files.writeString(root.resolve("Caller.java"), """
+                package demo;
+                class Caller { void call(Service service) { service.run(); } }
+                """);
+        Files.writeString(root.resolve("Unrelated.java"), """
+                package demo;
+                class Unrelated { void broken() { missing.call(); } }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "query-coverage"));
+        AgentContext context = new AgentContext(
+                repo, Set.of("src/main/java/demo/Service.java"));
+
+        ToolResult result = new InspectChangeImpactTool(snapshot)
+                .execute("java:demo.Service#run()", context);
+        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
+
+        assertTrue(payload.path("outcome").asText().equals("found"), result.getResult());
+        assertTrue(payload.path("coverage").asText().equals("complete"), result.getResult());
+        assertTrue(payload.path("snapshot_main_coverage").asText().equals("partial"),
+                result.getResult());
+    }
+
+    @Test
+    void mixedRelationsKeepResolvedFactsAndReportPartialCoverage(@TempDir Path repo)
+            throws Exception {
+        Files.writeString(repo.resolve("Mixed.java"), """
+                class Mixed {
+                    void run() throws Exception {
+                        Runtime.getRuntime().exec("ls");
+                        missing.execute();
+                    }
+                }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "mixed-relations"));
+        AgentContext context = new AgentContext(repo, Set.of("Mixed.java"));
+
+        ToolResult result = new InspectSecurityPathTool(snapshot)
+                .execute("java:Mixed#run()", context);
+        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
+
+        assertTrue(payload.path("outcome").asText().equals("found"), result.getResult());
+        assertTrue(payload.path("coverage").asText().equals("partial"), result.getResult());
+        assertFalse(payload.path("relationships").isEmpty(), result.getResult());
+        assertFalse(payload.path("unresolved_relationships").isEmpty(), result.getResult());
+        assertTrue(payload.path("unresolved_count").asInt() > 0, result.getResult());
+    }
+
+    @Test
+    void potentialUnresolvedCallerPreventsConfirmedAbsence(@TempDir Path repo)
+            throws Exception {
+        Files.writeString(repo.resolve("Service.java"), """
+                class Service { void run() {} }
+                """);
+        Files.writeString(repo.resolve("ExternalCaller.java"), """
+                class ExternalCaller {
+                    void call(MissingService service) { service.run(); }
+                }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "potential-caller"));
+        AgentContext context = new AgentContext(repo, Set.of("Service.java"));
+
+        ToolResult result = new InspectChangeImpactTool(snapshot)
+                .execute("java:Service#run()", context);
+        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
+
+        assertTrue(payload.path("outcome").asText().equals("indeterminate"),
+                result.getResult());
+        assertTrue(payload.path("coverage").asText().equals("partial"),
+                result.getResult());
+        assertTrue(payload.path("relationships").isEmpty(), result.getResult());
+        assertFalse(payload.path("unresolved_relationships").isEmpty(),
+                result.getResult());
     }
 }

@@ -252,8 +252,10 @@ def _step_from_pair(
                 f"l{metrics.get('refs_limited', 0)}/"
                 f"i{metrics.get('refs_invalid', 0)}) · "
                 f"replay {metrics.get('replay_requested', 0)}"
-                f"(cf{metrics.get('replay_confirmed', 0)}/"
+                f"(v{metrics.get('replay_valid', 0)}/"
+                f"l{metrics.get('replay_limited', 0)}/"
                 f"fl{metrics.get('replay_failed', 0)}) · "
+                f"gaps {metrics.get('evidence_gaps', 0)} · "
                 f"judge {metrics.get('judge_eligible', 0)}/"
                 f"{metrics.get('judge_rejected', 0)}",
             ]
@@ -475,10 +477,8 @@ def _application_tool_steps(
                             0.0, float(item.get("duration_ms") or 0.0)
                         ),
                         "status": status,
-                        "summary": (
-                            "复用已缓存工具结果"
-                            if status == "reused"
-                            else f"应用级工具记录 · {status}"
+                        "summary": _application_tool_summary(
+                            tool_name, item.get("output"), status
                         ),
                         "input": arguments,
                         "output": item.get("output"),
@@ -535,6 +535,30 @@ def _application_tool_steps(
                 }
             )
     return result
+
+
+def _application_tool_summary(tool: str, output: Any, status: str) -> str:
+    if status == "reused":
+        return "复用已缓存工具结果"
+    if tool not in {
+        "inspect_change_impact",
+        "inspect_security_path",
+        "inspect_structure",
+    }:
+        return f"应用级工具记录 · {status}"
+    try:
+        payload = json.loads(str(output or ""))
+    except (TypeError, json.JSONDecodeError):
+        return f"图谱查询 · {status}"
+    if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+        return "图谱协议不兼容"
+    relations = payload.get("relationships")
+    resolved = len(relations) if isinstance(relations, list) else 0
+    return (
+        f"图谱查询 · {payload.get('outcome', 'invalid')}/"
+        f"{payload.get('coverage', 'invalid')} · "
+        f"已解析 {resolved} · 未解析 {int(payload.get('unresolved_count') or 0)}"
+    )
 
 
 def _tool_step(

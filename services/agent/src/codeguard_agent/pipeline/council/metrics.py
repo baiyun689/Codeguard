@@ -90,19 +90,25 @@ def compute_council_run_stats(
             patch_only += 1
         for item in verification.valid_evidence or []:
             refs_selected += 1
-            if item.validation_status in {
-                EvidenceValidationStatus.VALID,
-                EvidenceValidationStatus.REPLAY_CONFIRMED,
-            }:
+            if item.validation_status is EvidenceValidationStatus.VALID:
                 refs_valid += 1
             else:
                 refs_limited += 1
+        refs_selected += len(verification.evidence_gaps or [])
         refs_invalid += len(verification.invalid_references or [])
 
     # ── 重放与 Judge 批调用(trace 事件) ──
     replay_requested = _count_event(council_trace, "evidence_replay_requested")
-    replay_confirmed = _count_event(council_trace, "evidence_replay_completed")
-    replay_failed = _count_event(council_trace, "evidence_replay_failed")
+    replay_valid = _count_event(council_trace, "evidence_replay_valid")
+    replay_limited = _count_event(council_trace, "evidence_replay_limited")
+    replay_failed = sum(
+        _count_event(council_trace, event)
+        for event in (
+            "evidence_replay_failed",
+            "evidence_replay_unavailable",
+            "evidence_replay_invalid",
+        )
+    )
     judge_batch_calls = _count_event(council_trace, "evidence_judge_batch_started")
 
     # ── 裁决 ──
@@ -162,8 +168,18 @@ def compute_council_run_stats(
         valid_reference_count=refs_valid,
         limited_reference_count=refs_limited,
         invalid_reference_count=refs_invalid,
+        evidence_gap_count=sum(
+            len(verification.evidence_gaps or [])
+            for verification in (verifications or {}).values()
+        ),
+        graph_indeterminate_count=sum(
+            gap.reason == "graph_indeterminate"
+            for verification in (verifications or {}).values()
+            for gap in verification.evidence_gaps or []
+        ),
         replay_requested_count=replay_requested,
-        replay_confirmed_count=replay_confirmed,
+        replay_valid_count=replay_valid,
+        replay_limited_count=replay_limited,
         replay_failed_count=replay_failed,
         judge_batch_call_count=judge_batch_calls,
         judge_failed_candidate_count=severity_defaulted,

@@ -91,6 +91,7 @@ def _evidence_item_payload(
         items.append({
             "evidence_id": fact_id,
             "source_kind": evidence.source_kind.value,
+            "declared_role": _role_of(evidence.artifact_id, dossier).value,
             "tool": evidence.tool,
             "arguments": evidence.arguments,
             "content": content,
@@ -123,6 +124,16 @@ def _judge_payload(
             },
             "grounding_status": verification.grounding_status,
             "evidence": items,
+            "evidence_gaps": [
+                {
+                    "tool": gap.tool,
+                    "arguments": gap.arguments,
+                    "declared_role": gap.declared_role.value,
+                    "reason": gap.reason,
+                    "limitations": list(gap.limitations),
+                }
+                for gap in verification.evidence_gaps
+            ],
         }
         candidates.append(candidate_entry)
         fact_map[dossier.candidate.id] = dict(mapping)

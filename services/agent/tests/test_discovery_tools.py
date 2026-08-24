@@ -133,22 +133,25 @@ def test_path_guard_rejection_and_missing_file_have_domain_statuses() -> None:
     )
     client = CoordinatedDiscoveryToolClient(raw, DiscoveryToolCoordinator())
 
-    client.get_file_content("GuessedController.java")
-    client.get_file_content("Deleted.java")
+    rejected = client.get_file_content("GuessedController.java")
+    missing = client.get_file_content("Deleted.java")
 
     assert [record.status for record in client.trace_records] == [
         "rejected",
         "not_found",
     ]
+    assert "[证据编号 T01]" in (rejected.error or "")
+    assert "[证据编号 T02]" in (missing.error or "")
 
 
 def test_transport_or_protocol_failure_keeps_failed_status() -> None:
     raw = _FakeClient([ToolResponse(False, error="HTTP 503")])
     client = CoordinatedDiscoveryToolClient(raw, DiscoveryToolCoordinator())
 
-    client.get_file_content("src/A.java")
+    response = client.get_file_content("src/A.java")
 
     assert client.trace_records[0].status == "failed"
+    assert "[证据编号 T01]" in (response.error or "")
 
 
 def test_different_arguments_execute_separately() -> None:

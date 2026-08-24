@@ -13,8 +13,8 @@ from typing import Any, Sequence
 
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.evidence import (
+    ArtifactAvailability,
     EvidenceArtifact,
-    EvidenceArtifactStatus,
     EvidenceCaptureMode,
     EvidenceCatalog,
     EvidenceRef,
@@ -30,10 +30,10 @@ from codeguard_agent.pipeline.discovery import (
 )
 
 _TOOL_STATUS_MAP = {
-    "complete": EvidenceArtifactStatus.COMPLETE,
-    "failed": EvidenceArtifactStatus.FAILED,
-    "rejected": EvidenceArtifactStatus.REJECTED,
-    "not_found": EvidenceArtifactStatus.NOT_FOUND,
+    "complete": ArtifactAvailability.AVAILABLE,
+    "failed": ArtifactAvailability.FAILED,
+    "rejected": ArtifactAvailability.REJECTED,
+    "not_found": ArtifactAvailability.MISSING,
 }
 
 _GRAPH_TOOLS = ("inspect_change_impact", "inspect_security_path", "inspect_structure")
@@ -63,7 +63,7 @@ class EvidenceCatalogBuilder:
             revision=revision,
             source_kind=EvidenceSourceKind.TASK_PATCH,
             payload=task.patch,
-            status=EvidenceArtifactStatus.COMPLETE,
+            availability=ArtifactAvailability.AVAILABLE,
             capture_mode=EvidenceCaptureMode.GENERATED,
             arguments={"file_path": task.file},
         )
@@ -80,11 +80,7 @@ class EvidenceCatalogBuilder:
                 source_kind=EvidenceSourceKind.PREFETCHED_CONTEXT,
                 tool=str(getattr(fact, "source", "")),
                 payload=str(getattr(fact, "content", "")),
-                status=(
-                    EvidenceArtifactStatus.PARTIAL
-                    if truncated
-                    else EvidenceArtifactStatus.COMPLETE
-                ),
+                availability=ArtifactAvailability.AVAILABLE,
                 capture_mode=EvidenceCaptureMode.GENERATED,
                 limitations=("context_truncated",) if truncated else (),
             )
@@ -112,11 +108,11 @@ class EvidenceCatalogBuilder:
                 continue
             if status == "reused":
                 capture_mode = EvidenceCaptureMode.REUSED
-                artifact_status = EvidenceArtifactStatus.COMPLETE
+                availability = ArtifactAvailability.AVAILABLE
             else:
                 capture_mode = EvidenceCaptureMode.EXECUTED
-                artifact_status = _TOOL_STATUS_MAP.get(
-                    status, EvidenceArtifactStatus.UNKNOWN
+                availability = _TOOL_STATUS_MAP.get(
+                    status, ArtifactAvailability.INVALID
                 )
             payload = str(getattr(record, "resolved_output", "") or output)
             arguments = dict(getattr(record, "arguments", {}) or {})
@@ -128,7 +124,7 @@ class EvidenceCatalogBuilder:
                 tool=str(getattr(record, "tool", "")),
                 arguments={k: v for k, v in arguments.items() if isinstance(v, str)},
                 payload=payload,
-                status=artifact_status,
+                availability=availability,
                 capture_mode=capture_mode,
                 call_id=str(getattr(record, "call_id", "")),
             )
@@ -207,16 +203,12 @@ def bind_discovered_issue(
                 )
             )
             continue
-        if artifact.status in {
-            EvidenceArtifactStatus.FAILED,
-            EvidenceArtifactStatus.REJECTED,
-            EvidenceArtifactStatus.NOT_FOUND,
-        }:
+        if artifact.availability is ArtifactAvailability.INVALID:
             errors.append(
                 EvidenceRefError(
                     alias=alias,
-                    reason=EvidenceRefErrorReason.ARTIFACT_FAILED,
-                    detail=f"artifact 状态 {artifact.status.value}",
+                    reason=EvidenceRefErrorReason.ARTIFACT_UNAVAILABLE,
+                    detail=f"artifact 可用性 {artifact.availability.value}",
                 )
             )
             continue
@@ -252,11 +244,7 @@ def bind_discovered_issue(
 
 
 def _citeable(artifact: EvidenceArtifact) -> bool:
-    return artifact.status in {
-        EvidenceArtifactStatus.COMPLETE,
-        EvidenceArtifactStatus.PARTIAL,
-        EvidenceArtifactStatus.UNKNOWN,
-    }
+    return artifact.availability is ArtifactAvailability.AVAILABLE
 
 
 def _catalog_payload(artifact: EvidenceArtifact) -> str:
@@ -292,7 +280,7 @@ def render_evidence_catalog(
         artifact = catalog.artifacts[catalog.alias_to_artifact_id[alias]]
         block = (
             f'<artifact id="{alias}" source="{artifact.source_kind.value}" '
-            f'status="{artifact.status.value}" tool="{artifact.tool}" '
+            f'availability="{artifact.availability.value}" tool="{artifact.tool}" '
             f'args="{_args_text(artifact.arguments)}" '
             f'citeable="{str(_citeable(artifact)).lower()}" '
             f'capture_mode="{artifact.capture_mode.value}">\n'

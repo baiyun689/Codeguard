@@ -116,7 +116,7 @@ def test_archive_preserves_evidence_ledger_council_metrics():
         "tool_artifact_count": 1,
         "candidate_tool_backed_count": 1,
         "valid_reference_count": 2,
-        "replay_confirmed_count": 1,
+        "replay_valid_count": 1,
         "judge_batch_call_count": 1,
     })
 
@@ -139,7 +139,7 @@ def test_archive_preserves_evidence_ledger_council_metrics():
     assert archived["final_issue_support_coverage"] == 1.0
     assert archived["artifact_count"] == 3
     assert archived["tool_artifact_count"] == 1
-    assert archived["replay_confirmed_count"] == 1
+    assert archived["replay_valid_count"] == 1
 
 
 def test_write_archive_filename_and_roundtrip(tmp_path):
