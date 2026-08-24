@@ -18,7 +18,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
-/** ThreatModelAgent 的安全路径工具：入口、敏感调用、字段读写与未解析边。
+/** ThreatModelAgent 的安全路径工具：入口、敏感调用、字段读写与安全相关未解析边。
  *  按 symbol 类型查询安全暴露面——方法/构造器：框架入口+敏感调用链；
  *  字段：读写它的方法+敏感字段类型标记；类型：内部方法的敏感调用+继承者。 */
 public final class InspectSecurityPathTool implements AgentTool {
@@ -38,7 +38,7 @@ public final class InspectSecurityPathTool implements AgentTool {
 
     @Override
     public String description() {
-        return "按稳定 symbol_id 查询安全路径：方法/构造器返回框架入口与敏感调用链；"
+        return "按稳定 symbol_id 查询安全路径：方法/构造器沿已解析关系返回框架入口与敏感调用链；"
                 + "字段返回读写它的方法并标记敏感字段类型；类型返回内部方法的敏感调用与继承者；并附解析限制";
     }
 
@@ -52,6 +52,7 @@ public final class InspectSecurityPathTool implements AgentTool {
             ProjectSnapshot value = GraphToolSupport.await(snapshot);
             SourceSet sourceScope = GraphToolSupport.sourceScope(value, symbol);
             List<GraphEdge> relationships = new ArrayList<>();
+            int suppressedUnresolvedCount = 0;
             GraphNodeKind kind = value.graph().node(symbol)
                     .map(GraphNode::kind).orElse(null);
             if (kind == GraphNodeKind.FIELD) {
@@ -62,7 +63,8 @@ public final class InspectSecurityPathTool implements AgentTool {
                         symbol, GraphEdgeKind.WRITES_FIELD));
             } else if (kind == GraphNodeKind.TYPE) {
                 // 类型安全路径：内部方法的敏感调用链 + 谁继承/实现它。
-                collectSensitiveCalls(value, internalMethods(value, symbol),
+                suppressedUnresolvedCount = collectSensitiveCalls(
+                        value, internalMethods(value, symbol),
                         sourceScope, relationships);
                 relationships.addAll(value.graph().incoming(
                         symbol, GraphEdgeKind.EXTENDS));
@@ -73,7 +75,8 @@ public final class InspectSecurityPathTool implements AgentTool {
                         symbol, GraphEdgeKind.EXPOSES_ROUTE));
                 relationships.addAll(value.graph().incoming(
                         symbol, GraphEdgeKind.LISTENS_TO_EVENT));
-                collectSensitiveCalls(value, Set.of(symbol), sourceScope, relationships);
+                suppressedUnresolvedCount = collectSensitiveCalls(
+                        value, Set.of(symbol), sourceScope, relationships);
             }
             List<GraphNode> nodes = new ArrayList<>();
             value.graph().node(symbol).ifPresent(nodes::add);
@@ -93,7 +96,15 @@ public final class InspectSecurityPathTool implements AgentTool {
                     .map(InspectSecurityPathTool::fieldType)
                     .filter(InspectSecurityPathTool::sensitive)
                     .ifPresent(type -> limits.add("field_type_sensitive: " + type));
-            return GraphToolSupport.facts(value, symbol, nodes, relationships, limits);
+            return GraphToolSupport.facts(
+                    value,
+                    symbol,
+                    nodes,
+                    relationships,
+                    limits,
+                    false,
+                    sourceScope,
+                    suppressedUnresolvedCount);
         } catch (Exception exception) {
             return ToolResult.error("graph_unavailable: " + exception.getMessage());
         }
@@ -114,14 +125,15 @@ public final class InspectSecurityPathTool implements AgentTool {
         return methods;
     }
 
-    /** 沿调用链收集敏感调用与未解析调用，保留原 3 层 BFS 语义。 */
-    private static void collectSensitiveCalls(
+    /** 沿已解析调用链搜索三层；未解析调用仅在目标本身命中敏感 sink 时报告。 */
+    private static int collectSensitiveCalls(
             ProjectSnapshot value,
             Set<String> frontier,
             SourceSet sourceScope,
             List<GraphEdge> relationships
     ) {
         Set<String> visited = new LinkedHashSet<>();
+        int suppressedUnresolvedCount = 0;
         for (int depth = 0; depth < 3 && !frontier.isEmpty(); depth++) {
             Set<String> next = new LinkedHashSet<>();
             for (String current : frontier) {
@@ -133,15 +145,20 @@ public final class InspectSecurityPathTool implements AgentTool {
                         relationships.add(edge);
                         continue;
                     }
-                    if (sensitive(edge.targetId())
-                            || edge.resolution() == ResolutionStatus.UNRESOLVED) {
+                    boolean resolved = edge.resolution() == ResolutionStatus.RESOLVED;
+                    if (sensitive(edge.targetId())) {
                         relationships.add(edge);
+                    } else if (!resolved) {
+                        suppressedUnresolvedCount++;
                     }
-                    next.add(edge.targetId());
+                    if (resolved) {
+                        next.add(edge.targetId());
+                    }
                 }
             }
             frontier = next;
         }
+        return suppressedUnresolvedCount;
     }
 
     /** 从字段签名中提取声明类型（"TokeniserState state" → "TokeniserState"）。 */

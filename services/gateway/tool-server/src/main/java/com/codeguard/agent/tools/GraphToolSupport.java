@@ -98,7 +98,8 @@ final class GraphToolSupport {
                 edges,
                 limitations,
                 subjectAloneIsFact,
-                sourceScope(snapshot, subject));
+                sourceScope(snapshot, subject),
+                0);
     }
 
     static ToolResult facts(
@@ -109,6 +110,27 @@ final class GraphToolSupport {
             List<String> limitations,
             boolean subjectAloneIsFact,
             SourceSet sourceScope
+    ) {
+        return facts(
+                snapshot,
+                subject,
+                nodes,
+                edges,
+                limitations,
+                subjectAloneIsFact,
+                sourceScope,
+                0);
+    }
+
+    static ToolResult facts(
+            ProjectSnapshot snapshot,
+            String subject,
+            Collection<GraphNode> nodes,
+            Collection<GraphEdge> edges,
+            List<String> limitations,
+            boolean subjectAloneIsFact,
+            SourceSet sourceScope,
+            int suppressedUnresolvedCount
     ) {
         try {
             ObjectNode root = JSON.createObjectNode();
@@ -147,6 +169,8 @@ final class GraphToolSupport {
             List<GraphEdge> resolvedGeneratedEdges = resolved(generatedEdges);
             List<GraphEdge> resolvedPrimaryEdges = resolved(primaryEdges);
             List<GraphEdge> unresolvedPrimaryEdges = unresolved(primaryEdges);
+            int totalUnresolvedCount = unresolvedPrimaryEdges.size()
+                    + Math.max(0, suppressedUnresolvedCount);
 
             List<GraphNode> boundedMainNodes =
                     mainNodes.stream().limit(MAX_SYMBOLS).toList();
@@ -182,7 +206,7 @@ final class GraphToolSupport {
                     snapshot, subject, sourceScope);
             boolean completeCoverage = subjectExists
                     && !primaryTruncated
-                    && unresolvedPrimaryEdges.isEmpty()
+                    && totalUnresolvedCount == 0
                     && queryDiagnostics.isEmpty();
             String outcome = found
                     ? "found"
@@ -212,7 +236,7 @@ final class GraphToolSupport {
                 case GENERATED -> boundedGeneratedEdges;
             }));
             root.set("unresolved_relationships", JSON.valueToTree(boundedUnresolvedEdges));
-            root.put("unresolved_count", unresolvedPrimaryEdges.size());
+            root.put("unresolved_count", totalUnresolvedCount);
             root.set("main_relationships", JSON.valueToTree(boundedMainEdges));
             root.set("test_relationships", JSON.valueToTree(boundedTestEdges));
             root.set("generated_relationships", JSON.valueToTree(boundedGeneratedEdges));
@@ -222,8 +246,13 @@ final class GraphToolSupport {
             if (!subjectExists) {
                 allLimitations.add("subject_not_found");
             }
-            if (!unresolvedPrimaryEdges.isEmpty()) {
-                allLimitations.add("unresolved_relationships:" + unresolvedPrimaryEdges.size());
+            if (totalUnresolvedCount > 0) {
+                allLimitations.add("unresolved_relationships:" + totalUnresolvedCount);
+            }
+            if (suppressedUnresolvedCount > 0) {
+                allLimitations.add(
+                        "unresolved_relationships_suppressed:"
+                                + suppressedUnresolvedCount);
             }
             if (primaryTruncated) {
                 allLimitations.add("result_truncated");

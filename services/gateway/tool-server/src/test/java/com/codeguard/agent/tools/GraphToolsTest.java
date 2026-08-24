@@ -15,6 +15,7 @@ import java.util.concurrent.CompletableFuture;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -343,6 +344,106 @@ class GraphToolsTest {
         assertFalse(payload.path("relationships").isEmpty(), result.getResult());
         assertFalse(payload.path("unresolved_relationships").isEmpty(), result.getResult());
         assertTrue(payload.path("unresolved_count").asInt() > 0, result.getResult());
+    }
+
+    @Test
+    void ordinaryUnresolvedCallIsAggregatedAsSecurityCoverageGap(@TempDir Path repo)
+            throws Exception {
+        Files.writeString(repo.resolve("Ordinary.java"), """
+                class Ordinary {
+                    void run() { missing.refresh(); }
+                }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "ordinary-unresolved-security"));
+        AgentContext context = new AgentContext(repo, Set.of("Ordinary.java"));
+
+        ToolResult result = new InspectSecurityPathTool(snapshot)
+                .execute("java:Ordinary#run()", context);
+        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
+
+        assertEquals("indeterminate", payload.path("outcome").asText(), result.getResult());
+        assertEquals("partial", payload.path("coverage").asText(), result.getResult());
+        assertEquals(1, payload.path("unresolved_count").asInt(), result.getResult());
+        assertTrue(payload.path("unresolved_relationships").isEmpty(), result.getResult());
+        assertTrue(result.getResult().contains("unresolved_relationships_suppressed:1"),
+                result.getResult());
+    }
+
+    @Test
+    void sensitiveUnresolvedCallStillLimitsSecurityQuery(@TempDir Path repo)
+            throws Exception {
+        Files.writeString(repo.resolve("Sensitive.java"), """
+                class Sensitive {
+                    void run() { missing.execute(); }
+                }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "sensitive-unresolved-security"));
+        AgentContext context = new AgentContext(repo, Set.of("Sensitive.java"));
+
+        ToolResult result = new InspectSecurityPathTool(snapshot)
+                .execute("java:Sensitive#run()", context);
+        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
+
+        assertEquals("indeterminate", payload.path("outcome").asText(), result.getResult());
+        assertEquals("partial", payload.path("coverage").asText(), result.getResult());
+        assertEquals(1, payload.path("unresolved_count").asInt(), result.getResult());
+        assertFalse(payload.path("unresolved_relationships").isEmpty(), result.getResult());
+    }
+
+    @Test
+    void resolvedCallChainStillFindsNestedSensitiveSink(@TempDir Path repo)
+            throws Exception {
+        Files.writeString(repo.resolve("ResolvedChain.java"), """
+                class ResolvedChain {
+                    void run() throws Exception { helper(); }
+                    void helper() throws Exception { Runtime.getRuntime().exec("ls"); }
+                }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "resolved-security-chain"));
+        AgentContext context = new AgentContext(repo, Set.of("ResolvedChain.java"));
+
+        ToolResult result = new InspectSecurityPathTool(snapshot)
+                .execute("java:ResolvedChain#run()", context);
+        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
+
+        assertEquals("found", payload.path("outcome").asText(), result.getResult());
+        assertFalse(payload.path("relationships").isEmpty(), result.getResult());
+        assertTrue(result.getResult().contains("exec"), result.getResult());
+    }
+
+    @Test
+    void resolvedSecurityTraversalHonorsThreeLayerBoundary(@TempDir Path repo)
+            throws Exception {
+        Files.writeString(repo.resolve("DepthBoundary.java"), """
+                class DepthBoundary {
+                    void within() throws Exception { withinOne(); }
+                    void withinOne() throws Exception { withinTwo(); }
+                    void withinTwo() throws Exception { Runtime.getRuntime().exec("ls"); }
+
+                    void beyond() throws Exception { beyondOne(); }
+                    void beyondOne() throws Exception { beyondTwo(); }
+                    void beyondTwo() throws Exception { beyondThree(); }
+                    void beyondThree() throws Exception { Runtime.getRuntime().exec("ls"); }
+                }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "security-depth-boundary"));
+        AgentContext context = new AgentContext(repo, Set.of("DepthBoundary.java"));
+
+        ToolResult within = new InspectSecurityPathTool(snapshot)
+                .execute("java:DepthBoundary#within()", context);
+        ToolResult beyond = new InspectSecurityPathTool(snapshot)
+                .execute("java:DepthBoundary#beyond()", context);
+
+        assertTrue(within.getResult().contains("\"outcome\":\"found\""),
+                within.getResult());
+        assertTrue(within.getResult().contains("exec"), within.getResult());
+        assertTrue(beyond.getResult().contains("\"outcome\":\"not_found\""),
+                beyond.getResult());
+        assertFalse(beyond.getResult().contains("exec"), beyond.getResult());
     }
 
     @Test

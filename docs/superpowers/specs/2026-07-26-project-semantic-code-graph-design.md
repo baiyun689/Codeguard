@@ -16,6 +16,8 @@ Java Gateway 为每个精确 revision 构建不可变 `ProjectSnapshot`。快照
 
 工具结果统一使用 schema v2 `outcome=found/not_found/indeterminate`、查询级 coverage、provenance 和 limitations。`found + partial` 只证明已解析关系存在；只有 `not_found + complete` 才是有限的缺席事实；解析不足且没有可用关系时返回 `indeterminate + partial`。局部结果最多返回 100 个符号和 200 条已解析关系，未解析关系独立限量输出；发生截断时 coverage 为 `partial` 并携带 `result_truncated`。
 
+`inspect_security_path` 的查询范围是最多三层已解析调用链和名称明确命中敏感 sink 的未解析调用。通用未解析调用不属于安全路径事实、不输出关系明细，但计入 `unresolved_count` 并使 coverage 保持 `partial`；安全相关未解析调用进入独立诊断数组。
+
 ## 工具分配
 
 - ContextProvider：`resolve_change_context`
