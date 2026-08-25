@@ -23,49 +23,68 @@ Codeguard 接收 GitHub Pull Request 事件，由 Python 审查委员会分析�
 
 ## 工作原理
 
-```text
-GitHub pull_request Webhook
-        |
-        v
-┌─ Java Gateway（单 JVM 三服务）─────────────┐
-│  CI Webhook (:8080)                        │
-│    校验签名 -> 持久化/去重 -> 调度 ->       │
-│    SHA 独立工作区 -> ProcessBuilder 调 Python│
-│  LLM Proxy (:9091)                         │
-│    OpenAI 兼容端点 -> 多提供商路由 ->        │
-│    限流/熔断/重试 -> 降级链透明切换          │
-│  Tool Server (:9090)                       │
-│    文件沙箱 + AST + 调用链 + 危险 API 扫描    │
-└────────────────────────────────────────────┘
-        |
-        v
-Python Agent
-  PR 规模路由(small/medium/large) -> Diff 任务 -> Task 级 DirectGate
-  -> Full task PlanUnit -> Reviewer 分派 -> 三路发现者(并行)
-  -> 候选定位校验/必要时批量重定位 -> 归并
-  -> 证据验证(账本健康/图护栏/异常重放,零 LLM)
-  -> 批量 EvidenceJudge 终审(evidence_mode=off 时跳过取证直接终审)
-  LLM 调用经 LLM Proxy 或直连提供商
-        |
-        v
-GitHub Check Run、Diff Annotation 和 PR 评论
+Codeguard 由 Java Gateway 和 Python Agent 组成。Java 负责请求接入、任务调度和确定性代码工具；Python 负责审查计划、Agent 推理、证据验证和结果裁决。
+
+### 整体架构
+
+```mermaid
+flowchart LR
+    Input[代码变更<br/>本地项目 / GitHub PR]
+    Gateway[Java Gateway]
+    Webhook[CI Webhook<br/>接入与调度]
+    Agent[Python Agent<br/>审查编排与推理]
+    Proxy[LLM Proxy<br/>模型路由]
+    Tools[Tool Server<br/>代码事实与沙盒]
+    Output[审查结果<br/>报告 / Check Run / 评论]
+
+    Input --> Gateway
+    Gateway --> Webhook
+    Webhook --> Agent
+    Agent <--> Proxy
+    Agent <--> Tools
+    Agent --> Output
 ```
 
-Python Agent 负责审查推理与编排。Java Gateway 拆为三个独立服务：LLM Proxy 负责多提供商路由和韧性策略（协议转发，不做语义判断），Tool Server 负责确定性代码事实采集和文件访问护栏，CI Webhook 负责 GitHub 事件接入和审查作业调度。
+模块职责：
 
-Full task 先由 OCR 式 PlanUnit 并发生成审查计划：Plan 选择 ThreatModelAgent、BehaviorAgent、MaintainabilityAgent、具体审查目标和按 reviewer 划分的知识主题，不负责工具调用或最终裁决。三个发现者分别固定使用 inspect_security_path、inspect_change_impact、inspect_structure 等专属工具；这些工具用于发现当前 diff 表面看不到的跨文件安全、行为和结构问题。LARGE 模式同文件 hunk 复用一次文件级 Plan。DirectGate 只由确定性 task 规则决定，低风险文档/注释 task 才走 Direct，其余进入 Full。
+- **CI Webhook**：接收 GitHub 事件，创建和调度审查任务。
+- **Python Agent**：拆分审查任务，编排审查员，并完成证据验证与结果裁决。
+- **LLM Proxy**：统一管理模型访问和提供商路由。
+- **Tool Server**：在沙盒内提供文件、符号、AST 和调用关系等代码事实。
 
-Reviewer 输出先经过统一候选定位护栏：系统只接受当前 task 新增行中的唯一原文片段，片段与行号冲突时以确定性匹配结果为准；无法确认的候选按 task 批量请求 LLM 重新提取片段并再次确定性复验。最终仍无法定位时保留为 `line=0` 的文件级问题，不把定位失败误判为问题不成立，也不会发布到错误的 GitHub 行内位置。Direct 与 Full 共用同一规则。
+### Agent 审查工作流
 
-配置工具服务后，每次审查会按精确 revision 异步构建完整、只读的 Java `ProjectSnapshot`，缓存全部源码、JavaParser AST、符号索引和 Spring 感知语义图。SymbolResolution 将 Full task 的变更行确定性解析为稳定 `symbol_id`；三路发现者分别通过 `inspect_security_path`、`inspect_change_impact`、`inspect_structure` 查询有限局部子图，取证验证阶段复用同一快照。图谱查询使用 v2 `found/not_found/indeterminate` outcome 与查询级 coverage：已解析关系可证明存在，只有 `not_found + complete` 才能证明声明范围内未找到，`indeterminate + partial` 只形成不可引用的证据缺口。`MAIN/TEST/GENERATED` 来源贯穿节点、关系和工具结果，测试关系不能单独证明生产可达或提高严重度。
+```mermaid
+flowchart LR
+    Diff[代码变更] --> Tasks[任务构建]
+    Tasks --> Route{任务路由}
 
-schema v2 只返回当前 `source_scope` 的 `symbols`、`relationships` 和 `unresolved_relationships`，不再重复输出 MAIN/TEST/GENERATED 专用数组；响应中的每项 `source_set` 必须与 scope 一致。
+    Route -->|Direct| Direct[直接审查]
+    Route -->|Full| Plan[审查规划]
+    Plan --> Reviewers[多维审查<br/>安全 / 行为 / 可维护性]
+    Reviewers --> Locate[候选定位]
+    Locate --> Collect[候选汇总]
+    Collect --> Verify[证据验证]
+    Verify --> Judge[结果裁决]
+    Judge --> Merge[语义合并]
 
-工具原始响应由 Evidence Ledger 完整保存；Reviewer 和 Judge 对三个图谱工具只消费确定性结构化摘要，避免重复字段和诊断噪声占用上下文。Trace 事件只记录调用与 Artifact 引用，独立 HTML 按内容哈希单份保存原始响应，默认展示压缩预览并允许折叠查看原文。
+    Direct --> Result[审查结果]
+    Merge --> Result
+```
 
-安全路径查询只沿已解析关系传播；未解析调用只有在目标名称直接命中敏感 sink 时才返回关系明细。普通未解析调用仅汇总数量并保持 `partial`，不会膨胀安全工具输出，也不会被误判为完整未发现。
+节点职责：
 
-证据阶段采用 Evidence Ledger：工具调用、预取上下文与 task patch 由运行时代码捕获为内容寻址 Artifact（P01/Cxx/Txx 短编号），审查员只输出编号引用（`evidence_refs`），离开发现子图即绑定为内部稳定 ID——LLM 无法伪造、改写或重新填写证据。EvidenceVerifier 全部确定性、零 LLM、正常路径零重放：只做 Artifact 健康检查（patch 摘要一致、图响应 subject/scope/status 护栏、coverage partial 保留正事实）、guard 注解扫描与引用范围核对；终审由批量 EvidenceJudge 承担。`evidence_mode=off` 时仍可作为无证据消融基线。开启本地 HTML Trace 后，主流程会呈现 PR 规模、task 路由、Plan、Reviewer、知识主题和工具步骤；按模式未执行的阶段标记为”按设计跳过”。
+- **任务构建**：按照变更规模生成审查任务。
+- **任务路由**：确定任务进入 Direct 或 Full 流程。
+- **审查规划**：为 Full task 选择审查员和审查重点。
+- **多维审查**：从安全、运行行为和可维护性三个角度发现候选问题。
+- **候选定位**：校验问题是否准确对应本次新增代码。
+- **候选汇总**：汇集并规范化各审查员的发现。
+- **证据验证**：检查候选引用的代码和工具事实是否真实可用。
+- **结果裁决**：根据候选和证据判断保留、丢弃及严重程度。
+- **语义合并**：合并因果语义相同的重复问题。
+
+本地审查输出 Markdown 报告和 HTML Trace；GitHub App 审查则进一步将结果回写到 Check Run、行内标注和 PR 评论。
 
 ## 使用 Docker Compose 快速开始
 
