@@ -191,6 +191,34 @@ TLS。生产环境必须由反向代理终止 HTTPS，并将 `/webhooks/github` 
 公开 Webhook 地址应为 `https://your-host.example/webhooks/github`。不要将 GitHub
 Webhook 直接指向映射端口。
 
+## 项目展示
+
+下面展示一次本地审查和一次 GitHub App 审查的主要产物。
+
+### 本地审查界面
+
+通过 Web UI 填写待审查项目根目录、选择 Diff 基线，并选择是否生成 Markdown 报告和 Agent Trace。
+
+![本地审查界面](docs/showcase/local-review-ui.png)
+
+### Agent Trace
+
+Trace 展示 LangGraph 主执行流、Task 路由、Plan、三类审查员、证据验证、Judge 和语义合并，并可展开查看工具调用与节点输入输出。
+
+![Agent Trace 执行流](docs/showcase/agent-trace.png)
+
+### Markdown 审查报告
+
+本地审查完成后可以生成 Markdown 报告，按严重级别、问题类型、文件和行号汇总最终保留的问题。
+
+示例报告：[review-report-example.md](docs/showcase/review-report-example.md)
+
+### GitHub App 审查结果
+
+GitHub App 接收 Pull Request Webhook 后，会将审查结果回写到 Check Run，并在变更文件对应位置发布行内评论；无法精确定位的问题会进入汇总结果。
+
+![GitHub App 审查结果](docs/showcase/github-app-review.png)
+
 ## 配置 GitHub App
 
 1. 在 GitHub 打开 **Settings > Developer settings > GitHub Apps > New GitHub App**。
