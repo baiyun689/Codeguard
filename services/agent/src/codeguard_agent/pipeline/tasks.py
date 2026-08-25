@@ -28,6 +28,7 @@ _BUILD_DIR_PREFIXES = (
     ".mvn/",
     "bin/",
 )
+_IDE_METADATA_NAMES = (".classpath", ".project")
 _NON_SOURCE_SUFFIXES = (
     ".class",
     ".jar",
@@ -66,6 +67,11 @@ _DIRECT_DENY_TERMS = (
 def _is_build_artifact(file_path: str) -> bool:
     """判断文件是否为构建产物或二进制文件，不应作为审查任务。"""
     normalized = file_path.replace("\\", "/").lower()
+    if normalized == ".idea" or normalized.startswith(".idea/"):
+        return True
+    basename = normalized.rsplit("/", 1)[-1]
+    if basename in _IDE_METADATA_NAMES or basename.endswith(".iml"):
+        return True
     for prefix in _BUILD_DIR_PREFIXES:
         if normalized.startswith(prefix):
             return True
@@ -350,20 +356,26 @@ def build_file_tasks(diff_text: str) -> list[ReviewTask]:
 
 def build_whole_diff_task(diff_text: str) -> list[ReviewTask]:
     """SMALL 模式保持单 task，但仍进入统一 ReviewCouncil 管线。"""
-    files = [file for file in split_diff_by_file(diff_text) if not _is_build_artifact(file)]
+    sections = {
+        file: section
+        for file, section in split_diff_by_file(diff_text).items()
+        if not _is_build_artifact(file)
+    }
+    files = list(sections)
+    filtered_diff = "\n".join(sections.values())
     changed_lines: list[int] = []
-    for section in split_diff_by_file(diff_text).values():
+    for section in sections.values():
         for _header, body, new_start in _split_hunks(section):
             changed_lines.extend(_changed_lines(body, new_start))
     return [
         ReviewTask(
             id="whole_diff#task",
             file=files[0] if len(files) == 1 else "<whole-diff>",
-            patch=diff_text,
+            patch=filtered_diff,
             changed_lines=changed_lines,
             patch_complete=False,
         )
-    ] if diff_text.strip() else []
+    ] if filtered_diff.strip() else []
 
 
 def diff_metrics(diff_text: str) -> DiffMetrics:
