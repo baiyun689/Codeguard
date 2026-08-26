@@ -16,6 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from codeguard_agent.llm.client import invoke_with_retry
+from codeguard_agent.pipeline.prompting import render_prompt_template
 
 logger = logging.getLogger("codeguard")
 
@@ -35,7 +36,7 @@ def _load_prompt(name: str) -> str:
 def _build_user_prompt(diff_text: str) -> str:
     """构造摘要的 user 消息，带提示注入防御（diff 包进标签、声明为数据非指令）。"""
     tpl = _load_prompt("summary-user.txt")
-    return tpl.replace("{{diff}}", diff_text)
+    return render_prompt_template(tpl, {"diff": diff_text})
 
 
 def build_diff_summary(

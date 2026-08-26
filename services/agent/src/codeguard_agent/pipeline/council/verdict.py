@@ -32,6 +32,7 @@ from codeguard_agent.pipeline.evidence.projection import (
     project_tool_payload,
 )
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
+from codeguard_agent.pipeline.prompting import render_prompt_template
 
 logger = logging.getLogger("codeguard")
 
@@ -224,7 +225,15 @@ def _invoke_batch(
                 structured,
                 [
                     ("system", system_prompt),
-                    ("user", _stable_json({"candidates": payload})),
+                    (
+                        "user",
+                        render_prompt_template(
+                            (_PROMPT_DIR / "evidence-judge-user.txt").read_text(
+                                encoding="utf-8"
+                            ),
+                            {"payload": _stable_json({"candidates": payload})},
+                        ),
+                    ),
                 ],
                 max_retries=max_retries,
             )
@@ -484,7 +493,15 @@ def _invoke_direct(
             structured,
             [
                 ("system", system_prompt),
-                ("user", _stable_json(_direct_payload(dossier))),
+                (
+                    "user",
+                    render_prompt_template(
+                        (_PROMPT_DIR / "direct-judge-user.txt").read_text(
+                            encoding="utf-8"
+                        ),
+                        {"payload": _stable_json(_direct_payload(dossier))},
+                    ),
+                ),
             ],
             max_retries=max_retries,
         )

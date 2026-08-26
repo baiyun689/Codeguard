@@ -2,6 +2,10 @@
 
 from pathlib import Path
 
+import pytest
+
+from codeguard_agent.pipeline.prompting import render_prompt_template
+
 
 PROMPT_DIR = (
     Path(__file__).resolve().parents[1]
@@ -81,3 +85,48 @@ def test_summary_prompt_is_fact_only_and_single_field():
     assert "唯一字段 `summary`" in prompt
     assert "## 输出前自检" in prompt
     assert "不提出修复建议" in prompt
+
+
+def test_all_runtime_stages_have_explicit_user_templates():
+    for name in (
+        "review-plan-user.txt",
+        "threat-model-user.txt",
+        "behavior-user.txt",
+        "maintainability-user.txt",
+        "evidence-judge-user.txt",
+        "direct-judge-user.txt",
+        "causal-merge-user.txt",
+        "candidate-relocation-user.txt",
+        "summary-user.txt",
+    ):
+        assert (PROMPT_DIR / name).is_file()
+
+
+def test_prompt_template_rendering_is_strict():
+    assert render_prompt_template("A {{value}}", {"value": "data"}) == "A data"
+    with pytest.raises(ValueError, match="missing"):
+        render_prompt_template("{{value}}", {})
+    with pytest.raises(ValueError, match="extra"):
+        render_prompt_template("plain", {"value": "data"})
+
+
+def test_user_template_rendering_keeps_dynamic_data_out_of_system_prompts():
+    marker = "TASK-DYNAMIC-001"
+    user = render_prompt_template(
+        _prompt("review-plan-user.txt"),
+        {"plan_unit": f'<plan_unit id="{marker}">patch</plan_unit>'},
+    )
+    assert marker in user
+    assert marker not in _prompt("review-plan.txt")
+
+    for name in (
+        "threat-model-base.txt",
+        "behavior-base.txt",
+        "maintainability-base.txt",
+        "evidence-judge.txt",
+        "direct-judge.txt",
+        "causal-merge-system.txt",
+        "candidate-relocation.txt",
+        "summary-system.txt",
+    ):
+        assert marker not in _prompt(name)

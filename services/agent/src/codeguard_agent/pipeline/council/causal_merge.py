@@ -24,6 +24,7 @@ from codeguard_agent.models.council import (
 )
 from codeguard_agent.models.evidence import CandidateVerification
 from codeguard_agent.models.schemas import Issue, Severity
+from codeguard_agent.pipeline.prompting import render_prompt_template
 
 logger = logging.getLogger("codeguard")
 
@@ -97,8 +98,9 @@ def _build_user_prompt(
     }
     if error:
         payload["previous_validation_error"] = error
-    return _load_prompt("causal-merge-user.txt").replace(
-        "{{candidates}}", _stable_json(payload)
+    return render_prompt_template(
+        _load_prompt("causal-merge-user.txt"),
+        {"payload": _stable_json(payload)},
     )
 
 

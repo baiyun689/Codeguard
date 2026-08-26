@@ -544,6 +544,7 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                 plan_objectives=state.get("plan_objectives", ()),
                 task_scope=state.get("task_scope", "current_hunk"),
                 catalog=catalog,
+                user_prompt_file=reviewer.prompt_file.replace("-base.txt", "-user.txt"),
             ),
             "evidence_catalog": catalog,
         }

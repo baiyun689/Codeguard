@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.schemas import DiscoveredIssue
 from codeguard_agent.models.tasks import ReviewTask
+from codeguard_agent.pipeline.prompting import render_prompt_template
 
 LocationStatus = Literal["verified", "corrected", "relocated", "file_level"]
 
@@ -244,7 +245,18 @@ def locate_issues(
             try:
                 result = invoke_with_retry(
                     structured,
-                    [("system", system_prompt), ("user", json.dumps(payload, ensure_ascii=False))],
+                    [
+                        ("system", system_prompt),
+                        (
+                            "user",
+                            render_prompt_template(
+                                (_PROMPT_FILE.parent / "candidate-relocation-user.txt").read_text(
+                                    encoding="utf-8"
+                                ),
+                                {"payload": json.dumps(payload, ensure_ascii=False)},
+                            ),
+                        ),
+                    ],
                     max_retries=max_retries,
                 )
                 if result is not None and not isinstance(result, _RelocationResponse):
