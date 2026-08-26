@@ -7,8 +7,8 @@ import pytest
 from codeguard_agent.config import Settings
 from codeguard_agent import config as config_module
 from codeguard_agent.models.tasks import ReviewBudget
-from codeguard_agent.pipeline import orchestrator as orchestrator_module
-from codeguard_agent.pipeline.graph import ReviewState
+from codeguard_agent.pipeline.orchestration import orchestrator as orchestrator_module
+from codeguard_agent.pipeline.orchestration.graph import ReviewState
 
 
 def _settings(**overrides) -> Settings:

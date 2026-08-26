@@ -6,12 +6,12 @@ from codeguard_agent.models.tasks import (
     TaskAgentPlan,
     TaskRoute,
 )
-from codeguard_agent.pipeline.graph import _task_route_node
+from codeguard_agent.pipeline.orchestration.graph import _task_route_node
 from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
 from codeguard_agent.pipeline.knowledge.selector import select_knowledge
 from codeguard_agent.models.knowledge import KnowledgeBudget
 from codeguard_agent.pipeline.planning import build_plan_units, validate_plan
-from codeguard_agent.pipeline.tasks import classify_task_route
+from codeguard_agent.pipeline.tasks.task_builder import classify_task_route
 
 
 def _task(task_id: str, file: str, patch: str) -> ReviewTask:

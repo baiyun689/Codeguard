@@ -19,8 +19,8 @@ from codeguard_agent.models.tasks import (
     TaskReviewPlan,
     ReviewAssignments,
 )
-from codeguard_agent.pipeline.concurrency import run_bounded_parallel
-from codeguard_agent.pipeline.engines import DirectEngine
+from codeguard_agent.pipeline.execution.concurrency import run_bounded_parallel
+from codeguard_agent.pipeline.execution.engines import DirectEngine
 from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
 
 logger = logging.getLogger("codeguard")

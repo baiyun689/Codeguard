@@ -25,7 +25,7 @@ from codeguard_agent.models.evidence import (
     EvidenceSourceKind,
 )
 from codeguard_agent.models.schemas import Issue, Severity
-from codeguard_agent.pipeline.concurrency import run_bounded_parallel
+from codeguard_agent.pipeline.execution.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.evidence.projection import (
     GRAPH_TOOLS,
     ProjectionAudience,

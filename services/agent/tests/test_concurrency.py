@@ -1,9 +1,9 @@
-"""pipeline/concurrency.py 的单测。"""
+"""pipeline/execution/concurrency.py 的单测。"""
 
 from __future__ import annotations
 
-import codeguard_agent.pipeline.concurrency as concurrency
-from codeguard_agent.pipeline.concurrency import run_bounded_parallel
+import codeguard_agent.pipeline.execution.concurrency as concurrency
+from codeguard_agent.pipeline.execution.concurrency import run_bounded_parallel
 
 
 def test_run_bounded_parallel_returns_results_in_input_order():

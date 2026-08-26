@@ -1609,7 +1609,7 @@ class TestPhaseMapping:
         免映射节点需在白名单中显式列出并注明理由(当前无,所有节点均有相位映射);
         新增图节点漏加映射时本测试直接失败。
         """
-        import codeguard_agent.pipeline.graph as graph_module
+        import codeguard_agent.pipeline.orchestration.graph as graph_module
 
         unmapped_allowlist: dict[str, str] = {
             # LangGraph 编译图的虚拟起止节点,非业务节点,不产生追踪事件,无需相位
@@ -2305,7 +2305,7 @@ class TestEndToEnd:
         monkeypatch,
         tmp_path,
     ):
-        from codeguard_agent.pipeline.orchestrator import (
+        from codeguard_agent.pipeline.orchestration.orchestrator import (
             PipelineOrchestrator,
         )
 
@@ -2354,7 +2354,7 @@ class TestEndToEnd:
         """
         from codeguard_agent.config import Settings
         from codeguard_agent.llm.client import build_llm
-        from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
+        from codeguard_agent.pipeline.orchestration.orchestrator import PipelineOrchestrator
 
         settings = Settings(
             provider="mock", model="", api_key="", api_base_url="",

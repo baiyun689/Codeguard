@@ -69,12 +69,12 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 - **安全路径查询边界**:`inspect_security_path` 只沿已解析调用关系执行最多三层传播；未解析调用仅在目标名称直接命中敏感 sink 时进入 `unresolved_relationships`。普通未解析调用不作为安全事实且不输出关系明细，但会汇总进 `unresolved_count` 并保持 `partial`，避免通用解析噪声膨胀响应，也不把无法遍历的下游误判为完整缺席。
 - **图谱响应合同**:schema v2 只输出当前 `source_scope` 的 canonical `symbols`、`relationships`、`unresolved_relationships`；每项 `source_set` 必须与 scope 一致，不再双写 MAIN/TEST/GENERATED 专用数组。带旧 scope 数组的 Gateway 响应视为协议不兼容。
 - **CandidateLocator(节点内定位护栏)**:Full 与 Direct 的 `DiscoveredIssue` 在绑定稳定候选 ID 前统一校验 `location_snippet`。只允许当前 task 新增行中的 1～5 行连续原文；唯一匹配可修正 Reviewer 行号，合法原行号可兜底，其余按 task 每批最多 8 条调用 LLM 重新提取片段并确定性复验。最终失败保留为 `line=0` 文件级候选，并向 Judge 暴露 `candidate_location_unresolved` 限制；该步骤不新增 LangGraph 节点，定位片段也不进入产品输出或证据账本。
-- **发现者工具协调**:`pipeline/discovery_tools.py` 在单次 review 的单个 reviewer node 内按规范化工具参数执行 single-flight/cache；不同 task 首次复用完整结果，同一 ReAct 对话重复调用只返回短标记，最终 gathered context 也按相同 canonical key 去重，三个发现者之间及跨 review 不共享。只有未被大 diff 策略截断的完整新增文件 patch 才可代替 `get_file_content`。
+- **发现者工具协调**:`pipeline/execution/discovery.py` 在单次 review 的单个 reviewer node 内按规范化工具参数执行 single-flight/cache；不同 task 首次复用完整结果，同一 ReAct 对话重复调用只返回短标记，最终 gathered context 也按相同 canonical key 去重，三个发现者之间及跨 review 不共享。只有未被大 diff 策略截断的完整新增文件 patch 才可代替 `get_file_content`。
 - **工具响应投影**:Gateway 原始响应只进入 Evidence Artifact；三个 `inspect_*` 图谱工具通过确定性 `PayloadProjection` 向 Reviewer/Judge 提供 schema v2 摘要，`get_file_content` 仍提供完整代码。工具轨迹通道只流转 `ToolTraceRef`，不再把 `DiscoveryToolRecord.output/resolved_output` 写入 State；Evidence Ledger 的 Artifact 仍作为证据状态保留。HTML Trace 按 `payload_hash` 单份保存原文，事件通过 `call_id/artifact_id` 引用。
 - **EvidenceVerifier(证据账本验证,零 LLM)**:审查员只从运行时捕获的 `<evidence_catalog>` 里选编号(`evidence_refs` 最多 3 条，patch=P01 自动绑定)，离开发现子图即绑定为内容寻址 artifact ID——LLM 无法伪造、改写或重新填写证据。Verifier 只证明 Artifact 真实、可用、属于候选范围：patch 摘要一致、图响应 schema/outcome/scope/coverage 护栏（`MAIN/TEST/GENERATED` 分类，生产查询不消费 TEST 关系，测试事实不能证明生产可达/影响/severity）、guard 注解扫描确定性反证、引用范围核对；`found + partial` 只保留正向事实，`indeterminate + partial` 进入 EvidenceGap，只有可恢复执行异常进入重放且重放后重新执行相同校验。
 - **CouncilJudge(批量证据裁决)**:每批 ≤8 候选、最多 4 批并行，一次完成支持/反驳/去留/定级。Patch 可以证明局部代码机制，但不能自动证明跨文件调用、生产可达性或外部契约；定位事实（LOCATION）不能单独证明缺陷成立；未找到保护不等于证明保护不存在。输出经确定性合同校验（keep 必须引用 ≥1 支持事实、引用 ID 必须属于候选可见范围、supporting/counter 不得重叠、维护性候选不得 CRITICAL），违规重试/二分拆批，单候选最终失败 fail-closed 不输出。Judge 不补证、不按标签直定级，也不接受 LLM 直接选择危险等级。
 
-审查员的"执行方式"抽成可插拔引擎(`pipeline/engines.py`):`DirectEngine`(无工具基准)/ `ToolAgentEngine`(ReAct,基于 langchain v1 `create_agent`)。`ReviewerStage` 按 `tool_client` 是否存在分流。
+审查员的"执行方式"抽成可插拔引擎(`pipeline/execution/engines.py`):`DirectEngine`(无工具基准)/ `ToolAgentEngine`(ReAct,基于 langchain v1 `create_agent`)。`ReviewerStage` 按 `tool_client` 是否存在分流。
 
 **职责边界**:Python = 智能编排(推理 / 编排 / 对结论加工);Java = 护栏 + 地面真值(安全沙箱 / 重静态计算)。四条不变量:Python 调 Java 单向、Java 不碰 LLM;代码探索只走 Java 沙箱;不确定性只在 Python;Java 不判断"是不是问题"。
 
@@ -107,8 +107,12 @@ Codeguard/
     │   │   ├── git/diff_collector.py  # 调系统 git 采集 diff + parse_changed_files(派生 allowed_files)
     │   │   ├── llm/client.py      # LLM 工厂(openai/Codex/mock)+ 重试 + mock 假数据
     │   │   ├── tools/             # ★工具调用(智能层侧)。tool_client(同步 HTTP)+ definitions(LangChain 工具)
-    │   │   ├── pipeline/orchestrator.py   # 多阶段管线编排(审查唯一入口)
-    │   │   ├── pipeline/tasks.py          # ★任务拆分、DirectGate 与规模路由
+    │   │   ├── pipeline/orchestration/    # ★LangGraph 图构建与管线入口
+    │   │   │   ├── graph.py
+    │   │   │   └── orchestrator.py
+    │   │   ├── pipeline/tasks/            # ★任务拆分、DirectGate 与规模路由
+    │   │   │   ├── task_builder.py
+    │   │   │   └── scope.py
     │   │   ├── pipeline/symbols/          # ★Full task 变更位置到稳定项目符号的解析
     │   │   ├── pipeline/reviewers/        # ★三路发现者、工具协调与 prompt 构造
     │   │   ├── pipeline/planning/         # ★OCR 式 PlanUnit、Reviewer 与知识主题规划
@@ -116,7 +120,10 @@ Codeguard/
     │   │   ├── pipeline/evidence/         # ★证据账本:注册/绑定/目录渲染、健康检查/图护栏/异常重放、guard 扫描
     │   │   ├── pipeline/council/          # ★候选归并、裁决与过程指标
     │   │   ├── pipeline/summary/          # 可选变更摘要阶段
-    │   │   ├── pipeline/engines.py        # ★审查员执行引擎:DirectEngine(直连基准)/ ToolAgentEngine(ReAct)
+    │   │   ├── pipeline/execution/        # ★运行时执行、工具发现与并发控制
+    │   │   │   ├── engines.py
+    │   │   │   ├── discovery.py
+    │   │   │   └── concurrency.py
     │   │   └── prompts/                   # Plan、三路发现、证据、裁决、摘要与知识主题
     │   ├── legacy/                # 不打包、不参与默认 pytest 的历史实现
     │   │   ├── supervisor_graph/  # 旧 Supervisor 图
@@ -149,7 +156,7 @@ Codeguard/
 3. **`git/diff_collector.py:collect_diff`** 调系统 `git diff <base>` 拿 unified diff 文本;空 diff 直接结束。
 4. **`llm/client.py:build_llm`** 按 provider 造 LangChain Chat 模型;`provider=mock` 返回 `None`。
 5. **工具会话(可选)**:配置 `CODEGUARD_TOOL_SERVER_URL` 且非 mock 时,CLI 为本次 diff 创建 Java 工具会话;否则走无工具直连基准。
-6. **`pipeline/orchestrator.py:PipelineOrchestrator.run`** 是审查唯一门面,内部构建 `pipeline/graph.py` 的 ADR-032 LangGraph:
+6. **`pipeline/orchestration/orchestrator.py:PipelineOrchestrator.run`** 是审查唯一门面,内部构建 `pipeline/orchestration/graph.py` 的 ADR-032 LangGraph:
    - `PRModeClassifier` 先按规模选择 whole-diff、file task 或 hunk task；所有规模都进入统一 task 管线。
    - TaskBuilder 后执行确定性 `TaskRoute(DirectGate)`；Direct task 独立直审，Full task 进入 `TaskSelection → Plan → ReviewPlan`。
    - `Plan` 按 PlanUnit 并发生成 Reviewer、审查重点和知识主题；LARGE 模式同文件 hunk 复用文件级 Plan。
@@ -285,7 +292,7 @@ python -m evals.runner --profile eval-codeguard-full --runs 1   # 完整档单�
 
 ### 6.4 LLM / 结构化输出的坑
 
-- **结果可能是 `None`**:`with_structured_output(...).invoke()` 在模型没正确发起工具调用时返回 `None`。审查引擎(`pipeline/engines.py`)已兜底成空结果——**任何新写的、消费 LLM 结构化输出的代码都要做同样的 None 防御。**
+- **结果可能是 `None`**:`with_structured_output(...).invoke()` 在模型没正确发起工具调用时返回 `None`。审查引擎(`pipeline/execution/engines.py`)已兜底成空结果——**任何新写的、消费 LLM 结构化输出的代码都要做同样的 None 防御。**
 - **DeepSeek 等兼容端点**:不支持 OpenAI 的 `json_schema`,必须用 `function_calling`(已是默认);推理模型要 `CODEGUARD_DISABLE_THINKING=true`。flash 类小模型工具调用稳定性弱,评测时漏报偏多属正常。
 - **provider=mock 时 `build_llm` 返回 `None`**,靠下游分支识别走假数据——别假设 llm 一定非空。
 

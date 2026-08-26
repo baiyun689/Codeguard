@@ -1,6 +1,6 @@
 """任务构建阶段的 IDE 元数据过滤测试。"""
 
-from codeguard_agent.pipeline.tasks import (
+from codeguard_agent.pipeline.tasks.task_builder import (
     build_file_tasks,
     build_tasks,
     build_whole_diff_task,

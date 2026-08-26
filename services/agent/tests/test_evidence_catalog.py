@@ -20,7 +20,7 @@ from codeguard_agent.models.tasks import (
     SymbolResolutionStatus,
     TaskSymbolContext,
 )
-from codeguard_agent.pipeline.engines import (
+from codeguard_agent.pipeline.execution.engines import (
     DirectEngine,
     ToolAgentEngine,
     _gathered_context_from_records,
@@ -30,7 +30,7 @@ from codeguard_agent.pipeline.evidence.ledger import (
     capture_tool_records,
 )
 from codeguard_agent.pipeline.reviewers.reviewers import build_reviewer_user_prompt
-from codeguard_agent.pipeline.discovery import (
+from codeguard_agent.pipeline.execution.discovery import (
     COMPLETE_PATCH_RESULT,
     REPEATED_TOOL_RESULT,
     CoordinatedDiscoveryToolClient,

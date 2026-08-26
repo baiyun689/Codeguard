@@ -18,7 +18,7 @@ from codeguard_agent.models.evidence import (
     compute_artifact_id,
     merge_evidence_artifacts,
 )
-from codeguard_agent.pipeline.orchestrator import resolve_evidence_revision
+from codeguard_agent.pipeline.orchestration.orchestrator import resolve_evidence_revision
 from codeguard_agent.tools.tool_client import ToolClient, create_tool_session
 
 from evals.runner import case_evidence_revision

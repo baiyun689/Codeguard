@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import codeguard_agent.pipeline.graph as G
+import codeguard_agent.pipeline.orchestration.graph as G
 from codeguard_agent.models.tasks import TaskSelection
 from codeguard_agent.pipeline.reviewers.reviewers import DEFAULT_REVIEWERS
 

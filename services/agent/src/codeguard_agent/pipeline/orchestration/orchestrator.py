@@ -15,7 +15,7 @@ import uuid
 from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.models.tasks import ReviewBudget
 from codeguard_agent.observability.models import DegradationReport
-from codeguard_agent.pipeline.graph import (
+from codeguard_agent.pipeline.orchestration.graph import (
     DEFAULT_RECURSION_LIMIT,
     ReviewState,
     build_review_graph,
@@ -223,7 +223,7 @@ def _artifact_tool_profile(artifacts: dict) -> list:
     与严格工具降级检测读取。
     """
     from codeguard_agent.models.evidence import EvidenceCaptureMode, EvidenceSourceKind
-    from codeguard_agent.pipeline.engines import GatheredContext
+    from codeguard_agent.pipeline.execution.engines import GatheredContext
 
     items: list[GatheredContext] = []
     seen: set[tuple[str, str]] = set()

@@ -30,7 +30,7 @@ from codeguard_agent.pipeline.evidence.projection import (
     ProjectionAudience,
     project_tool_payload,
 )
-from codeguard_agent.pipeline.discovery import (
+from codeguard_agent.pipeline.execution.discovery import (
     COMPLETE_PATCH_RESULT,
     REPEATED_TOOL_RESULT,
 )

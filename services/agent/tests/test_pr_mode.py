@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from codeguard_agent.models.tasks import ReviewBudget, ReviewMode
-from codeguard_agent.pipeline.tasks import classify_diff, diff_metrics
+from codeguard_agent.pipeline.tasks.task_builder import classify_diff, diff_metrics
 
 
 _SMALL_CHARS = 1000

@@ -38,9 +38,9 @@ from codeguard_agent.models.tasks import (
     TaskAgentPlan,
     TaskRoute,
 )
-from codeguard_agent.pipeline import tasks as task_prep
-from codeguard_agent.pipeline.concurrency import run_bounded_parallel
-from codeguard_agent.pipeline.discovery import (
+from codeguard_agent.pipeline.tasks import task_builder as task_prep
+from codeguard_agent.pipeline.execution.concurrency import run_bounded_parallel
+from codeguard_agent.pipeline.execution.discovery import (
     CoordinatedDiscoveryToolClient,
     DiscoveryToolCoordinator,
 )
@@ -48,13 +48,13 @@ from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
 from codeguard_agent.pipeline.knowledge.selector import select_knowledge
 from codeguard_agent.pipeline.location import locate_issues
 from codeguard_agent.models.knowledge import KnowledgeBudget
-from codeguard_agent.pipeline.task_scope import LargeDiffPlan, plan_large_diff
+from codeguard_agent.pipeline.tasks.scope import LargeDiffPlan, plan_large_diff
 from codeguard_agent.pipeline.planning import (
     build_plan_units,
     plan_coverage,
     run_plan_units,
 )
-from codeguard_agent.pipeline.engines import (
+from codeguard_agent.pipeline.execution.engines import (
     DirectEngine,
     ReviewEngine,
     ReviewOutcome,

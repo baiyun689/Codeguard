@@ -37,8 +37,8 @@ from codeguard_agent.config import Settings
 from codeguard_agent.git.diff_collector import parse_changed_files
 from codeguard_agent.llm.client import build_llm
 from codeguard_agent.models.tasks import ReviewBudget
-from codeguard_agent.pipeline.orchestrator import PipelineOrchestrator
-from codeguard_agent.pipeline.engines import DirectEngine
+from codeguard_agent.pipeline.orchestration.orchestrator import PipelineOrchestrator
+from codeguard_agent.pipeline.execution.engines import DirectEngine
 from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.tools.tool_client import create_tool_session, destroy_tool_session
 

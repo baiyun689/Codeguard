@@ -19,7 +19,7 @@ from typing import Any
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.evidence import ToolTraceRef
 from codeguard_agent.models.schemas import ReviewResult
-from codeguard_agent.pipeline.discovery import (
+from codeguard_agent.pipeline.execution.discovery import (
     COMPLETE_PATCH_RESULT,
     DISCOVERY_GATEWAY_TOOLS,
     REPEATED_TOOL_RESULT,
