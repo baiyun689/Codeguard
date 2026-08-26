@@ -15,9 +15,9 @@ import uuid
 from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.models.tasks import ReviewBudget
 from codeguard_agent.observability.models import DegradationReport
+from codeguard_agent.models.state import ReviewState
 from codeguard_agent.pipeline.orchestration.graph import (
     DEFAULT_RECURSION_LIMIT,
-    ReviewState,
     build_review_graph,
 )
 

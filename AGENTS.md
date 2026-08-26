@@ -102,6 +102,7 @@ Codeguard/
     │   │   ├── cli.py             # 命令行:review 子命令、结果打印、退出码、工具会话建/销
     │   │   ├── config.py          # Settings:从环境变量/.env 读配置(含 Tool Server URL/Token)
     │   │   ├── models/schemas.py  # ★产品输出结构:Severity / Issue / ReviewResult / DiscoveredIssue(evidence_refs)
+    │   │   ├── models/state.py    # ★LangGraph 顶层 ReviewState/ReviewerState 与 reducer
     │   │   ├── models/evidence.py # ★证据账本:Artifact/Catalog/Ref/Verifier/Judge 模型
     │   │   ├── models/council.py  # ★内部结构:CandidateIssue / Verdict / Trace/Stats
     │   │   ├── git/diff_collector.py  # 调系统 git 采集 diff + parse_changed_files(派生 allowed_files)

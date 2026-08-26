@@ -8,19 +8,18 @@ large 构建 hunk task。所有 task 经过 DirectGate，Full task 进入 Plan�
 from __future__ import annotations
 
 import logging
-import operator
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Any, Literal
 
 from codeguard_agent.llm.client import mock_review_result
 from codeguard_agent.models.council import (
-    CandidateIssue,
-    CausalComparison,
-    CausalMergeGroup,
-    CausalProfile,
-    CouncilRunStats,
     CouncilTrace,
     MAX_CANDIDATES_PER_AGENT,
+)
+from codeguard_agent.models.state import (
+    ReviewState,
+    ReviewerState,
+    collect_candidate_reducer,
 )
 from codeguard_agent.models.schemas import DiscoveryReviewResult, Issue, ReviewResult
 from codeguard_agent.models.tasks import (
@@ -30,12 +29,8 @@ from codeguard_agent.models.tasks import (
     ReviewRouteThresholds,
     ReviewerKind,
     ReviewTask,
-    TaskSymbolContext,
-    ReviewAssignments,
     SkippedTask,
     TaskSelection,
-    PlanUnit,
-    TaskAgentPlan,
     TaskRoute,
 )
 from codeguard_agent.pipeline.tasks import task_builder as task_prep
@@ -62,7 +57,6 @@ from codeguard_agent.pipeline.execution.engines import (
 )
 from codeguard_agent.models.evidence import (
     EvidenceArtifact,
-    merge_evidence_artifacts,
 )
 from codeguard_agent.pipeline.evidence.ledger import (
     EvidenceCatalogBuilder,
@@ -85,116 +79,8 @@ DEFAULT_RECURSION_LIMIT = 50
 _ALL_REVIEWER_NAMES = [r.source_agent for r in DEFAULT_REVIEWERS]
 
 
-def collect_candidate_reducer(existing: list | None, new: list | None) -> list:
-    """`raw_candidate_issues` reducer: 仅按 candidate.id 去重，保留首次出现的 payload。
-
-    语义合并在 EvidenceJudge 之后的 causal_merge 节点中执行。
-    """
-    merged = list(existing or []) + list(new or [])
-    seen: set[str] = set()
-    out: list[CandidateIssue] = []
-    for c in merged:
-        if c.id in seen:
-            continue
-        seen.add(c.id)
-        out.append(c)
-    return out
-
-
 def _discover_node_name(reviewer: Reviewer) -> str:
     return f"discover_{reviewer.source_agent}"
-
-
-class ReviewState(TypedDict, total=False):
-    """审查图共享状态。
-
-    字段按生命周期分组，但仍保持顶层 channel 以保留 LangGraph reducer
-    语义。只有会影响后续节点的工作数据留在这里；纯运行观测数据逐步由
-    TraceCollector / eval 侧信道承载。
-    """
-
-    # --- Input: 本次审查的只读事实 ---
-    diff_text: str
-    evidence_revision: str
-
-    # --- Config: 本次运行的策略和预算 ---
-    enabled_tools: Any
-    enabled_evidence_tools: Any
-    max_retries: int
-    structured_method: str
-    react_recursion_limit: int
-    allow_direct_fallback: bool
-    review_budget: ReviewBudget
-
-    # --- Plan: 确定性规划结果 ---
-    review_mode: str  # "small" | "medium" | "large"
-    review_route: ReviewRoute
-    direct_review_status: str  # "completed" | "fallback"
-    review_tasks: list[ReviewTask]
-    task_routes: dict[str, TaskRoute]
-    plan_units: list[PlanUnit]
-    task_plans: dict[str, TaskAgentPlan]
-    direct_final_issues: list
-    task_selection: TaskSelection
-    review_assignments: ReviewAssignments
-
-    # --- Working: 跨节点传递、会影响后续决策的审查工作集 ---
-    diff_summary: str
-    task_symbol_contexts: dict[str, TaskSymbolContext]
-    raw_candidate_issues: Annotated[list[CandidateIssue], collect_candidate_reducer]
-    candidate_issues: list[CandidateIssue]
-    candidate_verifications: dict[str, Any]
-    evidence_artifacts: Annotated[dict[str, EvidenceArtifact], merge_evidence_artifacts]
-    review_summaries: Annotated[list, operator.add]
-    judge_survivor_ids: list[str]
-    causal_profiles: dict[str, CausalProfile]
-    causal_comparisons: list[CausalComparison]
-    causal_merge_groups: list[CausalMergeGroup]
-    causal_merge_stats: dict[str, int]
-
-    # --- Output: 对外 ReviewResult 的来源 ---
-    final_issues: list
-    summary: str
-
-    # --- Diagnostics: Trace / eval 数据，不属于产品输出 ---
-    symbol_resolution_diagnostics: dict[str, str]
-    council_stats: CouncilRunStats
-    council_trace: Annotated[list[CouncilTrace], operator.add]
-    truncated_candidates: Annotated[int, operator.add]
-    tool_trace_records: Annotated[list, operator.add]
-
-
-class ReviewerState(TypedDict, total=False):
-    """单个发现者 Agent 子图的局部状态，不是顶层审查结果状态。"""
-
-    # 输入/策略：由顶层 ReviewState 为当前 reviewer + task 投影而来。
-    diff_text: str
-    enabled_tools: Any
-    max_retries: int
-    structured_method: str
-    diff_summary: str
-    react_recursion_limit: int
-    allow_direct_fallback: bool
-    task_knowledge: str
-    plan_objectives: tuple[str, ...]
-    knowledge_topics: tuple[str, ...]
-    review_task: ReviewTask
-    task_symbol_context: TaskSymbolContext
-    tier: str
-    task_scope: str  # "current_hunk" | "current_file"
-    review_tool_client: Any
-
-    # 当前 task 的证据目录和结构化 Prompt。
-    evidence_revision: str
-    evidence_catalog: Any
-
-    issues: list
-    tool_trace_records: list
-    review_summaries: list
-    council_trace: Annotated[list[CouncilTrace], operator.add]
-
-    user_prompt: str
-    outcome: Any
 
 
 def _make_engine(state: ReviewState | ReviewerState, tool_client=None) -> ReviewEngine:
