@@ -29,7 +29,7 @@ Compose 的 `observability` profile 提供 Prometheus、预置告警规则和自
 
 ReviewCouncil 发现者由 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent` 方法论分工;最终 category 仍兼容 `security` / `logic` / `quality`。三类发现者各自声明工具 allowlist，并通过 `CandidateIssue` / `EvidenceRef` / `Verdict` / `CouncilTrace` 结构化黑板通信。三路发现者只通过 ID reducer 汇集 raw candidates；CouncilCoordinator 在 fan-in 后按完整路径和局部位置构块，并以最多 8 个并行结构化 LLM 调用进行保守归并。非法、低置信或失败结果一律保留候选。
 
-证据采用 **Evidence Ledger**（取代 ADR-046 的 evidence_chain 重放验证与更早的多阶段 Concern/Strategist/Researcher/ImpactAssessor，后者已废弃勿恢复）：patch（P01）、预取上下文（Cxx）、真实工具结果（Txx）由运行时代码捕获为内容寻址 Artifact，审查员只输出短编号引用（`evidence_refs`），不生产任何证据文本。EvidenceVerifier 全部确定性、零 LLM、正常路径零重放——Artifact 健康检查（patch 摘要一致、图响应 schema/outcome/scope/coverage 护栏）、guard 注解扫描（按发现者分工：@PreAuthorize 族/@Transactional 确定性反证）、引用范围核对；`indeterminate` 形成不可引用的 EvidenceGap，仅执行失败、空响应、解析失败和 revision 不一致进入重放，重放结果必须重新校验。CouncilJudge 用批量 EvidenceJudge（每批 ≤8 候选）一次完成支持/反驳/去留/定级，输出经确定性合同校验（keep 必须引用支持事实、ID 必须可见、维护性候选不得 CRITICAL、LOCATION 不能单独支持），违规重试/二分拆批，单候选最终失败 fail-closed 不输出。旧 Supervisor 图迁移到 `services/agent/legacy/supervisor_graph/`,仅作历史参考,不作为默认路径、feature flag 或 eval profile 回退。
+证据采用 **Evidence Ledger**（取代 ADR-046 的 evidence_chain 重放验证与更早的多阶段 Concern/Strategist/Researcher/ImpactAssessor，后者已废弃勿恢复）：patch（P01）、预取上下文（Cxx）、真实工具结果（Txx）由运行时代码捕获为内容寻址 Artifact，审查员只输出短编号引用（`evidence_refs`），不生产任何证据文本。EvidenceVerifier 全部确定性、零 LLM、正常路径零重放——Artifact 健康检查（patch 摘要一致、图响应 schema/outcome/scope/coverage 护栏）、引用范围核对；`indeterminate` 形成不可引用的 EvidenceGap，仅执行失败、空响应、解析失败和 revision 不一致进入重放，重放结果必须重新校验。鉴权和事务注解不在 Verifier 阶段决定候选去留，统一交由 CouncilJudge 根据候选主张和有效证据裁决。CouncilJudge 用批量 EvidenceJudge（每批 ≤8 候选）一次完成支持/反驳/去留/定级，输出经确定性合同校验（keep 必须引用支持事实、ID 必须可见、维护性候选不得 CRITICAL、LOCATION 不能单独支持），违规重试/二分拆批，单候选最终失败 fail-closed 不输出。旧 Supervisor 图迁移到 `services/agent/legacy/supervisor_graph/`,仅作历史参考,不作为默认路径、feature flag 或 eval profile 回退。
 
 Reviewer 分派和知识注入完全由 Full task 的 Plan 决定；Plan 失败时只注入 BASE，并沿用基础 Reviewer 覆盖策略。
 任务选择只消费 DirectGate、diff 规模和确定性任务上限，不依赖额外的风险分类模型。内部 State
@@ -63,7 +63,7 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 
 - **Summary 阶段(可选)**:在 TaskRank 后对选中任务范围产出变更摘要,作为 ReviewCouncil 的导航背景。由 `CODEGUARD_ENABLE_SUMMARY` 控制(默认开)。摘要不进入 Evidence Ledger,也不作为候选成立依据。
 - **PR 规模与 Task 路由**:`PRModeClassifier` 只按 diff 体量选择 task 粒度：SMALL 整个 diff 一个 task，MEDIUM 按文件建 task，LARGE 按 hunk 建 task。TaskBuilder 之后由确定性 DirectGate 逐 task 决定 direct/full；低风险文档/注释任务走 Direct，其余默认 Full。SMALL 不再绕过统一管线。LARGE 同一文件的 Full hunk 共享一个 PlanUnit，Plan 只调用一次；HTML Trace 展示 TaskRoute、DirectTaskReview 和 Plan。
-- **SymbolResolution**:在 ReviewCouncil 前把 Full task 的变更文件与行号批量解析为强类型 `TaskSymbolContext`。它只提供稳定 `symbol_id`、声明范围、注解、局部控制流和来源集合，供领域工具、Evidence Ledger 与 guard 扫描使用；不负责摘要、知识选择、Reviewer 分派、深层图谱查询或问题判断。
+- **SymbolResolution**:在 ReviewCouncil 前把 Full task 的变更文件与行号批量解析为强类型 `TaskSymbolContext`。它只提供稳定 `symbol_id`、声明范围、注解、局部控制流和来源集合，供领域工具与 Evidence Ledger 使用；不负责摘要、知识选择、Reviewer 分派、深层图谱查询或问题判断。
 - **大 diff 降级**:仅在超过 5000 行时，Python 确定性收紧为最多 20 个任务、每文件 3 个、每任务上下文 2000 字符；普通 diff 全选 Full task。Plan 不引入新的总 Token 预算，成本由 task 粒度、同文件 Plan 复用、并发限制、超时和现有重试控制。Java 不重复判断。
 - **Plan 与 ReviewCouncilSubgraph**:Full task 按 PlanUnit 并发执行结构化 Plan；Plan 显式选择 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent`、审查重点和知识主题，不选择工具。三个 task-scoped 发现者 fan-out 产出 raw `CandidateIssue`;Reviewer 固定持有 `inspect_security_path` / `inspect_change_impact` / `inspect_structure`，这些专属工具负责发现隐藏的跨文件安全、行为和结构问题。user prompt 携带 Plan 重点、预取事实和 Plan 选中的 BASE+专项 knowledge bundle。`CouncilCoordinator` 在显式 fan-in 后构建局部候选块并保守归并。
 - **安全路径查询边界**:`inspect_security_path` 只沿已解析调用关系执行最多三层传播；未解析调用仅在目标名称直接命中敏感 sink 时进入 `unresolved_relationships`。普通未解析调用不作为安全事实且不输出关系明细，但会汇总进 `unresolved_count` 并保持 `partial`，避免通用解析噪声膨胀响应，也不把无法遍历的下游误判为完整缺席。
@@ -71,7 +71,7 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 - **CandidateLocator(节点内定位护栏)**:Full 与 Direct 的 `DiscoveredIssue` 在绑定稳定候选 ID 前统一校验 `location_snippet`。只允许当前 task 新增行中的 1～5 行连续原文；唯一匹配可修正 Reviewer 行号，合法原行号可兜底，其余按 task 每批最多 8 条调用 LLM 重新提取片段并确定性复验。最终失败保留为 `line=0` 文件级候选，并向 Judge 暴露 `candidate_location_unresolved` 限制；该步骤不新增 LangGraph 节点，定位片段也不进入产品输出或证据账本。
 - **发现者工具协调**:`pipeline/execution/discovery.py` 在单次 review 的单个 reviewer node 内按规范化工具参数执行 single-flight/cache；不同 task 首次复用完整结果，同一 ReAct 对话重复调用只返回短标记，最终 gathered context 也按相同 canonical key 去重，三个发现者之间及跨 review 不共享。只有未被大 diff 策略截断的完整新增文件 patch 才可代替 `get_file_content`。
 - **工具响应投影**:Gateway 原始响应只进入 Evidence Artifact；三个 `inspect_*` 图谱工具通过确定性 `PayloadProjection` 向 Reviewer/Judge 提供 schema v2 摘要，`get_file_content` 仍提供完整代码。工具轨迹通道只流转 `ToolTraceRef`，不再把 `DiscoveryToolRecord.output/resolved_output` 写入 State；Evidence Ledger 的 Artifact 仍作为证据状态保留。HTML Trace 按 `payload_hash` 单份保存原文，事件通过 `call_id/artifact_id` 引用。
-- **EvidenceVerifier(证据账本验证,零 LLM)**:审查员只从运行时捕获的 `<evidence_catalog>` 里选编号(`evidence_refs` 最多 3 条，patch=P01 自动绑定)，离开发现子图即绑定为内容寻址 artifact ID——LLM 无法伪造、改写或重新填写证据。Verifier 只证明 Artifact 真实、可用、属于候选范围：patch 摘要一致、图响应 schema/outcome/scope/coverage 护栏（`MAIN/TEST/GENERATED` 分类，生产查询不消费 TEST 关系，测试事实不能证明生产可达/影响/severity）、guard 注解扫描确定性反证、引用范围核对；`found + partial` 只保留正向事实，`indeterminate + partial` 进入 EvidenceGap，只有可恢复执行异常进入重放且重放后重新执行相同校验。
+- **EvidenceVerifier(证据账本验证,零 LLM)**:审查员只从运行时捕获的 `<evidence_catalog>` 里选编号(`evidence_refs` 最多 3 条，patch=P01 自动绑定)，离开发现子图即绑定为内容寻址 artifact ID——LLM 无法伪造、改写或重新填写证据。Verifier 只证明 Artifact 真实、可用、属于候选范围：patch 摘要一致、图响应 schema/outcome/scope/coverage 护栏（`MAIN/TEST/GENERATED` 分类，生产查询不消费 TEST 关系，测试事实不能证明生产可达/影响/severity）、引用范围核对；`found + partial` 只保留正向事实，`indeterminate + partial` 进入 EvidenceGap，只有可恢复执行异常进入重放且重放后重新执行相同校验。鉴权和事务注解只作为候选可见上下文，不在 Verifier 阶段直接淘汰候选。
 - **CouncilJudge(批量证据裁决)**:每批 ≤8 候选、最多 4 批并行，一次完成支持/反驳/去留/定级。Patch 可以证明局部代码机制，但不能自动证明跨文件调用、生产可达性或外部契约；定位事实（LOCATION）不能单独证明缺陷成立；未找到保护不等于证明保护不存在。输出经确定性合同校验（keep 必须引用 ≥1 支持事实、引用 ID 必须属于候选可见范围、supporting/counter 不得重叠、维护性候选不得 CRITICAL），违规重试/二分拆批，单候选最终失败 fail-closed 不输出。Judge 不补证、不按标签直定级，也不接受 LLM 直接选择危险等级。
 
 审查员的"执行方式"抽成可插拔引擎(`pipeline/execution/engines.py`):`DirectEngine`(无工具基准)/ `ToolAgentEngine`(ReAct,基于 langchain v1 `create_agent`)。`ReviewerStage` 按 `tool_client` 是否存在分流。
@@ -132,7 +132,7 @@ Codeguard/
     │   │   ├── pipeline/reviewers/        # ★三路发现者、工具协调与 prompt 构造
     │   │   ├── pipeline/planning/         # ★OCR 式 PlanUnit、Reviewer 与知识主题规划
     │   │   ├── pipeline/location/         # ★候选新增行定位校验与批量重定位
-    │   │   ├── pipeline/evidence/         # ★证据账本:注册/绑定/目录渲染、健康检查/图护栏/异常重放、guard 扫描
+    │   │   ├── pipeline/evidence/         # ★证据账本:注册/绑定/目录渲染、健康检查/图护栏/异常重放
     │   │   ├── pipeline/council/          # ★候选归并、裁决与过程指标
     │   │   ├── pipeline/summary/          # 可选变更摘要阶段
     │   │   ├── pipeline/execution/        # ★运行时执行、工具发现与并发控制

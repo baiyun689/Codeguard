@@ -1070,7 +1070,7 @@ def _assemble_state_dossiers(state: ReviewState):
 
 
 def _evidence_verifier_node(tool_client=None, judge_llm=None):
-    """证据验证节点:Artifact 健康检查 + 图护栏 + guard 扫描 + 异常重放(零 LLM)。"""
+    """证据验证节点:Artifact 健康检查 + 图护栏 + 异常重放(零 LLM)。"""
 
     def _node(state: ReviewState) -> dict:
         from codeguard_agent.pipeline.evidence.verifier import verify_evidence

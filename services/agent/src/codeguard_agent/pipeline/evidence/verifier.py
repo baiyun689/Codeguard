@@ -1,4 +1,4 @@
-"""Evidence Ledger 验证节点:Artifact 健康检查 + 图护栏 + guard 扫描 + 异常重放。
+"""Evidence Ledger 验证节点:Artifact 健康检查 + 图护栏 + 异常重放。
 
 正常路径零 LLM、零重放:只证明 Artifact 真实、可用、属于候选可见范围,
 不判断 candidate claim 是否成立——支持/反驳判定整体移交批量 EvidenceJudge。
@@ -34,7 +34,6 @@ from codeguard_agent.models.evidence import (
 )
 from codeguard_agent.models.tasks import ResolvedSymbol
 from codeguard_agent.pipeline.evidence.graph_response import validate_graph_payload
-from codeguard_agent.pipeline.evidence.guard_scan import scan_guard_content
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 
 logger = logging.getLogger("codeguard")
@@ -263,14 +262,13 @@ def _verify_candidate(
     batch: VerificationBatch,
     replay_cache: dict[str, _ArtifactHealth],
 ) -> CandidateVerification:
-    """单个候选的确定性验证:引用核对 → 健康检查 → guard 扫描 → grounding。"""
+    """单个候选的确定性验证:引用核对 → 健康检查 → grounding。"""
     candidate = dossier.candidate
     valid_evidence: list[VerifiedEvidence] = []
     evidence_gaps: list[EvidenceGap] = []
     invalid_references: list[EvidenceRefError] = []
     source_kinds: set[EvidenceSourceKind] = set()
     patch_valid = False
-    guard_hit = ""
 
     for ref in candidate.evidence_refs:
         artifact = artifacts.get(ref.artifact_id)
@@ -411,19 +409,6 @@ def _verify_candidate(
             )
         )
 
-    # guard 确定性扫描:patch/文件内容中的明确保护机制 → 直接反证(门控残留)。
-    if not invalid_references:
-        for item in valid_evidence:
-            content = item.content.strip()
-            if not content:
-                continue
-            observation = scan_guard_content(
-                dossier, content, candidate.source_agent
-            )
-            if observation:
-                guard_hit = observation
-                break
-
     if not patch_valid:
         grounding = "ungrounded"
         rejection = "patch_artifact_missing_or_corrupt"
@@ -436,10 +421,7 @@ def _verify_candidate(
     else:
         grounding = "grounded"
         rejection = ""
-    if guard_hit:
-        rejection = "direct_counter_guard"
-
-    eligible = patch_valid and not guard_hit
+    eligible = patch_valid
     verification = CandidateVerification(
         candidate_id=candidate.id,
         source_kinds=source_kinds,
@@ -456,7 +438,6 @@ def _verify_candidate(
             "grounding": verification.grounding_status,
             "eligible": eligible,
             "rejection_reason": rejection,
-            "guard_hit": guard_hit,
             "evidence_gaps": len(evidence_gaps),
         }))
     )

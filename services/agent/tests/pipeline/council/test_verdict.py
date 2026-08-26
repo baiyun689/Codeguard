@@ -256,14 +256,14 @@ def test_不可裁决候选_按验证淘汰原因drop():
     batch = judge_with_evidence(
         _assembly([candidate]),
         {"c1": _verification("c1", eligible=False).model_copy(
-            update={"rejection_reason": "direct_counter_guard"}
+            update={"rejection_reason": "patch_artifact_missing_or_corrupt"}
         )},
         _artifacts(),
         judge_llm=None,
         structured_method="function_calling",
         max_retries=1,
     )
-    assert batch.verdicts[0].reason_code == "direct_counter_guard"
+    assert batch.verdicts[0].reason_code == "patch_artifact_missing_or_corrupt"
     assert batch.final_issues == []
 
 

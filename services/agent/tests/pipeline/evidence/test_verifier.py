@@ -1,4 +1,4 @@
-"""Evidence Ledger 验证器测试:Artifact 健康检查 / 图护栏 / guard 扫描 / 异常重放。
+"""Evidence Ledger 验证器测试:Artifact 健康检查 / 图护栏 / 异常重放。
 
 正常路径零 LLM、零重放;只证明 Artifact 真实可用、属于候选范围。
 """
@@ -502,10 +502,10 @@ def test_重放后仍_indeterminate_形成_gap_不升级():
     assert "evidence_replay_unavailable" in [event for event, _ in batch.trace]
 
 
-# ── guard 扫描与引用范围 ───────────────────────────────────────────────
+# ── 注解上下文与引用范围 ───────────────────────────────────────────────
 
 
-def _guard_context(annotation: str = "PreAuthorize") -> TaskSymbolContext:
+def _annotation_context(annotation: str = "PreAuthorize") -> TaskSymbolContext:
     return TaskSymbolContext(
         task_id=TASK_ID,
         status=SymbolResolutionStatus.RESOLVED,
@@ -524,49 +524,25 @@ def _guard_context(annotation: str = "PreAuthorize") -> TaskSymbolContext:
     )
 
 
-def _verify_with_bundle(candidate: CandidateIssue, annotation: str):
+def test_protection_annotations_do_not_remove_candidate_from_judge():
     patch = _patch_artifact()
-    batch = verify_evidence(
-        [_dossier(candidate, context=_guard_context(annotation))],
-        artifacts={patch.id: patch},
-        tool_client=None,
-        revision=REV,
-        enabled_replay_tools=None,
-    )
-    return batch.candidates[candidate.id]
-
-
-def test_guard_threat候选_授权注解命中_直接反证_不可裁决():
-    patch = _patch_artifact()
-    verification = _verify_with_bundle(_candidate(patch.id), "PreAuthorize")
-    assert verification.eligible_for_judge is False
-    assert verification.rejection_reason == "direct_counter_guard"
-
-
-def test_guard_behavior候选_事务注解命中_直接反证():
-    candidate = _candidate(_patch_artifact().id).model_copy(
-        update={"source_agent": "behavior"}
-    )
-    verification = _verify_with_bundle(candidate, "Transactional")
-    assert verification.eligible_for_judge is False
-    assert verification.rejection_reason == "direct_counter_guard"
-
-
-def test_guard_behavior候选_授权注解不扫描():
-    # guard 过滤按发现者分工:授权注解只对 threat_model 候选反证。
-    candidate = _candidate(_patch_artifact().id).model_copy(
-        update={"source_agent": "behavior"}
-    )
-    verification = _verify_with_bundle(candidate, "PreAuthorize")
-    assert verification.eligible_for_judge is True
-
-
-def test_guard_maintainability候选_不扫描():
-    candidate = _candidate(_patch_artifact().id).model_copy(
-        update={"source_agent": "maintainability"}
-    )
-    verification = _verify_with_bundle(candidate, "PreAuthorize")
-    assert verification.eligible_for_judge is True
+    for source_agent, annotation in (
+        ("threat_model", "PreAuthorize"),
+        ("behavior", "Transactional"),
+        ("maintainability", "PreAuthorize"),
+    ):
+        candidate = _candidate(patch.id).model_copy(
+            update={"source_agent": source_agent}
+        )
+        verification = verify_evidence(
+            [_dossier(candidate, context=_annotation_context(annotation))],
+            artifacts={patch.id: patch},
+            tool_client=None,
+            revision=REV,
+            enabled_replay_tools=None,
+        ).candidates[candidate.id]
+        assert verification.eligible_for_judge is True
+        assert verification.rejection_reason == ""
 
 
 def test_引用指向缺失artifact_无效引用_partially_grounded():
