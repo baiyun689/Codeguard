@@ -11,18 +11,18 @@ from codeguard_agent.models.schemas import Issue, Severity
 class CandidateIssue(BaseModel):
     """发现者 Agent 写入共享黑板的候选问题。"""
 
-    id: str
-    task_id: str
-    source_agent: str
-    file: str
-    line: int = 0
-    type: str
-    severity_proposal: Severity
-    claim: str
-    suggestion: str = ""
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
-    evidence_ref_errors: list[EvidenceRefError] = Field(default_factory=list)
+    id: str = Field(description="候选问题的稳定 ID")
+    task_id: str = Field(description="产生该候选的 ReviewTask ID")
+    source_agent: str = Field(description="产生该候选的 Reviewer 标识")
+    file: str = Field(description="候选问题所在文件路径")
+    line: int = Field(default=0, description="候选问题所在行号，0 表示暂时无法定位")
+    type: str = Field(description="问题类型")
+    severity_proposal: Severity = Field(description="发现者建议的严重级别，最终由 Judge 决定")
+    claim: str = Field(description="候选问题的具体主张及其原因")
+    suggestion: str = Field(default="", description="修复建议，可选")
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="发现者对候选问题成立的置信度")
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list, description="候选引用的证据账本条目")
+    evidence_ref_errors: list[EvidenceRefError] = Field(default_factory=list, description="证据引用校验失败的诊断信息")
 
     def to_issue(self) -> Issue:
         """裁决后转换为产品输出 Issue。"""

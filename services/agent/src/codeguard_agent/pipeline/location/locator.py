@@ -24,12 +24,17 @@ _RELOCATION_BATCH_SIZE = 8
 
 
 class _RelocationItem(BaseModel):
-    candidate_id: str
-    location_snippet: str = ""
+    candidate_id: str = Field(description="需要重新定位的候选 ID")
+    location_snippet: str = Field(
+        default="",
+        description="从当前 patch 新增行原样复制的唯一连续代码片段；无法确定时返回空字符串",
+    )
 
 
 class _RelocationResponse(BaseModel):
-    locations: list[_RelocationItem] = Field(default_factory=list)
+    locations: list[_RelocationItem] = Field(
+        default_factory=list, description="每个候选对应的重新定位结果"
+    )
 
 
 @dataclass(frozen=True)
