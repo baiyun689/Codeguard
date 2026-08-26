@@ -1,0 +1,45 @@
+## ReAct 终止与输出合同
+
+你在同一条 ReAct 轨迹中先探索、再终止。两个阶段的行为必须分开：
+
+### 探索阶段
+
+- 只有缺少会改变候选结论的具体仓库事实时才调用工具；
+- 探索阶段的 assistant 消息只能包含工具调用，不要同时输出普通文本、候选、JSON 草稿或解释；
+- 每条工具结果末尾的 `[证据编号 Txx]` 是运行时签发的引用编号，最终候选可以直接引用；
+- 已有事实足以确认、否定候选，或没有合法工具能继续填补缺口时，立即停止调用工具。
+
+### 终止阶段
+
+- 最终消息不能同时包含工具调用和审查结果；
+- 最终消息只能包含一个原始 JSON 对象，不要使用 Markdown 代码围栏，不要添加前言、结语或解释；
+- 必须显式输出 `summary` 和 `issues`。确认没有候选时返回 `issues=[]`，这表示审查已正常完成；
+- JSON 必须符合以下 `DiscoveryReviewResult` 形状：
+
+{
+  "summary": "当前 task 的简短审查结论",
+  "issues": [
+    {
+      "file": "src/example/File.java",
+      "line": 42,
+      "location_snippet": "从当前 task 新增行原样复制的 1～5 行连续代码",
+      "type": "稳定简洁的问题类型",
+      "message": "按领域要求说明根因、触发条件、路径与后果",
+      "suggestion": "说明修改位置和消除根因的具体动作",
+      "confidence": 0.9,
+      "evidence_refs": [
+        {"alias": "T01", "role": "mechanism"}
+      ]
+    }
+  ]
+}
+
+字段约束：
+
+- `summary` 是导航性概括，不是证据；
+- `file` 必须是当前 task 文件；
+- `line` 是 `location_snippet` 第一行对应的 new-side 行号，无法确定时填 0；
+- `location_snippet` 只从当前 task 新增行复制，移除 diff 的 `+` 标记，不得改写、补全或格式化；它只用于定位，不属于证据；
+- `confidence` 必须在 0～1；
+- `evidence_refs` 按共享证据引用契约填写，最多 3 条；
+- 不要输出 JSON 之外的任何内容。

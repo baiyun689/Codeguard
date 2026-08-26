@@ -272,8 +272,8 @@ class CouncilTraceStats(BaseModel):
     react_degraded_recursion_count: int = Field(
         default=0, description="ReAct 撞递归上限降级 DirectEngine 的次数"
     )
-    react_degraded_empty_count: int = Field(
-        default=0, description="ReAct 空结果降级 DirectEngine 的次数"
+    react_synthesis_fallback_count: int = Field(
+        default=0, description="ReAct 结构化收口 fallback 的次数"
     )
     direct_tier_task_count: int = Field(
         default=0, description="路由为 tier=direct（不使用 ReAct）的 task 数"

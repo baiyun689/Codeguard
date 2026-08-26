@@ -302,9 +302,9 @@ def test_共享协调器_跨任务复用_返回真实内容且记录指向首次
     client_b = CoordinatedDiscoveryToolClient(_FakeDelegate(), coordinator)
     resp_a = client_a.get_file_content("src/A.java")
     resp_b = client_b.get_file_content("src/A.java")
-    # 首发回显编号;跨任务复用:LLM 看到真实内容(协调器缓存命中),不是短标记。
+    # 首发与跨任务复用都回显当前 task 的编号；复用命中仍返回真实内容。
     assert resp_a.result == "REAL CONTENT\n\n[证据编号 T01]"
-    assert resp_b.result == "REAL CONTENT"
+    assert resp_b.result == "REAL CONTENT\n\n[证据编号 T01]"
     record_a = client_a.trace_records[-1]
     record_b = client_b.trace_records[-1]
     assert record_a.status == "complete"

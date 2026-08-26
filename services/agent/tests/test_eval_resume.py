@@ -40,7 +40,7 @@ def test_strict_tool_profile_allows_policy_selected_direct_tasks() -> None:
                 "symbol_resolution": "graph_coverage_partial"
             },
             "council": {
-                "react_degraded_empty_count": 1,
+                "react_synthesis_fallback_count": 1,
                 "direct_tier_task_count": 2,
             },
         },
@@ -48,7 +48,7 @@ def test_strict_tool_profile_allows_policy_selected_direct_tasks() -> None:
 
     assert "symbol_resolution:graph_coverage_partial" in failures
     assert "tool_failed:inspect_structure" in failures
-    assert "react_degraded_empty_count=1" in failures
+    assert "react_synthesis_fallback_count=1" in failures
     assert "direct_tier_task_count=2" not in failures
     assert warnings == []
 

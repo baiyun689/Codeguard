@@ -1,8 +1,13 @@
 """Default discoverer prompt configuration tests."""
 
+from codeguard_agent.models.schemas import DiscoveryReviewResult
+from codeguard_agent.models.tasks import ReviewTask
+from codeguard_agent.pipeline.execution.engines import ReviewOutcome
+from codeguard_agent.pipeline.orchestration import graph as graph_module
 from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
     _load_prompt,
+    build_reviewer_system_prompt,
 )
 
 
@@ -24,18 +29,13 @@ def test_base_prompts_do_not_contain_knowledge_graph_heading():
 
 
 def test_all_discovery_prompts_define_location_snippet_contract():
-    for filename in (
-        "threat-model-base.txt",
-        "behavior-base.txt",
-        "maintainability-base.txt",
-        "eval-direct-reviewer.txt",
-    ):
-        prompt = _load_prompt(filename)
+    prompts = [build_reviewer_system_prompt(reviewer) for reviewer in DEFAULT_REVIEWERS]
+    prompts.append(_load_prompt("eval-direct-reviewer.txt"))
+    for prompt in prompts:
         assert "location_snippet" in prompt
         assert "新增行" in prompt
         assert "1～5 行" in prompt
         assert "不属于" in prompt and "证据" in prompt
-        assert "severity" not in prompt
 
 
 def test_relocation_prompt_is_a_restricted_location_contract():
@@ -49,3 +49,46 @@ def test_relocation_prompt_is_a_restricted_location_contract():
     assert "keep/drop" in prompt
     assert "无法确定时返回空字符串" in prompt
     assert "禁止猜测" in prompt
+
+
+def test_reviewer_subgraph_合法clean结果不再次直审(monkeypatch):
+    class CleanEngine:
+        def review(self, *_args, **_kwargs):
+            return ReviewOutcome(
+                DiscoveryReviewResult(summary="clean", issues=[]),
+                execution_events=["react_inline_structured"],
+            )
+
+    class FailIfDirectLLM:
+        def with_structured_output(self, *_args, **_kwargs):
+            raise AssertionError("合法 clean 结果不应再次直审")
+
+    monkeypatch.setattr(graph_module, "_make_engine", lambda *_args, **_kwargs: CleanEngine())
+    reviewer = DEFAULT_REVIEWERS[1]
+    subgraph = graph_module.build_reviewer_subgraph(
+        reviewer,
+        llm=FailIfDirectLLM(),
+        tool_client=object(),
+    )
+    task = ReviewTask(
+        id="task-1",
+        file="src/A.java",
+        patch="@@ -1 +1 @@\n-old\n+new",
+        changed_lines=[1],
+    )
+
+    result = subgraph.invoke({
+        "diff_text": task.patch,
+        "review_task": task,
+        "tier": "react",
+        "review_tool_client": object(),
+        "evidence_revision": "rev-1",
+        "max_retries": 1,
+        "structured_method": "function_calling",
+        "task_scope": "current_hunk",
+    })
+
+    assert result["issues"] == []
+    assert "react_inline_structured" in {
+        trace.event for trace in result.get("council_trace", [])
+    }

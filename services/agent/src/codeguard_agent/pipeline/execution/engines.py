@@ -29,6 +29,19 @@ from codeguard_agent.pipeline.execution.discovery import (
 
 logger = logging.getLogger("codeguard")
 
+REACT_INLINE_STRUCTURED_EVENT = "react_inline_structured"
+REACT_SYNTHESIS_FALLBACK_INVALID_OUTPUT_EVENT = (
+    "react_synthesis_fallback_invalid_output"
+)
+REACT_SYNTHESIS_FALLBACK_RECURSION_EVENT = "react_synthesis_fallback_recursion"
+REACT_SYNTHESIS_FALLBACK_FAILED_EVENT = "react_synthesis_fallback_failed"
+REACT_DEGRADED_RECURSION_EVENT = "react_degraded_recursion"
+REACT_DIRECT_FALLBACK_FAILED_EVENT = "react_direct_fallback_failed"
+REACT_SYNTHESIS_FALLBACK_EVENTS = frozenset({
+    REACT_SYNTHESIS_FALLBACK_INVALID_OUTPUT_EVENT,
+    REACT_SYNTHESIS_FALLBACK_RECURSION_EVENT,
+})
+
 
 @dataclass(frozen=True)
 class GatheredContext:
@@ -125,15 +138,14 @@ class DirectEngine(ReviewEngine):
 
 
 class ToolAgentEngine(ReviewEngine):
-    """ReAct Agent 引擎:可调 Java 工具服务获取上下文,再产出结构化结果。
+    """ReAct Agent 引擎:探索工具并在同一轨迹终止消息中产出结构化结果。
 
     基于 langchain v1 的 ``create_agent``(langgraph 预构建图):
     - 工具循环 + 停止条件由图托管,无需手写 AgentExecutor;
-    - ``response_format=ReviewResult`` 让图内置结构化收口,免去"逼 prompt 吐 JSON 再正则解析";
+    - 终止消息按 ``result_schema`` 本地校验，失败时才进行一次结构化 synthesis;
     - 与图编排同源，均基于 LangGraph 预构建图。
 
-    与 DirectEngine 同构地返回 ReviewResult;拿不到结构化结果时一律兜底为空并告警,绝不抛断
-    (见 spec「ReAct 审查结果的结构化与健壮性」)。
+    全部工具调用先进入 Evidence Ledger/Trace，再解释终止消息；候选只引用其中最小子集。
     """
 
     def __init__(
@@ -187,7 +199,7 @@ class ToolAgentEngine(ReviewEngine):
                 catalog, trace_refs = _capture_records(
                     evidence_catalog, tool_records
                 )
-                synthesis = DirectEngine().review(
+                return _run_structured_fallback(
                     llm,
                     system_prompt=system_prompt,
                     user_prompt=_synthesis_prompt(user_prompt, catalog, gathered),
@@ -195,11 +207,10 @@ class ToolAgentEngine(ReviewEngine):
                     max_retries=max_retries,
                     structured_method=structured_method,
                     result_schema=result_schema,
+                    catalog=catalog,
+                    trace_refs=trace_refs,
+                    event=REACT_SYNTHESIS_FALLBACK_RECURSION_EVENT,
                 )
-                synthesis.tool_trace_records.extend(trace_refs)
-                synthesis.execution_events.append("react_bounded_synthesis")
-                synthesis.evidence_catalog = catalog
-                return synthesis
             # ReAct 在 recursion_limit 步内没收敛(绕的难例 / 工具反复绕)。不让该域被静默丢弃
             # (那会直接丢失这一维度的发现、压低 recall),而是降级为无工具直连复审一次,至少
             # 据 diff 产出一份结论。直连无工具不会再循环。
@@ -208,29 +219,33 @@ class ToolAgentEngine(ReviewEngine):
                 reviewer_name,
                 self._recursion_limit,
             )
-            fallback = DirectEngine().review(
+            catalog, trace_refs = _capture_records(evidence_catalog, tool_records)
+            return _run_structured_fallback(
                 llm,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 reviewer_name=reviewer_name,
                 max_retries=max_retries,
                 structured_method=structured_method,
+                result_schema=result_schema,
+                catalog=catalog,
+                trace_refs=trace_refs,
+                event=REACT_DEGRADED_RECURSION_EVENT,
+                failure_event=REACT_DIRECT_FALLBACK_FAILED_EVENT,
             )
-            tool_records = list(getattr(self._tool_client, "trace_records", ()))
-            catalog, trace_refs = _capture_records(
-                evidence_catalog, tool_records
-            )
-            fallback.tool_trace_records.extend(trace_refs)
-            # ReAct 异常降级 Direct 时保留已捕获目录,不丢已取得的工具事实。
-            fallback.evidence_catalog = catalog
-            return fallback
-        # 两阶段收束:ReAct 探索工具收集上下文 → DirectEngine 结构化合成。
-        # create_agent 不再传 response_format(deepseek 不兼容 LangChain 隐式 Respond 工具),
-        # 改为主动用 DirectEngine.with_structured_output 做最终收口。
         tool_records = list(getattr(self._tool_client, "trace_records", ()))
-        gathered = _extract_gathered_context(raw, tool_records=tool_records)
         catalog, trace_refs = _capture_records(evidence_catalog, tool_records)
-        synthesis = DirectEngine().review(
+        inline_result = _extract_inline_result(raw, result_schema)
+        if inline_result is not None:
+            return ReviewOutcome(
+                inline_result,
+                tool_trace_records=list(trace_refs),
+                execution_events=[REACT_INLINE_STRUCTURED_EVENT],
+                evidence_catalog=catalog,
+            )
+
+        gathered = _gathered_context_from_records(tool_records)
+        return _run_structured_fallback(
             llm,
             system_prompt=system_prompt,
             user_prompt=_synthesis_prompt(user_prompt, catalog, gathered),
@@ -238,11 +253,10 @@ class ToolAgentEngine(ReviewEngine):
             max_retries=max_retries,
             structured_method=structured_method,
             result_schema=result_schema,
+            catalog=catalog,
+            trace_refs=trace_refs,
+            event=REACT_SYNTHESIS_FALLBACK_INVALID_OUTPUT_EVENT,
         )
-        synthesis.tool_trace_records.extend(trace_refs)
-        synthesis.execution_events.append("react_two_phase_synthesis")
-        synthesis.evidence_catalog = catalog
-        return synthesis
 
     def _run_agent(self, llm: Any, system_prompt: str, user_prompt: str) -> Any:
         """构建 ReAct agent 并执行,返回原始状态。
@@ -282,81 +296,103 @@ class ToolAgentEngine(ReviewEngine):
             config={"recursion_limit": self._recursion_limit},
         )
 
-def _extract_gathered_context(
-    raw: Any,
+
+def _run_structured_fallback(
+    llm: Any,
     *,
-    tool_records: Any = (),
-) -> list[GatheredContext]:
-    """从 create_agent 返回状态的消息流里抽取工具返回的上下文(ToolMessage)。
-
-    工具入参在调用它的 AIMessage.tool_calls 里,故先建 tool_call_id → (name, args) 映射,
-    再把每条 ToolMessage 配回去。对任何缺失/异常健壮:取不到一律返回已收集的部分(或空),
-    绝不抛断(工具上下文是"锦上添花",不该让审查失败)。
-    """
+    system_prompt: str,
+    user_prompt: str,
+    reviewer_name: str,
+    max_retries: int,
+    structured_method: str,
+    result_schema: Any,
+    catalog: Any,
+    trace_refs: list[Any],
+    event: str,
+    failure_event: str = REACT_SYNTHESIS_FALLBACK_FAILED_EVENT,
+) -> ReviewOutcome:
+    """执行唯一一次结构化收口；失败后返回显式事件，不再启动新阶段。"""
     try:
-        if not isinstance(raw, dict):
-            return []
-        messages = raw.get("messages") or []
-        records_by_key: dict[ToolKey, Any] = {}
-        for record in tool_records or ():
-            arguments = getattr(record, "arguments", {})
-            if not isinstance(arguments, dict):
-                continue
-            key = canonical_tool_key(str(getattr(record, "tool", "")), arguments)
-            if getattr(record, "status", "") != "reused":
-                records_by_key.setdefault(key, record)
-        # tool_call_id → (工具名, 入参摘要)
-        call_meta: dict[str, tuple[str, str, ToolKey]] = {}
-        for msg in messages:
-            for call in getattr(msg, "tool_calls", None) or []:
-                cid = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
-                name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
-                args = call.get("args") if isinstance(call, dict) else getattr(call, "args", {})
-                if cid:
-                    tool_name = name or ""
-                    args_text = _summarize_args(args)
-                    key = (
-                        canonical_tool_key(tool_name, args)
-                        if isinstance(args, dict)
-                        else (tool_name, args_text)
-                    )
-                    call_meta[cid] = (tool_name, args_text, key)
-        gathered: list[GatheredContext] = []
-        seen: set[ToolKey] = set()
-        for msg in messages:
-            if getattr(msg, "type", "") != "tool":
-                continue
-            cid = getattr(msg, "tool_call_id", None)
-            fallback_name = getattr(msg, "name", "") or ""
-            name, args, key = call_meta.get(
-                cid or "", (fallback_name, "", (fallback_name, ""))
-            )
-            if name not in DISCOVERY_GATEWAY_TOOLS:
-                continue
-            if key in seen:
-                continue
-            content = getattr(msg, "content", "")
-            content = content if isinstance(content, str) else str(content)
-            if not content.strip():
-                continue
-            if content in {COMPLETE_PATCH_RESULT, REPEATED_TOOL_RESULT}:
-                continue
-            seen.add(key)
-            record = records_by_key.get(key)
-            gathered.append(
-                GatheredContext(
-                    tool=name,
-                    args=args,
-                    content=content,
-                    duration_ms=float(getattr(record, "duration_ms", 0.0)),
-                    status=str(getattr(record, "status", "complete")),
-                )
-            )
-        return gathered
-    except Exception as exc:  # noqa: BLE001 上下文捕获失败不应影响审查
-        logger.warning("[engines] 抽取工具上下文失败,本次按空处理: %s", exc)
-        return []
+        synthesis = DirectEngine().review(
+            llm,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            reviewer_name=reviewer_name,
+            max_retries=max_retries,
+            structured_method=structured_method,
+            result_schema=result_schema,
+        )
+    except Exception as exc:  # noqa: BLE001 fallback 失败必须在本层终止
+        logger.warning("[%s] ReAct 结构化收口失败: %s", reviewer_name, exc)
+        try:
+            empty_result = result_schema(summary="", issues=[])
+        except Exception:  # noqa: BLE001 非审查 schema 的防御性兜底
+            empty_result = ReviewResult(summary="")
+        return ReviewOutcome(
+            empty_result,
+            tool_trace_records=list(trace_refs),
+            execution_events=[event, failure_event],
+            evidence_catalog=catalog,
+        )
+    synthesis.tool_trace_records.extend(trace_refs)
+    synthesis.execution_events.append(event)
+    synthesis.evidence_catalog = catalog
+    return synthesis
 
+
+def _extract_inline_result(raw: Any, result_schema: Any) -> Any | None:
+    """解析 ReAct 的终止消息；结构不合法时返回 None 交给 synthesis 降级。"""
+    if not isinstance(raw, dict):
+        return None
+    messages = raw.get("messages") or []
+    if not isinstance(messages, list) or not messages:
+        return None
+    final_message = messages[-1]
+    if getattr(final_message, "type", "") != "ai":
+        return None
+    if getattr(final_message, "tool_calls", None):
+        return None
+    content = _message_text(getattr(final_message, "content", ""))
+    if not content:
+        return None
+    payload = _unwrap_json_fence(content)
+    try:
+        return result_schema.model_validate_json(payload)
+    except Exception:  # noqa: BLE001 最终输出不合法时由一次结构化 synthesis 兜底
+        return None
+
+
+def _message_text(content: Any) -> str:
+    """归一化 LangChain AIMessage 的字符串或文本 content blocks。"""
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+            continue
+        if isinstance(block, dict) and block.get("type") in {"text", "plain_text"}:
+            text = block.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+                continue
+        return ""
+    return "".join(parts).strip()
+
+
+def _unwrap_json_fence(text: str) -> str:
+    """仅兼容包裹整个终止结果的单一 JSON 代码围栏。"""
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    if len(lines) < 3 or lines[0].strip().lower() not in {"```", "```json"}:
+        return stripped
+    if lines[-1].strip() != "```":
+        return stripped
+    return "\n".join(lines[1:-1]).strip()
 
 def _synthesis_prompt(user_prompt: str, catalog: Any, gathered: list[GatheredContext]) -> str:
     """合成期提示词:优先渲染证据目录(编号+摘要内容),无目录时回退有界事实。"""

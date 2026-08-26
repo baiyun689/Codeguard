@@ -70,10 +70,11 @@ def test_parallel_task_clients_share_single_flight_but_both_receive_full_result(
     clients = [CoordinatedDiscoveryToolClient(raw, coordinator) for _ in range(2)]
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda c: c.get_file_content("src/A.java"), clients))
-    # 首发客户端回显编号;复用方(协调器缓存命中)收到原始内容。
-    assert {result.result for result in results} == {
-        "FULL BODY\n\n[证据编号 T01]", "FULL BODY",
-    }
+    # 每个 task 都收到完整内容和自己账本中的 T01，复用不丢引用能力。
+    assert [result.result for result in results] == [
+        "FULL BODY\n\n[证据编号 T01]",
+        "FULL BODY\n\n[证据编号 T01]",
+    ]
     assert raw.calls == 1
     records = [record for client in clients for record in client.trace_records]
     assert sorted(record.status for record in records) == ["complete", "reused"]

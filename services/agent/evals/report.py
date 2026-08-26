@@ -286,7 +286,7 @@ def render_report(
             "",
             "### 降级摘要",
             "",
-            "| 用例 | ReAct→直连(递归) | ReAct→直连(空) | Direct 分派 | 发现者失败 | Task 失败 | Judge 失败 |",
+            "| 用例 | ReAct→直连(递归) | ReAct结构化收口降级 | Direct 分派 | 发现者失败 | Task 失败 | Judge 失败 |",
             "|---|---|---|---|---|---|---|",
         ]
         for o in council_rows:
@@ -294,7 +294,7 @@ def render_report(
             lines.append(
                 f"| {o.case_id} | "
                 f"{c.react_degraded_recursion_count} | "
-                f"{c.react_degraded_empty_count} | "
+                f"{c.react_synthesis_fallback_count} | "
                 f"{c.direct_tier_task_count} | "
                 f"{c.discoverer_failed_count} | "
                 f"{c.task_review_failed_count} | "

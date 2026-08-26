@@ -26,6 +26,10 @@ from codeguard_agent.models.evidence import (
 )
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.pipeline.evidence.planner import DossierAssembly
+from codeguard_agent.pipeline.execution.engines import (
+    REACT_DEGRADED_RECURSION_EVENT,
+    REACT_SYNTHESIS_FALLBACK_EVENTS,
+)
 
 
 def _ratio(numerator: int, denominator: int) -> float | None:
@@ -125,9 +129,12 @@ def compute_council_run_stats(
     )
     # ── 降级指标:从 council_trace 事件中计数 ──
     react_degraded_recursion_count = _count_event(
-        council_trace, "react_degraded_recursion"
+        council_trace, REACT_DEGRADED_RECURSION_EVENT
     )
-    react_degraded_empty_count = _count_event(council_trace, "react_degraded_empty")
+    react_synthesis_fallback_count = sum(
+        _count_event(council_trace, event)
+        for event in REACT_SYNTHESIS_FALLBACK_EVENTS
+    )
     direct_tier_task_count = _count_event(council_trace, "tier_direct")
     discoverer_failed_count = _count_event(council_trace, "discover_failed")
     task_review_failed_count = _count_event(council_trace, "task_review_failed")
@@ -174,7 +181,7 @@ def compute_council_run_stats(
         judge_failed_candidate_count=severity_defaulted,
         judge_no_support_drop_count=judge_no_support_drop,
         react_degraded_recursion_count=react_degraded_recursion_count,
-        react_degraded_empty_count=react_degraded_empty_count,
+        react_synthesis_fallback_count=react_synthesis_fallback_count,
         direct_tier_task_count=direct_tier_task_count,
         discoverer_failed_count=discoverer_failed_count,
         task_review_failed_count=task_review_failed_count,

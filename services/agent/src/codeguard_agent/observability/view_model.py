@@ -128,7 +128,7 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
             "total": degradation.total_degradations,
             "items": [
                 {"label": "ReAct→直连(递归)", "count": degradation.react_degraded_recursion},
-                {"label": "ReAct→直连(空)", "count": degradation.react_degraded_empty},
+                {"label": "ReAct结构化收口降级", "count": degradation.react_synthesis_fallback},
                 {"label": "Direct分派", "count": degradation.direct_tier_tasks, "info": True},
                 {"label": "发现者失败", "count": degradation.discoverer_failed},
                 {"label": "Task失败", "count": degradation.task_review_failed},

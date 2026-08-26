@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Severity(str, Enum):
@@ -78,6 +78,8 @@ class DiscoveredIssue(BaseModel):
     系统会自动绑定 task patch(P01),evidence_refs=[] 不代表没有证据。
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     file: str = Field(description="问题所在文件路径")
     line: int = Field(default=0, description="问题所在行号,0 表示无法定位到具体行")
     location_snippet: str = Field(
@@ -98,8 +100,10 @@ class DiscoveredIssue(BaseModel):
 class DiscoveryReviewResult(BaseModel):
     """发现者输出的结构化审查结果(带证据引用)。"""
 
-    summary: str = Field(default="", description="本次审查的整体摘要")
-    issues: list[DiscoveredIssue] = Field(default_factory=list, description="发现的问题列表")
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(description="本次审查的整体摘要")
+    issues: list[DiscoveredIssue] = Field(description="发现的问题列表")
 
 
 class ReviewResult(BaseModel):

@@ -52,6 +52,12 @@ from codeguard_agent.pipeline.planning import (
 )
 from codeguard_agent.pipeline.execution.engines import (
     DirectEngine,
+    REACT_DEGRADED_RECURSION_EVENT,
+    REACT_DIRECT_FALLBACK_FAILED_EVENT,
+    REACT_INLINE_STRUCTURED_EVENT,
+    REACT_SYNTHESIS_FALLBACK_FAILED_EVENT,
+    REACT_SYNTHESIS_FALLBACK_INVALID_OUTPUT_EVENT,
+    REACT_SYNTHESIS_FALLBACK_RECURSION_EVENT,
     ReviewEngine,
     ReviewOutcome,
     ToolAgentEngine,
@@ -563,7 +569,6 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
             else _make_engine(state, tool_client=effective_tool_client)
         )
         review_traces: list[CouncilTrace] = []
-        degraded_to_direct = False
         if tier == "direct":
             task = state.get("review_task")
             task_id = task.id if task is not None else ""
@@ -591,7 +596,7 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                 review_traces.append(
                     CouncilTrace(
                         node=reviewer.source_agent,
-                        event="react_degraded_recursion",
+                        event=REACT_DEGRADED_RECURSION_EVENT,
                         detail=str(exc)[:200],
                     )
                 )
@@ -606,7 +611,6 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                 )
                 outcome.evidence_catalog = catalog
                 outcome.tool_trace_records.extend(trace_refs)
-                degraded_to_direct = True
             else:
                 if (
                     tier != "direct"
@@ -630,7 +634,6 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                     )
                     outcome.evidence_catalog = catalog
                     outcome.tool_trace_records.extend(trace_refs)
-                    degraded_to_direct = True
                 else:
                     logger.warning("[%s] 发现者失败,跳过: %s", reviewer.name, exc)
                     return {
@@ -644,36 +647,30 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                         ],
                     }
 
-        # ReAct 跑完但未产出任何 issue → LLM 偶发空响应（DeepSeek 已知问题），
-        # 降级为 DirectEngine 直连复审以保住该域覆盖率。
-        if (
-            tier != "direct"
-            and not degraded_to_direct
-            and not outcome.result.issues
-            and state.get("allow_direct_fallback", True)
-        ):
-            logger.warning(
-                "[%s] ReAct 未产出 issue,降级直连复审以保住该域覆盖", reviewer.name
-            )
-            review_traces.append(
-                CouncilTrace(
-                    node=reviewer.source_agent,
-                    event="react_degraded_empty",
-                    detail="empty result",
-                )
-            )
-            react_outcome = outcome
-            outcome = _direct_fallback(state)
-            outcome.tool_trace_records.extend(react_outcome.tool_trace_records)
-            # ReAct 空结果降级直连时,保留已捕获目录(含 Txx),禁止丢失已取得的工具事实。
-            outcome.evidence_catalog = react_outcome.evidence_catalog
-
+        event_details = {
+            REACT_INLINE_STRUCTURED_EVENT: "used the ReAct terminal structured result",
+            REACT_SYNTHESIS_FALLBACK_INVALID_OUTPUT_EVENT: (
+                "synthesized from captured tool facts after invalid terminal output"
+            ),
+            REACT_SYNTHESIS_FALLBACK_RECURSION_EVENT: (
+                "synthesized from captured tool facts after the recursion limit"
+            ),
+            REACT_SYNTHESIS_FALLBACK_FAILED_EVENT: (
+                "structured fallback failed; no further review stage was started"
+            ),
+            REACT_DEGRADED_RECURSION_EVENT: (
+                "used the configured direct fallback after recursion without facts"
+            ),
+            REACT_DIRECT_FALLBACK_FAILED_EVENT: (
+                "direct fallback failed; no further review stage was started"
+            ),
+        }
         for event in outcome.execution_events:
             review_traces.append(
                 CouncilTrace(
                     node=reviewer.source_agent,
                     event=event,
-                    detail="bounded ReAct exploration synthesized from gathered tool facts",
+                    detail=event_details.get(event, event),
                 )
             )
 

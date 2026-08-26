@@ -5,6 +5,10 @@ from pathlib import Path
 import pytest
 
 from codeguard_agent.pipeline.prompting import render_prompt_template
+from codeguard_agent.pipeline.reviewers.reviewers import (
+    DEFAULT_REVIEWERS,
+    build_reviewer_system_prompt,
+)
 
 
 PROMPT_DIR = (
@@ -20,19 +24,32 @@ def _prompt(name: str) -> str:
 
 
 def test_reviewer_prompts_have_shared_review_contract():
-    for name in (
-        "threat-model-base.txt",
-        "behavior-base.txt",
-        "maintainability-base.txt",
-    ):
-        prompt = _prompt(name)
+    for reviewer in DEFAULT_REVIEWERS:
+        prompt = build_reviewer_system_prompt(reviewer)
         assert "## 审查步骤" in prompt
-        assert "## 输出前自检" in prompt
+        assert prompt.count("## ReAct 终止与输出合同") == 1
         assert "EvidenceJudge" in prompt
         assert "只输出有明确代码依据" in prompt
         assert "宁可多报" not in prompt
         assert "只有存在明确事实缺口时" in prompt
-        assert "`severity`" not in prompt
+        assert '"summary"' in prompt
+        assert '"issues"' in prompt
+        assert "issues=[]" in prompt
+        assert "assistant 消息只能包含工具调用" in prompt
+        assert "最终消息不能同时包含工具调用和审查结果" in prompt
+
+
+def test_discovery_evidence_contract_requires_minimal_sufficient_references():
+    prompt = _prompt("discovery-evidence-contract.txt")
+    for text in (
+        "最小充分证据集",
+        "删除该引用",
+        "探索性",
+        "重复性",
+        "被后续事实推翻",
+        "最多选择 3 条",
+    ):
+        assert text in prompt
 
 
 def test_reviewer_prompts_define_tool_decision_protocol():

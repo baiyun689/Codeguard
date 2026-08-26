@@ -20,6 +20,10 @@ from codeguard_agent.pipeline.orchestration.graph import (
     DEFAULT_RECURSION_LIMIT,
     build_review_graph,
 )
+from codeguard_agent.pipeline.execution.engines import (
+    REACT_DEGRADED_RECURSION_EVENT,
+    REACT_SYNTHESIS_FALLBACK_EVENTS,
+)
 
 logger = logging.getLogger("codeguard")
 
@@ -259,10 +263,11 @@ def _inject_degradation(report: Any, final_state: dict) -> None:
     council_trace = final_state.get("council_trace") or []
     report.degradation = DegradationReport(
         react_degraded_recursion=sum(
-            t.event == "react_degraded_recursion" for t in council_trace
+            t.event == REACT_DEGRADED_RECURSION_EVENT for t in council_trace
         ),
-        react_degraded_empty=sum(
-            t.event == "react_degraded_empty" for t in council_trace
+        react_synthesis_fallback=sum(
+            t.event in REACT_SYNTHESIS_FALLBACK_EVENTS
+            for t in council_trace
         ),
         direct_tier_tasks=sum(
             t.event == "tier_direct" for t in council_trace

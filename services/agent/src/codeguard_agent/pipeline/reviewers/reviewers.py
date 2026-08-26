@@ -68,6 +68,7 @@ def _load_prompt(name: str) -> str:
 
 _DISCOVERY_CONTEXT_CONTRACT = "discovery-context-contract.txt"
 _DISCOVERY_EVIDENCE_CONTRACT = "discovery-evidence-contract.txt"
+_DISCOVERY_OUTPUT_CONTRACT = "discovery-output-contract.txt"
 
 
 def build_reviewer_system_prompt(reviewer: Reviewer) -> str:
@@ -76,6 +77,7 @@ def build_reviewer_system_prompt(reviewer: Reviewer) -> str:
         _load_prompt(reviewer.prompt_file).strip(),
         _load_prompt(_DISCOVERY_CONTEXT_CONTRACT).strip(),
         _load_prompt(_DISCOVERY_EVIDENCE_CONTRACT).strip(),
+        _load_prompt(_DISCOVERY_OUTPUT_CONTRACT).strip(),
     ])
 
 

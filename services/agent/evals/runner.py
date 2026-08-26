@@ -193,7 +193,7 @@ def _strict_tool_failures(trace: list, metadata: dict) -> tuple[list[str], list[
     council = metadata.get("council") or {}
     for key in (
         "react_degraded_recursion_count",
-        "react_degraded_empty_count",
+        "react_synthesis_fallback_count",
         "discoverer_failed_count",
         "task_review_failed_count",
     ):

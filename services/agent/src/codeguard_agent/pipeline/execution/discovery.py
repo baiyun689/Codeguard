@@ -287,7 +287,9 @@ class CoordinatedDiscoveryToolClient:
                 return _alias_echo(
                     tool_name, response, self._next_t_alias(), arguments
                 )
-            return _reviewer_response(tool_name, response, arguments)
+            return _alias_echo(
+                tool_name, response, self._next_t_alias(), arguments
+            )
         except BaseException as exc:
             if future is not None and not future.done():
                 future.set_exception(exc)
