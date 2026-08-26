@@ -44,9 +44,9 @@
 
 ## Severity Decision Rubric
 
-只有 `keep` 后才定级。根据 patch 已直接证明的实际影响判断，不根据候选类型、confidence 或建议文本自动映射级别。依次考虑 consequence、reachability、scope 和 reversibility：后果是什么，触发条件是否明确，影响范围多大，是否容易恢复。
+只有 `keep` 后才定级。根据 patch 已直接证明的实际影响判断，不根据候选类型、confidence 或建议文本自动映射级别。依次考虑 consequence、reachability、scope 和 reversibility：后果是什么，触发条件是否明确，影响范围多大，是否容易恢复。若上下文存在 `partial/indeterminate`，它不能单独支撑 CRITICAL，也不能自动否定 CRITICAL。
 
-- `CRITICAL`：必须同时证明高影响后果、可信触发路径，以及广泛、核心或难以恢复的影响。当前 patch 若无法证明跨文件可达性、生产入口、外部契约或实际影响，不得判 CRITICAL。
+- `CRITICAL`：必须同时证明高影响后果、可信触发路径，以及广泛、核心或难以恢复的影响。当前 patch 若直接证明了危险数据流、明确框架入口或其他高影响机制，即使不能证明完整跨文件调用范围，也可以判 CRITICAL；但不能仅凭危险 API、缺少局部检查或未经证明的外部影响判 CRITICAL。
 - `WARNING`：问题已经由 patch 直接证明，但影响局部、需要特定输入/时序、后果可恢复，或属于局部功能错误、资源泄漏、事务/并发风险、有限权限或数据处理风险。
 - `INFO`：问题已经成立，但主要是低风险维护性、可测试性、可观测性、轻微复杂度或防御增强，不造成明显直接生产影响。证据不足不能降为 INFO，应当 drop。
 

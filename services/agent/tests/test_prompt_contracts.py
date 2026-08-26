@@ -95,6 +95,8 @@ def test_judge_prompts_define_dimension_specific_severity_rubric():
             "behavior",
             "maintainability",
             "证据不足不能降为 INFO",
+            "不能单独支撑 CRITICAL",
+            "也不能自动否定 CRITICAL",
         ):
             assert text in prompt
 
