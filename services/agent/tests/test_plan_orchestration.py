@@ -58,6 +58,58 @@ def test_plan_validation_rejects_cross_reviewer_topics():
     assert any("invalid_topic" in item for item in diagnostics)
 
 
+def test_plan_validation_requires_objectives_and_matching_reviewer_lists():
+    plan = TaskAgentPlan(
+        plan_unit_id="A.java",
+        reviewers=(ReviewerKind.THREAT_MODEL, ReviewerKind.BEHAVIOR),
+        reviewer_plans=(
+            {
+                "reviewer": "threat_model",
+                "objectives": [],
+                "knowledge_topics": [],
+            },
+        ),
+    )
+    validated, diagnostics = validate_plan(
+        plan,
+        plan_unit_id="A.java",
+        catalog=KnowledgeCatalog(),
+    )
+    assert validated.fallback is True
+    assert "empty_objectives:threat_model" in diagnostics
+    assert "reviewers_and_reviewer_plans_mismatch" in diagnostics
+
+
+def test_plan_validation_falls_back_for_valid_but_mismatched_reviewer_lists():
+    plan = TaskAgentPlan(
+        plan_unit_id="A.java",
+        reviewers=(ReviewerKind.THREAT_MODEL,),
+        reviewer_plans=(
+            {
+                "reviewer": "behavior",
+                "objectives": ["检查新增调用是否破坏调用方契约"],
+                "knowledge_topics": [],
+            },
+        ),
+    )
+    validated, diagnostics = validate_plan(
+        plan,
+        plan_unit_id="A.java",
+        catalog=KnowledgeCatalog(),
+    )
+    assert validated.fallback is True
+    assert validated.fallback_reason == "invalid_reviewer_contract"
+    assert "reviewers_and_reviewer_plans_mismatch" in diagnostics
+
+
+def test_plan_schema_describes_llm_facing_fields():
+    schema = TaskAgentPlan.model_json_schema()
+    assert "具体检查目标" in schema["properties"]["reviewer_plans"]["description"]
+    reviewer_schema = schema["$defs"]["ReviewerPlan"]["properties"]
+    assert "当前 diff" in reviewer_schema["objectives"]["description"]
+    assert "知识主题 ID" in reviewer_schema["knowledge_topics"]["description"]
+
+
 def test_plan_prompt_requires_minimal_reviewer_set_and_selection_thresholds():
     prompt = (
         Path(__file__).resolve().parents[1]

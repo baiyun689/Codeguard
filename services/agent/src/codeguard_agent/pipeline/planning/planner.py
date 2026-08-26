@@ -91,6 +91,9 @@ def validate_plan(
     """确定性校验 Plan 的 reviewer/topic allowlist。"""
     allowed_topics = _catalog_topics(catalog)
     diagnostics: list[str] = []
+    declared_reviewers = tuple(dict.fromkeys(plan.reviewers))
+    if len(declared_reviewers) != len(plan.reviewers):
+        diagnostics.append("duplicate_reviewers")
     by_reviewer: dict[ReviewerKind, ReviewerPlan] = {}
     for reviewer_plan in plan.reviewer_plans:
         if reviewer_plan.reviewer not in _DEFAULT_REVIEWERS:
@@ -105,11 +108,30 @@ def validate_plan(
                 continue
             if topic not in topics:
                 topics.append(topic)
+        objectives = tuple(
+            objective.strip()
+            for objective in reviewer_plan.objectives
+            if objective.strip()
+        )
+        if not objectives:
+            diagnostics.append(f"empty_objectives:{reviewer_plan.reviewer.value}")
+            continue
         by_reviewer[reviewer_plan.reviewer] = ReviewerPlan(
             reviewer=reviewer_plan.reviewer,
-            objectives=tuple(objective.strip() for objective in reviewer_plan.objectives if objective.strip()),
+            objectives=objectives,
             knowledge_topics=tuple(topics),
         )
+
+    reviewer_lists_mismatch = set(declared_reviewers) != set(by_reviewer)
+    if reviewer_lists_mismatch:
+        diagnostics.append("reviewers_and_reviewer_plans_mismatch")
+
+    if plan.fallback or plan.fallback_reason.strip():
+        diagnostics.append("llm_fallback_fields_are_system_owned")
+        return fallback_plan(plan_unit_id, "llm_requested_fallback"), tuple(diagnostics)
+
+    if len(declared_reviewers) != len(plan.reviewers) or reviewer_lists_mismatch:
+        return fallback_plan(plan_unit_id, "invalid_reviewer_contract"), tuple(diagnostics)
 
     selected = tuple(
         reviewer for reviewer in _DEFAULT_REVIEWERS if reviewer in by_reviewer

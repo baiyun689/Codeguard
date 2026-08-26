@@ -124,6 +124,24 @@
 
 ## 输出格式
 
+### 字段契约
+
+- `plan_unit_id`：当前 PlanUnit 的稳定 ID，必须原样返回输入中的 ID。
+- `reviewers`：选中的 Reviewer 类型汇总列表；必须与 `reviewer_plans` 中的
+  `reviewer` 一一对应，不得重复。
+- `reviewer_plans`：每个 Reviewer 一项，描述该 Reviewer 在当前 PlanUnit 中具体要检查什么，
+  以及需要哪些知识主题。
+- `reviewer_plans[].reviewer`：Reviewer 类型，只能使用上方 allowlist 中的值。
+- `reviewer_plans[].objectives`：一个或多个具体检查目标，必须同时指向当前 diff 的变更点和
+  要验证的行为；它是审查指导，不是问题结论、severity、证据或工具调用计划。
+- `reviewer_plans[].knowledge_topics`：知识主题 ID，只能来自对应 Reviewer 的目录；它只提供
+  检查方法，不代表当前代码一定存在相关问题。
+- `fallback`、`fallback_reason`：系统生成的兜底字段，不属于 LLM 决策；输出时必须保持默认值，
+  不得主动设置。
+
+如果无法为某个 Reviewer 生成具体 objective，就不要选择该 Reviewer；如果所有 Reviewer 都无法
+生成具体目标，选择最相关的基础 Reviewer 并给出具体检查方向。
+
 只返回符合结构化 schema 的对象，不要输出 Markdown、解释文字或额外字段：
 
 {
