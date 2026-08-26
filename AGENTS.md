@@ -108,7 +108,17 @@ Codeguard/
     │   │   │   ├── verification.py # Verifier 状态、EvidenceGap 与验证批次
     │   │   │   ├── judge.py     # EvidenceJudge 输入输出
     │   │   │   └── __init__.py  # 统一导出入口
-    │   │   ├── models/council.py  # ★内部结构:CandidateIssue / Verdict / Trace/Stats
+    │   │   ├── models/tasks/     # ★Task、Plan、Route 与符号上下文模型
+    │   │   │   ├── tasking.py
+    │   │   │   ├── planning.py
+    │   │   │   ├── symbols.py
+    │   │   │   └── __init__.py
+    │   │   ├── models/council/   # ★ReviewCouncil 候选、裁决、合并与统计模型
+    │   │   │   ├── candidates.py
+    │   │   │   ├── causal.py
+    │   │   │   ├── verdict.py
+    │   │   │   ├── metrics.py
+    │   │   │   └── __init__.py
     │   │   ├── git/diff_collector.py  # 调系统 git 采集 diff + parse_changed_files(派生 allowed_files)
     │   │   ├── llm/client.py      # LLM 工厂(openai/Codex/mock)+ 重试 + mock 假数据
     │   │   ├── tools/             # ★工具调用(智能层侧)。tool_client(同步 HTTP)+ definitions(LangChain 工具)

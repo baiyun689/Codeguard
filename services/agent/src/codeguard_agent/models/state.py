@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import operator
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Protocol, TypedDict
 
 from codeguard_agent.models.council import (
     CandidateIssue,
@@ -17,7 +17,14 @@ from codeguard_agent.models.council import (
     CouncilRunStats,
     CouncilTrace,
 )
-from codeguard_agent.models.evidence import EvidenceArtifact, merge_evidence_artifacts
+from codeguard_agent.models.evidence import (
+    CandidateVerification,
+    EvidenceArtifact,
+    EvidenceCatalog,
+    ToolTraceRef,
+    merge_evidence_artifacts,
+)
+from codeguard_agent.models.schemas import DiscoveredIssue, DiscoveryReviewResult, Issue, ReviewResult
 from codeguard_agent.models.tasks import (
     PlanUnit,
     ReviewAssignments,
@@ -29,6 +36,15 @@ from codeguard_agent.models.tasks import (
     TaskSelection,
     TaskSymbolContext,
 )
+
+
+class ReviewerOutcomeLike(Protocol):
+    """发现者执行结果的最小状态接口，避免状态模型依赖 execution 引擎。"""
+
+    result: DiscoveryReviewResult | ReviewResult
+    tool_trace_records: list[ToolTraceRef]
+    execution_events: list[str]
+    evidence_catalog: EvidenceCatalog | None
 
 
 def collect_candidate_reducer(
@@ -56,8 +72,8 @@ class ReviewState(TypedDict, total=False):
     evidence_revision: str
 
     # Config: 本次运行的策略和预算
-    enabled_tools: Any
-    enabled_evidence_tools: Any
+    enabled_tools: list[str] | None
+    enabled_evidence_tools: list[str] | None
     max_retries: int
     structured_method: str
     react_recursion_limit: int
@@ -72,7 +88,7 @@ class ReviewState(TypedDict, total=False):
     task_routes: dict[str, TaskRoute]
     plan_units: list[PlanUnit]
     task_plans: dict[str, TaskAgentPlan]
-    direct_final_issues: list
+    direct_final_issues: list[Issue]
     task_selection: TaskSelection
     review_assignments: ReviewAssignments
 
@@ -81,9 +97,9 @@ class ReviewState(TypedDict, total=False):
     task_symbol_contexts: dict[str, TaskSymbolContext]
     raw_candidate_issues: Annotated[list[CandidateIssue], collect_candidate_reducer]
     candidate_issues: list[CandidateIssue]
-    candidate_verifications: dict[str, Any]
+    candidate_verifications: dict[str, CandidateVerification]
     evidence_artifacts: Annotated[dict[str, EvidenceArtifact], merge_evidence_artifacts]
-    review_summaries: Annotated[list, operator.add]
+    review_summaries: Annotated[list[str], operator.add]
     judge_survivor_ids: list[str]
     causal_profiles: dict[str, CausalProfile]
     causal_comparisons: list[CausalComparison]
@@ -91,7 +107,7 @@ class ReviewState(TypedDict, total=False):
     causal_merge_stats: dict[str, int]
 
     # Output: 对外 ReviewResult 的来源
-    final_issues: list
+    final_issues: list[Issue]
     summary: str
 
     # Diagnostics: Trace / eval 数据，不属于产品输出
@@ -99,7 +115,7 @@ class ReviewState(TypedDict, total=False):
     council_stats: CouncilRunStats
     council_trace: Annotated[list[CouncilTrace], operator.add]
     truncated_candidates: Annotated[int, operator.add]
-    tool_trace_records: Annotated[list, operator.add]
+    tool_trace_records: Annotated[list[ToolTraceRef], operator.add]
 
 
 class ReviewerState(TypedDict, total=False):
@@ -107,7 +123,7 @@ class ReviewerState(TypedDict, total=False):
 
     # Input / 策略：由顶层 ReviewState 投影而来
     diff_text: str
-    enabled_tools: Any
+    enabled_tools: list[str] | None
     max_retries: int
     structured_method: str
     diff_summary: str
@@ -120,15 +136,15 @@ class ReviewerState(TypedDict, total=False):
     task_symbol_context: TaskSymbolContext
     tier: str
     task_scope: str
-    review_tool_client: Any
+    review_tool_client: object
 
     # 当前 task 的证据目录和结构化 Prompt
     evidence_revision: str
-    evidence_catalog: Any
+    evidence_catalog: EvidenceCatalog | None
 
-    issues: list
-    tool_trace_records: list
-    review_summaries: list
+    issues: list[DiscoveredIssue]
+    tool_trace_records: list[ToolTraceRef]
+    review_summaries: list[str]
     council_trace: Annotated[list[CouncilTrace], operator.add]
     user_prompt: str
-    outcome: Any
+    outcome: ReviewerOutcomeLike

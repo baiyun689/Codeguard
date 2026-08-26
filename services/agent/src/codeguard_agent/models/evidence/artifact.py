@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -35,7 +36,7 @@ class EvidenceCaptureMode(str, Enum):
     REUSED = "reused"
 
 
-def stable_json(obj: dict) -> str:
+def stable_json(obj: Mapping[str, object]) -> str:
     """规范化 JSON，保证相同参数不同键序得到同一字符串。"""
 
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
