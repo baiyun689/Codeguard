@@ -2,7 +2,7 @@
 
 import json
 
-from codeguard_agent.models.schemas import DiscoveredIssue, Severity
+from codeguard_agent.models.schemas import DiscoveredIssue
 from codeguard_agent.models.tasks import ReviewTask
 from codeguard_agent.pipeline.location import locate_issues
 
@@ -43,7 +43,6 @@ def _task() -> ReviewTask:
 
 def _issue(**updates) -> DiscoveredIssue:
     values = {
-        "severity": Severity.WARNING,
         "file": "src/A.java",
         "line": 99,
         "location_snippet": "    execute(userInput);",

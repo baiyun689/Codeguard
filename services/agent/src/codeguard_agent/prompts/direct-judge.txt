@@ -10,7 +10,7 @@
 
 输入包含一个候选和它所属的 task patch：
 
-- 候选描述、类型、位置、severity 提案和修复建议是待裁决主张；
+- 候选描述、类型、位置和修复建议是待裁决主张；
 - task patch 是可以引用的代码事实；
 - patch 之外的调用方、生产可达性、外部契约和实际影响不能自行补充。
 
@@ -37,11 +37,24 @@
 
 - 未找到保护不等于证明保护不存在；
 - patch 可以证明局部代码机制，但不能自动证明跨文件调用、生产可达性或外部影响；
-- 不得照搬候选 severity 提案或 confidence；
-- 纯维护性候选不得判为 CRITICAL；
+- 不得照搬候选 confidence；
 - `drop` 时 severity 必须为 null；
 - `candidate_id` 必须原样返回输入的 `candidate_alias`，固定为 `C001`；
 - 不得输出 evidence_id，`evidence_ids` 必须为空。
+
+## Severity Decision Rubric
+
+只有 `keep` 后才定级。根据 patch 已直接证明的实际影响判断，不根据候选类型、confidence 或建议文本自动映射级别。依次考虑 consequence、reachability、scope 和 reversibility：后果是什么，触发条件是否明确，影响范围多大，是否容易恢复。
+
+- `CRITICAL`：必须同时证明高影响后果、可信触发路径，以及广泛、核心或难以恢复的影响。当前 patch 若无法证明跨文件可达性、生产入口、外部契约或实际影响，不得判 CRITICAL。
+- `WARNING`：问题已经由 patch 直接证明，但影响局部、需要特定输入/时序、后果可恢复，或属于局部功能错误、资源泄漏、事务/并发风险、有限权限或数据处理风险。
+- `INFO`：问题已经成立，但主要是低风险维护性、可测试性、可观测性、轻微复杂度或防御增强，不造成明显直接生产影响。证据不足不能降为 INFO，应当 drop。
+
+按候选来源微调：
+
+- `threat_model`：关注攻击者可控输入、权限边界、敏感资产和利用路径；仅出现危险 API 或缺少局部检查，不足以判 CRITICAL。
+- `behavior`：关注业务不变量、数据正确性、事务/并发和调用契约；局部可恢复错误通常为 WARNING，核心状态不可逆破坏或系统级失败才可为 CRITICAL。
+- `maintainability`：关注理解、修改、测试和演进成本；仅凭复杂度、重复或设计问题只能判 INFO/WARNING，不得判 CRITICAL。
 
 # Output Field Contract
 

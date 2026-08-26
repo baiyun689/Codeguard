@@ -72,13 +72,12 @@ class Issue(BaseModel):
 
 
 class DiscoveredIssue(BaseModel):
-    """发现阶段的专用输出:与 Issue 同构,外加 evidence_refs 短别名引用。
+    """发现阶段的专用输出:问题主张与 evidence_refs 短别名引用。
 
     发现者不能直接输出产品 ReviewResult——内部证据引用不得污染产品接口;
     系统会自动绑定 task patch(P01),evidence_refs=[] 不代表没有证据。
     """
 
-    severity: Severity = Field(description="严重级别")
     file: str = Field(description="问题所在文件路径")
     line: int = Field(default=0, description="问题所在行号,0 表示无法定位到具体行")
     location_snippet: str = Field(

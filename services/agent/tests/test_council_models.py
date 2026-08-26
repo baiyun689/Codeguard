@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.evidence import EvidenceRef
-from codeguard_agent.models.schemas import EvidenceRole, Severity
+from codeguard_agent.models.schemas import EvidenceRole
 
 
 def test_candidate_requires_task_id():
@@ -15,7 +15,6 @@ def test_candidate_requires_task_id():
         file="A.java",
         line=1,
         type="t",
-        severity_proposal=Severity.WARNING,
         claim="m",
         confidence=0.9,
     )
@@ -30,7 +29,6 @@ def test_candidate_contains_only_the_candidate_claim():
         file="src/UserService.java",
         line=0,
         type="missing-auth-check",
-        severity_proposal=Severity.WARNING,
         claim="缺少权限校验",
         confidence=0.7,
         evidence_refs=[
@@ -48,7 +46,6 @@ def test_candidate_contains_only_the_candidate_claim():
         "file",
         "line",
         "type",
-        "severity_proposal",
         "claim",
         "suggestion",
         "confidence",

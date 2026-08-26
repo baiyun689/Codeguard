@@ -16,7 +16,7 @@ from codeguard_agent.models.evidence import (
     EvidenceSourceKind,
     EvidenceValidationStatus,
 )
-from codeguard_agent.models.schemas import EvidenceRole, Severity
+from codeguard_agent.models.schemas import EvidenceRole
 from codeguard_agent.models.tasks import (
     ResolvedSymbol,
     ReviewTask,
@@ -45,7 +45,6 @@ def _candidate(*artifact_ids: str) -> CandidateIssue:
         file="src/A.java",
         line=1,
         type="command-injection",
-        severity_proposal=Severity.WARNING,
         claim="未转义参数进入命令构造",
         confidence=0.8,
         evidence_refs=[

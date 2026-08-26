@@ -290,7 +290,6 @@ def bind_discovered_issue(
         file=issue.file,
         line=issue.line,
         type=issue.type,
-        severity_proposal=issue.severity,
         claim=issue.message,
         suggestion=issue.suggestion,
         confidence=issue.confidence,

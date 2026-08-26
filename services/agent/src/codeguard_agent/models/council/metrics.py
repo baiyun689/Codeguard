@@ -18,7 +18,6 @@ class CouncilRunStats(BaseModel):
     verdict_count: int = 0
     removed_by_judge: int = 0
     critical_candidate_count: int = 0
-    severity_transitions: dict[str, int] = Field(default_factory=dict)
     final_issue_count: int = 0
     final_issue_supported_count: int = 0
     final_issue_support_coverage: float | None = None

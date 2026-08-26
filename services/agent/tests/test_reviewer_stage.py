@@ -35,6 +35,7 @@ def test_all_discovery_prompts_define_location_snippet_contract():
         assert "新增行" in prompt
         assert "1～5 行" in prompt
         assert "不属于" in prompt and "证据" in prompt
+        assert "severity" not in prompt
 
 
 def test_relocation_prompt_is_a_restricted_location_contract():

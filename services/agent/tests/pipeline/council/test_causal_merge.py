@@ -32,14 +32,13 @@ def _candidate(
         file=file,
         line=10,
         type="logic",
-        severity_proposal=Severity.WARNING,
         claim=claim,
         suggestion="修复问题",
     )
 
 
 def _issue(candidate: CandidateIssue) -> Issue:
-    return candidate.to_issue()
+    return candidate.to_issue(Severity.WARNING)
 
 
 def _verification(candidate: CandidateIssue) -> CandidateVerification:

@@ -43,7 +43,6 @@ def _candidate(cid: str, source_agent: str = "threat_model", role: EvidenceRole 
         file="src/A.java",
         line=1,
         type="command-injection",
-        severity_proposal=Severity.WARNING,
         claim="未转义参数进入命令构造",
         confidence=0.8,
         evidence_refs=[
@@ -303,7 +302,7 @@ def test_keep缺severity_合同违约():
     assert batch.verdicts[0].reason_code == "verification_failed"
 
 
-def test_maintainability_候选_CRITICAL_违约():
+def test_maintainability_候选由_judge决定_CRITICAL():
     candidate = _candidate("c1", source_agent="maintainability")
     llm = _FakeJudgeLLM(EvidenceJudgeBatch(
         assessments=[_assessment("c1", severity=Severity.CRITICAL)]
@@ -316,7 +315,8 @@ def test_maintainability_候选_CRITICAL_违约():
         structured_method="function_calling",
         max_retries=1,
     )
-    assert batch.verdicts[0].reason_code == "verification_failed"
+    assert batch.verdicts[0].reason_code == "ok"
+    assert batch.final_issues[0].severity is Severity.CRITICAL
 
 
 def test_evidence全为LOCATION_违约():
@@ -455,7 +455,7 @@ def test_direct_mock模式_keep提案严重度():
     assert batch.final_issues[0].severity is Severity.WARNING
 
 
-def test_direct_LLM不可用_保留提案严重度_基线语义():
+def test_direct_LLM不可用_fail_closed():
     candidate = _candidate("c1")
     llm = _FakeJudgeLLM(RuntimeError("boom"))
     batch = judge_direct(
@@ -464,8 +464,8 @@ def test_direct_LLM不可用_保留提案严重度_基线语义():
         structured_method="function_calling",
         max_retries=1,
     )
-    assert batch.verdicts[0].reason_code == "direct_assessment_missing"
-    assert batch.final_issues[0].severity is Severity.WARNING
+    assert batch.verdicts[0].reason_code == "verification_failed"
+    assert batch.final_issues == []
 
 
 def test_direct_drop裁决_不产出():

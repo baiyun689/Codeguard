@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 from codeguard_agent.llm.client import mock_review_result
 from codeguard_agent.models.council import (
+    CandidateIssue,
     CouncilTrace,
     MAX_CANDIDATES_PER_AGENT,
 )
@@ -993,29 +994,11 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
 
 
 def _discovery_collector_node():
-    """发现者直出模式:将 raw_candidate_issues 直接转为 final_issues,不经归并/举证/法官。"""
+    """历史诊断拓扑:只记录发现者候选,不伪造未经过 Judge 的产品 Issue。"""
 
     def _node(state: ReviewState) -> dict:
         raw = list(state.get("raw_candidate_issues") or [])
-        from codeguard_agent.models.schemas import Issue
-
-        issues = []
-        seen: set[str] = set()
-        for c in raw:
-            if c.id in seen:
-                continue
-            seen.add(c.id)
-            issues.append(
-                Issue(
-                    severity=c.severity_proposal,
-                    file=c.file,
-                    line=c.line,
-                    type=f"[{c.source_agent}] {c.type}",
-                    message=c.claim,
-                    suggestion=c.suggestion or "",
-                    confidence=c.confidence,
-                )
-            )
+        issues: list[Issue] = []
 
         trace = list(state.get("council_trace") or [])
         trace.append(
@@ -1222,7 +1205,7 @@ def _plan_node(llm):
 
 
 def _direct_task_review_node(llm):
-    """执行 DirectGate 判定的 task，不创建证据目录，也不进入 Judge。"""
+    """执行 DirectGate 判定的 task，跳过取证但仍交给 DirectJudge 定级。"""
     prompt_dir = Path(__file__).resolve().parents[1] / "prompts"
 
     def _node(state: ReviewState) -> dict:
@@ -1254,7 +1237,8 @@ def _direct_task_review_node(llm):
             return outcome.result.issues
 
         results = run_bounded_parallel(tasks, review_one, max_workers=8)
-        issues: list[Issue] = []
+        candidates: list[CandidateIssue] = []
+        dossiers: list[Any] = []
         rejected = 0
         location_trace: list[CouncilTrace] = []
         for task, result in zip(tasks, results):
@@ -1274,34 +1258,59 @@ def _direct_task_review_node(llm):
                 structured_method=state.get("structured_method", "function_calling"),
                 max_retries=state.get("max_retries", 3),
             )
-            issues.extend(
-                Issue(
-                    severity=issue.severity,
+            from codeguard_agent.pipeline.evidence.planner import CandidateDossier
+
+            for index, issue in enumerate(location_batch.issues, start=1):
+                candidate = CandidateIssue(
+                    id=f"direct-{task.id}-{index}",
+                    task_id=task.id,
+                    source_agent="direct_task",
                     file=issue.file,
                     line=issue.line,
                     type=issue.type,
-                    message=issue.message,
+                    claim=issue.message,
                     suggestion=issue.suggestion,
                     confidence=issue.confidence,
                 )
-                for issue in location_batch.issues
-            )
+                candidates.append(candidate)
+                dossiers.append(
+                    CandidateDossier(
+                        candidate=candidate,
+                        task=task,
+                        symbol_context=None,
+                    )
+                )
             location_trace.extend(
                 CouncilTrace(node="direct_task_review", event=event, detail=detail)
                 for event, detail in location_batch.trace
             )
+        from codeguard_agent.pipeline.council.verdict import judge_direct
+        from codeguard_agent.pipeline.evidence.planner import DossierAssembly
+
+        verdict_batch = judge_direct(
+            DossierAssembly(tuple(dossiers), (), ()),
+            judge_llm=llm,
+            structured_method=state.get("structured_method", "function_calling"),
+            max_retries=state.get("max_retries", 3),
+        )
+        judge_trace = [
+            CouncilTrace(node="direct_judge", event=event, detail=detail)
+            for event, detail in verdict_batch.trace
+        ]
         return {
-            "direct_final_issues": issues,
+            "direct_final_issues": verdict_batch.final_issues,
             "council_trace": [
                 CouncilTrace(
                     node="direct_task_review",
                     event="completed",
                     detail=(
-                        f"tasks={len(tasks)} issues={len(issues)} "
+                        f"tasks={len(tasks)} candidates={len(candidates)} "
+                        f"issues={len(verdict_batch.final_issues)} "
                         f"rejected={rejected}"
                     ),
                 ),
                 *location_trace,
+                *judge_trace,
             ],
         }
 

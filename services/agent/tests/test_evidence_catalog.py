@@ -13,7 +13,7 @@ from codeguard_agent.models.evidence import (
     EvidenceCaptureMode,
     EvidenceSourceKind,
 )
-from codeguard_agent.models.schemas import EvidenceRole, ReviewResult, Severity
+from codeguard_agent.models.schemas import EvidenceRole, ReviewResult
 from codeguard_agent.models.tasks import (
     ResolvedSymbol,
     ReviewTask,
@@ -399,7 +399,6 @@ def test_绑定器_role为枚举成员时不抛():
 
     catalog = _Builder().build(_bundle(_fact("resolve_change_context", "symbol A")))
     issue = DiscoveredIssue(
-        severity=Severity.WARNING,
         file="src/A.java",
         line=1,
         type="t",
@@ -431,7 +430,6 @@ def test_绑定器保留失败工具引用供_verifier_重放():
         [_record(call_id="failed", output="HTTP 503", status="failed")],
     )
     issue = DiscoveredIssue(
-        severity=Severity.WARNING,
         file="src/A.java",
         line=1,
         type="t",

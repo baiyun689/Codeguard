@@ -118,16 +118,6 @@ def compute_council_run_stats(
     judge_no_support_drop = sum(
         verdict.reason_code == "insufficient_evidence" for verdict in verdicts
     )
-    proposals = {candidate.id: candidate.severity_proposal for candidate in candidates}
-    severity_transitions: dict[str, int] = {}
-    for verdict in verdicts:
-        proposed = proposals.get(verdict.candidate_id)
-        resolved = verdict.resolved_severity
-        if verdict.action != "keep" or proposed is None or resolved is None:
-            continue
-        key = f"{proposed.value}->{resolved.value}"
-        severity_transitions[key] = severity_transitions.get(key, 0) + 1
-
     final_issue_count = len(final_candidate_ids)
     final_issue_supported = sum(
         verdict.candidate_id in final_ids and verdict.supported
@@ -151,7 +141,6 @@ def compute_council_run_stats(
             verdict.action == "keep" and verdict.resolved_severity is Severity.CRITICAL
             for verdict in verdicts
         ),
-        severity_transitions=severity_transitions,
         final_issue_count=final_issue_count,
         final_issue_supported_count=final_issue_supported,
         final_issue_support_coverage=_ratio(final_issue_supported, final_issue_count),

@@ -125,7 +125,6 @@ def _judge_payload(
                 "line": dossier.candidate.line,
                 "type": dossier.candidate.type,
                 "claim": dossier.candidate.claim,
-                "severity_proposal": dossier.candidate.severity_proposal.value,
                 "confidence": dossier.candidate.confidence,
                 "suggestion": dossier.candidate.suggestion,
                 "source_agent": dossier.candidate.source_agent,
@@ -187,9 +186,6 @@ def _validate_assessment(
             return None
         if item.severity is None:
             violations.append("keep_without_severity")
-            return None
-        if dossier.candidate.source_agent == "maintainability" and item.severity is Severity.CRITICAL:
-            violations.append("maintainability_critical")
             return None
         # 修正⑤:LOCATION 只说明位置,不能单独满足 keep 的支持要求。
         artifact_ids = [fact_map[fid] for fid in evidence_ids]
@@ -260,14 +256,14 @@ def _judge_chunk(
 ) -> list[tuple[CandidateDossier, EvidenceJudgeAssessment | None, str]]:
     """批内裁决:整批 → 输出合同校验 → 失败二分;单候选失败 fail-closed。"""
     if judge_llm is None:
-        # mock 模式:确定性 keep + 提案严重度(真实 LLM 故障绝不走此路径)。
+        # mock 模式由 Judge 直接给出固定的 WARNING,不模拟 Reviewer 定级。
         return [
             (
                 dossier,
                 EvidenceJudgeAssessment(
                     candidate_id=dossier.candidate.id,
                     action="keep",
-                    severity=dossier.candidate.severity_proposal,
+                    severity=Severity.WARNING,
                     reason="mock_deterministic_keep",
                 ),
                 "mock_deterministic_keep",
@@ -370,7 +366,8 @@ def _finalize_assessment(
         resolved_severity=assessment.severity,
         supported=bool(assessment.evidence_ids),
     )
-    issue = candidate.to_issue().model_copy(update={"severity": assessment.severity})
+    assert assessment.severity is not None  # keep 合同已在 _validate_assessment 中校验
+    issue = candidate.to_issue(assessment.severity)
     _trace(batch, event, {
         "candidate_id": candidate.id, "action": "keep",
         "reason_code": verdict_reason,
@@ -461,7 +458,6 @@ def _direct_payload(dossier: CandidateDossier) -> dict[str, Any]:
             "claim": dossier.candidate.claim,
             "file": dossier.candidate.file,
             "line": dossier.candidate.line,
-            "severity_proposal": dossier.candidate.severity_proposal.value,
             "suggestion": dossier.candidate.suggestion,
             "confidence": dossier.candidate.confidence,
         },
@@ -481,7 +477,7 @@ def _invoke_direct(
         return EvidenceJudgeAssessment(
             candidate_id=dossier.candidate.id,
             action="keep",
-            severity=dossier.candidate.severity_proposal,
+            severity=Severity.WARNING,
             reason="mock_deterministic_keep",
         )
     try:
@@ -546,21 +542,14 @@ def judge_direct(
         supported: list[tuple[str, Issue]] = []
         for dossier, assessment in zip(assembly.dossiers, results, strict=True):
             if assessment is None:
-                # 消融档基线语义:LLM 不可用时保留提案严重度(与完整档 fail-closed 不同)。
-                severity = dossier.candidate.severity_proposal
                 verdict = Verdict(
-                    dossier.candidate.id, "keep", "direct_assessment_missing",
-                    "DirectJudge LLM assessment unavailable; kept with proposed severity",
-                    resolved_severity=severity,
-                )
-                issue = dossier.candidate.to_issue().model_copy(
-                    update={"severity": severity}
+                    dossier.candidate.id, "drop", "verification_failed",
+                    "DirectJudge LLM assessment unavailable; fail-closed",
                 )
                 batch.verdicts.append(verdict)
-                supported.append((dossier.candidate.id, issue))
                 _trace(batch, "direct_judge_verdict", {
                     "candidate_id": dossier.candidate.id, "action": "keep",
-                    "reason_code": "direct_assessment_missing",
+                    "reason_code": "verification_failed",
                 })
                 continue
             verdict, final_issue = _finalize_assessment(

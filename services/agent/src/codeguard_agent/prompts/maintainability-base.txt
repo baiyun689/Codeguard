@@ -51,18 +51,10 @@
 - **以下不属于审查范围，不要报告**：版权年份/许可证声明变更、`@author` 标签增删、import 语句增删、注释增删、空白/格式化变更。这些不增加未来修改成本。
 - 测试方法的增删**不要报告**。测试随生产代码变化而调整是正常的。
 
-## 严重级别
-
-- **WARNING**：明显增加理解/修改/测试成本的结构问题（默认档）。可维护性问题一般不卡合并。
-- **INFO**：轻微的最佳实践建议、可选优化。
-
-发现阶段的 severity 只是候选影响建议，最终级别由后续证据链裁决确定；confidence 反映当前主张的把握程度。
-
 ## 输出
 
 返回结构化 `DiscoveryReviewResult`。`summary` 是当前 task 审查结论的简短概括；`issues` 为问题列表，确实没有发现时返回空列表。每条 Issue：
 - `type`：稳定简洁的问题类型
-- `severity`：CRITICAL / WARNING / INFO；纯维护性候选不得建议 CRITICAL
 - `confidence`：0~1 的把握程度。证据不够扎实时可以报低分，后续法官阶段会做进一步验证
 - `file`：当前 task 文件的仓库相对路径
 - `line`：`location_snippet` 第一行对应的 new-side 行号；无法定位填 0
@@ -81,5 +73,4 @@
 - message 写明根因、触发场景、修改路径和维护后果；
 - evidence_refs 只引用当前 Evidence Catalog 中存在的 ID；
 - location_snippet 只用于定位，不当作证据；
-- 纯维护性候选不得建议 CRITICAL；
 - 未发现问题时 issues 为 []，不输出额外解释。

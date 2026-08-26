@@ -32,6 +32,7 @@ def test_reviewer_prompts_have_shared_review_contract():
         assert "只输出有明确代码依据" in prompt
         assert "宁可多报" not in prompt
         assert "只有存在明确事实缺口时" in prompt
+        assert "`severity`" not in prompt
 
 
 def test_reviewer_prompts_define_tool_decision_protocol():
@@ -77,6 +78,25 @@ def test_judge_prompts_define_evidence_boundaries():
         assert "keep" in prompt and "drop" in prompt
     assert "evidence_gaps" in evidence_prompt
     assert "evidence_ids` 在本模式固定为空数组" in direct_prompt
+
+
+def test_judge_prompts_define_dimension_specific_severity_rubric():
+    for name in ("evidence-judge.txt", "direct-judge.txt"):
+        prompt = _prompt(name)
+        for text in (
+            "consequence",
+            "reachability",
+            "scope",
+            "reversibility",
+            "CRITICAL",
+            "WARNING",
+            "INFO",
+            "threat_model",
+            "behavior",
+            "maintainability",
+            "证据不足不能降为 INFO",
+        ):
+            assert text in prompt
 
 
 def test_causal_and_location_prompts_define_uncertainty_contracts():
