@@ -21,7 +21,7 @@ def make_file_content_tool(client: ToolClient):
         """读取仓库中指定文件的完整内容,用于了解 diff 之外的上下文。
 
         参数 file_path:相对仓库根的文件路径(如 src/main/java/com/example/Service.java)。
-        只能读取本次变更涉及的文件;越权 / 不存在 / 过大会返回以 'Error:' 开头的说明。
+        可读取仓库内与当前候选相关的源码或配置文件;越权 / 不存在 / 过大会返回以 'Error:' 开头的说明。
         """
         return client.get_file_content(file_path).as_tool_output()
 
@@ -30,8 +30,9 @@ def make_file_content_tool(client: ToolClient):
         name="get_file_content",
         description=(
             "读取仓库中指定文件的完整内容,用于了解 diff 之外的上下文"
-            "(被改方法的完整定义、调用方、相关类等)。"
-            "输入为相对仓库根的文件路径;可读 repo 内的源码文件。"
+            "(被改方法的完整定义、已知调用方、相关类等)。"
+            "输入为相对仓库根的文件路径;仅读取与当前候选相关的 repo 内源码或配置文件,"
+            "不要遍历无关文件。"
         ),
     )
 

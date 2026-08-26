@@ -34,6 +34,26 @@ def test_reviewer_prompts_have_shared_review_contract():
         assert "只有存在明确事实缺口时" in prompt
 
 
+def test_reviewer_prompts_define_tool_decision_protocol():
+    expected_tools = {
+        "threat-model-base.txt": "inspect_security_path",
+        "behavior-base.txt": "inspect_change_impact",
+        "maintainability-base.txt": "inspect_structure",
+    }
+    for name, specialist_tool in expected_tools.items():
+        prompt = _prompt(name)
+        for text in (
+            "## 工具决策协议",
+            "只能使用 `symbol_context` 中已有的稳定 `symbol_id`",
+            "不要为了收集信息调用所有工具",
+            "工具返回已经足以确认或否定",
+            "工具失败、`partial` 或 `indeterminate`",
+            "工具返回的事实必须通过 `evidence_refs` 引用",
+        ):
+            assert text in prompt
+        assert specialist_tool in prompt
+
+
 def test_plan_prompt_has_field_contract_and_final_check():
     prompt = _prompt("review-plan.txt")
     for text in (
