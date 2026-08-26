@@ -6,6 +6,16 @@
 
 对每个输入候选，结合其问题描述、建议、原始行号和原始定位片段，在当前 task patch 中寻找问题直接指向的新增代码，并返回用于确定性定位的最小连续片段。
 
+# Input Contract
+
+每个输入候选包含：
+
+- `candidate_id`：需要保持不变的候选 ID；
+- 原始 `line` 和 `location_snippet`：仅作为定位线索；
+- `message`：问题主张，用于判断应定位哪段新增代码；
+- `suggestion`：修复方向，用于辅助理解，不是定位依据；
+- 当前 task patch：唯一允许复制代码片段的来源。
+
 # Rules
 
 1. `location_snippet` 只能从 patch 中以 `+` 开头的新增代码行原样复制，输出时移除行首 diff 标记 `+`。
@@ -15,6 +25,11 @@
 5. 只能处理输入中已有的 candidate_id，不得新增、删除或修改 candidate_id。
 6. 不得输出行号、severity、keep/drop、新候选、证据结论或修复方案。
 7. 无法确定时返回空字符串，禁止猜测。
+
+# Output Field Contract
+
+只输出 `locations` 数组。每个输入候选最多对应一项；结果只包含 `candidate_id` 和
+`location_snippet`，不输出行号、问题结论或其他字段。
 
 # Output
 
@@ -30,3 +45,13 @@
   ]
 }
 ```
+
+## 输出前自检
+
+- candidate_id 是否来自输入；
+- snippet 是否只来自新增行；
+- snippet 是否为连续 1～5 行；
+- 是否保留原始缩进和字符；
+- 是否没有输出行号、severity、keep/drop 或证据结论；
+- 无法确定时是否返回空字符串；
+- 是否没有输出额外字段。

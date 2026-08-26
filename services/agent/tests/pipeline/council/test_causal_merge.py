@@ -134,6 +134,24 @@ def test_same_cause_but_different_effect_is_preserved():
     assert output.groups == []
 
 
+def test_unknown_comparison_is_not_treated_as_same():
+    first, second = _candidate("a", "first"), _candidate("b", "second")
+    result = CausalAnalysisBatch(
+        profiles=[_profile("a"), _profile("b")],
+        comparisons=[CausalComparison(
+            left_candidate_id="a",
+            right_candidate_id="b",
+            same_cause=None,
+            same_effect=None,
+        )],
+    )
+
+    output, _ = _run(first, second, result)
+
+    assert len(output.final_issues) == 2
+    assert output.groups == []
+
+
 def test_uncertain_or_failed_analysis_is_fail_closed():
     first, second = _candidate("a", "first"), _candidate("b", "second")
     output, llm = _run(first, second, None)
