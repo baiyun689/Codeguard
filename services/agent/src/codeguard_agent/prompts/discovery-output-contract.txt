@@ -13,6 +13,7 @@
 
 - 最终消息不能同时包含工具调用和审查结果；
 - 最终消息只能包含一个原始 JSON 对象，不要使用 Markdown 代码围栏，不要添加前言、结语或解释；
+- JSON 必须使用原始双引号 `"`，不得把 JSON 引号编码为 &quot; 或其它 HTML 实体；
 - 必须显式输出 `summary` 和 `issues`。确认没有候选时返回 `issues=[]`，这表示审查已正常完成；
 - JSON 必须符合以下 `DiscoveryReviewResult` 形状：
 

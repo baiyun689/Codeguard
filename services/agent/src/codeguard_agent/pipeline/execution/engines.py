@@ -13,6 +13,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from html import unescape
 from time import sleep
 from typing import Any
 
@@ -358,8 +359,14 @@ def _extract_inline_result(raw: Any, result_schema: Any) -> Any | None:
     payload = _unwrap_json_fence(content)
     try:
         return result_schema.model_validate_json(payload)
-    except Exception:  # noqa: BLE001 最终输出不合法时由一次结构化 synthesis 兜底
-        return None
+    except Exception:  # noqa: BLE001 继续尝试受限的 HTML 实体兼容
+        decoded = unescape(payload)
+        if decoded == payload:
+            return None
+        try:
+            return result_schema.model_validate_json(decoded)
+        except Exception:  # noqa: BLE001 仍不合法时交给一次 synthesis 兜底
+            return None
 
 
 def _message_text(content: Any) -> str:

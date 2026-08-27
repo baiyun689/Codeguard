@@ -4,10 +4,12 @@ from pathlib import Path
 
 import pytest
 
+from codeguard_agent.models.tasks import ReviewTask
 from codeguard_agent.pipeline.prompting import render_prompt_template
 from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
     build_reviewer_system_prompt,
+    build_reviewer_user_prompt,
 )
 
 
@@ -37,6 +39,7 @@ def test_reviewer_prompts_have_shared_review_contract():
         assert "issues=[]" in prompt
         assert "assistant 消息只能包含工具调用" in prompt
         assert "最终消息不能同时包含工具调用和审查结果" in prompt
+        assert "不得把 JSON 引号编码为 &quot;" in prompt
 
 
 def test_discovery_evidence_contract_requires_minimal_sufficient_references():
@@ -50,6 +53,24 @@ def test_discovery_evidence_contract_requires_minimal_sufficient_references():
         "最多选择 3 条",
     ):
         assert text in prompt
+
+
+def test_reviewer_user_prompts_end_with_shared_terminal_reminder():
+    task = ReviewTask(
+        id="task-1",
+        file="src/A.java",
+        patch="@@ -0,0 +1 @@\n+class A {}",
+        changed_lines=[1],
+    )
+    for reviewer in DEFAULT_REVIEWERS:
+        prompt = build_reviewer_user_prompt(
+            task=task,
+            user_prompt_file=reviewer.prompt_file.replace("-base.txt", "-user.txt"),
+        )
+        assert prompt.count("<terminal_response_contract>") == 1
+        assert prompt.rstrip().endswith("</terminal_response_contract>")
+        assert "必须以 `{` 开始、以 `}` 结束" in prompt
+        assert "不得输出分析、列表、Markdown 或 HTML 实体" in prompt
 
 
 def test_reviewer_prompts_define_tool_decision_protocol():

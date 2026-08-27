@@ -250,6 +250,26 @@ def test_react_明确clean_不触发结构化降级():
     assert outcome.execution_events == ["react_inline_structured"]
 
 
+def test_react_完整html实体编码json可直接结束而不降级():
+    engine = _RawFinalEngine(
+        "{&quot;summary&quot;: &quot;clean&quot;, &quot;issues&quot;: []}"
+    )
+
+    outcome = engine.review(
+        _FailIfStructuredLLM(),
+        system_prompt="s",
+        user_prompt="u",
+        reviewer_name="logic",
+        max_retries=1,
+        structured_method="function_calling",
+        result_schema=DiscoveryReviewResult,
+    )
+
+    assert outcome.result.summary == "clean"
+    assert outcome.result.issues == []
+    assert outcome.execution_events == ["react_inline_structured"]
+
+
 @pytest.mark.parametrize(
     "content",
     [
@@ -257,6 +277,10 @@ def test_react_明确clean_不触发结构化降级():
         '{"summary":"missing issues"}',
         '{"summary":"null issues","issues":null}',
         '{"summary":"extra field","issues":[],"unexpected":true}',
+        (
+            "{&quot;summary&quot;: &quot;extra field&quot;, "
+            "&quot;issues&quot;: [], &quot;unexpected&quot;: true}"
+        ),
     ],
 )
 def test_react_非法schema_只触发一次结构化降级(content):
@@ -349,8 +373,15 @@ def test_react_支持单一json围栏和文本内容块(content):
     assert outcome.execution_events == ["react_inline_structured"]
 
 
-def test_react_拒绝夹杂解释的json并降级():
-    engine = _RawFinalEngine('结果如下：{"summary":"mixed","issues":[]}')
+@pytest.mark.parametrize(
+    "content",
+    [
+        '结果如下：{"summary":"mixed","issues":[]}',
+        "结果如下：{&quot;summary&quot;: &quot;mixed&quot;, &quot;issues&quot;: []}",
+    ],
+)
+def test_react_拒绝夹杂解释的json并降级(content):
+    engine = _RawFinalEngine(content)
     llm = _CountingLLM(DiscoveryReviewResult(summary="fallback", issues=[]))
 
     outcome = engine.review(

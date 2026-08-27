@@ -69,6 +69,7 @@ def _load_prompt(name: str) -> str:
 _DISCOVERY_CONTEXT_CONTRACT = "discovery-context-contract.txt"
 _DISCOVERY_EVIDENCE_CONTRACT = "discovery-evidence-contract.txt"
 _DISCOVERY_OUTPUT_CONTRACT = "discovery-output-contract.txt"
+_DISCOVERY_OUTPUT_REMINDER = "discovery-output-reminder.txt"
 
 
 def build_reviewer_system_prompt(reviewer: Reviewer) -> str:
@@ -168,7 +169,8 @@ def build_reviewer_user_prompt(
             "  </review_plan>",
         ])
     parts.append("</review_input>")
-    return render_prompt_template(
+    rendered = render_prompt_template(
         (_PROMPT_DIR / user_prompt_file).read_text(encoding="utf-8"),
         {"dynamic_context": "\n".join(parts)},
     )
+    return f"{rendered.rstrip()}\n\n{_load_prompt(_DISCOVERY_OUTPUT_REMINDER).strip()}\n"

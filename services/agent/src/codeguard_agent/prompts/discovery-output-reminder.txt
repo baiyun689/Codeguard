@@ -1,0 +1,3 @@
+<terminal_response_contract>
+需要更多仓库事实时，assistant 消息只能发出工具调用。停止探索后的最终 assistant 消息只能包含一个原始 DiscoveryReviewResult JSON 对象，必须以 `{` 开始、以 `}` 结束。没有问题时仍要输出 `{"summary":"简短结论","issues":[]}`。不得输出分析、列表、Markdown 或 HTML 实体，也不得在 JSON 前后添加任何文字。
+</terminal_response_contract>
