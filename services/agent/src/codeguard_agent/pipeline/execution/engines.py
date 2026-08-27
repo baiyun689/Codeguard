@@ -357,16 +357,72 @@ def _extract_inline_result(raw: Any, result_schema: Any) -> Any | None:
     if not content:
         return None
     payload = _unwrap_json_fence(content)
-    try:
-        return result_schema.model_validate_json(payload)
-    except Exception:  # noqa: BLE001 继续尝试受限的 HTML 实体兼容
-        decoded = unescape(payload)
-        if decoded == payload:
-            return None
+    variants = [payload]
+    decoded = unescape(payload)
+    if decoded != payload:
+        variants.append(decoded)
+    for variant in variants:
         try:
-            return result_schema.model_validate_json(decoded)
-        except Exception:  # noqa: BLE001 仍不合法时交给一次 synthesis 兜底
+            return result_schema.model_validate_json(variant)
+        except Exception:  # noqa: BLE001 先完成所有严格变体尝试
+            continue
+    # 末尾提取必须在 HTML 解码后的统一语义文本上判断唯一性，
+    # 否则“实体编码对象 + 原始末尾对象”会被误当成唯一 JSON。
+    suffix = _terminal_json_suffix(decoded)
+    if suffix is not None:
+        try:
+            return result_schema.model_validate_json(suffix)
+        except Exception:  # noqa: BLE001 schema 不合法时交给 synthesis
+            pass
+    return None
+
+
+def _terminal_json_suffix(text: str) -> str | None:
+    """只提取消息末尾的唯一 JSON 对象。
+
+    DeepSeek 在工具返回后偶尔会先输出可见分析，再输出正式 JSON。
+    只兼容这一种受限形态：JSON 必须位于消息末尾，且前缀不得再包含
+    另一个可解析 JSON 对象。
+    """
+    stripped = text.strip()
+    decoder = json.JSONDecoder()
+    for start, char in enumerate(stripped):
+        if char != "{":
+            continue
+        decoded = _decode_json_object_at(decoder, stripped, start)
+        if decoded is None:
+            continue
+        _, end = decoded
+        if end != len(stripped):
+            continue
+        prefix = stripped[:start]
+        if _contains_json_object(prefix):
             return None
+        return stripped[start:end]
+    return None
+
+
+def _contains_json_object(text: str) -> bool:
+    decoder = json.JSONDecoder()
+    for start, char in enumerate(text):
+        if char != "{":
+            continue
+        if _decode_json_object_at(decoder, text, start) is not None:
+            return True
+    return False
+
+
+def _decode_json_object_at(
+    decoder: json.JSONDecoder, text: str, start: int
+) -> tuple[dict[str, Any], int] | None:
+    """在指定位置解码 JSON 对象；非对象或非法 JSON 返回 None。"""
+    try:
+        value, end = decoder.raw_decode(text, start)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(value, dict):
+        return value, end
+    return None
 
 
 def _message_text(content: Any) -> str:

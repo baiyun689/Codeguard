@@ -373,14 +373,65 @@ def test_react_支持单一json围栏和文本内容块(content):
     assert outcome.execution_events == ["react_inline_structured"]
 
 
+def test_react_接受分析文本后的唯一末尾json且不降级():
+    content = (
+        "The tool confirms the method reaches DriverManager.getConnection.\n\n"
+        "Let me analyze this before returning the formal result.\n\n"
+        '{"summary":"mixed","issues":[]}'
+    )
+    engine = _RawFinalEngine(content)
+
+    outcome = engine.review(
+        _FailIfStructuredLLM(),
+        system_prompt="s",
+        user_prompt="u",
+        reviewer_name="logic",
+        max_retries=1,
+        structured_method="function_calling",
+        result_schema=DiscoveryReviewResult,
+    )
+
+    assert outcome.result.summary == "mixed"
+    assert outcome.execution_events == ["react_inline_structured"]
+
+
+def test_react_接受紧邻分析前缀的唯一末尾json():
+    engine = _RawFinalEngine('结果如下：{"summary":"adjacent","issues":[]}')
+
+    outcome = engine.review(
+        _FailIfStructuredLLM(),
+        system_prompt="s",
+        user_prompt="u",
+        reviewer_name="logic",
+        max_retries=1,
+        structured_method="function_calling",
+        result_schema=DiscoveryReviewResult,
+    )
+
+    assert outcome.result.summary == "adjacent"
+    assert outcome.execution_events == ["react_inline_structured"]
+
+
 @pytest.mark.parametrize(
     "content",
     [
-        '结果如下：{"summary":"mixed","issues":[]}',
-        "结果如下：{&quot;summary&quot;: &quot;mixed&quot;, &quot;issues&quot;: []}",
+        (
+            '分析。\n\n{"summary":"first","issues":[]}\n\n'
+            '{"summary":"second","issues":[]}'
+        ),
+        (
+            '第一个对象：{"summary":"first","issues":[]}\n\n'
+            '{"summary":"second","issues":[]}'
+        ),
+        (
+            "{&quot;summary&quot;:&quot;first&quot;,&quot;issues&quot;:[]}\n\n"
+            '{"summary":"second","issues":[]}'
+        ),
+        '分析。\n\n{"summary":"result","issues":[]}\n补充解释。',
+        '分析。\n\n{"summary":"extra","issues":[],"unexpected":true}',
     ],
 )
-def test_react_拒绝夹杂解释的json并降级(content):
+def test_react_末尾json兼容仍拒绝多对象后缀和非法schema(content):
     engine = _RawFinalEngine(content)
     llm = _CountingLLM(DiscoveryReviewResult(summary="fallback", issues=[]))
 
