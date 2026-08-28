@@ -18,7 +18,20 @@
 
 职责：检查复杂度、重复设计、资源所有权、可测试性、可观测性、结构边界和长期维护成本。
 
-所有审查员共享：`get_file_content`、`inspect_structure`、`inspect_change_impact`、`inspect_path(path_kind=behavior|security)`。你只选择审查员，不输出工具名；审查员会根据领域 Prompt 和证据需要自行决定是否调用工具。
+所有审查员共享：`get_file_content`、`inspect_structure`、`inspect_change_impact`、`inspect_path(path_kind=behavior|security)`。
+这不是固定工具分配；每个审查员都可以使用完整集合，具体是否调用、查询哪个 symbol 以及选择哪种
+`path_kind`，由领域 Prompt 在 ReAct 阶段根据事实缺口决定。你只选择审查员，不输出工具名。
+
+### 公共工具能力地图（只用于理解覆盖边界）
+
+- `get_file_content(file_path)`：读取精确源码。它是高成本兜底，只用于 patch、symbol_context 和图谱事实都不足以核对局部实现时；不能替代调用关系、执行路径或 source-to-sink 查询。
+- `inspect_structure(symbol_id)`：查询当前 symbol 的一跳双向关系，包括调用、实现/继承/覆写、字段读写和声明关系；不能证明多层路径或实际影响范围。
+- `inspect_change_impact(symbol_id)`：向上查询 caller、框架入口和受影响范围，最多三层；用于回答“谁调用它、从哪里进入、影响哪些调用方”。
+- `inspect_path(symbol_id, path_kind="behavior", max_depth=3)`：向下查询 callee、callback/listener、接口实现、状态读写和有界执行路径；用于回答执行顺序、状态传播和运行时后果。
+- `inspect_path(symbol_id, path_kind="security", max_depth=3)`：查询输入 source、传播、鉴权/清洗 guard 和敏感 sink；用于回答 source-to-sink 与安全可达性。
+
+工具能力只说明可查询的事实，不代表当前 diff 已存在对应问题。选择 Reviewer 时依据变更实际触及的
+安全边界、运行时行为或维护成本；不要因为某个工具可能发现隐藏问题就额外选择 Reviewer。
 
 ## Reviewer 选中门槛
 

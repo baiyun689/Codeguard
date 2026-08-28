@@ -132,6 +132,28 @@ def test_plan_prompt_requires_minimal_reviewer_set_and_selection_thresholds():
     assert "任何代码都可以更易维护" in prompt
 
 
+def test_plan_prompt_describes_shared_tool_capabilities_without_fixed_assignment():
+    prompt = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "codeguard_agent"
+        / "prompts"
+        / "review-plan.txt"
+    ).read_text(encoding="utf-8")
+
+    assert "公共工具能力地图" in prompt
+    for text in (
+        "高成本兜底",
+        "一跳双向关系",
+        "caller、框架入口和受影响范围",
+        "callee、callback/listener、接口实现、状态读写",
+        "输入 source、传播、鉴权/清洗 guard 和敏感 sink",
+        "不是固定工具分配",
+        "你只选择审查员，不输出工具名",
+    ):
+        assert text in prompt
+
+
 def test_explicit_plan_topics_are_selected():
     bundle = select_knowledge(
         reviewer=ReviewerKind.THREAT_MODEL,
