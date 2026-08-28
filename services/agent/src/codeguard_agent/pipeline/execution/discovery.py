@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import unescape
 import json
 import posixpath
 from dataclasses import dataclass
@@ -390,6 +391,7 @@ class CoordinatedDiscoveryToolClient:
         path_kind: str,
         max_depth: int = 3,
     ) -> ToolResponse:
+        symbol_id = unescape(symbol_id)
         if path_kind not in {"behavior", "security"}:
             return ToolResponse(success=False, error="invalid_path_kind")
         if not isinstance(max_depth, int) or isinstance(max_depth, bool) or not 1 <= max_depth <= 3:
@@ -405,6 +407,7 @@ class CoordinatedDiscoveryToolClient:
         )
 
     def inspect_change_impact(self, symbol_id: str) -> ToolResponse:
+        symbol_id = unescape(symbol_id)
         return self._invoke(
             "inspect_change_impact",
             {"symbol_id": symbol_id},
@@ -412,6 +415,7 @@ class CoordinatedDiscoveryToolClient:
         )
 
     def inspect_structure(self, symbol_id: str) -> ToolResponse:
+        symbol_id = unescape(symbol_id)
         return self._invoke(
             "inspect_structure",
             {"symbol_id": symbol_id},

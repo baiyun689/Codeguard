@@ -81,6 +81,18 @@ def test_inspect_path_发送结构化_kind和深度():
     assert response.success is True
 
 
+def test_graph_tool_发送前还原_html实体编码的_symbol_id():
+    def handler(request: httpx.Request) -> httpx.Response:
+        query = json.loads(json.loads(request.content)["query"])
+        assert query["symbol_id"] == "java:demo.Retry#run(java.util.List<T>)"
+        return httpx.Response(200, json={"success": True, "result": "{}"})
+
+    response = _mock_client(handler).inspect_path(
+        "java:demo.Retry#run(java.util.List&lt;T&gt;)", "behavior"
+    )
+    assert response.success is True
+
+
 def test_inspect_path_非法_kind在客户端_fail_closed():
     client = _mock_client(lambda _request: httpx.Response(500))
     response = client.inspect_path("java:demo.Service#run()", "other")

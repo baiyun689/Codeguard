@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from html import unescape
 
 import httpx
 
@@ -96,10 +97,12 @@ class ToolClient:
         )
 
     def inspect_change_impact(self, symbol_id: str) -> ToolResponse:
-        return self._post_tool("inspect_change_impact", {"query": symbol_id})
+        return self._post_tool(
+            "inspect_change_impact", {"query": unescape(symbol_id)}
+        )
 
     def inspect_structure(self, symbol_id: str) -> ToolResponse:
-        return self._post_tool("inspect_structure", {"query": symbol_id})
+        return self._post_tool("inspect_structure", {"query": unescape(symbol_id)})
 
     def inspect_path(
         self,
@@ -108,6 +111,7 @@ class ToolClient:
         max_depth: int = 3,
     ) -> ToolResponse:
         """查询有界下游行为或安全路径。"""
+        symbol_id = unescape(symbol_id)
         if path_kind not in {"behavior", "security"}:
             return ToolResponse(success=False, error="invalid_path_kind")
         if not isinstance(max_depth, int) or isinstance(max_depth, bool) or not 1 <= max_depth <= 3:

@@ -26,6 +26,42 @@ class _FakeClient:
         return self._responses[min(index, len(self._responses) - 1)]
 
 
+class _FakeGraphClient:
+    def __init__(self) -> None:
+        self.path_calls: list[tuple[str, str, int]] = []
+        self.impact_calls: list[str] = []
+        self.structure_calls: list[str] = []
+
+    def inspect_path(
+        self, symbol_id: str, path_kind: str, max_depth: int = 3
+    ) -> ToolResponse:
+        self.path_calls.append((symbol_id, path_kind, max_depth))
+        return ToolResponse(True, "PATH")
+
+    def inspect_change_impact(self, symbol_id: str) -> ToolResponse:
+        self.impact_calls.append(symbol_id)
+        return ToolResponse(True, "IMPACT")
+
+    def inspect_structure(self, symbol_id: str) -> ToolResponse:
+        self.structure_calls.append(symbol_id)
+        return ToolResponse(True, "STRUCTURE")
+
+
+def test_graph_tools_decode_html_entities_in_symbol_id_before_gateway_call() -> None:
+    raw = _FakeGraphClient()
+    client = CoordinatedDiscoveryToolClient(raw, DiscoveryToolCoordinator())
+    escaped = "java:demo.Retry#run(java.util.List&lt;T&gt;)"
+    canonical = "java:demo.Retry#run(java.util.List<T>)"
+
+    client.inspect_path(escaped, "behavior")
+    client.inspect_change_impact(escaped)
+    client.inspect_structure(escaped)
+
+    assert raw.path_calls == [(canonical, "behavior", 3)]
+    assert raw.impact_calls == [canonical]
+    assert raw.structure_calls == [canonical]
+
+
 def test_canonical_key_normalizes_slashes_and_dot_segments_without_lowercasing() -> None:
     left = canonical_tool_key("get_file_content", {"file_path": "src\\.\\A.java"})
     right = canonical_tool_key("get_file_content", {"file_path": "src/A.java"})
