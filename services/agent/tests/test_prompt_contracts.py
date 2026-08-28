@@ -103,11 +103,12 @@ def test_reviewer_prompts_gate_non_local_claims_without_blocking_local_findings(
     output = _prompt("discovery-output-contract.txt")
 
     for text in (
-        "## 候选证明门槛",
-        "只要 trigger、reachability 或 impact 依赖 patch 之外",
-        "必须先调用能直接回答该缺口的",
-        "这不是要求每个候选都调用工具",
-        "主张收缩到 patch 已证明的局部范围",
+        "## 终止前证据收口",
+        "对**每个候选分别**完成一次最小证明检查",
+        "如果候选只是 patch 已直接证明的局部机制和后果，可以直接输出",
+        "哪一条尚未确认的仓库事实会改变这个候选的成立与否",
+        "不要穷举调用链",
+        "保留仍由现有事实独立成立的局部问题",
         "相对顺序变化本身只能证明局部顺序变化",
     ):
         assert text in shared
