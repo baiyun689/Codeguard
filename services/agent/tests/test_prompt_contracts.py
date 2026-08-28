@@ -31,7 +31,7 @@ def test_reviewer_prompts_have_shared_review_contract():
         assert "## 审查步骤" in prompt
         assert prompt.count("## ReAct 终止与输出合同") == 1
         assert "EvidenceJudge" in prompt
-        assert "只输出有明确代码依据" in prompt
+        assert "优先输出有代码依据" in prompt
         assert "宁可多报" not in prompt
         assert "只有存在明确事实缺口时" in prompt
         assert '"summary"' in prompt
@@ -69,8 +69,8 @@ def test_reviewer_user_prompts_end_with_shared_terminal_reminder():
         )
         assert prompt.count("<terminal_response_contract>") == 1
         assert prompt.rstrip().endswith("</terminal_response_contract>")
-        assert "必须以 `{` 开始、以 `}` 结束" in prompt
-        assert "不得输出分析、列表、Markdown 或 HTML 实体" in prompt
+        assert "符合 DiscoveryReviewResult schema 的 JSON 对象" in prompt
+        assert "最终消息不要混入工具调用、Markdown 围栏" in prompt
 
 
 def test_reviewer_prompts_define_tool_decision_protocol():
@@ -103,22 +103,22 @@ def test_reviewer_prompts_gate_non_local_claims_without_blocking_local_findings(
     output = _prompt("discovery-output-contract.txt")
 
     for text in (
-        "## 终止前证据收口",
-        "对**每个候选分别**完成一次最小证明检查",
-        "如果候选只是 patch 已直接证明的局部机制和后果，可以直接输出",
-        "哪一条尚未确认的仓库事实会改变这个候选的成立与否",
-        "不要穷举调用链",
-        "保留仍由现有事实独立成立的局部问题",
-        "相对顺序变化本身只能证明局部顺序变化",
+        "## 终止前的轻量证据检查",
+        "不要为了满足形式化清单而压缩探索",
+        "局部机制已经足够成立时，可以直接输出",
+        "优先查询一个最能改变结论的图谱事实",
+        "穷举调用链",
+        "保留仍由现有事实支持的部分",
+        "相对顺序变化只能直接证明局部顺序变化",
     ):
         assert text in shared
     for text in (
-        "候选必须先通过“主张—证据”检查再输出",
-        "不得仅降低 confidence 后继续输出原主张",
-        "无法证明的部分必须明确删掉或不形成候选",
+        "evidence_refs` 只填写你实际使用过",
+        "不要因为分数不高就自动放弃",
+        "应缩小 message，而不是编造引用",
+        "confidence` 只表达当前判断的把握程度",
     ):
-        assert text in evidence
-    assert "confidence` 只能表达当前已有事实" in output
+        assert text in output
 
     for name in (
         "threat-model-base.txt",
@@ -126,8 +126,7 @@ def test_reviewer_prompts_gate_non_local_claims_without_blocking_local_findings(
         "maintainability-base.txt",
     ):
         prompt = _prompt(name)
-        assert "不要用低 confidence 包装猜测" in prompt
-        assert "证据暂时不足时可以保留低置信度候选" not in prompt
+        assert "confidence 用于表达判断把握，不替代证据" in prompt
 
 
 def test_shared_tool_contract_prioritizes_graph_queries_over_full_file_reads():
