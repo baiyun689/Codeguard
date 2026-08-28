@@ -15,12 +15,13 @@ def make_file_content_tool(client: ToolClient):
     """构造 get_file_content 工具。
 
     返回一个 LangChain StructuredTool:Agent 给定文件相对路径,经 Java 沙箱读取内容。
+    这是高成本兜底工具;涉及跨符号关系时应优先使用图谱工具。
     LangChain 相关导入延迟到此处,保证 mock 模式 / 没装 langchain 时本模块仍可被引用。
     """
     from langchain_core.tools import StructuredTool
 
     def _get_file_content(file_path: str) -> str:
-        """读取仓库中指定文件的完整内容,用于了解 diff 之外的上下文。
+        """仅在图谱事实不足以回答问题时读取指定文件的完整内容。
 
         参数 file_path:相对仓库根的文件路径(如 src/main/java/com/example/Service.java)。
         可读取仓库内与当前候选相关的源码或配置文件;越权 / 不存在 / 过大会返回以 'Error:' 开头的说明。
@@ -31,8 +32,9 @@ def make_file_content_tool(client: ToolClient):
         func=_get_file_content,
         name="get_file_content",
         description=(
-            "读取仓库中指定文件的完整内容,用于了解 diff 之外的上下文"
-            "(被改方法的完整定义、已知调用方、相关类等)。"
+            "高成本兜底工具:仅在必须核对具体实现代码,且 patch、symbol_context 和图谱工具都不足以回答当前缺口时,"
+            "读取仓库中指定文件的完整内容。涉及 caller/callee、listener/callback、状态传播、执行顺序、"
+            "影响范围或 source-to-sink 的跨符号查询应优先使用 inspect_* 图谱工具。"
             "输入为相对仓库根的文件路径;仅读取与当前候选相关的 repo 内源码或配置文件,"
             "不要遍历无关文件。"
         ),

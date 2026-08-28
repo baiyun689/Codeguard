@@ -83,6 +83,8 @@ def test_reviewer_prompts_define_tool_decision_protocol():
         for text in (
             "## 工具决策协议",
             "只能使用 `symbol_context` 中已有的稳定 `symbol_id`",
+            "`get_file_content` 是高成本兜底工具",
+            "图谱事实无法回答时使用",
             "不要为了收集信息调用所有工具",
             "工具返回已经足以确认或否定",
             "工具失败、`partial` 或 `indeterminate`",
@@ -93,6 +95,26 @@ def test_reviewer_prompts_define_tool_decision_protocol():
         assert "## 共享图谱工具合同" in build_reviewer_system_prompt(reviewer)
     assert "inspect_path(path_kind=\"security\")" in _prompt("threat-model-base.txt")
     assert "inspect_path(path_kind=\"behavior\")" in _prompt("behavior-base.txt")
+
+
+def test_shared_tool_contract_prioritizes_graph_queries_over_full_file_reads():
+    prompt = _prompt("discovery-tool-contract.txt")
+    for text in (
+        "高成本兜底工具",
+        "确实必须核对具体实现代码",
+        "patch、symbol context 和图谱事实都不足",
+        "caller",
+        "callee",
+        "listener",
+        "callback",
+        "状态传播",
+        "执行顺序",
+        "source-to-sink",
+        "影响范围",
+        "必须优先使用对应图谱工具",
+        "不能用文件全文读取替代",
+    ):
+        assert text in prompt
 
 
 def test_plan_prompt_has_field_contract_and_final_check():

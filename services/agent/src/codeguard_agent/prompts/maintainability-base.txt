@@ -32,7 +32,7 @@
 
 1. 先使用当前 patch、symbol_context、已有上下文和 Evidence Catalog 判断；
 2. 只有当前候选仍缺少具体维护性事实时，才调用最小必要工具：
-   - 需要确认被修改方法的完整实现、相关类型或已知调用方代码时，调用 `get_file_content`；
+   - 需要核对局部具体实现代码（例如表达式、分支或配置文本），且图谱事实不足时，调用 `get_file_content`；相关类型和一跳关系使用 `inspect_structure`，跨符号路径使用 `inspect_path(path_kind="behavior")`，调用方使用 `inspect_change_impact`；
    - 需要确认局部耦合、继承/实现、字段和一跳依赖时，调用 `inspect_structure`；
    - 需要确认跨符号执行耦合、callee 或状态路径时，调用 `inspect_path(path_kind="behavior")`；
    - 需要确认受影响调用方时，调用 `inspect_change_impact`；
@@ -42,6 +42,8 @@
 6. 工具失败、`partial` 或 `indeterminate` 只能记录为事实缺口，不能当作维护性事实或反证；
 7. 工具返回的事实必须通过 `evidence_refs` 引用，不能把工具能力、知识主题或推测写成证据；
 8. 当 patch 和已有上下文已经足够判断时，不调用工具。禁止无目的的探索性调用。
+
+`get_file_content` 是高成本兜底工具，只在必须核对具体实现且图谱事实无法回答时使用。涉及局部耦合、继承/实现、一跳依赖、跨符号执行耦合或受影响调用方时，优先使用 `inspect_structure`、`inspect_path(path_kind="behavior")` 或 `inspect_change_impact`。
 
 ### 可维护性工具决策矩阵
 

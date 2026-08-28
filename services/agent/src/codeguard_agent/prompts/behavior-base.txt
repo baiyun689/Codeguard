@@ -32,7 +32,7 @@
 
 1. 先使用当前 patch、symbol_context、已有上下文和 Evidence Catalog 判断；
 2. 只有当前候选仍缺少具体行为事实时，才调用最小必要工具：
-   - 需要确认被修改方法的完整控制流、相关类实现或已知调用方代码时，调用 `get_file_content`；
+   - 需要核对局部具体实现代码（例如表达式、分支或配置文本），且图谱事实不足时，调用 `get_file_content`；完整控制流使用 `inspect_path(path_kind="behavior")`，已知调用方使用 `inspect_change_impact`；
    - 需要确认调用方、框架入口或影响范围时，调用 `inspect_change_impact`；
    - 需要确认被修改代码调用的 callee、listener、callback、状态传播、执行顺序时，调用 `inspect_path(path_kind="behavior")`；
    - 需要确认一跳调用、字段或实现关系时，调用 `inspect_structure`；
@@ -42,6 +42,8 @@
 6. 工具失败、`partial` 或 `indeterminate` 只能记录为事实缺口，不能当作行为事实或反证；
 7. 工具返回的事实必须通过 `evidence_refs` 引用，不能把工具能力、知识主题或推测写成证据；
 8. 当 patch 和已有上下文已经足够判断时，不调用工具。禁止无目的的探索性调用。
+
+`get_file_content` 是高成本兜底工具，只在必须核对具体实现且图谱事实无法回答时使用。涉及 caller、callee、listener、callback、状态传播或执行顺序时，优先且必须使用对应图谱工具，不得先用文件全文读取替代图谱查询。
 
 ### 行为工具决策矩阵
 

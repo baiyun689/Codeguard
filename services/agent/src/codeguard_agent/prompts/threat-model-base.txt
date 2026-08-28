@@ -32,7 +32,7 @@
 
 1. 先使用当前 patch、symbol_context、已有上下文和 Evidence Catalog 判断；
 2. 只有当前候选仍缺少具体安全事实时，才调用最小必要工具：
-   - 需要确认被修改方法的完整控制流、相关类实现或已知调用方代码时，调用 `get_file_content`；
+   - 需要核对局部具体实现代码（例如校验表达式、分支或配置文本），且图谱事实不足时，调用 `get_file_content`；完整传播路径使用 `inspect_path(path_kind="security")`，上游入口使用 `inspect_change_impact`；
    - 需要确认安全入口、输入传播、权限防护、敏感字段或敏感 sink 时，调用 `inspect_path(path_kind="security")`；
    - 需要确认上游入口和影响范围时，调用 `inspect_change_impact`；
    - 需要确认当前 symbol 的结构/实现关系时，调用 `inspect_structure`；
@@ -42,6 +42,8 @@
 6. 工具失败、`partial` 或 `indeterminate` 只能记录为事实缺口，不能当作安全事实或反证；
 7. 工具返回的事实必须通过 `evidence_refs` 引用，不能把工具能力、知识主题或推测写成证据；
 8. 当 patch 和已有上下文已经足够判断时，不调用工具。禁止无目的的探索性调用。
+
+`get_file_content` 是高成本兜底工具，只在必须核对具体实现且图谱事实无法回答时使用。涉及输入传播、鉴权/清洗、source-to-sink 或敏感 sink 时，优先且必须使用 `inspect_path(path_kind="security")`，不得用文件全文读取替代安全路径查询。
 
 ### 威胁工具决策矩阵
 

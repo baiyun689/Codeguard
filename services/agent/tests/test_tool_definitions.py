@@ -34,7 +34,21 @@ class _FakeClient:
 
 def test_file_content_工具名称正确():
     client = _FakeClient()
-    assert make_file_content_tool(client).name == "get_file_content"
+    tool = make_file_content_tool(client)
+    assert tool.name == "get_file_content"
+    for text in (
+        "高成本兜底工具",
+        "必须核对具体实现代码",
+        "patch、symbol_context 和图谱工具都不足",
+        "caller/callee",
+        "listener/callback",
+        "状态传播",
+        "执行顺序",
+        "影响范围",
+        "source-to-sink",
+        "优先使用 inspect_* 图谱工具",
+    ):
+        assert text in tool.description
 
 
 def test_file_content_工具透传路径():
