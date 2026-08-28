@@ -496,6 +496,7 @@ def main(argv: list[str] | None = None) -> int:
                     parse_changed_files(diff),
                     timeout=settings.graph_build_timeout_seconds + 15,
                     revision=case_revision,
+                    token=settings.tool_server_token,
                 )
             except Exception as exc:  # noqa: BLE001 工具服务不可用则降级无工具,不中断评测
                 if profile.strict_tools:
