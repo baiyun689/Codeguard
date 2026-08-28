@@ -97,6 +97,38 @@ def test_reviewer_prompts_define_tool_decision_protocol():
     assert "inspect_path(path_kind=\"behavior\")" in _prompt("behavior-base.txt")
 
 
+def test_reviewer_prompts_gate_non_local_claims_without_blocking_local_findings():
+    shared = _prompt("discovery-context-contract.txt")
+    evidence = _prompt("discovery-evidence-contract.txt")
+    output = _prompt("discovery-output-contract.txt")
+
+    for text in (
+        "## 候选证明门槛",
+        "只要 trigger、reachability 或 impact 依赖 patch 之外",
+        "必须先调用能直接回答该缺口的",
+        "这不是要求每个候选都调用工具",
+        "主张收缩到 patch 已证明的局部范围",
+        "相对顺序变化本身只能证明局部顺序变化",
+    ):
+        assert text in shared
+    for text in (
+        "候选必须先通过“主张—证据”检查再输出",
+        "不得仅降低 confidence 后继续输出原主张",
+        "无法证明的部分必须明确删掉或不形成候选",
+    ):
+        assert text in evidence
+    assert "confidence` 只能表达当前已有事实" in output
+
+    for name in (
+        "threat-model-base.txt",
+        "behavior-base.txt",
+        "maintainability-base.txt",
+    ):
+        prompt = _prompt(name)
+        assert "不要用低 confidence 包装猜测" in prompt
+        assert "证据暂时不足时可以保留低置信度候选" not in prompt
+
+
 def test_shared_tool_contract_prioritizes_graph_queries_over_full_file_reads():
     prompt = _prompt("discovery-tool-contract.txt")
     for text in (

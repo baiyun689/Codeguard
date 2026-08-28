@@ -20,3 +20,12 @@
 - 没有使用外部事实时返回空 evidence_refs，系统会自动使用当前 task patch；
 - 不得猜测、构造或修改编号;
 - 不得把 summary、Plan objectives 或 knowledge bundle 当仓库证据。
+
+候选必须先通过“主张—证据”检查再输出：
+
+- patch 直接可见的局部机制可以只依赖自动绑定的 patch；
+- caller、callee、listener、callback、调用顺序、状态传播、source-to-sink、外部契约、
+  生产可达性或运行时影响等非局部主张，必须有对应的 Cxx/Txx 外部事实引用；
+- 如果非局部事实尚未查到，不得仅降低 confidence 后继续输出原主张；应先调用相应图谱工具，
+  或删去未经证明的部分，保留仍由现有事实独立成立的局部问题；
+- 工具不可用不等于事实成立，也不等于事实不存在。无法证明的部分必须明确删掉或不形成候选。
