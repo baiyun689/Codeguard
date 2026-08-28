@@ -28,6 +28,7 @@ from codeguard_agent.pipeline.execution.engines import (
 from codeguard_agent.pipeline.evidence.ledger import (
     EvidenceCatalogBuilder,
     capture_tool_records,
+    render_evidence_catalog,
 )
 from codeguard_agent.pipeline.reviewers.reviewers import build_reviewer_user_prompt
 from codeguard_agent.pipeline.execution.discovery import (
@@ -366,7 +367,8 @@ def test_complete_patch_短标记记录_解析目标为_patch():
         complete_patch_files={"src/New.java"},
     )
     resp = client.get_file_content("src/New.java")
-    assert resp.result == COMPLETE_PATCH_RESULT + "\n\n[证据编号 P01]"
+    assert resp.result == COMPLETE_PATCH_RESULT
+    assert "P01" not in (resp.result or "")
     record = client.trace_records[-1]
     assert record.reused_from_call_id == "task_patch"
     assert record.resolved_output == ""
@@ -381,12 +383,19 @@ def test_gathered_context_复用记录携带真实payload():
 # ── 目录经提示词与引擎贯通 ─────────────────────────────────────────────
 
 
-def test_用户提示词_带目录时渲染_evidence_id():
+def test_用户提示词_带目录时只渲染外部_evidence_id():
     bundle = _bundle(_fact("resolve_change_context", "symbol A"))
     catalog = _Builder().build(bundle)
     prompt = build_reviewer_user_prompt(task=_task(), symbol_context=bundle, catalog=catalog)
-    assert 'evidence_id="P01"' in prompt
+    assert 'evidence_id="P01"' not in prompt
     assert 'evidence_id="C01"' in prompt
+
+
+def test_llm_catalog_hides_internal_patch_alias():
+    catalog = _Builder().build(_bundle(_fact("resolve_change_context", "symbol A")))
+    rendered = render_evidence_catalog(catalog)
+    assert "P01" not in rendered
+    assert 'id="C01"' in rendered
 
 
 def test_绑定器_role为枚举成员时不抛():

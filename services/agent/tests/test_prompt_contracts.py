@@ -74,12 +74,11 @@ def test_reviewer_user_prompts_end_with_shared_terminal_reminder():
 
 
 def test_reviewer_prompts_define_tool_decision_protocol():
-    expected_tools = {
-        "threat-model-base.txt": "inspect_security_path",
-        "behavior-base.txt": "inspect_change_impact",
-        "maintainability-base.txt": "inspect_structure",
-    }
-    for name, specialist_tool in expected_tools.items():
+    for name in (
+        "threat-model-base.txt",
+        "behavior-base.txt",
+        "maintainability-base.txt",
+    ):
         prompt = _prompt(name)
         for text in (
             "## 工具决策协议",
@@ -90,7 +89,10 @@ def test_reviewer_prompts_define_tool_decision_protocol():
             "工具返回的事实必须通过 `evidence_refs` 引用",
         ):
             assert text in prompt
-        assert specialist_tool in prompt
+    for reviewer in DEFAULT_REVIEWERS:
+        assert "## 共享图谱工具合同" in build_reviewer_system_prompt(reviewer)
+    assert "inspect_path(path_kind=\"security\")" in _prompt("threat-model-base.txt")
+    assert "inspect_path(path_kind=\"behavior\")" in _prompt("behavior-base.txt")
 
 
 def test_plan_prompt_has_field_contract_and_final_check():

@@ -33,8 +33,8 @@ Agent tool sessions:
 - `POST /api/v1/tools/{name}` dispatches an allowed tool using the `X-Session-Id` header.
 
 The default tool registry includes guarded file content, project-symbol
-resolution, and role-specific semantic graph queries (`get_file_content`,
-`resolve_change_context`, `inspect_security_path`, `inspect_change_impact`,
+resolution, and shared semantic graph queries (`get_file_content`,
+`resolve_change_context`, `inspect_path`, `inspect_change_impact`,
 `inspect_structure`). The legacy `find_sensitive_apis`, `get_code_metrics`,
 and `get_diff_ast` protocol names and their `GraphCompatibilityTool` adapter
 were removed in 2026-08 (git history preserves them). Repository paths are

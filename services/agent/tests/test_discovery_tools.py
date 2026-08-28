@@ -49,7 +49,7 @@ def test_same_conversation_repeated_read_returns_short_marker() -> None:
     assert records[1].reused_from_call_id == records[0].call_id
 
 
-def test_complete_patch_file_read_returns_marker_without_delegate_call() -> None:
+def test_complete_patch_file_read_hides_internal_alias_without_delegate_call() -> None:
     raw = _FakeClient()
     client = CoordinatedDiscoveryToolClient(
         raw,
@@ -60,7 +60,8 @@ def test_complete_patch_file_read_returns_marker_without_delegate_call() -> None
     response = client.get_file_content("src\\.\\A.java")
 
     assert response.success is True
-    assert response.result == COMPLETE_PATCH_RESULT + "\n\n[证据编号 P01]"
+    assert response.result == COMPLETE_PATCH_RESULT
+    assert "P01" not in (response.result or "")
     assert raw.calls == 0
 
 
@@ -165,8 +166,8 @@ def test_different_arguments_execute_separately() -> None:
 
 
 def test_parameterless_tool_key_is_stable() -> None:
-    assert canonical_tool_key("inspect_security_path", {}) == (
-        "inspect_security_path",
+    assert canonical_tool_key("inspect_path", {}) == (
+        "inspect_path",
         "{}",
     )
 

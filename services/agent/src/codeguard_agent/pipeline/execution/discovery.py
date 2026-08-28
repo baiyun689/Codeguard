@@ -18,9 +18,9 @@ from codeguard_agent.tools.tool_client import ToolResponse
 
 DISCOVERY_GATEWAY_TOOLS = frozenset({
     "get_file_content",
-    "inspect_security_path",
     "inspect_change_impact",
     "inspect_structure",
+    "inspect_path",
 })
 REPEATED_TOOL_RESULT = (
     "该工具和参数已经在当前对话中成功返回；请复用前述结果，不要重复读取。"
@@ -375,20 +375,33 @@ class CoordinatedDiscoveryToolClient:
                 "reused",
                 reused_from_call_id="task_patch",
             )
-            return _alias_echo(
-                "get_file_content", response, "P01", {"file_path": file_path}
-            )
+            # Patch is bound internally as P01; never expose that implementation
+            # alias to the reviewer.  The LLM-facing contract only allows Cxx/Txx.
+            return response
         return self._invoke(
             "get_file_content",
             {"file_path": file_path},
             lambda: self._delegate.get_file_content(file_path),
         )
 
-    def inspect_security_path(self, symbol_id: str) -> ToolResponse:
+    def inspect_path(
+        self,
+        symbol_id: str,
+        path_kind: str,
+        max_depth: int = 3,
+    ) -> ToolResponse:
+        if path_kind not in {"behavior", "security"}:
+            return ToolResponse(success=False, error="invalid_path_kind")
+        if not isinstance(max_depth, int) or isinstance(max_depth, bool) or not 1 <= max_depth <= 3:
+            return ToolResponse(success=False, error="invalid_max_depth")
         return self._invoke(
-            "inspect_security_path",
-            {"symbol_id": symbol_id},
-            lambda: self._delegate.inspect_security_path(symbol_id),
+            "inspect_path",
+            {
+                "symbol_id": symbol_id,
+                "path_kind": path_kind,
+                "max_depth": max_depth,
+            },
+            lambda: self._delegate.inspect_path(symbol_id, path_kind, max_depth),
         )
 
     def inspect_change_impact(self, symbol_id: str) -> ToolResponse:

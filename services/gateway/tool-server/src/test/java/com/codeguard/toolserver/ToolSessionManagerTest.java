@@ -44,7 +44,7 @@ class ToolSessionManagerTest {
         // 本期唯一工具应已注册到会话。
         assertNotNull(s.getTool("get_file_content"));
         assertNotNull(s.getTool("resolve_change_context"));
-        assertNotNull(s.getTool("inspect_security_path"));
+        assertNotNull(s.getTool("inspect_path"));
         assertNotNull(s.getTool("inspect_change_impact"));
         assertNotNull(s.getTool("inspect_structure"));
         assertNotNull(s.getSnapshot());

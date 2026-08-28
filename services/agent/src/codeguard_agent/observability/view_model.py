@@ -556,7 +556,7 @@ def _application_tool_summary(tool: str, output: Any, status: str) -> str:
         return "复用已缓存工具结果"
     if tool not in {
         "inspect_change_impact",
-        "inspect_security_path",
+        "inspect_path",
         "inspect_structure",
     }:
         return f"应用级工具记录 · {status}"

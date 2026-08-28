@@ -25,7 +25,7 @@ profiles:
     mode: pipeline
     execution: pipeline
     orchestration: adr-032
-    tools: [get_file_content, inspect_security_path, inspect_change_impact, inspect_structure]
+    tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
     evidence_tools: []
     strict_tools: true
 
@@ -34,8 +34,8 @@ profiles:
     mode: pipeline
     execution: pipeline
     orchestration: adr-032
-    tools: [get_file_content, inspect_security_path, inspect_change_impact, inspect_structure]
-    evidence_tools: [get_file_content, inspect_security_path, inspect_change_impact, inspect_structure]
+    tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
+    evidence_tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
     strict_tools: true
 
   # 消融 5:证据链整链关闭——Council + 发现者工具照跑,候选由 DirectJudge
@@ -46,7 +46,7 @@ profiles:
     mode: pipeline
     execution: pipeline
     orchestration: adr-032
-    tools: [get_file_content, inspect_security_path, inspect_change_impact, inspect_structure]
+    tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
     evidence_mode: "off"
     strict_tools: true
 
@@ -83,7 +83,7 @@ profiles:
   pipeline-codegraph:
     mode: pipeline
     orchestration: adr-032
-    tools: [get_file_content, inspect_security_path, inspect_change_impact, inspect_structure]
+    tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
 
   # —— 扩展占位(零成本预留,框架无需改动)——
   # 后续逐个加重型工具时,在此追加 profile 即可:

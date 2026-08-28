@@ -1,0 +1,18 @@
+## 共享图谱工具合同
+
+三个审查员都可以使用以下事实工具。工具只返回仓库事实，不判断问题、严重程度或是否保留候选。调用前必须先使用 `<symbol_context>` 中实际提供的稳定 `symbol_id`；不得根据文件名、类名或惯用命名猜测 symbol。
+
+- `get_file_content(file_path)`：读取精确源码。仅在 patch、symbol context 或已有图谱事实缺少具体代码时调用；新增文件的完整 patch 不要重复读取。
+- `inspect_structure(symbol_id)`：查询当前 symbol 的一跳双向结构关系，包括调用、实现/继承/覆写、字段读写和声明关系。它不提供多层调用路径。
+- `inspect_change_impact(symbol_id)`：向上查询 caller、框架入口和受影响范围，最多三层。凡是要确认“谁调用它、从哪里进入、影响哪些调用方”，必须使用它。
+- `inspect_path(symbol_id, path_kind="behavior", max_depth=3)`：向下查询 callee、callback/listener、接口实现、状态读写和有界执行路径。凡是要确认“它调用谁、执行顺序如何、状态如何传播”，必须使用 `path_kind="behavior"`。
+- `inspect_path(symbol_id, path_kind="security", max_depth=3)`：查询输入 source、传播、鉴权/清洗 guard 和敏感 sink。凡是要确认 source-to-sink 或生产可达性，必须使用 `path_kind="security"`。
+
+硬性路由规则：
+
+1. caller、入口、影响范围 → `inspect_change_impact`。
+2. callee、listener、callback、状态传播、执行顺序 → `inspect_path(path_kind="behavior")`。
+3. 安全 source-to-sink、鉴权/清洗和敏感 sink → `inspect_path(path_kind="security")`。
+4. 仅需确认当前 symbol 的一跳关系 → `inspect_structure`。
+
+`path_kind` 只能是 `behavior` 或 `security`，默认深度为 3。工具结果为 `partial` 或 `indeterminate` 时，只能如实声明覆盖缺口，不能把缺口当作不存在关系。

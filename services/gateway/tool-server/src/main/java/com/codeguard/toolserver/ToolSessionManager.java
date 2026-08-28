@@ -8,7 +8,7 @@ import com.codeguard.agent.graph.ProjectSnapshotManager;
 import com.codeguard.agent.tools.FileAccessSandbox;
 import com.codeguard.agent.tools.GetFileContentTool;
 import com.codeguard.agent.tools.InspectChangeImpactTool;
-import com.codeguard.agent.tools.InspectSecurityPathTool;
+import com.codeguard.agent.tools.InspectPathTool;
 import com.codeguard.agent.tools.InspectStructureTool;
 import com.codeguard.agent.tools.ResolveChangeContextTool;
 import com.codeguard.agent.tools.ToolRegistry;
@@ -73,7 +73,7 @@ public final class ToolSessionManager {
             // 加工具 = 在这里 register 一个实现即可,无需改协议(扩展接缝 design.md D2)。
             this.registry.register(new GetFileContentTool(sandbox, snapshot));
             this.registry.register(new ResolveChangeContextTool(snapshot));
-            this.registry.register(new InspectSecurityPathTool(snapshot));
+            this.registry.register(new InspectPathTool(snapshot));
             this.registry.register(new InspectChangeImpactTool(snapshot));
             this.registry.register(new InspectStructureTool(snapshot));
         }

@@ -64,6 +64,30 @@ def test_inspect_change_impact_使用稳定符号():
     assert response.success is True
 
 
+def test_inspect_path_发送结构化_kind和深度():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/tools/inspect_path"
+        query = json.loads(json.loads(request.content)["query"])
+        assert query == {
+            "symbol_id": "java:demo.Service#run()",
+            "path_kind": "behavior",
+            "max_depth": 2,
+        }
+        return httpx.Response(200, json={"success": True, "result": "{}"})
+
+    response = _mock_client(handler).inspect_path(
+        "java:demo.Service#run()", "behavior", 2
+    )
+    assert response.success is True
+
+
+def test_inspect_path_非法_kind在客户端_fail_closed():
+    client = _mock_client(lambda _request: httpx.Response(500))
+    response = client.inspect_path("java:demo.Service#run()", "other")
+    assert response.success is False
+    assert response.error == "invalid_path_kind"
+
+
 def test_失败信封_映射为_error_并加前缀():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"success": False, "error": "文件不在审查范围内"})

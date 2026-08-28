@@ -84,7 +84,7 @@ def test_reviewer_invalid_graph_projection_never_falls_back_to_raw_payload():
     raw = "BROKEN_GRAPH_SECRET"
 
     projection = project_tool_payload(
-        "inspect_security_path", raw, ProjectionAudience.REVIEWER
+        "inspect_path", raw, ProjectionAudience.REVIEWER
     )
 
     assert raw not in projection.content

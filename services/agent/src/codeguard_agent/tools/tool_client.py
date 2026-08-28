@@ -95,14 +95,36 @@ class ToolClient:
             {"query": json.dumps({"changes": changes}, ensure_ascii=False)},
         )
 
-    def inspect_security_path(self, symbol_id: str) -> ToolResponse:
-        return self._post_tool("inspect_security_path", {"query": symbol_id})
-
     def inspect_change_impact(self, symbol_id: str) -> ToolResponse:
         return self._post_tool("inspect_change_impact", {"query": symbol_id})
 
     def inspect_structure(self, symbol_id: str) -> ToolResponse:
         return self._post_tool("inspect_structure", {"query": symbol_id})
+
+    def inspect_path(
+        self,
+        symbol_id: str,
+        path_kind: str,
+        max_depth: int = 3,
+    ) -> ToolResponse:
+        """查询有界下游行为或安全路径。"""
+        if path_kind not in {"behavior", "security"}:
+            return ToolResponse(success=False, error="invalid_path_kind")
+        if not isinstance(max_depth, int) or isinstance(max_depth, bool) or not 1 <= max_depth <= 3:
+            return ToolResponse(success=False, error="invalid_max_depth")
+        return self._post_tool(
+            "inspect_path",
+            {
+                "query": json.dumps(
+                    {
+                        "symbol_id": symbol_id,
+                        "path_kind": path_kind,
+                        "max_depth": max_depth,
+                    },
+                    ensure_ascii=False,
+                )
+            },
+        )
 
     def delete_session(self) -> None:
         """请求服务端释放本会话(复用同一连接)。"""

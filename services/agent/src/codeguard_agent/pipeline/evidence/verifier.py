@@ -38,11 +38,11 @@ from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 
 logger = logging.getLogger("codeguard")
 
-_GRAPH_TOOLS = ("inspect_change_impact", "inspect_security_path", "inspect_structure")
+_GRAPH_TOOLS = ("inspect_change_impact", "inspect_path", "inspect_structure")
 _DISCOVERY_TOOLS = (
     "get_file_content",
     "inspect_change_impact",
-    "inspect_security_path",
+    "inspect_path",
     "inspect_structure",
 )
 

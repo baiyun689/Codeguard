@@ -325,17 +325,12 @@ def render_evidence_catalog(
 ) -> str:
     """把证据目录渲染为合成提示词的 <evidence_catalog> 段(修正③)。
 
-    patch 已在原 <task_patch> 标签带 evidence_id="P01",不重复全文;
-    渲染顺序 P 指针 → Cxx → Txx;总硬上限按顺序逐条截断(渲染发生在
+    patch 由运行时内部自动绑定,不向 LLM 暴露 patch 编号;
+    渲染顺序 Cxx → Txx;总硬上限按顺序逐条截断(渲染发生在
     引用已知前,截断规则只能是"顺序+长度"式,不依赖引用)。
     """
     blocks: list[str] = []
     used = 0
-    if catalog.patch_alias():
-        blocks.append(
-            '<artifact id="P01" source="task_patch" citeable="true" '
-            'ref="task_patch_tag"/>'
-        )
     for alias in (*catalog.symbol_aliases(), *catalog.tool_aliases()):
         artifact = catalog.artifacts[catalog.alias_to_artifact_id[alias]]
         block = (

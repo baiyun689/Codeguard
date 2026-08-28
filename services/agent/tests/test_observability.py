@@ -1268,7 +1268,7 @@ def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
                     "output": {
                         "tool_trace_records": [
                             {
-                                "tool": "inspect_security_path",
+                                "tool": "inspect_path",
                                 "arguments": {"symbol_id": "java:demo.Service"},
                                 "output": '{"schema_version":2,"outcome":"found","coverage":"complete"}',
                                 "call_id": "evidence-call-1",
@@ -1284,7 +1284,7 @@ def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
                                 "event": "evidence_tool_reused",
                                 "detail": json.dumps(
                                     {
-                                        "tool": "inspect_security_path",
+                                        "tool": "inspect_path",
                                         "arguments": {
                                             "symbol_id": "java:demo.Service"
                                         },

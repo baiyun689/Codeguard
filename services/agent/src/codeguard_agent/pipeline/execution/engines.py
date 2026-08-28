@@ -271,16 +271,16 @@ class ToolAgentEngine(ReviewEngine):
         from codeguard_agent.tools.definitions import (
             make_change_impact_tool,
             make_file_content_tool,
-            make_security_path_tool,
+            make_path_tool,
             make_structure_tool,
         )
 
-        # 已实现工具的工厂表。顺序即推荐用法:先专属工具发现问题,再 get_file_content 细读确认。
+        # 已实现工具的工厂表。领域 Prompt 决定查询时机与 path_kind。
         available = {
             "get_file_content": lambda: make_file_content_tool(self._tool_client),
-            "inspect_security_path": lambda: make_security_path_tool(self._tool_client),
-            "inspect_change_impact": lambda: make_change_impact_tool(self._tool_client),
             "inspect_structure": lambda: make_structure_tool(self._tool_client),
+            "inspect_change_impact": lambda: make_change_impact_tool(self._tool_client),
+            "inspect_path": lambda: make_path_tool(self._tool_client),
         }
         # 按白名单挑工具:None=全开(CLI 默认);否则只开 profile 列出的(保持其声明顺序)。
         names = list(available) if self._enabled_tools is None else self._enabled_tools

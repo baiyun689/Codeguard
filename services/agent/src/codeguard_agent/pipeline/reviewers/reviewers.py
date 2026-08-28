@@ -1,6 +1,6 @@
 """发现者 Agent 定义与辅助函数。
 
-Reviewer dataclass 描述每个发现者的配置（名称、prompt、工具边界）。
+Reviewer dataclass 描述每个发现者的配置（名称、prompt、共享工具边界）。
 DEFAULT_REVIEWERS 是三个默认发现者（ThreatModel/Behavior/Maintainability）。
 辅助函数供 graph.py 的发现者子图使用。
 """
@@ -22,10 +22,17 @@ logger = logging.getLogger("codeguard")
 # 上溯两层(reviewers → pipeline → codeguard_agent)再进 prompts/。
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
 
+COMMON_REVIEW_TOOLS = [
+    "get_file_content",
+    "inspect_structure",
+    "inspect_change_impact",
+    "inspect_path",
+]
+
 
 @dataclass(frozen=True)
 class Reviewer:
-    """一个领域审查员:名字 + 它的 system prompt 文件名 + 专属工具清单。
+    """一个领域审查员:名字 + 它的 system prompt 文件名 + 工具白名单。
 
     tool_allowlist:该审查员可用的工具名称列表。None=使用全局默认;[]=无工具(直连)。
     """
@@ -39,25 +46,25 @@ class Reviewer:
         object.__setattr__(self, "source_agent", self.source_agent or self.name)
 
 
-# 默认的三个并行领域审查员（每人一个专属工具）
+# 默认的三个并行领域审查员共享全部事实工具；领域 Prompt 决定使用时机。
 DEFAULT_REVIEWERS: tuple[Reviewer, ...] = (
     Reviewer(
         "ThreatModelAgent",
         "threat-model-base.txt",
         source_agent="threat_model",
-        tool_allowlist=["get_file_content", "inspect_security_path"],
+        tool_allowlist=list(COMMON_REVIEW_TOOLS),
     ),
     Reviewer(
         "BehaviorAgent",
         "behavior-base.txt",
         source_agent="behavior",
-        tool_allowlist=["get_file_content", "inspect_change_impact"],
+        tool_allowlist=list(COMMON_REVIEW_TOOLS),
     ),
     Reviewer(
         "MaintainabilityAgent",
         "maintainability-base.txt",
         source_agent="maintainability",
-        tool_allowlist=["get_file_content", "inspect_structure"],
+        tool_allowlist=list(COMMON_REVIEW_TOOLS),
     ),
 )
 
@@ -67,6 +74,7 @@ def _load_prompt(name: str) -> str:
 
 
 _DISCOVERY_CONTEXT_CONTRACT = "discovery-context-contract.txt"
+_DISCOVERY_TOOL_CONTRACT = "discovery-tool-contract.txt"
 _DISCOVERY_EVIDENCE_CONTRACT = "discovery-evidence-contract.txt"
 _DISCOVERY_OUTPUT_CONTRACT = "discovery-output-contract.txt"
 _DISCOVERY_OUTPUT_REMINDER = "discovery-output-reminder.txt"
@@ -77,6 +85,7 @@ def build_reviewer_system_prompt(reviewer: Reviewer) -> str:
     return "\n\n".join([
         _load_prompt(reviewer.prompt_file).strip(),
         _load_prompt(_DISCOVERY_CONTEXT_CONTRACT).strip(),
+        _load_prompt(_DISCOVERY_TOOL_CONTRACT).strip(),
         _load_prompt(_DISCOVERY_EVIDENCE_CONTRACT).strip(),
         _load_prompt(_DISCOVERY_OUTPUT_CONTRACT).strip(),
     ])
@@ -107,7 +116,6 @@ def build_reviewer_user_prompt(
     catalog:证据目录(EvidenceCatalog);非 None 时给 task_patch/符号事实
     渲染 evidence_id 短别名,供审查员按编号引用证据(Evidence Ledger)。
     """
-    patch_alias = catalog.patch_alias() if catalog is not None else ""
     fact_aliases = catalog.symbol_aliases() if catalog is not None else []
     coverage = (
         "full_new_file"
@@ -125,9 +133,7 @@ def build_reviewer_user_prompt(
     parts.extend([
         (
             f'  <task_patch scope="{_attr(task_scope)}" coverage="{_attr(coverage)}" '
-            f'task_id="{_attr(task.id)}" file="{_attr(task.file)}"'
-            + (f' evidence_id="{_attr(patch_alias)}"' if patch_alias else "")
-            + ">"
+            f'task_id="{_attr(task.id)}" file="{_attr(task.file)}">'
         ),
         _text(task.patch),
         "  </task_patch>",
@@ -152,6 +158,30 @@ def build_reviewer_user_prompt(
                 _text(symbol.model_dump_json()),
                 "    </symbol>",
             ])
+            domain = Path(user_prompt_file).stem
+            if domain == "behavior":
+                recommendation = (
+                    "caller/入口/影响范围→inspect_change_impact; "
+                    "callee/listener/callback/状态/执行顺序→inspect_path(behavior); "
+                    "一跳关系→inspect_structure"
+                )
+            elif domain == "threat-model":
+                recommendation = (
+                    "source/传播/guard/sink→inspect_path(security); "
+                    "入口/影响范围→inspect_change_impact; 一跳关系→inspect_structure"
+                )
+            else:
+                recommendation = (
+                    "局部耦合/继承/字段/一跳依赖→inspect_structure; "
+                    "跨符号执行耦合→inspect_path(behavior); "
+                    "受影响调用方→inspect_change_impact"
+                )
+            parts.append(
+                f'    <query_hint symbol_id="{_attr(symbol.symbol_id)}" '
+                f'range="{symbol.start_line}-{symbol.end_line}" '
+                f'changed_lines="{_attr(",".join(str(line) for line in task.changed_lines if symbol.start_line <= line <= symbol.end_line))}">'
+                f'{_text(recommendation)}</query_hint>'
+            )
         for limitation in symbol_context.limitations:
             parts.append(f"    <limitation>{_text(limitation)}</limitation>")
         parts.append("  </symbol_context>")

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from codeguard_agent.tools.tool_client import ToolClient
 
 
@@ -37,20 +39,26 @@ def make_file_content_tool(client: ToolClient):
     )
 
 
-def make_security_path_tool(client: ToolClient):
+def make_path_tool(client: ToolClient):
     from langchain_core.tools import StructuredTool
 
-    def _inspect_security_path(symbol_id: str) -> str:
-        """查询当前变更符号的框架入口、敏感 API 路径与解析限制。"""
-        return client.inspect_security_path(symbol_id).as_tool_output()
+    def _inspect_path(
+        symbol_id: str,
+        path_kind: Literal["behavior", "security"],
+        max_depth: int = 3,
+    ) -> str:
+        """查询当前变更符号的有界下游行为或安全路径。"""
+        return client.inspect_path(symbol_id, path_kind, max_depth).as_tool_output()
 
     return StructuredTool.from_function(
-        func=_inspect_security_path,
-        name="inspect_security_path",
+        func=_inspect_path,
+        name="inspect_path",
         description=(
-            "按 symbol_context 给出的稳定 symbol_id 查询安全路径：方法/构造器返回"
-            "框架入口与敏感调用链；字段返回读写它的方法并标记敏感字段类型；类型返回"
-            "内部方法的敏感调用与继承者；并附解析限制。不得自行编造 symbol_id 或文件名。"
+            "按 symbol_context 给出的稳定 symbol_id 查询有界下游路径。"
+            "path_kind=behavior 查询 callee、callback、listener、接口实现和状态访问；"
+            "path_kind=security 查询输入源、传播、防护和敏感 sink。"
+            "path_kind 只能是 behavior 或 security，max_depth 默认 3、最大 3。"
+            "不得自行编造 symbol_id 或文件名。"
         ),
     )
 

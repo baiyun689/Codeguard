@@ -22,6 +22,42 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class GraphToolsTest {
 
     @Test
+    void behaviorPathReturnsDownstreamCalls(@TempDir Path repo) throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("Service.java"), """
+                package demo;
+                class Service { void run() { helper(); } void helper() {} }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "behavior-path"));
+        AgentContext context = new AgentContext(repo, Set.of("src/main/java/demo/Service.java"));
+
+        ToolResult result = new InspectPathTool(snapshot)
+                .execute("{\"symbol_id\":\"java:demo.Service#run()\",\"path_kind\":\"behavior\"}", context);
+        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
+
+        assertTrue(result.isSuccess(), result.getError());
+        assertEquals("behavior", payload.path("path_kind").asText(), result.getResult());
+        assertTrue(payload.path("relationships").toString().contains("helper()"), result.getResult());
+        assertTrue(payload.path("outcome").asText().equals("found"), result.getResult());
+    }
+
+    @Test
+    void pathRejectsUnknownKind(@TempDir Path repo) throws Exception {
+        Files.writeString(repo.resolve("Service.java"), "class Service { void run() {} }");
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "invalid-path-kind"));
+        AgentContext context = new AgentContext(repo, Set.of("Service.java"));
+
+        ToolResult result = new InspectPathTool(snapshot)
+                .execute("{\"symbol_id\":\"java:Service#run()\",\"path_kind\":\"other\"}", context);
+
+        assertFalse(result.isSuccess());
+        assertEquals("invalid_path_kind", result.getError());
+    }
+
+    @Test
     void resolvesChangedLineAndUsesSymbolForImpactQuery(@TempDir Path repo) throws Exception {
         Path root = repo.resolve("src/main/java/demo");
         Files.createDirectories(root);
@@ -201,8 +237,8 @@ class GraphToolsTest {
                 .getOrBuild(ProjectKey.of(repo, "field-sec"));
         AgentContext context = new AgentContext(repo, Set.of("src/main/java/demo/State.java"));
 
-        ToolResult impact = new InspectSecurityPathTool(snapshot)
-                .execute("java:demo.State#executor", context);
+        ToolResult impact = new InspectPathTool(snapshot)
+                .execute("{\"symbol_id\":\"java:demo.State#executor\",\"path_kind\":\"security\"}", context);
 
         assertTrue(impact.isSuccess(), impact.getError());
         assertTrue(impact.getResult().contains("\"kind\":\"READS_FIELD\"")
@@ -232,8 +268,8 @@ class GraphToolsTest {
                 .getOrBuild(ProjectKey.of(repo, "type-sec"));
         AgentContext context = new AgentContext(repo, Set.of("src/main/java/demo/Base.java"));
 
-        ToolResult impact = new InspectSecurityPathTool(snapshot)
-                .execute("java:demo.Base", context);
+        ToolResult impact = new InspectPathTool(snapshot)
+                .execute("{\"symbol_id\":\"java:demo.Base\",\"path_kind\":\"security\"}", context);
 
         assertTrue(impact.isSuccess(), impact.getError());
         assertTrue(impact.getResult().contains("\"kind\":\"EXTENDS\""), impact.getResult());
@@ -338,8 +374,8 @@ class GraphToolsTest {
                 .getOrBuild(ProjectKey.of(repo, "mixed-relations"));
         AgentContext context = new AgentContext(repo, Set.of("Mixed.java"));
 
-        ToolResult result = new InspectSecurityPathTool(snapshot)
-                .execute("java:Mixed#run()", context);
+        ToolResult result = new InspectPathTool(snapshot)
+                .execute("{\"symbol_id\":\"java:Mixed#run()\",\"path_kind\":\"security\"}", context);
         JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
 
         assertTrue(payload.path("outcome").asText().equals("found"), result.getResult());
@@ -361,8 +397,8 @@ class GraphToolsTest {
                 .getOrBuild(ProjectKey.of(repo, "ordinary-unresolved-security"));
         AgentContext context = new AgentContext(repo, Set.of("Ordinary.java"));
 
-        ToolResult result = new InspectSecurityPathTool(snapshot)
-                .execute("java:Ordinary#run()", context);
+        ToolResult result = new InspectPathTool(snapshot)
+                .execute("{\"symbol_id\":\"java:Ordinary#run()\",\"path_kind\":\"security\"}", context);
         JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
 
         assertEquals("indeterminate", payload.path("outcome").asText(), result.getResult());
@@ -385,8 +421,8 @@ class GraphToolsTest {
                 .getOrBuild(ProjectKey.of(repo, "sensitive-unresolved-security"));
         AgentContext context = new AgentContext(repo, Set.of("Sensitive.java"));
 
-        ToolResult result = new InspectSecurityPathTool(snapshot)
-                .execute("java:Sensitive#run()", context);
+        ToolResult result = new InspectPathTool(snapshot)
+                .execute("{\"symbol_id\":\"java:Sensitive#run()\",\"path_kind\":\"security\"}", context);
         JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
 
         assertEquals("indeterminate", payload.path("outcome").asText(), result.getResult());
@@ -408,8 +444,8 @@ class GraphToolsTest {
                 .getOrBuild(ProjectKey.of(repo, "resolved-security-chain"));
         AgentContext context = new AgentContext(repo, Set.of("ResolvedChain.java"));
 
-        ToolResult result = new InspectSecurityPathTool(snapshot)
-                .execute("java:ResolvedChain#run()", context);
+        ToolResult result = new InspectPathTool(snapshot)
+                .execute("{\"symbol_id\":\"java:ResolvedChain#run()\",\"path_kind\":\"security\"}", context);
         JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
 
         assertEquals("found", payload.path("outcome").asText(), result.getResult());
@@ -436,10 +472,10 @@ class GraphToolsTest {
                 .getOrBuild(ProjectKey.of(repo, "security-depth-boundary"));
         AgentContext context = new AgentContext(repo, Set.of("DepthBoundary.java"));
 
-        ToolResult within = new InspectSecurityPathTool(snapshot)
-                .execute("java:DepthBoundary#within()", context);
-        ToolResult beyond = new InspectSecurityPathTool(snapshot)
-                .execute("java:DepthBoundary#beyond()", context);
+        ToolResult within = new InspectPathTool(snapshot)
+                .execute("{\"symbol_id\":\"java:DepthBoundary#within()\",\"path_kind\":\"security\"}", context);
+        ToolResult beyond = new InspectPathTool(snapshot)
+                .execute("{\"symbol_id\":\"java:DepthBoundary#beyond()\",\"path_kind\":\"security\"}", context);
 
         assertTrue(within.getResult().contains("\"outcome\":\"found\""),
                 within.getResult());

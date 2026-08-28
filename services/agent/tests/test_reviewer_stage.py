@@ -19,6 +19,23 @@ def test_default_reviewers_point_to_base_prompt_files():
     assert names["MaintainabilityAgent"] == "maintainability-base.txt"
 
 
+def test_default_reviewers_share_all_fact_tools():
+    expected = [
+        "get_file_content",
+        "inspect_structure",
+        "inspect_change_impact",
+        "inspect_path",
+    ]
+    assert all(reviewer.tool_allowlist == expected for reviewer in DEFAULT_REVIEWERS)
+
+
+def test_system_prompts_include_shared_tool_contract_once():
+    for reviewer in DEFAULT_REVIEWERS:
+        prompt = build_reviewer_system_prompt(reviewer)
+        assert prompt.count("## 共享图谱工具合同") == 1
+        assert prompt.count("inspect_path") >= 3
+
+
 def test_base_prompts_do_not_contain_knowledge_graph_heading():
     for filename in (
         "threat-model-base.txt",

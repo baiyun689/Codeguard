@@ -47,7 +47,7 @@ START → classify_mode ─┬─ small  → direct_review
 
 管线入口 `classify_mode` 按 PR 体量做纯确定性路由：small 构建 whole-diff task，medium 按文件拆分，large 按 hunk 拆分并应用确定性任务上限。所有 task 先经过 DirectGate；Full task 按文件复用 Plan，Plan 选择 Reviewer、审查目标和知识主题。`symbol_resolution` 通过 `resolve_change_context` 把 Full task 的变更行解析为强类型稳定符号，只为领域工具、Evidence Ledger 与 guard 扫描提供入口。
 
-三个发现者 Agent（ThreatModel / Behavior / Maintainability）并行运行，各自配备专属语义图工具 + 共享 `get_file_content`，走 ReAct 引擎：威胁建模用 `inspect_security_path`、行为审查用 `inspect_change_impact`、可维护性用 `inspect_structure`。每个 Agent 的 prompt = 领域 BASE 知识 + Plan 显式选择的主题文件（`prompts/knowledge/`），拆分是为分摊上下文压力，重叠是多角度验证。
+三个发现者 Agent（ThreatModel / Behavior / Maintainability）并行运行，共享 `get_file_content`、`inspect_structure`、`inspect_change_impact`、`inspect_path`，走 ReAct 引擎；领域 Prompt 决定查询时机和 `path_kind`。每个 Agent 的 prompt = 领域 BASE 知识 + Plan 显式选择的主题文件（`prompts/knowledge/`）。
 
 三路输出在 `council_coordinator` 处 fan-in。证据采用 **Evidence Ledger**：patch(P01)、稳定符号上下文(Cxx)、真实工具结果(Txx)由运行时代码捕获为内容寻址 Artifact，审查员只输出短编号引用（`evidence_refs`），不生产任何证据文本；`evidence_verifier` 零 LLM 证明 Artifact 真实可用（健康检查 + 图护栏 + guard 扫描 + 异常重放白名单）；`council_judge` 用批量 EvidenceJudge 完成支持/反驳/去留/定级，随后由 `causal_merge` 按因果语义保守合并。`evidence_mode=off` 时跳过取证，候选由 `direct_judge` 直接终审（无证据链消融基线档）。
 
@@ -84,7 +84,7 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 ```
 管线(无工具):git diff → [摘要] → 并行三审查员(直连) → 归并 → 裁决(门控+终审) → 打印
 管线(有工具):配置 CODEGUARD_TOOL_SERVER_URL 后,审查员改走 ReAct,
-              可调 Java 工具(get_file_content / inspect_security_path / inspect_change_impact / inspect_structure)
+              可调 Java 工具(get_file_content / inspect_structure / inspect_change_impact / inspect_path)
               获取 diff 之外上下文
 
 LLM 调用路径:Python → LLM Proxy(:9091) → 按 model 路由 → DeepSeek/Claude/千问
@@ -93,7 +93,7 @@ LLM 调用路径:Python → LLM Proxy(:9091) → 按 model 路由 → DeepSeek/C
 
 当前审查核心是 ReviewCouncil 多 Agent 编排：
 
-- **发现者 Agent ×3（并行）**:ThreatModelAgent（安全）/ BehaviorAgent（行为逻辑）/ MaintainabilityAgent（维护质量）。每个 Agent 配备专属语义图工具（`inspect_security_path` / `inspect_change_impact` / `inspect_structure`）+ 共享 `get_file_content`，走 ReAct 引擎。prompt = BASE 领域知识 + Plan 显式选择的 `prompts/knowledge/` 主题文件。重叠不叫重复，叫多角度验证。每个候选输出带 `evidence_refs` 证据编号引用——审查员只从运行时捕获的 `<evidence_catalog>`（patch=P01 / 预取上下文=Cxx / 工具结果=Txx）里挑编号，不得重新填写工具参数、代码片段或工具原文；工具返回会回显编号（[证据编号 T0n]），离开发现子图即绑定为内容寻址 artifact ID。
+- **发现者 Agent ×3（并行）**:ThreatModelAgent（安全）/ BehaviorAgent（行为逻辑）/ MaintainabilityAgent（维护质量）共享四个事实工具，走 ReAct 引擎；领域 Prompt 决定工具时机和 `inspect_path` 的 `path_kind`。prompt = BASE 领域知识 + Plan 显式选择的 `prompts/knowledge/` 主题文件。每个候选输出带 `evidence_refs` 证据编号引用——审查员只从运行时捕获的 `<evidence_catalog>`（预取上下文=Cxx / 工具结果=Txx）里挑编号，不得重新填写工具参数、代码片段或工具原文；patch 由运行时内部自动绑定。
 - **CouncilCoordinator（fan-in 归并）**:三路发现者输出的显式汇聚屏障——按同文件/邻行构建连通候选块 → 每块并行 LLM 保守语义归并（同根因+同影响+单一修复，最多 8 路）→ 产出严格等价逻辑组；非法/低置信/失败结果一律完整保留。
 - **EvidenceVerifier（确定性验证，零 LLM、正常路径零重放）**:只证明 Artifact 真实、可用、属于候选范围——① Artifact 健康检查（patch 摘要一致；图响应 subject/scope/status/coverage 护栏；TEST 关系不能证明生产可达）；② guard 注解扫描（按发现者分工：threat_model 候选扫 @PreAuthorize 族、behavior 候选扫 @Transactional，命中直接产出 direct 反证，Judge 前淘汰）；③ 引用范围核对（跨 task/缺失/失败 Artifact 留痕）。仅异常 Artifact（失败/未知/revision 不一致/响应不可解析）进入重放队列，受 `enabled_evidence_tools` 白名单约束，重放失败只产生限制、不作反证。
 - **CouncilJudge（批量证据裁决）**:每批 ≤8 候选、最多 4 批并行，一次完成支持/反驳/去留/定级（`EvidenceJudgeBatch`）——keep 必须引用 ≥1 支持事实、引用 ID 必须属于候选可见范围、supporting/counter 不得重叠、维护性候选不得 CRITICAL、LOCATION 角色不能单独支持 keep；输出合同违约重试/二分拆批，单候选最终失败 fail-closed 不输出。之后组内合并（严格等价组收敛，组内形状不一致安全拆回）。`evidence_mode=off` 时走 `direct_judge` 消融档：无证据输入、跳过取证，输出 keep/drop/severity 同构。

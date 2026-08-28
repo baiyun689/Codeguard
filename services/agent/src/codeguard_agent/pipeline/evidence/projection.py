@@ -15,7 +15,7 @@ from codeguard_agent.pipeline.evidence.graph_response import (
 )
 
 GRAPH_TOOLS = frozenset({
-    "inspect_security_path",
+    "inspect_path",
     "inspect_change_impact",
     "inspect_structure",
 })
