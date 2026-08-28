@@ -1,0 +1,10 @@
+id: graph-necessity-v1
+benchmark_type: controlled graph-necessity benchmark
+case_count: 1
+selection: one derived Spring Retry project with two deliberately planted deep behavior bugs
+cases:
+  - id: spring-retry-deep
+    source_case: selected-20-v2/cases/gitbug-spring-retry-interrupt
+    source_project: https://github.com/spring-projects/spring-retry.git
+    dimension: logic
+    category: retry context lifecycle

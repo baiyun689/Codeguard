@@ -46,6 +46,7 @@ class CaseProvenance(BaseModel):
     """可复现评测用例的来源与精确版本。"""
 
     source: str = ""
+    source_case: str = ""
     repository_url: str = ""
     base_revision: str = ""
     head_revision: str = ""
@@ -79,6 +80,13 @@ class ExpectedIssue(BaseModel):
     evidence_anchors: list[str] = Field(
         default_factory=list,
         description="可接受的符号、source/sink 或源码位置锚点",
+    )
+    mechanism: str = Field(default="", description="受控评测中问题的机制主张")
+    reachability: str = Field(default="", description="受控评测中 source 到 sink 的可达性主张")
+    impact: str = Field(default="", description="受控评测中可观察的影响主张")
+    required_graph_facts: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="图谱必要性评测要求验证的关系/状态事实",
     )
 
 
@@ -140,6 +148,10 @@ class EvalCase(BaseModel):
         default_factory=list,
         description="诱饵清单:看着像漏洞、实则无害的点。报告踩中即归类为'中诱饵'误报,"
         "用来量复杂用例下的克制力。缺省为空(老用例向后兼容)。",
+    )
+    graph_evaluation: dict[str, object] = Field(
+        default_factory=dict,
+        description="受控图谱必要性评测元数据,不进入产品审查结果",
     )
 
     @field_validator("capability", mode="before")

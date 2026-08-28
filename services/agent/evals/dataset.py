@@ -36,6 +36,7 @@ _DIFF_FILE = "changes.diff"
 _LOCAL_ONLY_DIRS = frozenset({
     "interview-v1",
     "selected-20-v2",
+    "graph-necessity-v1",
 })
 
 

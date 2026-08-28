@@ -1,0 +1,70 @@
+id: spring-retry-deep
+category: retry context lifecycle
+dimension: logic
+description: >-
+  Controlled graph-necessity case derived from spring-retry. The two changed hunks
+  are locally plausible; the defect requires following callback/listener and
+  stateful retry cache relationships outside the patch.
+ground_truth_mode: exhaustive
+difficulty: deep
+capability:
+  - call-path
+  - state-impact
+provenance:
+  source: Codeguard graph-necessity-v1 derived fixture
+  repository_url: https://github.com/spring-projects/spring-retry.git
+  source_case: selected-20-v2/cases/gitbug-spring-retry-interrupt
+  patch_direction: planted-from-safe-snapshot
+  license: Spring Retry Apache-2.0; source per upstream
+graph_evaluation:
+  tier: deep
+  diff_only_sufficient: false
+  reviewer: behavior
+expected:
+  - id: G1
+    type_keywords: [retry context, listener, synchronization, callback, 上下文, 监听器, 时序]
+    file: src/main/java/org/springframework/retry/support/RetryTemplate.java
+    line: 297
+    tolerance: 4
+    severity: WARNING
+    note: >-
+      The retry context is registered only after open listeners run. A listener or
+      callback reached through RetryTemplate therefore observes the parent/stale
+      synchronization context during its open phase instead of the newly opened context.
+    root_cause: RetrySynchronizationManager registration moved past the listener seam
+    mechanism: open listeners execute before the new context is visible globally
+    reachability: RetryTemplate.doExecute -> doOpenInterceptors -> RetryListener.open
+    impact: listener state and nested retry behavior can attach to the wrong context
+    required_graph_facts:
+      - kind: CALLS
+        from: RetryTemplate.doExecute
+        to: RetryTemplate.doOpenInterceptors
+      - kind: CALLS
+        from: RetryTemplate.doOpenInterceptors
+        to: RetryListener.open
+      - kind: USES_CONTEXT
+        symbol: RetrySynchronizationManager.getContext
+  - id: G2
+    type_keywords: [stateful retry, cache, retry count, context lifecycle, 有状态重试, 缓存, 重试次数]
+    file: src/main/java/org/springframework/retry/support/RetryTemplate.java
+    line: 500
+    tolerance: 4
+    severity: WARNING
+    note: >-
+      On a stateful cache hit, open returns a newly created context instead of the cached
+      context. The caller then loses the prior retry count and failure attributes, so the
+      stateful retry sequence can restart rather than resume.
+    root_cause: cached retry context is discarded at the stateful retry seam
+    mechanism: RetryTemplate.open -> RetryContextCache.get -> doExecute
+    reachability: RetryTemplate.doExecute -> open -> handleRetryExhausted/registerContext
+    impact: repeated stateful attempts do not share the context required for retry limits and recovery
+    required_graph_facts:
+      - kind: CALLS
+        from: RetryTemplate.doExecute
+        to: RetryTemplate.open
+      - kind: CALLS
+        from: RetryTemplate.open
+        to: RetryContextCache.get
+      - kind: STATE_CONSUMER
+        symbol: RetryTemplate.handleRetryExhausted
+        attribute: RetryContext.EXHAUSTED

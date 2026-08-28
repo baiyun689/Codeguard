@@ -1,0 +1,31 @@
+diff --git a/src/main/java/org/springframework/retry/support/RetryTemplate.java b/src/main/java/org/springframework/retry/support/RetryTemplate.java
+index abc1d90..f331bbd 100644
+--- a/src/main/java/org/springframework/retry/support/RetryTemplate.java
++++ b/src/main/java/org/springframework/retry/support/RetryTemplate.java
+@@ -282,8 +282,6 @@ public class RetryTemplate implements RetryOperations {
+ 
+ 		// Make sure the context is available globally for clients who need
+ 		// it...
+-		RetrySynchronizationManager.register(context);
+-
+ 		Throwable lastException = null;
+ 
+ 		boolean exhausted = false;
+@@ -296,6 +294,8 @@ public class RetryTemplate implements RetryOperations {
+ 			if (!running) {
+ 				throw new TerminatedRetryException("Retry terminated abnormally by interceptor before first attempt");
+ 			}
+ 
++			RetrySynchronizationManager.register(context);
++
+ 			// Get or Start the backoff context...
+ 			BackOffContext backOffContext = null;
+ 			Object resource = context.getAttribute("backOffContext");
+@@ -497,7 +497,7 @@ public class RetryTemplate implements RetryOperations {
+ 		context.removeAttribute(RetryContext.CLOSED);
+ 		context.removeAttribute(RetryContext.EXHAUSTED);
+ 		context.removeAttribute(RetryContext.RECOVERED);
+-		return context;
++		return doOpenInternal(retryPolicy, state);
+ 
+ 	}

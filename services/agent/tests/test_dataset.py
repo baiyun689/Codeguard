@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import textwrap
+from pathlib import Path
 
 from evals.dataset import load_cases
 from evals.schema import EvalCase
@@ -217,3 +218,15 @@ def test_candidate_dedup_fixtures_are_present_and_schema_valid():
     assert len(adjacent.expected) == 2
     assert "payment.charge(order)" in adjacent.diff
     assert "inventory.reserve(order)" in adjacent.diff
+
+
+def test_graph_necessity_fixture_loads_with_graph_oracle():
+    graph_root = Path(__file__).parents[1] / "evals" / "dataset" / "graph-necessity-v1"
+    cases = load_cases(graph_root)
+    assert len(cases) == 1
+    case = cases[0]
+    assert case.graph_evaluation["tier"] == "deep"
+    assert case.capability == ["call-path", "state-impact"]
+    assert len(case.expected) == 2
+    assert all(issue.required_graph_facts for issue in case.expected)
+    assert case.is_repo_backed
