@@ -2,6 +2,15 @@ from __future__ import annotations
 
 import json
 
+from codeguard_agent.models.evidence import (
+    ArtifactAvailability,
+    EvidenceArtifact,
+    EvidenceCaptureMode,
+    EvidenceSourceKind,
+    payload_digest,
+)
+from codeguard_agent.pipeline.execution.discovery import DiscoveryToolRecord
+from codeguard_agent.pipeline.execution.engines import _gathered_context_from_records
 from codeguard_agent.pipeline.evidence.projection import (
     GraphProjectionFocus,
     ProjectionAudience,
@@ -57,6 +66,76 @@ def test_reviewer_graph_projection_keeps_reasoning_fields_not_raw_diagnostics():
     assert "snapshot_main_coverage" not in content
     assert "diagnostic" not in content["relationships"][0]
     assert projection.summary == "found/complete · 已解析 1 · 未解析 0"
+
+
+def test_reviewer_graph_projection_preserves_unresolved_relationship_facts():
+    payload = json.loads(_graph_payload())
+    payload["coverage"] = "partial"
+    payload["unresolved_relationships"] = [{
+        "sourceId": "java:demo.Service#m()",
+        "targetId": "java:demo.Dynamic#run()",
+        "kind": "CALLS",
+        "file": "src/Service.java",
+        "line": 14,
+        "source_set": "MAIN",
+        "resolution": "UNRESOLVED",
+        "reason": "dynamic dispatch",
+    }]
+    payload["unresolved_count"] = 1
+
+    content = json.loads(project_tool_payload(
+        "inspect_path",
+        json.dumps(payload, ensure_ascii=False),
+        ProjectionAudience.REVIEWER,
+        arguments={
+            "symbol_id": "java:demo.Service#m()",
+            "path_kind": "behavior",
+        },
+    ).content)
+
+    assert content["unresolved_count"] == 1
+    assert content["unresolved_relationships"] == [{
+        "sourceId": "java:demo.Service#m()",
+        "targetId": "java:demo.Dynamic#run()",
+        "kind": "CALLS",
+        "file": "src/Service.java",
+        "line": 14,
+        "source_set": "MAIN",
+        "resolution": "UNRESOLVED",
+    }]
+    assert "reason" not in content["unresolved_relationships"][0]
+
+
+def test_projection_reports_omitted_unresolved_relationships_under_budget_pressure():
+    payload = json.loads(_graph_payload())
+    payload["coverage"] = "partial"
+    payload["unresolved_relationships"] = [{
+        "sourceId": "java:demo.Service#m()",
+        "targetId": f"java:demo.Dynamic#target{index}-{'x' * 80}()",
+        "kind": "CALLS",
+        "file": "src/Service.java",
+        "line": index,
+        "source_set": "MAIN",
+        "resolution": "UNRESOLVED",
+    } for index in range(100)]
+    payload["unresolved_count"] = 100
+
+    projection = project_tool_payload(
+        "inspect_path",
+        json.dumps(payload, ensure_ascii=False),
+        ProjectionAudience.REVIEWER,
+        arguments={
+            "symbol_id": "java:demo.Service#m()",
+            "path_kind": "behavior",
+        },
+    )
+    content = json.loads(projection.content)
+
+    assert content["unresolved_count"] == 100
+    assert content["omitted_unresolved_count"] > 0
+    assert len(content["unresolved_relationships"]) < 100
+    assert "unresolved_relationships_truncated" in content["limitations"]
+    assert projection.truncated is True
 
 
 def test_reviewer_file_projection_preserves_complete_content():
@@ -516,6 +595,78 @@ def test_reviewer_and_judge_projection_are_byte_identical_with_focus():
     assert reviewer.truncated == judge.truncated
 
 
+def test_fallback_projection_matches_reviewer_projection_for_deep_payload():
+    raw = _deep_behavior_payload()
+    focus = GraphProjectionFocus(
+        changed_file="src/RetryTemplate.java",
+        changed_lines=(101, 116, 121),
+        changed_symbol_ids=("java:retry.RetryTemplate#doExecute()",),
+    )
+    arguments = {
+        "symbol_id": "java:retry.RetryTemplate#doExecute()",
+        "path_kind": "behavior",
+        "max_depth": 3,
+    }
+    record = DiscoveryToolRecord(
+        call_id="deep-call",
+        tool="inspect_path",
+        arguments=arguments,
+        output=raw,
+        resolved_output=raw,
+        duration_ms=1.0,
+        status="complete",
+        reuse_key="inspect_path:deep",
+    )
+
+    reviewer = project_tool_payload(
+        "inspect_path",
+        raw,
+        ProjectionAudience.REVIEWER,
+        arguments=arguments,
+        focus=focus,
+    )
+    fallback_context = _gathered_context_from_records([record], focus=focus)
+
+    assert len(fallback_context) == 1
+    assert fallback_context[0].content == reviewer.content
+
+
+def test_projection_preserves_artifact_payload_hash_and_graph_headers():
+    raw = _deep_behavior_payload()
+    artifact = EvidenceArtifact.build(
+        task_id="deep-task",
+        reviewer="behavior",
+        revision="deep-revision",
+        source_kind=EvidenceSourceKind.TOOL_CALL,
+        tool="inspect_path",
+        arguments={
+            "symbol_id": "java:retry.RetryTemplate#doExecute()",
+            "path_kind": "behavior",
+            "max_depth": "3",
+        },
+        payload=raw,
+        availability=ArtifactAvailability.AVAILABLE,
+        capture_mode=EvidenceCaptureMode.EXECUTED,
+        call_id="deep-call",
+    )
+    projected = json.loads(project_tool_payload(
+        "inspect_path",
+        raw,
+        ProjectionAudience.REVIEWER,
+        arguments={
+            "symbol_id": "java:retry.RetryTemplate#doExecute()",
+            "path_kind": "behavior",
+            "max_depth": 3,
+        },
+    ).content)
+
+    assert artifact.payload == raw
+    assert artifact.payload_hash == payload_digest(raw)
+    raw_headers = json.loads(raw)
+    for key in ("outcome", "coverage", "source_scope"):
+        assert projected[key] == raw_headers[key]
+
+
 def test_behavior_attached_relationship_does_not_create_a_pseudo_path():
     subject = "java:demo.Root#m()"
     attached_target = "java:demo.State#value"
@@ -644,6 +795,97 @@ def test_projection_hard_limit_returns_empty_relationships_without_invalid_json(
 
     assert content["relationships"] == []
     assert content["omitted_count"] == 1
+    assert "projection_hard_limit_exceeded" in content["limitations"]
+
+
+def test_projection_hard_limit_does_not_repopulate_relationships_with_attached_facts():
+    subject = "java:demo.Root#m()"
+    raw = json.dumps({
+        "schema_version": 2,
+        "outcome": "found",
+        "coverage": "complete",
+        "source_scope": "MAIN",
+        "subject_symbol_id": subject,
+        "symbols": [],
+        "relationships": [
+            {
+                "sourceId": subject,
+                "targetId": "java:demo.Target#" + ("x" * 20000),
+                "kind": "CALLS",
+                "file": "src/Root.java",
+                "line": 10,
+                "source_set": "MAIN",
+                "resolution": "RESOLVED",
+            },
+            {
+                "sourceId": subject,
+                "targetId": "java:demo.State#value",
+                "kind": "READS_FIELD",
+                "file": "src/Root.java",
+                "line": 11,
+                "source_set": "MAIN",
+                "resolution": "RESOLVED",
+            },
+        ],
+        "unresolved_relationships": [],
+        "unresolved_count": 0,
+        "limitations": [],
+    })
+
+    content = json.loads(project_tool_payload(
+        "inspect_path",
+        raw,
+        ProjectionAudience.REVIEWER,
+        arguments={"symbol_id": subject, "path_kind": "behavior"},
+    ).content)
+
+    assert content["relationships"] == []
+    assert content["symbols"] == []
+    assert "projection_hard_limit_exceeded" in content["limitations"]
+
+
+def test_projection_hard_limit_after_an_earlier_path_fails_closed():
+    subject = "java:demo.Root#m()"
+    raw = json.dumps({
+        "schema_version": 2,
+        "outcome": "found",
+        "coverage": "complete",
+        "source_scope": "MAIN",
+        "subject_symbol_id": subject,
+        "symbols": [],
+        "relationships": [
+            {
+                "sourceId": subject,
+                "targetId": "java:demo.Small#run()",
+                "kind": "CALLS",
+                "file": "src/Root.java",
+                "line": 10,
+                "source_set": "MAIN",
+                "resolution": "RESOLVED",
+            },
+            {
+                "sourceId": subject,
+                "targetId": "java:demo.Large#" + ("x" * 20000),
+                "kind": "CALLS",
+                "file": "src/Root.java",
+                "line": 11,
+                "source_set": "MAIN",
+                "resolution": "RESOLVED",
+            },
+        ],
+        "unresolved_relationships": [],
+        "unresolved_count": 0,
+        "limitations": [],
+    })
+
+    content = json.loads(project_tool_payload(
+        "inspect_path",
+        raw,
+        ProjectionAudience.REVIEWER,
+        arguments={"symbol_id": subject, "path_kind": "behavior"},
+    ).content)
+
+    assert content["relationships"] == []
     assert "projection_hard_limit_exceeded" in content["limitations"]
 
 

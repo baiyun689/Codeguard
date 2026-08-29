@@ -111,6 +111,14 @@ def summarize_graph(
         rel for rel in payload.get("relationships") or []
         if isinstance(rel, dict)
     ]
+    unresolved_relationships = _normalize_unresolved_relationships(
+        payload.get("unresolved_relationships") or []
+    )
+    summary_seed = {
+        key: payload.get(key)
+        for key in _GRAPH_HEADER_KEYS
+        if key in payload
+    }
     edges = _normalize_edges(raw_relations)
     selection = _select_graph_facts(
         edges,
@@ -119,11 +127,7 @@ def summarize_graph(
         arguments=arguments,
         focus=focus,
         symbols=raw_symbols,
-        summary_seed={
-            key: payload.get(key)
-            for key in _GRAPH_HEADER_KEYS
-            if key in payload
-        },
+        summary_seed=summary_seed,
     )
     selected_edges = list(selection.relationships)
     selected_signatures = {edge.signature for edge in selected_edges}
@@ -135,6 +139,12 @@ def summarize_graph(
         for symbol in raw_symbols
         if str(symbol.get("id", "")) in selected_symbol_ids
     ]
+    projected_unresolved, omitted_unresolved = _select_unresolved_relationships(
+        summary_seed,
+        unresolved_relationships,
+        selected_edges,
+        symbols,
+    )
     omitted_relationships = len({edge.signature for edge in edges}) - len(
         selected_signatures
     )
@@ -147,15 +157,22 @@ def summarize_graph(
         limitations.append("path_enumeration_capped")
     if selection.hard_limit_exceeded:
         limitations.append("projection_hard_limit_exceeded")
+    if omitted_unresolved:
+        limitations.append("unresolved_relationships_truncated")
     truncated = bool(
-        omitted_relationships or omitted_symbols or selection.enumeration_capped
+        omitted_relationships
+        or omitted_symbols
+        or omitted_unresolved
+        or selection.enumeration_capped
     )
     if truncated:
         limitations.append("projection_truncated")
     summary["symbols"] = symbols
     summary["relationships"] = [edge.payload for edge in selected_edges]
+    summary["unresolved_relationships"] = list(projected_unresolved)
     summary["omitted_count"] = omitted_relationships
     summary["omitted_symbol_count"] = omitted_symbols
+    summary["omitted_unresolved_count"] = omitted_unresolved
     summary["omitted_path_count"] = selection.omitted_path_count
     summary["limitations"] = list(dict.fromkeys(limitations))
     rendered = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
@@ -170,10 +187,12 @@ def summarize_graph(
         for symbol in raw_symbols
         if str(symbol.get("id", "")) == str(payload.get("subject_symbol_id", ""))
     ]
+    summary["unresolved_relationships"] = []
     summary["omitted_count"] = len({edge.signature for edge in edges})
     summary["omitted_symbol_count"] = max(
         0, len(raw_symbols) - len(summary["symbols"])
     )
+    summary["omitted_unresolved_count"] = len(unresolved_relationships)
     summary["omitted_path_count"] = max(
         selection.omitted_path_count,
         selection.total_path_count,
@@ -307,6 +326,11 @@ def _select_graph_facts(
         additions = [
             edge for edge in path.edges if edge.signature not in selected_edges
         ]
+        if path.edges and _serialized_size(
+            summary_seed, list(path.edges), symbols, subject
+        ) > _GRAPH_SUMMARY_HARD_MAX_CHARS:
+            hard_limit_exceeded = True
+            return False
         candidate = [*selected_edges.values(), *additions]
         if not selected_paths and not fits(candidate):
             # The first path may exceed target_budget, but only as a complete unit.
@@ -395,23 +419,30 @@ def _select_graph_facts(
             continue
         add_path(path)
 
+    if hard_limit_exceeded:
+        # A path that cannot fit even as one complete unit invalidates the
+        # traversal view; never replace it with a shorter accidental branch.
+        selected_edges.clear()
+        selected_paths.clear()
+
     path_nodes = {
         node
         for path in selected_paths
         for node in path.nodes
     }
-    attached_order = sorted(
-        attached,
-        key=lambda edge: _attached_priority(
-            edge, path_nodes, focus, subject
-        ),
-    )
-    for edge in attached_order:
-        if edge.signature in selected_edges:
-            continue
-        candidate = [*selected_edges.values(), edge]
-        if fits(candidate):
-            selected_edges[edge.signature] = edge
+    if not hard_limit_exceeded:
+        attached_order = sorted(
+            attached,
+            key=lambda edge: _attached_priority(
+                edge, path_nodes, focus, subject
+            ),
+        )
+        for edge in attached_order:
+            if edge.signature in selected_edges:
+                continue
+            candidate = [*selected_edges.values(), edge]
+            if fits(candidate):
+                selected_edges[edge.signature] = edge
 
     # Structure has no traversal paths; select one-hop facts with the same budget
     # and stable ordering rather than applying an arbitrary relationship prefix.
@@ -762,6 +793,61 @@ def _serialized_size(
     ))
 
 
+def _normalize_unresolved_relationships(
+    raw_relationships: list[Any],
+) -> list[dict[str, Any]]:
+    """保留未解析关系的稳定、非敏感投影字段并去重。"""
+    normalized: dict[tuple[str, ...], dict[str, Any]] = {}
+    for relationship in raw_relationships:
+        if not isinstance(relationship, dict):
+            continue
+        signature = tuple(
+            str(relationship.get(key, ""))
+            for key in (
+                "sourceId", "targetId", "kind", "file", "line",
+                "source_set", "resolution",
+            )
+        )
+        item = {
+            key: relationship.get(key)
+            for key in _GRAPH_RELATION_KEYS
+            if key in relationship
+        }
+        if "kind" in item:
+            item["kind"] = str(item["kind"]).upper()
+        if "resolution" in item:
+            item["resolution"] = str(item["resolution"]).upper()
+        normalized.setdefault(signature, item)
+    return [normalized[key] for key in sorted(normalized)]
+
+
+def _select_unresolved_relationships(
+    summary_seed: Mapping[str, Any],
+    unresolved: list[dict[str, Any]],
+    edges: list[_GraphEdge],
+    symbols: list[dict[str, Any]],
+) -> tuple[tuple[dict[str, Any], ...], int]:
+    """在不挤掉完整 resolved 路径的前提下保留未解析事实。"""
+    selected: list[dict[str, Any]] = []
+    for relationship in unresolved:
+        candidate_unresolved = [*selected, relationship]
+        candidate = _candidate_summary(
+            summary_seed,
+            edges,
+            symbols,
+            omitted_count=0,
+            omitted_path_count=0,
+            limitations=list(summary_seed.get("limitations") or []),
+            unresolved_relationships=candidate_unresolved,
+            omitted_unresolved_count=max(
+                0, len(unresolved) - len(candidate_unresolved)
+            ),
+        )
+        if len(candidate) <= _GRAPH_SUMMARY_MAX_CHARS:
+            selected.append(relationship)
+    return tuple(selected), max(0, len(unresolved) - len(selected))
+
+
 def _candidate_summary(
     summary_seed: Mapping[str, Any],
     edges: list[_GraphEdge],
@@ -770,12 +856,16 @@ def _candidate_summary(
     omitted_count: int,
     omitted_path_count: int,
     limitations: list[str],
+    unresolved_relationships: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
+    omitted_unresolved_count: int = 0,
 ) -> str:
     value = dict(summary_seed)
     value["symbols"] = symbols
     value["relationships"] = [edge.payload for edge in edges]
+    value["unresolved_relationships"] = list(unresolved_relationships)
     value["omitted_count"] = omitted_count
     value["omitted_symbol_count"] = 0
+    value["omitted_unresolved_count"] = omitted_unresolved_count
     value["omitted_path_count"] = omitted_path_count
     value["limitations"] = limitations
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))

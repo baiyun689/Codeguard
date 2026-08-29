@@ -57,7 +57,12 @@ def project_tool_payload(
                 "outcome": "indeterminate",
                 "coverage": "partial",
                 "relationships": [],
+                "unresolved_relationships": [],
                 "unresolved_count": 0,
+                "omitted_count": 0,
+                "omitted_symbol_count": 0,
+                "omitted_unresolved_count": 0,
+                "omitted_path_count": 0,
                 "limitations": ["graph_projection_unavailable"],
             }, ensure_ascii=False, separators=(",", ":"))
             return PayloadProjection(
@@ -135,7 +140,11 @@ def _graph_projection_truncated(raw_payload: str, content: str) -> bool:
         return True
     return any(
         len(projected.get(key) or []) < len(raw.get(key) or [])
-        for key in ("symbols", "relationships")
+        for key in (
+            "symbols",
+            "relationships",
+            "unresolved_relationships",
+        )
     )
 
 
