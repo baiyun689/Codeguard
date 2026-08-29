@@ -38,7 +38,7 @@ from codeguard_agent.git.diff_collector import parse_changed_files
 from codeguard_agent.llm.client import build_llm
 from codeguard_agent.models.tasks import ReviewBudget
 from codeguard_agent.pipeline.orchestration.orchestrator import PipelineOrchestrator
-from codeguard_agent.pipeline.execution.engines import DirectEngine
+from codeguard_agent.pipeline.execution.engines import DirectEngine, ReviewExecutionStatus
 from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.tools.tool_client import create_tool_session, destroy_tool_session
 
@@ -477,6 +477,14 @@ def main(argv: list[str] | None = None) -> int:
                 max_retries=settings.max_retries,
                 structured_method=settings.structured_method,
             )
+            if (
+                direct.status is not ReviewExecutionStatus.COMPLETE
+                or direct.result is None
+            ):
+                raise RuntimeError(
+                    "direct eval review failed: "
+                    f"{direct.failure_reason or direct.status.value}"
+                )
             return direct.result, [], {
                 "total_duration_ms": (perf_counter() - review_started) * 1000
             }

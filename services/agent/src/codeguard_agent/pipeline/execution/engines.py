@@ -13,6 +13,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from html import unescape
 from time import sleep
 from typing import Any
@@ -45,6 +46,21 @@ REACT_SYNTHESIS_FALLBACK_EVENTS = frozenset({
 })
 
 
+class ReviewExecutionStatus(str, Enum):
+    """审查执行的协议状态。
+
+    ``COMPLETE`` 表示模型已返回符合结果 schema 的语义结果，其
+    ``issues=[]`` 才能解释为“未发现候选”。其它状态表示执行链未能
+    产生可信的结构化结果，不得当作 clean review 消费。
+    """
+
+    COMPLETE = "complete"
+    PROTOCOL_FAILED = "protocol_failed"
+    SYNTHESIS_FAILED = "synthesis_failed"
+    RECURSION_FAILED = "recursion_failed"
+    EXECUTION_FAILED = "execution_failed"
+
+
 @dataclass(frozen=True)
 class GatheredContext:
     """审查员经工具获取的一段 diff 之外上下文(供下游误报复核实证判定)。
@@ -64,10 +80,18 @@ class GatheredContext:
 class ReviewOutcome:
     """单个领域审查员的产出信封:结构化结果 + 本次工具调用记录与证据目录。"""
 
-    result: ReviewResult
+    result: Any | None
+    status: ReviewExecutionStatus = ReviewExecutionStatus.COMPLETE
+    failure_reason: str = ""
     tool_trace_records: list[Any] = field(default_factory=list)
     execution_events: list[str] = field(default_factory=list)
     evidence_catalog: Any = None  # 本次发现的证据目录(P01/Cxx/Txx);Direct 档仅 P/C
+
+    def __post_init__(self) -> None:
+        if self.status is ReviewExecutionStatus.COMPLETE and self.result is None:
+            raise ValueError("complete review outcome requires a structured result")
+        if self.status is not ReviewExecutionStatus.COMPLETE and self.result is not None:
+            raise ValueError("failed review outcome must not carry a semantic result")
 
 
 class ReviewEngine(ABC):
@@ -129,9 +153,11 @@ class DirectEngine(ReviewEngine):
                 )
                 sleep(1)
         if result is None:
-            logger.warning("[%s] 审查员未返回结构化结果(重试 3 次后仍空),本次按空处理", reviewer_name)
+            logger.warning("[%s] 审查员未返回结构化结果(重试 3 次后仍空)", reviewer_name)
             return ReviewOutcome(
-                ReviewResult(summary=""),
+                result=None,
+                status=ReviewExecutionStatus.PROTOCOL_FAILED,
+                failure_reason="structured_output_missing",
                 execution_events=["structured_output_missing"],
                 evidence_catalog=evidence_catalog,
             )
@@ -342,12 +368,10 @@ def _run_structured_fallback(
         )
     except Exception as exc:  # noqa: BLE001 fallback 失败必须在本层终止
         logger.warning("[%s] ReAct 结构化收口失败: %s", reviewer_name, exc)
-        try:
-            empty_result = result_schema(summary="", issues=[])
-        except Exception:  # noqa: BLE001 非审查 schema 的防御性兜底
-            empty_result = ReviewResult(summary="")
         return ReviewOutcome(
-            empty_result,
+            result=None,
+            status=ReviewExecutionStatus.SYNTHESIS_FAILED,
+            failure_reason=type(exc).__name__,
             tool_trace_records=list(trace_refs),
             execution_events=[event, failure_event],
             evidence_catalog=catalog,
@@ -355,6 +379,9 @@ def _run_structured_fallback(
     synthesis.tool_trace_records.extend(trace_refs)
     synthesis.execution_events.append(event)
     synthesis.evidence_catalog = catalog
+    if synthesis.status is not ReviewExecutionStatus.COMPLETE:
+        synthesis.status = ReviewExecutionStatus.SYNTHESIS_FAILED
+        synthesis.execution_events.append(failure_event)
     return synthesis
 
 

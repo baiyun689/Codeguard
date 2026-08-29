@@ -41,7 +41,9 @@ from codeguard_agent.models.tasks import (
 class ReviewerOutcomeLike(Protocol):
     """发现者执行结果的最小状态接口，避免状态模型依赖 execution 引擎。"""
 
-    result: DiscoveryReviewResult | ReviewResult
+    result: DiscoveryReviewResult | ReviewResult | None
+    status: object
+    failure_reason: str
     tool_trace_records: list[ToolTraceRef]
     execution_events: list[str]
     evidence_catalog: EvidenceCatalog | None

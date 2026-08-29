@@ -108,3 +108,51 @@ def test_文件级问题不在终端或markdown展示零行号(capsys):
     assert "src/App.java:0" not in terminal
     assert "`src/App.java`" in markdown
     assert "src/App.java:0" not in markdown
+
+
+def test_未完成审查不得显示未发现问题(capsys):
+    cli._print_result(
+        ReviewResult(summary="", issues=[]),
+        review_incomplete=True,
+    )
+
+    terminal = capsys.readouterr().out
+    assert "⚠️ 审查未完整" in terminal
+    assert "未发现问题" not in terminal
+
+    markdown = cli.render_review_report(
+        ReviewResult(summary="", issues=[]),
+        repo=".",
+        base="HEAD",
+        model="mock",
+        duration_s=0,
+        diff_text=_DIFF,
+        review_incomplete=True,
+    )
+    assert "⚠️ 审查未完整" in markdown
+    assert "未发现问题" not in markdown
+
+
+def test_cli_未完成审查返回基础设施失败码(tmp_path, monkeypatch, capsys):
+    class IncompleteOrchestrator:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def run(self, *_args: object, **kwargs: object) -> ReviewResult:
+            metadata = kwargs["metadata_sink"]
+            metadata["council"] = {
+                "task_review_failed_count": 1,
+                "discoverer_failed_count": 0,
+                "judge_synthesis_failed_count": 0,
+            }
+            return ReviewResult(summary="", issues=[])
+
+    _patch_cli(monkeypatch)
+    monkeypatch.setattr(cli, "PipelineOrchestrator", IncompleteOrchestrator)
+
+    exit_code = cli.main(["review", "--repo", str(tmp_path)])
+
+    assert exit_code == 2
+    terminal = capsys.readouterr().out
+    assert "⚠️ 审查未完整" in terminal
+    assert "未发现问题" not in terminal

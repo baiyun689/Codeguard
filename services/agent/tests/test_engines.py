@@ -12,6 +12,7 @@ from codeguard_agent.pipeline.execution.discovery import (
 )
 from codeguard_agent.pipeline.execution.engines import (
     DirectEngine,
+    ReviewExecutionStatus,
     ReviewOutcome,
     ToolAgentEngine,
 )
@@ -61,16 +62,19 @@ def test_direct_engine_返回评审信封():
         reviewer_name="logic", max_retries=1, structured_method="function_calling",
     )
     assert isinstance(outcome, ReviewOutcome)
+    assert outcome.status is ReviewExecutionStatus.COMPLETE
     assert outcome.result is rr
     assert outcome.tool_trace_records == []
 
 
-def test_direct_engine_none_结果兜底空信封():
+def test_direct_engine_none_结果标记协议失败():
     outcome = DirectEngine().review(
         _FakeLLM(None), system_prompt="s", user_prompt="u",
         reviewer_name="logic", max_retries=1, structured_method="function_calling",
     )
-    assert outcome.result.issues == []
+    assert outcome.status is ReviewExecutionStatus.PROTOCOL_FAILED
+    assert outcome.result is None
+    assert outcome.failure_reason == "structured_output_missing"
     assert outcome.tool_trace_records == []
 
 
@@ -318,10 +322,13 @@ def test_react_结构化降级失败后返回失败事件且不启动新阶段(m
     )
 
     assert llm.structured_calls == 1
-    assert outcome.result.issues == []
+    assert outcome.status is ReviewExecutionStatus.SYNTHESIS_FAILED
+    assert outcome.result is None
+    assert outcome.failure_reason == "structured_output_missing"
     assert outcome.execution_events == [
         "structured_output_missing",
         "react_synthesis_fallback_invalid_output",
+        "react_synthesis_fallback_failed",
     ]
 
 
@@ -341,7 +348,9 @@ def test_react_结构化降级抛异常后返回失败事件且不逸出(monkeyp
     )
 
     assert llm.structured_calls == 1
-    assert outcome.result.issues == []
+    assert outcome.status is ReviewExecutionStatus.SYNTHESIS_FAILED
+    assert outcome.result is None
+    assert outcome.failure_reason == "RuntimeError"
     assert outcome.execution_events == [
         "react_synthesis_fallback_invalid_output",
         "react_synthesis_fallback_failed",
@@ -589,7 +598,9 @@ def test_递归无可用事实的直连降级失败不再次逸出且保留审�
         result_schema=DiscoveryReviewResult,
     )
 
-    assert outcome.result.issues == []
+    assert outcome.status is ReviewExecutionStatus.SYNTHESIS_FAILED
+    assert outcome.result is None
+    assert outcome.failure_reason == "RuntimeError"
     assert [ref.call_id for ref in outcome.tool_trace_records] == ["call-failed"]
     assert outcome.execution_events == [
         "react_degraded_recursion",

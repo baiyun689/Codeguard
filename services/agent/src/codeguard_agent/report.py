@@ -39,6 +39,7 @@ def render_review_report(
     model: str,
     duration_s: float,
     diff_text: str,
+    review_incomplete: bool = False,
 ) -> str:
     """把 ReviewResult 渲染为 Markdown 报告字符串。
 
@@ -70,7 +71,12 @@ def render_review_report(
         )
     )
     lines.append("")
-    if not result.issues:
+    if review_incomplete:
+        lines.append("⚠️ 审查未完整：至少一个审查任务未产生可信的结构化结果。")
+        lines.append("")
+        if not result.issues:
+            return "\n".join(lines)
+    elif not result.issues:
         lines.append("✅ 未发现问题。")
         lines.append("")
         return "\n".join(lines)

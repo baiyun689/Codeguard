@@ -58,6 +58,7 @@ from codeguard_agent.pipeline.execution.engines import (
     REACT_SYNTHESIS_FALLBACK_FAILED_EVENT,
     REACT_SYNTHESIS_FALLBACK_INVALID_OUTPUT_EVENT,
     REACT_SYNTHESIS_FALLBACK_RECURSION_EVENT,
+    ReviewExecutionStatus,
     ReviewEngine,
     ReviewOutcome,
     ToolAgentEngine,
@@ -261,12 +262,12 @@ def _direct_review_node(llm):
                     )
                 ],
             }
-        if "structured_output_missing" in outcome.execution_events:
+        if outcome.status is not ReviewExecutionStatus.COMPLETE:
             route = route.model_copy(update={
                 "effective_mode": ReviewMode.MEDIUM,
                 "selected_node": "file_task_builder",
                 "fallback": True,
-                "fallback_reason": "structured_output_missing",
+                "fallback_reason": outcome.failure_reason or "review_execution_failed",
             })
             return {
                 "direct_review_status": "fallback",
@@ -276,14 +277,19 @@ def _direct_review_node(llm):
                     CouncilTrace(
                         node="direct_review",
                         event="fallback",
-                        detail="structured output missing; route=file_task_builder",
+                        detail=(
+                            f"{outcome.failure_reason or 'review execution failed'}; "
+                            "route=file_task_builder"
+                        ),
                     )
                 ],
             }
+        structured_result = outcome.result
+        assert structured_result is not None
         route = route.model_copy(update={"outcome": "completed"})
         return {
-            "final_issues": outcome.result.issues,
-            "summary": outcome.result.summary,
+            "final_issues": structured_result.issues,
+            "summary": structured_result.summary,
             "direct_review_status": "completed",
             "review_route": route,
             "council_trace": [
@@ -291,7 +297,7 @@ def _direct_review_node(llm):
                     node="direct_review",
                     event="completed",
                     detail=(
-                        f"mode=small issues={len(outcome.result.issues)} "
+                        f"mode=small issues={len(structured_result.issues)} "
                         f"diff_chars={len(state['diff_text'])}"
                     ),
                 )
@@ -603,8 +609,18 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                     )
                 )
                 if not state.get("allow_direct_fallback", True):
+                    catalog, trace_refs = _capture_catalog_from_client(
+                        state.get("evidence_catalog"), effective_tool_client
+                    )
                     return {
-                        "outcome": ReviewOutcome(ReviewResult(summary="")),
+                        "outcome": ReviewOutcome(
+                            result=None,
+                            status=ReviewExecutionStatus.RECURSION_FAILED,
+                            failure_reason=type(exc).__name__,
+                            tool_trace_records=trace_refs,
+                            execution_events=[REACT_DEGRADED_RECURSION_EVENT],
+                            evidence_catalog=catalog,
+                        ),
                         "council_trace": review_traces,
                     }
                 outcome = _direct_fallback(state)
@@ -638,8 +654,17 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
                     outcome.tool_trace_records.extend(trace_refs)
                 else:
                     logger.warning("[%s] 发现者失败,跳过: %s", reviewer.name, exc)
+                    catalog, trace_refs = _capture_catalog_from_client(
+                        state.get("evidence_catalog"), effective_tool_client
+                    )
                     return {
-                        "outcome": ReviewOutcome(ReviewResult(summary="")),
+                        "outcome": ReviewOutcome(
+                            result=None,
+                            status=ReviewExecutionStatus.EXECUTION_FAILED,
+                            failure_reason=type(exc).__name__,
+                            tool_trace_records=trace_refs,
+                            evidence_catalog=catalog,
+                        ),
                         "council_trace": [
                             CouncilTrace(
                                 node=reviewer.source_agent,
@@ -690,12 +715,24 @@ def build_reviewer_subgraph(reviewer: Reviewer, checkpointer=None, llm=None, too
         if outcome is None:
 
             return out
-        out["issues"] = list(outcome.result.issues)
         if outcome.tool_trace_records:
             out["tool_trace_records"] = list(outcome.tool_trace_records)
         catalog = outcome.evidence_catalog or state.get("evidence_catalog")
         if catalog is not None:
             out["evidence_catalog"] = catalog
+        if outcome.status is not ReviewExecutionStatus.COMPLETE or outcome.result is None:
+            out["council_trace"].append(
+                CouncilTrace(
+                    node=reviewer.source_agent,
+                    event="task_review_failed",
+                    detail=(
+                        outcome.failure_reason
+                        or str(getattr(outcome.status, "value", outcome.status))
+                    ),
+                )
+            )
+            return out
+        out["issues"] = list(outcome.result.issues)
         if outcome.result.summary:
             out["review_summaries"] = (
                 [outcome.result.summary]
@@ -1229,7 +1266,7 @@ def _direct_task_review_node(llm):
         system = (prompt_dir / "eval-direct-reviewer.txt").read_text(encoding="utf-8")
 
         def review_one(task: ReviewTask):
-            outcome = DirectEngine().review(
+            return DirectEngine().review(
                 llm,
                 system_prompt=system,
                 user_prompt=(
@@ -1243,16 +1280,38 @@ def _direct_task_review_node(llm):
                 structured_method=state.get("structured_method", "function_calling"),
                 result_schema=DiscoveryReviewResult,
             )
-            return outcome.result.issues
 
         results = run_bounded_parallel(tasks, review_one, max_workers=8)
         candidates: list[CandidateIssue] = []
         dossiers: list[Any] = []
         rejected = 0
+        failed_tasks = 0
         location_trace: list[CouncilTrace] = []
-        for task, result in zip(tasks, results):
+        for task, outcome in zip(tasks, results):
+            if (
+                outcome is None
+                or outcome.status is not ReviewExecutionStatus.COMPLETE
+                or outcome.result is None
+            ):
+                failed_tasks += 1
+                failure_reason = (
+                    "parallel_review_missing"
+                    if outcome is None
+                    else outcome.failure_reason or outcome.status.value
+                )
+                location_trace.append(
+                    CouncilTrace(
+                        node="direct_task_review",
+                        event="task_review_failed",
+                        detail=(
+                            f"task={task.id} reason="
+                            f"{failure_reason}"
+                        ),
+                    )
+                )
+                continue
             accepted = []
-            for issue in result or []:
+            for issue in outcome.result.issues:
                 if not task_prep.file_matches_task(issue.file, task):
                     rejected += 1
                     continue
@@ -1311,11 +1370,11 @@ def _direct_task_review_node(llm):
             "council_trace": [
                 CouncilTrace(
                     node="direct_task_review",
-                    event="completed",
+                    event="partial" if failed_tasks else "completed",
                     detail=(
                         f"tasks={len(tasks)} candidates={len(candidates)} "
                         f"issues={len(verdict_batch.final_issues)} "
-                        f"rejected={rejected}"
+                        f"rejected={rejected} failed={failed_tasks}"
                     ),
                 ),
                 *location_trace,

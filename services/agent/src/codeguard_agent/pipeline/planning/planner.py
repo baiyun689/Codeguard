@@ -20,7 +20,7 @@ from codeguard_agent.models.tasks import (
     ReviewAssignments,
 )
 from codeguard_agent.pipeline.execution.concurrency import run_bounded_parallel
-from codeguard_agent.pipeline.execution.engines import DirectEngine
+from codeguard_agent.pipeline.execution.engines import DirectEngine, ReviewExecutionStatus
 from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
 from codeguard_agent.pipeline.prompting import render_prompt_template
 
@@ -193,7 +193,10 @@ def run_plan_units(
                 structured_method=structured_method,
                 result_schema=TaskAgentPlan,
             )
-            if not isinstance(outcome.result, TaskAgentPlan):
+            if (
+                outcome.status is not ReviewExecutionStatus.COMPLETE
+                or not isinstance(outcome.result, TaskAgentPlan)
+            ):
                 return unit.id, fallback_plan(unit.id, "structured_output_invalid"), ()
             plan, diagnostics = validate_plan(
                 outcome.result,

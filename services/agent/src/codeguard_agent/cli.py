@@ -44,12 +44,17 @@ _SEVERITY_ICON = {
 }
 
 
-def _print_result(result: ReviewResult) -> None:
+def _print_result(result: ReviewResult, *, review_incomplete: bool = False) -> None:
     """把审查结果以易读的形式打印到终端。"""
     print("\n" + "=" * 60)
     print("Codeguard 审查报告")
     print("=" * 60)
     print(f"\n摘要:{result.summary}\n")
+
+    if review_incomplete:
+        print("⚠️ 审查未完整：至少一个审查任务未产生可信的结构化结果。")
+        if not result.issues:
+            return
 
     if not result.issues:
         print("✅ 未发现问题。")
@@ -65,6 +70,18 @@ def _print_result(result: ReviewResult) -> None:
         if issue.suggestion:
             print(f"    建议:{issue.suggestion}")
         print(f"    置信度:{issue.confidence:.2f}\n")
+
+
+def _review_incomplete(metadata: dict[str, object]) -> bool:
+    council = metadata.get("council")
+    if not isinstance(council, dict):
+        return False
+    failure_counters = (
+        "task_review_failed_count",
+        "discoverer_failed_count",
+        "judge_synthesis_failed_count",
+    )
+    return any(int(council.get(name, 0) or 0) > 0 for name in failure_counters)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -162,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         trace_enabled = settings.trace_enabled if args.trace is None else args.trace
 
         started = time.monotonic()
+        review_metadata: dict[str, object] = {}
         try:
             result = orch.run(
                 llm,
@@ -178,16 +196,20 @@ def main(argv: list[str] | None = None) -> int:
                 trace_enabled=trace_enabled,
                 trace_dir=settings.trace_dir,
                 trace_max_llm_content=settings.trace_max_llm_content,
+                metadata_sink=review_metadata,
             )
         finally:
             if tool_client is not None:
                 destroy_tool_session(tool_client)
         duration_s = time.monotonic() - started
+        review_incomplete = _review_incomplete(review_metadata)
 
         if args.format == "json":
             print(result.model_dump_json(indent=2))
+            if review_incomplete:
+                logger.error("审查未完整：至少一个审查任务执行失败")
         else:
-            _print_result(result)
+            _print_result(result, review_incomplete=review_incomplete)
 
         if args.report:
             report_text = render_review_report(
@@ -197,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
                 model=settings.model,
                 duration_s=duration_s,
                 diff_text=diff_text,
+                review_incomplete=review_incomplete,
             )
             report_dir = Path(repo_abspath) / "reports"
             report_dir.mkdir(parents=True, exist_ok=True)
@@ -205,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n报告已写入: {report_path}")
 
         # 退出码约定:发现 CRITICAL 问题时返回非 0,方便接入 CI 做门禁
+        if review_incomplete:
+            return 2
         has_critical = any(i.severity == Severity.CRITICAL for i in result.issues)
         return 1 if has_critical else 0
 

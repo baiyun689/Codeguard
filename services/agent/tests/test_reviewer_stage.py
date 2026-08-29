@@ -1,8 +1,10 @@
 """Default discoverer prompt configuration tests."""
 
+from codeguard_agent.models.evidence import EvidenceSourceKind
 from codeguard_agent.models.schemas import DiscoveryReviewResult
 from codeguard_agent.models.tasks import ReviewTask
-from codeguard_agent.pipeline.execution.engines import ReviewOutcome
+from codeguard_agent.pipeline.execution.discovery import DiscoveryToolRecord
+from codeguard_agent.pipeline.execution.engines import ReviewExecutionStatus, ReviewOutcome
 from codeguard_agent.pipeline.orchestration import graph as graph_module
 from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
@@ -109,3 +111,102 @@ def test_reviewer_subgraph_合法clean结果不再次直审(monkeypatch):
     assert "react_inline_structured" in {
         trace.event for trace in result.get("council_trace", [])
     }
+
+
+def test_reviewer_subgraph_协议失败不得伪装成clean(monkeypatch):
+    class FailedEngine:
+        def review(self, *_args, **_kwargs):
+            return ReviewOutcome(
+                result=None,
+                status=ReviewExecutionStatus.PROTOCOL_FAILED,
+                failure_reason="structured_output_missing",
+                execution_events=["structured_output_missing"],
+            )
+
+    monkeypatch.setattr(graph_module, "_make_engine", lambda *_args, **_kwargs: FailedEngine())
+    reviewer = DEFAULT_REVIEWERS[1]
+    subgraph = graph_module.build_reviewer_subgraph(
+        reviewer,
+        llm=object(),
+        tool_client=object(),
+    )
+    task = ReviewTask(
+        id="task-1",
+        file="src/A.java",
+        patch="@@ -1 +1 @@\n-old\n+new",
+        changed_lines=[1],
+    )
+
+    result = subgraph.invoke({
+        "diff_text": task.patch,
+        "review_task": task,
+        "tier": "react",
+        "review_tool_client": object(),
+        "evidence_revision": "rev-1",
+        "max_retries": 1,
+        "structured_method": "function_calling",
+        "task_scope": "current_hunk",
+    })
+
+    assert result.get("issues", []) == []
+    traces = result.get("council_trace", [])
+    assert any(
+        trace.event == "task_review_failed"
+        and trace.detail == "structured_output_missing"
+        for trace in traces
+    )
+    assert not result.get("review_summaries")
+
+
+def test_reviewer_subgraph_严格工具失败仍保留已捕获证据(monkeypatch):
+    class RaisingEngine:
+        def review(self, *_args, **_kwargs):
+            raise RuntimeError("agent protocol failed")
+
+    record = DiscoveryToolRecord(
+        call_id="call-1",
+        tool="get_file_content",
+        arguments={"file_path": "src/A.java"},
+        output="class A { int value; }",
+        duration_ms=1.0,
+        status="complete",
+        reuse_key='get_file_content:{"file_path":"src/A.java"}',
+    )
+    tool_client = type("Client", (), {"trace_records": [record]})()
+    monkeypatch.setattr(graph_module, "_make_engine", lambda *_args, **_kwargs: RaisingEngine())
+    reviewer = DEFAULT_REVIEWERS[1]
+    subgraph = graph_module.build_reviewer_subgraph(
+        reviewer,
+        llm=object(),
+        tool_client=tool_client,
+    )
+    task = ReviewTask(
+        id="task-1",
+        file="src/A.java",
+        patch="@@ -1 +1 @@\n-old\n+new",
+        changed_lines=[1],
+    )
+
+    result = subgraph.invoke({
+        "diff_text": task.patch,
+        "review_task": task,
+        "tier": "react",
+        "review_tool_client": tool_client,
+        "allow_direct_fallback": False,
+        "evidence_revision": "rev-1",
+        "max_retries": 1,
+        "structured_method": "function_calling",
+        "task_scope": "current_hunk",
+    })
+
+    assert [ref.call_id for ref in result["tool_trace_records"]] == ["call-1"]
+    catalog = result["evidence_catalog"]
+    assert any(
+        artifact.source_kind is EvidenceSourceKind.TOOL_CALL
+        for artifact in catalog.artifacts.values()
+    )
+    assert any(
+        trace.event == "task_review_failed"
+        and trace.detail == "RuntimeError"
+        for trace in result["council_trace"]
+    )
