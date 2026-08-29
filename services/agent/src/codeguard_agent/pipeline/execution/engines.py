@@ -27,6 +27,7 @@ from codeguard_agent.pipeline.execution.discovery import (
     ToolKey,
     canonical_tool_key,
 )
+from codeguard_agent.pipeline.evidence.projection import GraphProjectionFocus
 
 logger = logging.getLogger("codeguard")
 
@@ -155,6 +156,7 @@ class ToolAgentEngine(ReviewEngine):
         recursion_limit: int = 12,
         enabled_tools: list[str] | None = None,
         allow_direct_fallback: bool = True,
+        projection_focus: GraphProjectionFocus | None = None,
     ) -> None:
         self._tool_client = tool_client
         # langgraph 用 recursion_limit 约束图的总步数,间接限制工具调用轮数,防止失控。
@@ -162,6 +164,7 @@ class ToolAgentEngine(ReviewEngine):
         # 工具白名单:None=暴露所有已实现工具;否则只暴露列出的(profile 控制,对照可控)。
         self._enabled_tools = enabled_tools
         self._allow_direct_fallback = allow_direct_fallback
+        self._projection_focus = projection_focus
 
     def review(
         self,
@@ -187,7 +190,9 @@ class ToolAgentEngine(ReviewEngine):
             if enable_hitl:
                 raise
             tool_records = list(getattr(self._tool_client, "trace_records", ()))
-            gathered = _gathered_context_from_records(tool_records)
+            gathered = _gathered_context_from_records(
+                tool_records, focus=self._projection_focus
+            )
             if not self._allow_direct_fallback and not gathered:
                 raise
             if gathered:
@@ -203,7 +208,12 @@ class ToolAgentEngine(ReviewEngine):
                 return _run_structured_fallback(
                     llm,
                     system_prompt=system_prompt,
-                    user_prompt=_synthesis_prompt(user_prompt, catalog, gathered),
+                    user_prompt=_synthesis_prompt(
+                        user_prompt,
+                        catalog,
+                        gathered,
+                        focus=self._projection_focus,
+                    ),
                     reviewer_name=reviewer_name,
                     max_retries=max_retries,
                     structured_method=structured_method,
@@ -245,11 +255,18 @@ class ToolAgentEngine(ReviewEngine):
                 evidence_catalog=catalog,
             )
 
-        gathered = _gathered_context_from_records(tool_records)
+        gathered = _gathered_context_from_records(
+            tool_records, focus=self._projection_focus
+        )
         return _run_structured_fallback(
             llm,
             system_prompt=system_prompt,
-            user_prompt=_synthesis_prompt(user_prompt, catalog, gathered),
+            user_prompt=_synthesis_prompt(
+                user_prompt,
+                catalog,
+                gathered,
+                focus=self._projection_focus,
+            ),
             reviewer_name=reviewer_name,
             max_retries=max_retries,
             structured_method=structured_method,
@@ -457,12 +474,18 @@ def _unwrap_json_fence(text: str) -> str:
         return stripped
     return "\n".join(lines[1:-1]).strip()
 
-def _synthesis_prompt(user_prompt: str, catalog: Any, gathered: list[GatheredContext]) -> str:
+def _synthesis_prompt(
+    user_prompt: str,
+    catalog: Any,
+    gathered: list[GatheredContext],
+    *,
+    focus: GraphProjectionFocus | None = None,
+) -> str:
     """合成期提示词:优先渲染证据目录(编号+摘要内容),无目录时回退有界事实。"""
     if catalog is not None:
         from codeguard_agent.pipeline.evidence.ledger import render_evidence_catalog
 
-        rendered = render_evidence_catalog(catalog)
+        rendered = render_evidence_catalog(catalog, focus=focus)
         if rendered:
             return (
                 f"{user_prompt}\n\n"
@@ -509,7 +532,11 @@ def _capture_records(catalog: Any, tool_records: Any) -> tuple[Any, list[ToolTra
     return None, refs
 
 
-def _gathered_context_from_records(tool_records: Any) -> list[GatheredContext]:
+def _gathered_context_from_records(
+    tool_records: Any,
+    *,
+    focus: GraphProjectionFocus | None = None,
+) -> list[GatheredContext]:
     gathered: list[GatheredContext] = []
     seen: set[ToolKey] = set()
     for record in tool_records or ():
@@ -535,6 +562,7 @@ def _gathered_context_from_records(tool_records: Any) -> list[GatheredContext]:
             output,
             ProjectionAudience.REVIEWER,
             arguments=arguments,
+            focus=focus,
         ).content
         key = canonical_tool_key(tool_name, arguments)
         if key in seen:

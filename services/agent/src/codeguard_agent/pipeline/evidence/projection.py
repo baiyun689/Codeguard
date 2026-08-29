@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel
 
 from codeguard_agent.models.evidence import EvidenceValidationStatus
 from codeguard_agent.pipeline.evidence.graph_response import (
+    GraphProjectionFocus,
     summarize_graph,
     validate_graph_payload,
 )
@@ -39,7 +41,8 @@ def project_tool_payload(
     raw_payload: str,
     audience: ProjectionAudience,
     *,
-    arguments: Mapping[str, str] | None = None,
+    arguments: Mapping[str, Any] | None = None,
+    focus: GraphProjectionFocus | None = None,
 ) -> PayloadProjection:
     """保留 Evidence 原文，其余消费者只接收各自需要的确定性视图。"""
     if audience is ProjectionAudience.EVIDENCE:
@@ -61,7 +64,12 @@ def project_tool_payload(
                 content=content,
                 summary="图谱响应无法投影",
             )
-        content = summarize_graph(raw_payload)
+        content = summarize_graph(
+            raw_payload,
+            tool=tool,
+            arguments=arguments,
+            focus=focus,
+        )
         return PayloadProjection(
             content=content,
             summary=_graph_summary(raw_payload),
@@ -75,6 +83,23 @@ def project_tool_payload(
     return PayloadProjection(
         content=raw_payload,
         summary=_plain_summary(tool, raw_payload),
+    )
+
+
+def graph_projection_focus(task: Any, symbol_context: Any = None) -> GraphProjectionFocus:
+    """Build task-only focus facts; tool arguments remain the source of truth."""
+    symbols = getattr(symbol_context, "symbols", ()) if symbol_context is not None else ()
+    changed_file = str(getattr(task, "file", "")).replace("\\", "/")
+    return GraphProjectionFocus(
+        changed_file=changed_file or None,
+        changed_lines=tuple(
+            int(line) for line in (getattr(task, "changed_lines", ()) or ())
+        ),
+        changed_symbol_ids=tuple(
+            str(getattr(symbol, "symbol_id", ""))
+            for symbol in symbols
+            if getattr(symbol, "symbol_id", "")
+        ),
     )
 
 
@@ -117,7 +142,7 @@ def _graph_projection_truncated(raw_payload: str, content: str) -> bool:
 def _is_projectable_graph_payload(
     tool: str,
     raw_payload: str,
-    arguments: Mapping[str, str] | None,
+    arguments: Mapping[str, Any] | None,
 ) -> bool:
     validation = validate_graph_payload(
         raw_payload,
@@ -129,7 +154,9 @@ def _is_projectable_graph_payload(
 
 __all__ = [
     "GRAPH_TOOLS",
+    "GraphProjectionFocus",
     "PayloadProjection",
     "ProjectionAudience",
+    "graph_projection_focus",
     "project_tool_payload",
 ]

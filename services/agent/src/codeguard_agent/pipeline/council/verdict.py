@@ -29,6 +29,7 @@ from codeguard_agent.pipeline.execution.concurrency import run_bounded_parallel
 from codeguard_agent.pipeline.evidence.projection import (
     GRAPH_TOOLS,
     ProjectionAudience,
+    graph_projection_focus,
     project_tool_payload,
 )
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
@@ -89,6 +90,10 @@ def _evidence_item_payload(
                 evidence.tool,
                 evidence.content,
                 ProjectionAudience.JUDGE,
+                arguments=evidence.arguments,
+                focus=graph_projection_focus(
+                    dossier.task, dossier.symbol_context
+                ),
             ).content
         else:
             content = evidence.content[:_FILE_PAYLOAD_MAX_CHARS]

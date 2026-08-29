@@ -70,6 +70,7 @@ from codeguard_agent.pipeline.evidence.ledger import (
     bind_discovered_issue,
 )
 from codeguard_agent.pipeline.evidence.planner import assemble_dossiers
+from codeguard_agent.pipeline.evidence.projection import graph_projection_focus
 from codeguard_agent.pipeline.symbols import resolve_task_symbols
 from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
@@ -97,6 +98,7 @@ def _make_engine(state: ReviewState | ReviewerState, tool_client=None) -> Review
             recursion_limit=state.get("react_recursion_limit", 24),
             enabled_tools=state.get("enabled_tools"),
             allow_direct_fallback=state.get("allow_direct_fallback", True),
+            projection_focus=getattr(tool_client, "projection_focus", None),
         )
     return DirectEngine()
 
@@ -729,7 +731,10 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
 
         _coordinator = DiscoveryToolCoordinator() if tool_client is not None else None
 
-        def _task_tool_client(task: ReviewTask | None = None):
+        def _task_tool_client(
+            task: ReviewTask | None = None,
+            symbol_context: Any = None,
+        ):
             if tool_client is None or _coordinator is None:
                 return None
             complete_patch_files = (
@@ -743,6 +748,11 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                 tool_client,
                 _coordinator,
                 complete_patch_files=complete_patch_files,
+                projection_focus=(
+                    graph_projection_focus(task, symbol_context)
+                    if task is not None
+                    else None
+                ),
             )
 
         assignment_by_task = {
@@ -845,7 +855,9 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
                     "knowledge_topics": reviewer_plan.knowledge_topics if reviewer_plan else (),
                     "tier": tier,
                     "task_scope": task_scope,
-                    "review_tool_client": _task_tool_client(scoped_task),
+                    "review_tool_client": _task_tool_client(
+                        scoped_task, symbol_context
+                    ),
                     "evidence_revision": state.get("evidence_revision", ""),
                 },
             )

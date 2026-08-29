@@ -27,6 +27,7 @@ from codeguard_agent.models.evidence import (
 from codeguard_agent.models.schemas import EvidenceRole
 from codeguard_agent.pipeline.evidence.projection import (
     GRAPH_TOOLS,
+    GraphProjectionFocus,
     ProjectionAudience,
     project_tool_payload,
 )
@@ -302,7 +303,11 @@ def _citeable(artifact: EvidenceArtifact) -> bool:
     return artifact.availability is ArtifactAvailability.AVAILABLE
 
 
-def _catalog_payload(artifact: EvidenceArtifact) -> str:
+def _catalog_payload(
+    artifact: EvidenceArtifact,
+    *,
+    focus: GraphProjectionFocus | None = None,
+) -> str:
     """Catalog 内单条 payload 预算:图摘要化、文件截 2000 字符(修正③)。"""
     if artifact.tool in GRAPH_TOOLS:
         return project_tool_payload(
@@ -310,6 +315,7 @@ def _catalog_payload(artifact: EvidenceArtifact) -> str:
             artifact.payload,
             ProjectionAudience.REVIEWER,
             arguments=artifact.arguments,
+            focus=focus,
         ).content
     truncated = len(artifact.payload) > _CATALOG_PAYLOAD_MAX_CHARS
     return (
@@ -322,6 +328,7 @@ def render_evidence_catalog(
     catalog: EvidenceCatalog,
     *,
     max_chars: int = _CATALOG_MAX_CHARS,
+    focus: GraphProjectionFocus | None = None,
 ) -> str:
     """把证据目录渲染为合成提示词的 <evidence_catalog> 段(修正③)。
 
@@ -339,7 +346,7 @@ def render_evidence_catalog(
             f'args="{_args_text(artifact.arguments)}" '
             f'citeable="{str(_citeable(artifact)).lower()}" '
             f'capture_mode="{artifact.capture_mode.value}">\n'
-            f"{_catalog_payload(artifact)}\n"
+            f"{_catalog_payload(artifact, focus=focus)}\n"
             f"</artifact>"
         )
         remaining = max_chars - used

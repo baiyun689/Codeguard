@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from codeguard_agent.pipeline.evidence.projection import (
+    GraphProjectionFocus,
     ProjectionAudience,
     project_tool_payload,
 )
@@ -37,6 +38,7 @@ def _reviewer_response(
     tool: str,
     response: ToolResponse,
     arguments: dict[str, Any] | None = None,
+    focus: GraphProjectionFocus | None = None,
 ) -> ToolResponse:
     """把已捕获的原始工具响应投影成 Reviewer 所需视图。"""
     if not response.success:
@@ -47,6 +49,7 @@ def _reviewer_response(
         raw,
         ProjectionAudience.REVIEWER,
         arguments=_canonical_arguments(arguments or {}),
+        focus=focus,
     )
     return ToolResponse(success=True, result=projection.content)
 
@@ -56,6 +59,7 @@ def _alias_echo(
     response: ToolResponse,
     alias: str,
     arguments: dict[str, Any] | None = None,
+    focus: GraphProjectionFocus | None = None,
 ) -> ToolResponse:
     """把证据编号回显进返回给 LLM 的文本;record 保留原始 payload 不污染。
 
@@ -66,7 +70,9 @@ def _alias_echo(
             success=False,
             error=f"{error}\n\n{ALIAS_TAG.format(alias=alias)}",
         )
-    text = (_reviewer_response(tool, response, arguments).result or "").strip()
+    text = (
+        _reviewer_response(tool, response, arguments, focus).result or ""
+    ).strip()
     if not text:
         return response
     return ToolResponse(success=True, result=f"{text}\n\n{ALIAS_TAG.format(alias=alias)}")
@@ -199,6 +205,7 @@ class CoordinatedDiscoveryToolClient:
         coordinator: DiscoveryToolCoordinator,
         *,
         complete_patch_files: set[str] | frozenset[str] = frozenset(),
+        projection_focus: GraphProjectionFocus | None = None,
     ) -> None:
         self._delegate = delegate
         self._coordinator = coordinator
@@ -211,6 +218,11 @@ class CoordinatedDiscoveryToolClient:
             canonical_tool_key("get_file_content", {"file_path": path})
             for path in complete_patch_files
         }
+        self._projection_focus = projection_focus
+
+    @property
+    def projection_focus(self) -> GraphProjectionFocus | None:
+        return self._projection_focus
 
     def _invoke(
         self,
@@ -260,7 +272,11 @@ class CoordinatedDiscoveryToolClient:
                 return repeated
             self._record(tool_name, arguments, response, started)
             return _alias_echo(
-                tool_name, response, self._next_t_alias(), arguments
+                tool_name,
+                response,
+                self._next_t_alias(),
+                arguments,
+                self._projection_focus,
             )
 
         try:
@@ -286,10 +302,18 @@ class CoordinatedDiscoveryToolClient:
                 self._in_flight.pop(key, None)
             if not coordinator_reused:
                 return _alias_echo(
-                    tool_name, response, self._next_t_alias(), arguments
+                    tool_name,
+                    response,
+                    self._next_t_alias(),
+                    arguments,
+                    self._projection_focus,
                 )
             return _alias_echo(
-                tool_name, response, self._next_t_alias(), arguments
+                tool_name,
+                response,
+                self._next_t_alias(),
+                arguments,
+                self._projection_focus,
             )
         except BaseException as exc:
             if future is not None and not future.done():
