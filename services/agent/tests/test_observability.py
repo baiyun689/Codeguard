@@ -36,6 +36,7 @@ from codeguard_agent.observability.serialization import (
 )
 from codeguard_agent.observability.view_model import build_trace_view
 from codeguard_agent.pipeline.evidence.projection import (
+    GraphProjectionFocus,
     ProjectionAudience,
     project_tool_payload,
 )
@@ -497,6 +498,67 @@ def test_trace_normalization_uses_parent_run_to_disambiguate_same_payload_tasks(
 
     tool_ends = [event for event in report.events if event.event_type == "tool_end"]
     assert [event.detail["artifact_id"] for event in tool_ends] == ids
+
+
+def test_trace_preview_reuses_runtime_focused_reviewer_projection():
+    raw = json.dumps({
+        "schema_version": 2,
+        "outcome": "found",
+        "coverage": "complete",
+        "source_scope": "MAIN",
+        "subject_symbol_id": "java:A#m()",
+        "symbols": [
+            {"id": "java:A#m()", "kind": "METHOD", "file": "src/A.java",
+             "startLine": 1, "endLine": 20, "source_set": "MAIN"},
+            {"id": "java:B#listener()", "kind": "METHOD", "file": "src/B.java",
+             "startLine": 1, "endLine": 3, "source_set": "MAIN"},
+        ],
+        "relationships": [
+            {"sourceId": "java:A#m()", "targetId": "java:B#listener()",
+             "kind": "CALLS", "file": "src/A.java", "line": 10,
+             "source_set": "MAIN", "resolution": "RESOLVED"},
+        ],
+        "unresolved_relationships": [],
+        "unresolved_count": 0,
+        "limitations": [],
+    }, ensure_ascii=False)
+    artifact = EvidenceArtifact.build(
+        task_id="task-1",
+        reviewer="behavior",
+        revision="rev",
+        source_kind=EvidenceSourceKind.TOOL_CALL,
+        tool="inspect_path",
+        arguments={"symbol_id": "java:A#m()", "path_kind": "behavior"},
+        payload=raw,
+        availability=ArtifactAvailability.AVAILABLE,
+        capture_mode=EvidenceCaptureMode.EXECUTED,
+        call_id="call-1",
+    )
+    focus = GraphProjectionFocus(
+        changed_file="src/A.java",
+        changed_lines=(10,),
+        changed_symbol_ids=("java:A#m()",),
+    )
+    report = TraceReport(
+        run_id="focused-preview",
+        timestamp="2026-08-24T00:00:00",
+        events=[],
+    )
+
+    normalize_trace_report(
+        report,
+        {artifact.id: artifact},
+        focus_by_task={"task-1": focus},
+    )
+
+    expected = project_tool_payload(
+        "inspect_path",
+        raw,
+        ProjectionAudience.REVIEWER,
+        arguments=artifact.arguments,
+        focus=focus,
+    ).content
+    assert report.artifacts[artifact.id].preview == expected
 
 
 def test_trace_view_summarizes_judge_and_causal_merge_results():

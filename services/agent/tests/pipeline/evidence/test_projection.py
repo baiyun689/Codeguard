@@ -280,6 +280,216 @@ def test_behavior_projection_preserves_complete_deep_path_and_focuses_changed_li
     assert "projection_truncated" in content["limitations"]
 
 
+def test_behavior_projection_keeps_real_listener_and_state_branches_under_budget_pressure():
+    subject = "java:retry.RetryTemplate#doExecute()"
+    open_method = "java:retry.RetryTemplate#open()"
+    interceptors = "java:retry.RetryTemplate#doOpenInterceptors()"
+    listener = "java:retry.RetryListener#open()"
+    internal = "java:retry.RetryTemplate#doOpenInternal()"
+    context = "java:retry.RetrySynchronizationManager#getContext()"
+    relationships = [
+        {
+            "sourceId": subject,
+            "targetId": open_method,
+            "kind": "CALLS",
+            "file": "src/RetryTemplate.java",
+            "line": 278,
+            "source_set": "MAIN",
+            "resolution": "RESOLVED",
+        },
+        {
+            "sourceId": subject,
+            "targetId": interceptors,
+            "kind": "CALLS",
+            "file": "src/RetryTemplate.java",
+            "line": 291,
+            "source_set": "MAIN",
+            "resolution": "RESOLVED",
+        },
+        {
+            "sourceId": interceptors,
+            "targetId": listener,
+            "kind": "CALLS",
+            "file": "src/RetryTemplate.java",
+            "line": 585,
+            "source_set": "MAIN",
+            "resolution": "RESOLVED",
+        },
+        {
+            "sourceId": open_method,
+            "targetId": internal,
+            "kind": "CALLS",
+            "file": "src/RetryTemplate.java",
+            "line": 500,
+            "source_set": "MAIN",
+            "resolution": "RESOLVED",
+        },
+        {
+            "sourceId": internal,
+            "targetId": context,
+            "kind": "CALLS",
+            "file": "src/RetryTemplate.java",
+            "line": 505,
+            "source_set": "MAIN",
+            "resolution": "RESOLVED",
+        },
+    ]
+    # Many connected ordinary CALLS branches compete for the same path budget.
+    for branch in range(80):
+        branch_nodes = [
+            f"java:retry.RetryTemplate#aaaNoiseComponent{branch}_{depth}"
+            + ("x" * 48)
+            + "()"
+            for depth in range(4)
+        ]
+        for depth in range(3):
+            relationships.append({
+                "sourceId": subject if depth == 0 else branch_nodes[depth - 1],
+                "targetId": branch_nodes[depth],
+                "kind": "CALLS",
+                "file": "src/RetryTemplate.java",
+                "line": 600 + branch * 3 + depth,
+                "source_set": "MAIN",
+                "resolution": "RESOLVED",
+            })
+    # Callback paths use ordinary CALLS too; the target name is the only
+    # stable semantic signal available from this Gateway response shape.
+    for branch in range(40):
+        callback = f"java:retry.Callback{branch}#callback()"
+        callback_leaf = f"java:retry.Callback{branch}#invoke()"
+        relationships.extend([
+            {
+                "sourceId": subject,
+                "targetId": callback,
+                "kind": "CALLS",
+                "file": "src/RetryTemplate.java",
+                "line": 800 + branch * 2,
+                "source_set": "MAIN",
+                "resolution": "RESOLVED",
+            },
+            {
+                "sourceId": callback,
+                "targetId": callback_leaf,
+                "kind": "CALLS",
+                "file": "src/RetryTemplate.java",
+                "line": 801 + branch * 2,
+                "source_set": "MAIN",
+                "resolution": "RESOLVED",
+            },
+        ])
+    # Subject-level field facts are intentionally noisy: they must not make
+    # every traversal branch look semantic merely because it shares the root.
+    for index in range(30):
+        relationships.append({
+            "sourceId": subject,
+            "targetId": f"java:retry.RetryContext#attribute{index}",
+            "kind": "READS_FIELD",
+            "file": "src/RetryTemplate.java",
+            "line": 700 + index,
+            "source_set": "MAIN",
+            "resolution": "RESOLVED",
+        })
+    symbol_ids = {item["sourceId"] for item in relationships}
+    symbol_ids.update(item["targetId"] for item in relationships)
+    raw = json.dumps({
+        "schema_version": 2,
+        "outcome": "found",
+        "coverage": "complete",
+        "source_scope": "MAIN",
+        "subject_symbol_id": subject,
+        "symbols": [
+            {
+                "id": symbol_id,
+                "kind": "method",
+                "file": "src/RetryTemplate.java",
+                "startLine": 1,
+                "endLine": 700,
+                "source_set": "MAIN",
+            }
+            for symbol_id in sorted(symbol_ids)
+        ],
+        "relationships": relationships,
+        "unresolved_relationships": [],
+        "unresolved_count": 0,
+        "limitations": [],
+    }, ensure_ascii=False)
+    content = json.loads(project_tool_payload(
+        "inspect_path",
+        raw,
+        ProjectionAudience.REVIEWER,
+        arguments={"symbol_id": subject, "path_kind": "behavior", "max_depth": 3},
+        focus=GraphProjectionFocus(
+            changed_file="src/RetryTemplate.java",
+            changed_lines=(298, 299, 500),
+            changed_symbol_ids=(subject, open_method),
+        ),
+    ).content)
+    edges = {
+        (item["sourceId"], item["targetId"])
+        for item in content["relationships"]
+    }
+    assert (subject, interceptors) in edges
+    assert (interceptors, listener) in edges
+    assert (internal, context) in edges
+    callback_edges = {
+        edge for edge in edges if edge[1].startswith("java:retry.Callback")
+    }
+    assert callback_edges
+    callback_branches = {
+        edge[1] for edge in callback_edges if edge[0] == subject
+    }
+    assert len(callback_branches) <= 4
+
+
+def test_path_family_prefers_changed_callsite_before_deduplication():
+    subject = "java:demo.Service#run()"
+    target = "java:demo.Service#helper()"
+    raw = json.dumps({
+        "schema_version": 2,
+        "outcome": "found",
+        "coverage": "complete",
+        "source_scope": "MAIN",
+        "subject_symbol_id": subject,
+        "symbols": [
+            {"id": subject, "kind": "method", "file": "src/Service.java",
+             "startLine": 1, "endLine": 100, "source_set": "MAIN"},
+            {"id": target, "kind": "method", "file": "src/Service.java",
+             "startLine": 1, "endLine": 100, "source_set": "MAIN"},
+        ],
+        "relationships": [
+            {"sourceId": subject, "targetId": target, "kind": "CALLS",
+             "file": "src/Service.java", "line": 12, "source_set": "MAIN",
+             "resolution": "RESOLVED"},
+            {"sourceId": subject, "targetId": target, "kind": "CALLS",
+             "file": "src/Service.java", "line": 88, "source_set": "MAIN",
+             "resolution": "RESOLVED"},
+        ],
+        "unresolved_relationships": [],
+        "unresolved_count": 0,
+        "limitations": [],
+    }, ensure_ascii=False)
+    content = json.loads(project_tool_payload(
+        "inspect_path",
+        raw,
+        ProjectionAudience.REVIEWER,
+        arguments={"symbol_id": subject, "path_kind": "behavior"},
+        focus=GraphProjectionFocus(
+            changed_file="src/Service.java",
+            changed_lines=(88,),
+            changed_symbol_ids=(subject,),
+        ),
+    ).content)
+    assert content["relationships"] == [{
+        "sourceId": subject,
+        "targetId": target,
+        "kind": "CALLS",
+        "file": "src/Service.java",
+        "line": 88,
+        "source_set": "MAIN",
+        "resolution": "RESOLVED",
+    }]
+
+
 def test_reviewer_and_judge_projection_are_byte_identical_with_focus():
     raw = _deep_behavior_payload(24)
     focus = GraphProjectionFocus(

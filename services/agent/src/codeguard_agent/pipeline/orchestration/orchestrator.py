@@ -16,6 +16,7 @@ from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.models.tasks import ReviewBudget
 from codeguard_agent.observability.models import DegradationReport
 from codeguard_agent.models.state import ReviewState
+from codeguard_agent.pipeline.evidence.projection import graph_projection_focus
 from codeguard_agent.pipeline.orchestration.graph import (
     DEFAULT_RECURSION_LIMIT,
     build_review_graph,
@@ -184,9 +185,19 @@ class PipelineOrchestrator:
                         normalize_trace_report,
                     )
 
+                    focus_by_task = {
+                        task.id: graph_projection_focus(
+                            task,
+                            (final_state.get("task_symbol_contexts") or {}).get(
+                                task.id
+                            ),
+                        )
+                        for task in (final_state.get("review_tasks") or [])
+                    }
                     normalize_trace_report(
                         report,
                         final_state.get("evidence_artifacts") or {},
+                        focus_by_task=focus_by_task,
                     )
                     render_dashboard_file(report, trace_dir, _run_id)
                 except Exception:

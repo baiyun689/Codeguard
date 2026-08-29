@@ -19,6 +19,7 @@ from codeguard_agent.models.evidence import EvidenceValidationStatus
 _GRAPH_SUMMARY_MAX_CHARS = 8000
 _GRAPH_SUMMARY_HARD_MAX_CHARS = 16000
 _GRAPH_MAX_ENUMERATED_PATHS = 4096
+_TARGET_BRANCH_REPRESENTATIVE_LIMIT = 4
 _GRAPH_HEADER_KEYS = (
     "schema_version", "outcome", "coverage", "source_scope",
     "subject_symbol_id", "unresolved_count", "limitations",
@@ -258,16 +259,18 @@ def _select_graph_facts(
         subject=subject,
         max_depth=max_depth,
     )
-    path_order = sorted(
+    # Rank before family de-duplication so a node-identical path whose call
+    # site hits the changed line wins over a metadata-only duplicate.
+    path_order = _dedupe_path_families(sorted(
         paths,
         key=lambda path: _path_priority(
             path,
             attached,
-            symbols,
             focus=focus,
             subject=subject,
         ),
-    )
+    ))
+    canonical_path_count = len(path_order)
     selected_edges: dict[tuple[str, ...], _GraphEdge] = {}
     selected_paths: list[_GraphPath] = []
     hard_limit_exceeded = False
@@ -286,13 +289,21 @@ def _select_graph_facts(
             candidate,
             selected_symbols,
             omitted_count=max(0, len(edges) - len(candidate)),
-            omitted_path_count=max(0, len(paths) - len(selected_paths)),
+            omitted_path_count=max(
+                0, canonical_path_count - len(selected_paths)
+            ),
             limitations=list(summary_seed.get("limitations") or []),
         )
         return len(value) <= _GRAPH_SUMMARY_MAX_CHARS
 
-    # Complete traversal paths are the primary units. Shared edges count once.
-    for path in path_order:
+    # Reserve branch coverage before filling the remaining budget greedily. A
+    # changed path can otherwise consume the whole budget and hide a listener,
+    # callback, or state branch that is equally important to the reviewer.
+    selected_branches: set[str] = set()
+    selected_families: set[tuple[tuple[str, str, str], ...]] = set()
+
+    def add_path(path: _GraphPath, *, allow_target_overflow: bool = False) -> bool:
+        nonlocal hard_limit_exceeded
         additions = [
             edge for edge in path.edges if edge.signature not in selected_edges
         ]
@@ -305,13 +316,84 @@ def _select_graph_facts(
                 for edge in additions:
                     selected_edges[edge.signature] = edge
                 selected_paths.append(path)
+                selected_families.add(_path_family_key(path))
+                return True
             else:
                 hard_limit_exceeded = True
-            continue
-        if not additions or fits(candidate):
+            return False
+        if not additions or fits(candidate) or (
+            allow_target_overflow
+            and _serialized_size(summary_seed, candidate, symbols, subject)
+            <= _GRAPH_SUMMARY_HARD_MAX_CHARS
+        ):
             for edge in additions:
                 selected_edges[edge.signature] = edge
             selected_paths.append(path)
+            selected_families.add(_path_family_key(path))
+            return True
+        return False
+
+    changed_paths = [
+        path for path in path_order
+        if _path_hits_changed_fact(path, focus)
+    ]
+    target_paths = [
+        path for path in path_order
+        if _path_has_semantic_target(path, attached, subject)
+    ]
+
+    # One shortest representative per first-hop branch in the changed layer.
+    for path in changed_paths:
+        branch = path.edges[0].target if path.edges else subject
+        if branch in selected_branches:
+            continue
+        if add_path(path):
+            selected_branches.add(branch)
+
+    # Reserve a bounded number of shortest representatives per semantic class.
+    # Round-robin class coverage prevents callback-heavy graphs from crowding
+    # out listener/state branches while retaining distinct lifecycle branches
+    # such as open/close when they are present.
+    target_representatives: dict[str, list[_GraphPath]] = {}
+    for path in target_paths:
+        target_family = _path_target_family(path, attached, subject)
+        if not target_family:
+            continue
+        target_representatives.setdefault(target_family, []).append(path)
+    for paths_for_family in target_representatives.values():
+        paths_for_family.sort(
+            key=lambda path: _path_priority(
+                path, attached, focus=focus, subject=subject
+            )
+        )
+    target_groups = sorted({
+        family.split(":", 1)[0]
+        for family in target_representatives
+    })
+    for ordinal in range(_TARGET_BRANCH_REPRESENTATIVE_LIMIT):
+        for group in target_groups:
+            families = sorted(
+                family for family in target_representatives
+                if family.startswith(f"{group}:")
+            )[:_TARGET_BRANCH_REPRESENTATIVE_LIMIT]
+            if ordinal >= len(families):
+                continue
+            # One first-hop family per class and round, using its shortest
+            # representative. This bounds each semantic class to four paths.
+            path = target_representatives[families[ordinal]][0]
+            if _path_family_key(path) not in selected_families:
+                add_path(path, allow_target_overflow=True)
+
+    # Remaining paths use the established deterministic order and budget.
+    for path in path_order:
+        if _path_family_key(path) in selected_families:
+            continue
+        # Semantic target families are handled by the bounded round-robin
+        # reservation above; do not re-introduce unselected callback branches
+        # during generic greedy filling.
+        if _path_target_family(path, attached, subject) in target_representatives:
+            continue
+        add_path(path)
 
     path_nodes = {
         node
@@ -321,7 +403,7 @@ def _select_graph_facts(
     attached_order = sorted(
         attached,
         key=lambda edge: _attached_priority(
-            edge, path_nodes, symbols, focus, subject
+            edge, path_nodes, focus, subject
         ),
     )
     for edge in attached_order:
@@ -338,7 +420,7 @@ def _select_graph_facts(
         for edge in sorted(
             attached,
             key=lambda item: _attached_priority(
-                item, {subject}, symbols, focus, subject
+                item, {subject}, focus, subject
             ),
         ):
             candidate = [*selected_edges.values(), edge]
@@ -350,12 +432,12 @@ def _select_graph_facts(
             if fits(candidate) or not selected_edges:
                 selected_edges[edge.signature] = edge
 
-    omitted_paths = max(0, len(paths) - len(selected_paths))
+    omitted_paths = max(0, canonical_path_count - len(selected_paths))
     if enumeration_capped:
         omitted_paths = max(omitted_paths, 1)
     return _ProjectionSelection(
         relationships=tuple(selected_edges.values()),
-        total_path_count=len(paths),
+        total_path_count=canonical_path_count,
         omitted_path_count=omitted_paths,
         enumeration_capped=enumeration_capped,
         hard_limit_exceeded=hard_limit_exceeded,
@@ -469,12 +551,18 @@ _SEMANTIC_EDGE_KINDS = frozenset({
     "LISTENS_TO_EVENT", "SCHEDULED_BY", "READS_FIELD", "WRITES_FIELD",
     "IMPLEMENTS", "OVERRIDES", "EXPOSES_ROUTE",
 })
+_SEMANTIC_TARGET_GROUPS = (
+    ("listener", ("listener", "event")),
+    ("callback", ("callback",)),
+    ("route", ("route", "interceptor")),
+    ("relation", ("implements", "override")),
+    ("state", ("state", "context", "synchronization", "retrycount", "cache")),
+)
 
 
 def _path_priority(
     path: _GraphPath,
     attached: list[_GraphEdge],
-    symbols: list[dict[str, Any]],
     *,
     focus: GraphProjectionFocus | None,
     subject: str,
@@ -482,12 +570,13 @@ def _path_priority(
     nodes = set(path.nodes)
     path_edges = (*path.edges, *[
         edge for edge in attached
-        if edge.source in nodes or edge.target in nodes
+        if (edge.source in nodes or edge.target in nodes)
+        and subject not in {edge.source, edge.target}
     ])
     return (
-        0 if _hits_changed_line(path_edges, symbols, path.nodes, focus) else 1,
+        0 if _path_hits_changed_fact(path, focus) else 1,
         0 if _hits_non_subject_symbol(path_edges, focus, subject) else 1,
-        0 if any(edge.kind in _SEMANTIC_EDGE_KINDS for edge in path_edges) else 1,
+        _path_semantic_rank(path, attached, subject),
         len(path.edges),
         path.signature,
     )
@@ -496,14 +585,15 @@ def _path_priority(
 def _attached_priority(
     edge: _GraphEdge,
     path_nodes: set[str],
-    symbols: list[dict[str, Any]],
     focus: GraphProjectionFocus | None,
     subject: str,
 ) -> tuple[Any, ...]:
     return (
         0 if edge.source == subject or edge.target == subject else 1,
         0 if edge.source in path_nodes or edge.target in path_nodes else 1,
-        0 if _hits_changed_line((edge,), symbols, tuple(path_nodes), focus) else 1,
+        0 if _hits_changed_line(
+            (edge,), focus
+        ) else 1,
         0 if _hits_non_subject_symbol((edge,), focus, subject) else 1,
         0 if edge.kind in _SEMANTIC_EDGE_KINDS else 1,
         edge.signature,
@@ -512,8 +602,6 @@ def _attached_priority(
 
 def _hits_changed_line(
     edges: tuple[_GraphEdge, ...] | list[_GraphEdge],
-    symbols: list[dict[str, Any]],
-    path_nodes: tuple[str, ...],
     focus: GraphProjectionFocus | None,
 ) -> bool:
     if focus is None or not focus.changed_file or not focus.changed_lines:
@@ -525,20 +613,106 @@ def _hits_changed_line(
         for edge in edges
     ):
         return True
-    return any(
-        str(symbol.get("id", "")) in path_nodes
-        and str(symbol.get("file", "")) == focus.changed_file
-        and _range_hits_lines(symbol, lines)
-        for symbol in symbols
-    )
+    # Symbol declaration ranges are intentionally not treated as changed-line
+    # hits. A changed method often spans hundreds of lines and would make
+    # every path through that symbol look equally relevant. Non-root changed
+    # symbols are scored separately by _hits_non_subject_symbol.
+    return False
 
 
-def _range_hits_lines(symbol: dict[str, Any], lines: set[int]) -> bool:
-    start = _as_int(symbol.get("startLine"))
-    end = _as_int(symbol.get("endLine"))
-    return start is not None and end is not None and any(
-        start <= line <= end for line in lines
-    )
+def _path_hits_changed_fact(
+    path: _GraphPath,
+    focus: GraphProjectionFocus | None,
+) -> bool:
+    # Changed-line relevance belongs to traversal call sites. Attached field
+    # facts around a node are context, not evidence that every path through
+    # that node touches the changed hunk.
+    return _hits_changed_line(path.edges, focus)
+
+
+def _path_family_key(path: _GraphPath) -> tuple[tuple[str, str, str], ...]:
+    """Collapse duplicate paths that differ only by call-site metadata."""
+    return tuple((edge.source, edge.target, edge.kind) for edge in path.edges)
+
+
+def _dedupe_path_families(paths: list[_GraphPath]) -> list[_GraphPath]:
+    families: dict[tuple[tuple[str, str, str], ...], _GraphPath] = {}
+    for path in paths:
+        families.setdefault(_path_family_key(path), path)
+    return list(families.values())
+
+
+def _path_has_semantic_target(
+    path: _GraphPath,
+    attached: list[_GraphEdge],
+    subject: str,
+) -> bool:
+    return _path_semantic_rank(path, attached, subject) < 2
+
+
+def _path_target_family(
+    path: _GraphPath,
+    attached: list[_GraphEdge],
+    subject: str,
+) -> str:
+    """Return a stable semantic target class for coverage reservation."""
+    targets = [edge.target.lower() for edge in path.edges]
+    target_groups: set[str] = set()
+    for target in targets:
+        group = _semantic_target_group(target)
+        if group:
+            target_groups.add(group)
+    for group in ("listener", "callback", "route", "relation", "state"):
+        if group in target_groups:
+            branch = path.edges[0].target if path.edges else subject
+            return f"{group}:{branch}"
+    if any(
+        edge.kind in _SEMANTIC_EDGE_KINDS - {"READS_FIELD", "WRITES_FIELD"}
+        and (edge.source in path.nodes or edge.target in path.nodes)
+        and subject not in {edge.source, edge.target}
+        for edge in attached
+    ):
+        return "semantic"
+    return ""
+
+
+def _path_semantic_rank(
+    path: _GraphPath,
+    attached: list[_GraphEdge],
+    subject: str,
+) -> int:
+    """Rank downstream semantic targets without letting subject metadata win."""
+    # Only traversal targets identify a downstream listener/callback/state
+    # path. Looking at source IDs or generic field facts makes unrelated paths
+    # inherit tokens such as ``RetryState``/``context`` from the subject.
+    best = 2
+    for edge in path.edges:
+        if edge.kind in _SEMANTIC_EDGE_KINDS:
+            best = min(best, 0)
+            continue
+        target_group = _semantic_target_group(edge.target)
+        if target_group in {"listener", "callback", "route", "relation"}:
+            best = min(best, 0)
+        elif target_group == "state":
+            best = min(best, 1)
+    # Preserve explicit Gateway semantic relation kinds attached to a path,
+    # but do not let generic READS_FIELD/WRITES_FIELD facts rank every branch.
+    if any(
+        edge.kind in _SEMANTIC_EDGE_KINDS - {"READS_FIELD", "WRITES_FIELD"}
+        and (edge.source in path.nodes or edge.target in path.nodes)
+        and subject not in {edge.source, edge.target}
+        for edge in attached
+    ):
+        best = min(best, 0)
+    return best
+
+
+def _semantic_target_group(target: str) -> str | None:
+    target_lower = target.lower()
+    for group, tokens in _SEMANTIC_TARGET_GROUPS:
+        if any(token in target_lower for token in tokens):
+            return group
+    return None
 
 
 def _hits_non_subject_symbol(

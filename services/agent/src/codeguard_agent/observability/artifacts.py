@@ -17,6 +17,7 @@ from codeguard_agent.observability.models import (
     TraceReport,
 )
 from codeguard_agent.pipeline.evidence.projection import (
+    GraphProjectionFocus,
     ProjectionAudience,
     project_tool_payload,
 )
@@ -37,6 +38,8 @@ _TRACE_REF_KEYS = (
 def normalize_trace_report(
     report: TraceReport,
     artifacts: Mapping[str, EvidenceArtifact],
+    *,
+    focus_by_task: Mapping[str, GraphProjectionFocus] | None = None,
 ) -> TraceReport:
     """原文按 hash 单份入库，并从所有 Trace 事件中移除工具 payload。"""
     tool_artifacts = {
@@ -50,11 +53,13 @@ def normalize_trace_report(
     by_projection_hash: dict[str, list[str]] = {}
     by_call: dict[str, str] = {}
     for artifact_id, artifact in tool_artifacts.items():
+        focus = (focus_by_task or {}).get(artifact.task_id)
         projection = project_tool_payload(
             artifact.tool,
             artifact.payload,
-            ProjectionAudience.TRACE,
+            ProjectionAudience.REVIEWER,
             arguments=artifact.arguments,
+            focus=focus,
         )
         report.payload_store.setdefault(artifact.payload_hash, artifact.payload)
         report.artifacts[artifact_id] = TraceArtifactMeta(
@@ -70,14 +75,8 @@ def normalize_trace_report(
             replayed_from_artifact_id=artifact.replayed_from_artifact_id,
         )
         by_hash.setdefault(artifact.payload_hash, []).append(artifact_id)
-        reviewer_projection = project_tool_payload(
-            artifact.tool,
-            artifact.payload,
-            ProjectionAudience.REVIEWER,
-            arguments=artifact.arguments,
-        )
         by_projection_hash.setdefault(
-            payload_digest(reviewer_projection.content), []
+            payload_digest(projection.content), []
         ).append(artifact_id)
         if artifact.call_id:
             by_call[artifact.call_id] = artifact_id
