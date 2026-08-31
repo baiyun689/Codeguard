@@ -9,7 +9,7 @@
    `changes.diff`,用于较长 diff 与标答分离,不提供工具仓库快照。
 
 3. **repo-backed 自包含快照用例**:dataset/repo/<case_id>/ 一个目录,含
-   - repo/         变更后的最小可解析工程(工具据此能读到 diff 之外的上下文)
+   - repo/         干净基线工程;runner 会将 changes.diff 应用到临时目标工作区供工具读取
    - changes.diff  被审查的 unified diff
    - case.yaml     标答 + 能力标签等元数据(diff 由 changes.diff 提供,可不在此内联)
    加载时把 changes.diff 注入 diff 字段、把 repo/ 的绝对路径写入 repo_path。
@@ -103,7 +103,7 @@ def _load_repo_backed_cases(root: Path) -> list[EvalCase]:
         if not raw.get("diff"):
             raise ValueError(f"repo-backed 用例缺少 diff:{case_dir}(需 {_DIFF_FILE} 或内联 diff)")
 
-        # repo_path 指向变更后的工程快照目录(绝对路径,供工具读取)。
+        # repo_path 指向干净基线快照;runner 会从此目录物化应用 diff 后的目标工作区。
         snapshot = case_dir / _REPO_SUBDIR
         if not snapshot.is_dir():
             raise ValueError(f"repo-backed 用例缺少 {_REPO_SUBDIR}/ 快照目录:{case_dir}")

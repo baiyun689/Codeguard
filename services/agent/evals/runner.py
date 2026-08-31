@@ -28,6 +28,8 @@ from dataclasses import dataclass
 import hashlib
 import json
 import logging
+import os
+import subprocess
 import sys
 from pathlib import Path
 from time import perf_counter
@@ -55,6 +57,7 @@ from evals.profiles import case_repo_root, resolve_profile, tools_effective
 from evals.report import render_history_views, render_report
 from evals.schema import CouncilTraceStats, EvalCase, MatchOutcome
 from evals.tool_usage import summarize_tool_usage
+from evals.workspace import MaterializedWorkspace, materialize_case_workspace
 
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s", stream=sys.stderr)
 logger = logging.getLogger("codeguard.evals")
@@ -70,6 +73,98 @@ def case_evidence_revision(case: EvalCase) -> str:
         digest = hashlib.sha256(case.diff.encode("utf-8")).hexdigest()
         return f"{case.provenance.head_revision}:{digest}"
     return ""
+
+
+def validate_case_snapshot(case: EvalCase) -> list[str]:
+    """检查 repo-backed case 是否仍是可复现的干净快照。
+
+    评测 diff 独立存放在 ``changes.diff``，工具读取 ``repo/`` 快照；快照一旦被
+    测试或人工修改，结果就不再对应 case.yaml 中记录的 provenance。返回诊断列表，
+    由 strict tool profile 在创建会话前 fail-closed。
+    """
+    repo_path = Path(case.repo_path) if case.repo_path else None
+    if repo_path is None or not (repo_path / ".git").exists():
+        return []
+
+    diagnostics: list[str] = []
+    status = subprocess.run(
+        ["git", "-C", str(repo_path), "status", "--porcelain=v2", "--untracked-files=all"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if status.returncode != 0:
+        # Git for Windows may fail to stat long test-resource paths even when their
+        # bytes match the index.  The structured fallback below can still verify
+        # tracked files by their blob hash in that case.
+        if "filename too long" not in status.stderr.lower():
+            diagnostics.append(f"git_status_failed:{status.stderr.strip() or status.returncode}")
+    if status.stdout.strip():
+        dirty = False
+        for raw_line in status.stdout.splitlines():
+            fields = raw_line.split(" ", 8)
+            if fields[0] == "?":
+                dirty = True
+                break
+            if fields[0] != "1":
+                dirty = True
+                break
+            if len(fields) < 9:
+                continue
+            xy, index_oid, rel = fields[1], fields[7], fields[8]
+            if xy[0] != ".":
+                dirty = True
+                break
+            if xy[1] != "M":
+                continue
+            # Worktree hash is not included in porcelain v2.  Compute the blob
+            # hash directly so long paths do not turn a clean checkout into a
+            # false dirty result.
+            try:
+                full_path = "\\\\?\\" + os.path.abspath(repo_path / rel)
+                data = Path(full_path).read_bytes()
+                blob = hashlib.sha1(
+                    f"blob {len(data)}\0".encode("ascii") + data
+                ).hexdigest()
+            except OSError:
+                dirty = True
+                break
+            if blob != index_oid:
+                dirty = True
+                break
+        if dirty:
+            diagnostics.append("snapshot_dirty")
+
+    expected = (case.provenance.head_revision if case.provenance else "").strip()
+    if not expected:
+        return diagnostics
+    exists = subprocess.run(
+        ["git", "-C", str(repo_path), "cat-file", "-e", f"{expected}^{{commit}}"],
+        capture_output=True,
+        check=False,
+    )
+    if exists.returncode != 0:
+        diagnostics.append(f"provenance_head_missing:{expected[:12]}")
+        return diagnostics
+    tree_delta = subprocess.run(
+        ["git", "-C", str(repo_path), "diff-tree", "--no-commit-id", "--name-only", "-r", expected, "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if tree_delta.returncode != 0:
+        diagnostics.append(f"snapshot_tree_mismatch:{expected[:12]}")
+    else:
+        # A few snapshots were imported with a controller commit that omitted
+        # long test resources on Windows.  This does not alter production source
+        # consumed by the reviewer, so only source-tree drift is fatal.
+        changed_paths = [line.strip().replace("\\", "/") for line in tree_delta.stdout.splitlines() if line.strip()]
+        if any(
+            not (path.startswith("src/test/") or "/src/test/" in path)
+            for path in changed_paths
+        ):
+            diagnostics.append(f"snapshot_tree_mismatch:{expected[:12]}")
+    return diagnostics
 
 
 @dataclass(frozen=True)
@@ -490,27 +585,39 @@ def main(argv: list[str] | None = None) -> int:
         # 工具仅在该用例有**真实** repo 根时启用(repo-backed 快照,或用户显式 --repo-base)。
         # 合成用例无快照时返回 None → 本条按无工具直连跑,避免工具扫到 cwd(agent 源码树/评测
         # 夹具)返回无关内容、诱使审查员无界乱逛撞 recursion_limit(ADR-016 根因)。
-        repo_root = case_repo_root(case.repo_path, args.repo_base) if use_tools else None
-        if profile.strict_tools and not repo_root:
+        base_repo_root = case_repo_root(case.repo_path, args.repo_base) if use_tools else None
+        if profile.strict_tools and not base_repo_root:
             raise RuntimeError(f"[{case.id}] 严格工具 profile 要求 repo-backed 快照")
-        case_revision = case_evidence_revision(case)
-        tool_client = None
-        if repo_root:
-            try:
-                tool_client = create_tool_session(
-                    settings.tool_server_url,
-                    repo_root,
-                    timeout=settings.graph_build_timeout_seconds + 15,
-                    revision=case_revision,
-                    token=settings.tool_server_token,
+        if profile.strict_tools and base_repo_root:
+            snapshot_issues = validate_case_snapshot(case)
+            if snapshot_issues:
+                raise RuntimeError(
+                    f"[{case.id}] 快照不可复现: {', '.join(snapshot_issues)}"
                 )
-            except Exception as exc:  # noqa: BLE001 工具服务不可用则降级无工具,不中断评测
-                if profile.strict_tools:
-                    raise RuntimeError(f"[{case.id}] 创建严格工具会话失败") from exc
-                logger.warning("[%s] 创建工具会话失败,本条按无工具跑: %s", case.id, exc)
+        case_revision = case_evidence_revision(case)
+        workspace: MaterializedWorkspace | None = None
+        repo_root = base_repo_root
+        tool_client = None
         trace: list = []  # 工具调用侧信道:编排器从证据 Artifact 派生工具画像追加进来。
         metadata: dict = {}
         try:
+            if repo_root and case.repo_path:
+                # 数据集 repo/ 是干净基线；Gateway 必须读取应用当前 diff 后的
+                # 临时 clone，否则图谱/源码工具看到的是变更前代码。
+                workspace = materialize_case_workspace(case)
+                repo_root = str(workspace.path)
+                try:
+                    tool_client = create_tool_session(
+                        settings.tool_server_url,
+                        repo_root,
+                        timeout=settings.graph_build_timeout_seconds + 15,
+                        revision=case_revision,
+                        token=settings.tool_server_token,
+                    )
+                except Exception as exc:  # noqa: BLE001 工具服务不可用则降级无工具,不中断评测
+                    if profile.strict_tools:
+                        raise RuntimeError(f"[{case.id}] 创建严格工具会话失败") from exc
+                    logger.warning("[%s] 创建工具会话失败,本条按无工具跑: %s", case.id, exc)
             result = orchestrator.run(
                 llm, diff,
                 max_retries=settings.max_retries,
@@ -547,6 +654,8 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             if tool_client is not None:
                 destroy_tool_session(tool_client)
+            if workspace is not None:
+                workspace.cleanup()
             metadata["total_duration_ms"] = (perf_counter() - review_started) * 1000
 
     checkpoint_path = Path(args.checkpoint) if args.checkpoint else None

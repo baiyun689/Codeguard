@@ -136,7 +136,7 @@ class EvalCase(BaseModel):
     )
     repo_path: str = Field(
         default="",
-        description="repo-backed 用例的仓库根路径(指向快照 repo/ 目录,代表变更后的工程状态);"
+        description="repo-backed 用例的仓库根路径(指向干净基线快照 repo/ 目录;runner 会应用 diff 后再供工具读取);"
         "空表示纯内联合成用例(磁盘无对应文件,工具读不到)。",
     )
     capability: list[str] = Field(
