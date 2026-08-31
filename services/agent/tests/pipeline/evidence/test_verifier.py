@@ -74,7 +74,7 @@ def _file_artifact(payload: str = "class A { void m() { exec(cmd); } }") -> Evid
     return EvidenceArtifact.build(
         task_id=TASK_ID, reviewer="threat_model", revision=REV,
         source_kind=EvidenceSourceKind.TOOL_CALL, tool="get_file_content",
-        arguments={"file_path": "src/A.java"}, payload=payload,
+        arguments={"symbol_id": "java:A#run()"}, payload=payload,
         availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.EXECUTED,
     )

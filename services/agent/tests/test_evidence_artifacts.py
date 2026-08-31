@@ -35,7 +35,7 @@ def _artifact(**overrides) -> EvidenceArtifact:
         revision=REV,
         source_kind=EvidenceSourceKind.TOOL_CALL,
         tool="get_file_content",
-        arguments={"file_path": "src/A.java"},
+        arguments={"symbol_id": "java:A#run()"},
         payload="public void run() {\n    exec(cmd);\n}\n",
         availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.EXECUTED,
@@ -47,11 +47,11 @@ def _artifact(**overrides) -> EvidenceArtifact:
 def test_内容寻址_相同输入稳定():
     a = compute_artifact_id(
         REV, TASK, EvidenceSourceKind.TOOL_CALL, "get_file_content",
-        {"file_path": "src/A.java"}, "payload",
+        {"symbol_id": "java:A#run()"}, "payload",
     )
     b = compute_artifact_id(
         REV, TASK, EvidenceSourceKind.TOOL_CALL, "get_file_content",
-        {"file_path": "src/A.java"}, "payload",
+        {"symbol_id": "java:A#run()"}, "payload",
     )
     assert a == b
     assert a.startswith("ev-")
@@ -154,9 +154,10 @@ def test_创建会话_把_revision_传给客户端(monkeypatch):
 
     monkeypatch.setattr(httpx, "Client", _FakeClient)
     client = create_tool_session(
-        "http://toolserver", "/repo", ["a.java"], revision="abc:def", token="test-token"
+        "http://toolserver", "/repo", revision="abc:def", token="test-token"
     )
     assert captured["json"]["revision"] == "abc:def"
+    assert "allowed_files" not in captured["json"]
     assert client.revision == "abc:def"
 
 

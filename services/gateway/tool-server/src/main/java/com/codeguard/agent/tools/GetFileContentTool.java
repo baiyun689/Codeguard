@@ -55,7 +55,7 @@ public final class GetFileContentTool implements AgentTool {
 
     @Override
     public ToolResult execute(String input, AgentContext context) {
-        String symbolId = GraphToolSupport.symbolId(input);
+        String symbolId = GraphToolSupport.symbolIdOnly(input);
         if (symbolId.isBlank()) {
             return ToolResult.error("缺少 symbol_id");
         }

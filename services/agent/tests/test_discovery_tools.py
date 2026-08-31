@@ -20,7 +20,7 @@ class _FakeClient:
         self._responses = list(responses or [ToolResponse(True, "FULL BODY")])
         self._lock = Lock()
 
-    def get_file_content(self, file_path: str) -> ToolResponse:
+    def get_file_content(self, symbol_id: str) -> ToolResponse:  # noqa: ARG002
         with self._lock:
             index = self.calls
             self.calls += 1
@@ -100,8 +100,8 @@ def test_canonical_key_normalizes_symbol_entities_without_lowercasing() -> None:
 def test_same_conversation_repeated_read_returns_short_marker() -> None:
     raw = _FakeClient()
     client = CoordinatedDiscoveryToolClient(raw, DiscoveryToolCoordinator())
-    first = client.get_file_content("src/A.java")
-    second = client.get_file_content("src/A.java")
+    first = client.get_file_content("java:demo.A#run()")
+    second = client.get_file_content("java:demo.A#run()")
     # 首次真实结果回显证据编号(Evidence Ledger 修正④),重复调用仍是短标记。
     assert first.result == "FULL BODY\n\n[证据编号 T01]"
     assert second.result == REPEATED_TOOL_RESULT
@@ -172,7 +172,7 @@ def test_parallel_task_clients_share_single_flight_but_both_receive_full_result(
     coordinator = DiscoveryToolCoordinator()
     clients = [CoordinatedDiscoveryToolClient(raw, coordinator) for _ in range(2)]
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda c: c.get_file_content("src/A.java"), clients))
+        results = list(pool.map(lambda c: c.get_file_content("java:demo.A#run()"), clients))
     # 每个 task 都收到完整内容和自己账本中的 T01，复用不丢引用能力。
     assert [result.result for result in results] == [
         "FULL BODY\n\n[证据编号 T01]",
@@ -195,7 +195,7 @@ def test_same_conversation_parallel_duplicate_returns_one_short_marker() -> None
         def __init__(self) -> None:
             self.calls = 0
 
-        def get_file_content(self, file_path: str) -> ToolResponse:  # noqa: ARG002
+        def get_file_content(self, symbol_id: str) -> ToolResponse:  # noqa: ARG002
             self.calls += 1
             started.set()
             assert release.wait(timeout=2)
@@ -204,9 +204,9 @@ def test_same_conversation_parallel_duplicate_returns_one_short_marker() -> None
     raw = _BlockingSuccessClient()
     client = CoordinatedDiscoveryToolClient(raw, DiscoveryToolCoordinator())
     with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(client.get_file_content, "src/A.java")
+        first = pool.submit(client.get_file_content, "java:demo.A#run()")
         assert started.wait(timeout=2)
-        second = pool.submit(client.get_file_content, "src/A.java")
+        second = pool.submit(client.get_file_content, "java:demo.A#run()")
         release.set()
         results = [first.result(timeout=2), second.result(timeout=2)]
 
@@ -222,27 +222,27 @@ def test_empty_success_is_not_cached() -> None:
     coordinator = DiscoveryToolCoordinator()
     first = CoordinatedDiscoveryToolClient(raw, coordinator)
     second = CoordinatedDiscoveryToolClient(raw, coordinator)
-    assert first.get_file_content("src/A.java").result == ""  # 空结果不附加编号
+    assert first.get_file_content("java:demo.A#run()").result == ""  # 空结果不附加编号
     # 第二个客户端各自的记录独立编号(T01),与 per-task 目录一致。
-    assert second.get_file_content("src/A.java").result == "RECOVERED\n\n[证据编号 T01]"
+    assert second.get_file_content("java:demo.A#run()").result == "RECOVERED\n\n[证据编号 T01]"
     assert raw.calls == 2
 
 
-def test_path_guard_rejection_and_missing_file_have_domain_statuses() -> None:
+def test_source_failures_have_domain_statuses() -> None:
     raw = _FakeClient(
         [
-            ToolResponse(False, error="unconfirmed_path: GuessedController.java"),
-            ToolResponse(False, error="文件不存在: Deleted.java"),
+            ToolResponse(False, error="symbol_not_in_review_context"),
+            ToolResponse(False, error="symbol_not_found: java:demo.Deleted#run()"),
         ]
     )
     client = CoordinatedDiscoveryToolClient(raw, DiscoveryToolCoordinator())
 
-    rejected = client.get_file_content("GuessedController.java")
-    missing = client.get_file_content("Deleted.java")
+    rejected = client.get_file_content("java:demo.Guessed#run()")
+    missing = client.get_file_content("java:demo.Deleted#run()")
 
     assert [record.status for record in client.trace_records] == [
-        "rejected",
-        "not_found",
+        "failed",
+        "failed",
     ]
     assert "[证据编号 T01]" in (rejected.error or "")
     assert "[证据编号 T02]" in (missing.error or "")
@@ -252,7 +252,7 @@ def test_transport_or_protocol_failure_keeps_failed_status() -> None:
     raw = _FakeClient([ToolResponse(False, error="HTTP 503")])
     client = CoordinatedDiscoveryToolClient(raw, DiscoveryToolCoordinator())
 
-    response = client.get_file_content("src/A.java")
+    response = client.get_file_content("java:demo.A#run()")
 
     assert client.trace_records[0].status == "failed"
     assert "[证据编号 T01]" in (response.error or "")
@@ -262,8 +262,8 @@ def test_different_arguments_execute_separately() -> None:
     raw = _FakeClient()
     coordinator = DiscoveryToolCoordinator()
     client = CoordinatedDiscoveryToolClient(raw, coordinator)
-    client.get_file_content("src/A.java")
-    client.get_file_content("src/B.java")
+    client.get_file_content("java:demo.A#run()")
+    client.get_file_content("java:demo.B#run()")
     assert raw.calls == 2
 
 
@@ -291,7 +291,7 @@ def test_parallel_failure_is_shared_then_later_call_retries(monkeypatch) -> None
             self.calls = 0
             self.lock = Lock()
 
-        def get_file_content(self, file_path: str) -> ToolResponse:  # noqa: ARG002
+        def get_file_content(self, symbol_id: str) -> ToolResponse:  # noqa: ARG002
             with self.lock:
                 self.calls += 1
                 call_number = self.calls
@@ -305,9 +305,9 @@ def test_parallel_failure_is_shared_then_later_call_retries(monkeypatch) -> None
     coordinator = DiscoveryToolCoordinator()
     clients = [CoordinatedDiscoveryToolClient(raw, coordinator) for _ in range(2)]
     with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(clients[0].get_file_content, "src/A.java")
+        first = pool.submit(clients[0].get_file_content, "java:demo.A#run()")
         assert started.wait(timeout=2)
-        second = pool.submit(clients[1].get_file_content, "src/A.java")
+        second = pool.submit(clients[1].get_file_content, "java:demo.A#run()")
         assert waiter_entered.wait(timeout=2)
         release.set()
         results = [first.result(timeout=2), second.result(timeout=2)]
@@ -316,7 +316,7 @@ def test_parallel_failure_is_shared_then_later_call_retries(monkeypatch) -> None
     assert raw.calls == 1
 
     retry = CoordinatedDiscoveryToolClient(raw, coordinator)
-    assert retry.get_file_content("src/A.java").result == "RECOVERED\n\n[证据编号 T01]"
+    assert retry.get_file_content("java:demo.A#run()").result == "RECOVERED\n\n[证据编号 T01]"
     assert raw.calls == 2
 
 
@@ -345,7 +345,7 @@ def test_failure_remains_in_flight_until_waiters_receive_it(monkeypatch) -> None
             self.calls = 0
             self.lock = Lock()
 
-        def get_file_content(self, file_path: str) -> ToolResponse:  # noqa: ARG002
+        def get_file_content(self, symbol_id: str) -> ToolResponse:  # noqa: ARG002
             with self.lock:
                 self.calls += 1
                 call_number = self.calls
@@ -358,9 +358,9 @@ def test_failure_remains_in_flight_until_waiters_receive_it(monkeypatch) -> None
     coordinator = DiscoveryToolCoordinator()
     clients = [CoordinatedDiscoveryToolClient(raw, coordinator) for _ in range(2)]
     with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(clients[0].get_file_content, "src/A.java")
+        first = pool.submit(clients[0].get_file_content, "java:demo.A#run()")
         assert publishing.wait(timeout=2)
-        second = pool.submit(clients[1].get_file_content, "src/A.java")
+        second = pool.submit(clients[1].get_file_content, "java:demo.A#run()")
         assert not second_raw_call.wait(timeout=0.2)
         allow_publish.set()
         results = [first.result(timeout=2), second.result(timeout=2)]
@@ -368,7 +368,7 @@ def test_failure_remains_in_flight_until_waiters_receive_it(monkeypatch) -> None
     assert all(result.success is False for result in results)
     assert raw.calls == 1
     retry = CoordinatedDiscoveryToolClient(raw, coordinator)
-    assert retry.get_file_content("src/A.java").result == "RECOVERED\n\n[证据编号 T01]"
+    assert retry.get_file_content("java:demo.A#run()").result == "RECOVERED\n\n[证据编号 T01]"
     assert raw.calls == 2
 
 
@@ -376,6 +376,6 @@ def test_separate_coordinators_do_not_share_cache() -> None:
     raw = _FakeClient()
     one = CoordinatedDiscoveryToolClient(raw, DiscoveryToolCoordinator())
     two = CoordinatedDiscoveryToolClient(raw, DiscoveryToolCoordinator())
-    assert one.get_file_content("src/A.java").success
-    assert two.get_file_content("src/A.java").success
+    assert one.get_file_content("java:demo.A#run()").success
+    assert two.get_file_content("java:demo.A#run()").success
     assert raw.calls == 2

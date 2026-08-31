@@ -14,15 +14,13 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.security.MessageDigest;
-import java.util.LinkedHashSet;
-import java.util.Set;
 
 /**
  * 工具服务的 HTTP 端点控制器。
  * <p>
  * 路由设计(design.md D2):
  * <ul>
- *   <li>{@code POST /api/v1/tools/session} 创建会话(repo 路径 + 改动文件集合)→ session_id;</li>
+ *   <li>{@code POST /api/v1/tools/session} 创建项目快照会话(repo 路径 + revision)→ session_id;</li>
  *   <li>{@code DELETE /api/v1/tools/session/{id}} 销毁会话;</li>
  *   <li>{@code POST /api/v1/tools/{name}} **通用分发**:凭 X-Session-Id 关联会话,按 name 查注册表执行。</li>
  * </ul>
@@ -87,15 +85,9 @@ public final class ToolServerController {
                 ctx.json(error("缺少 repo_path"));
                 return;
             }
-            Set<String> allowedFiles = new LinkedHashSet<>();
-            JsonNode arr = body.path("allowed_files");
-            if (arr.isArray()) {
-                arr.forEach(n -> allowedFiles.add(n.asText()));
-            }
-
             String revision = textOrEmpty(body, "revision");
-            String sessionId = sessionManager.create(Path.of(repoDir), allowedFiles, revision);
-            log.info("创建工具会话: {}(允许文件 {} 个)", sessionId, allowedFiles.size());
+            String sessionId = sessionManager.create(Path.of(repoDir), revision);
+            log.info("创建工具会话: {}", sessionId);
 
             ObjectNode resp = success(null);
             resp.put("session_id", sessionId);
@@ -132,9 +124,13 @@ public final class ToolServerController {
 
         try {
             JsonNode body = mapper.readTree(ctx.body());
-            // 工具请求统一承载在 query 字符串中；旧的 file_path 仍仅用于返回明确的
-            // symbol_not_found，不再触发任意文件读取。
-            String input = firstNonEmpty(textOrEmpty(body, "file_path"), textOrEmpty(body, "query"));
+            // 工具请求统一承载在 query 字符串中。源码工具已经是 symbol-only
+            // 契约，旧的 file_path 入参直接拒绝，避免协议表面上继续支持路径读取。
+            if (toolName.equals("get_file_content") && body.has("file_path")) {
+                ctx.json(error("symbol_id_only"));
+                return;
+            }
+            String input = textOrEmpty(body, "query");
 
             int n = session.getContext().incrementToolCalls();
             ToolResult result = tool.execute(input, session.getContext());
@@ -155,10 +151,6 @@ public final class ToolServerController {
     private static String textOrEmpty(JsonNode node, String field) {
         JsonNode v = node.path(field);
         return v.isMissingNode() || v.isNull() ? "" : v.asText();
-    }
-
-    private static String firstNonEmpty(String a, String b) {
-        return !a.isEmpty() ? a : b;
     }
 
     private ObjectNode success(String result) {

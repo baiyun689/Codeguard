@@ -170,7 +170,7 @@ Codeguard/
     │   │   │                     #     Artifact/Catalog/Ref/Verifier/Judge 模型)
     │   │   │                     #   tasks.py(任务/PR 规模路由阈值) council.py(候选/
     │   │   │                     #     裁决/统计) knowledge.py
-    │   │   ├── git/diff_collector.py  # 调系统 git 采集 diff + parse_changed_files(派生 allowed_files)
+    │   │   ├── git/diff_collector.py  # 调系统 git 采集 diff + 派生变更文件元数据
     │   │   ├── llm/client.py      # LLM 工厂(openai/claude/mock)+ 重试 + mock 假数据
     │   │   ├── observability/     # HTML Trace:审查过程视图/统计(collector/dashboard/view_model)
     │   │   ├── report.py          # 本地审查报告渲染(Markdown)+ diff 代码片段提取(CLI --report)

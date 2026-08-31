@@ -166,11 +166,11 @@ def test_reviewer_subgraph_严格工具失败仍保留已捕获证据(monkeypatc
     record = DiscoveryToolRecord(
         call_id="call-1",
         tool="get_file_content",
-        arguments={"file_path": "src/A.java"},
+        arguments={"symbol_id": "java:A#run()"},
         output="class A { int value; }",
         duration_ms=1.0,
         status="complete",
-        reuse_key='get_file_content:{"file_path":"src/A.java"}',
+        reuse_key='get_file_content:{"symbol_id":"java:A#run()"}',
     )
     tool_client = type("Client", (), {"trace_records": [record]})()
     monkeypatch.setattr(graph_module, "_make_engine", lambda *_args, **_kwargs: RaisingEngine())

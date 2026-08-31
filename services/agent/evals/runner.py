@@ -34,7 +34,6 @@ from time import perf_counter
 from typing import Any, Callable
 
 from codeguard_agent.config import Settings
-from codeguard_agent.git.diff_collector import parse_changed_files
 from codeguard_agent.llm.client import build_llm
 from codeguard_agent.models.tasks import ReviewBudget
 from codeguard_agent.pipeline.orchestration.orchestrator import PipelineOrchestrator
@@ -501,7 +500,6 @@ def main(argv: list[str] | None = None) -> int:
                 tool_client = create_tool_session(
                     settings.tool_server_url,
                     repo_root,
-                    parse_changed_files(diff),
                     timeout=settings.graph_build_timeout_seconds + 15,
                     revision=case_revision,
                     token=settings.tool_server_token,
@@ -519,7 +517,6 @@ def main(argv: list[str] | None = None) -> int:
                 structured_method=settings.structured_method,
                 fp_verify_llm=fp_verify_llm,
                 repo_path=repo_root if tool_client is not None else None,
-                allowed_files=parse_changed_files(diff) if tool_client is not None else None,
                 tool_client=tool_client,
                 # profile.tools 即工具白名单:让"开哪些工具"成为对照的唯一变量。
                 enabled_tools=profile.tools if tool_client is not None else None,

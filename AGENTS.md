@@ -119,7 +119,7 @@ Codeguard/
     │   │   │   ├── verdict.py
     │   │   │   ├── metrics.py
     │   │   │   └── __init__.py
-    │   │   ├── git/diff_collector.py  # 调系统 git 采集 diff + parse_changed_files(派生 allowed_files)
+    │   │   ├── git/diff_collector.py  # 调系统 git 采集 diff + 派生变更文件元数据
     │   │   ├── llm/client.py      # LLM 工厂(openai/Codex/mock)+ 重试 + mock 假数据
     │   │   ├── tools/             # ★工具调用(智能层侧)。tool_client(同步 HTTP)+ definitions(LangChain 工具)
     │   │   ├── pipeline/orchestration/    # ★LangGraph 图构建与管线入口

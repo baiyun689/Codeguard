@@ -12,7 +12,6 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -24,13 +23,17 @@ class GetFileContentToolTest {
 
     private record Fixture(GetFileContentTool tool, ProjectSnapshot snapshot, AgentContext context) {}
 
+    private static String query(String symbolId) {
+        return "{\"symbol_id\":\"" + symbolId + "\"}";
+    }
+
     private Fixture fixture(Path repo, String revision) {
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, revision));
         return new Fixture(
                 new GetFileContentTool(snapshot),
                 snapshot.join(),
-                new AgentContext(repo, Set.of()));
+                new AgentContext(repo));
     }
 
     @Test
@@ -58,6 +61,14 @@ class GetFileContentToolTest {
     }
 
     @Test
+    void sourceReaderRejectsBareIdsAndLegacySubjectAlias(@TempDir Path repo) throws Exception {
+        Fixture fixture = fixture(repo, "strict-input");
+        assertFalse(fixture.tool().execute("java:demo.Service#run()", fixture.context()).isSuccess());
+        assertFalse(fixture.tool().execute(
+                "{\"subject\":\"java:demo.Service#run()\"}", fixture.context()).isSuccess());
+    }
+
+    @Test
     void overloadsOnOneLineUseTheRequestedSymbol(@TempDir Path repo) throws Exception {
         Path file = repo.resolve("src/main/java/demo/Overloads.java");
         Files.createDirectories(file.getParent());
@@ -67,7 +78,7 @@ class GetFileContentToolTest {
 
         Fixture fixture = fixture(repo, "overload-source");
         ToolResult result = fixture.tool().execute(
-                "java:demo.Overloads#run(int)", fixture.context());
+                query("java:demo.Overloads#run(int)"), fixture.context());
 
         assertTrue(result.isSuccess(), result.getError());
         assertTrue(result.getResult().contains("void run(int value)"), result.getResult());
@@ -89,7 +100,7 @@ class GetFileContentToolTest {
 
         Fixture fixture = fixture(repo, "field-source");
         ToolResult result = fixture.tool().execute(
-                "java:demo.State#counter", fixture.context());
+                query("java:demo.State#counter"), fixture.context());
 
         assertTrue(result.isSuccess(), result.getError());
         assertTrue(result.getResult().contains("@Deprecated"), result.getResult());
@@ -110,7 +121,7 @@ class GetFileContentToolTest {
                 """);
 
         Fixture fixture = fixture(repo, "type-source");
-        ToolResult result = fixture.tool().execute("java:demo.State", fixture.context());
+        ToolResult result = fixture.tool().execute(query("java:demo.State"), fixture.context());
 
         assertTrue(result.isSuccess(), result.getError());
         assertTrue(result.getResult().contains("@Deprecated"), result.getResult());
@@ -136,7 +147,7 @@ class GetFileContentToolTest {
                 .filter(node -> node.kind() == GraphNodeKind.FRAMEWORK_ENTRYPOINT)
                 .findFirst()
                 .orElseThrow();
-        ToolResult result = fixture.tool().execute(entrypoint.id(), fixture.context());
+        ToolResult result = fixture.tool().execute(query(entrypoint.id()), fixture.context());
 
         assertTrue(result.isSuccess(), result.getError());
         assertTrue(result.getResult().contains("@RequestMapping(\"/orders\")"), result.getResult());
@@ -154,7 +165,7 @@ class GetFileContentToolTest {
                 """);
 
         Fixture fixture = fixture(repo, "annotation-declaration");
-        ToolResult result = fixture.tool().execute("java:demo.Marker", fixture.context());
+        ToolResult result = fixture.tool().execute(query("java:demo.Marker"), fixture.context());
 
         assertTrue(result.isSuccess(), result.getError());
         assertTrue(result.getResult().contains("@interface Marker"), result.getResult());
@@ -172,7 +183,7 @@ class GetFileContentToolTest {
 
         Fixture fixture = fixture(repo, "oversized-symbol");
         ToolResult result = fixture.tool().execute(
-                "java:demo.Huge#run()", fixture.context());
+                query("java:demo.Huge#run()"), fixture.context());
 
         assertFalse(result.isSuccess());
         assertTrue(result.getError().startsWith("symbol_too_large:"), result.getError());
@@ -190,7 +201,7 @@ class GetFileContentToolTest {
                 "{\"symbol_id\":\"java:demo.Missing\"}", fixture.context());
 
         assertFalse(path.isSuccess());
-        assertTrue(path.getError().startsWith("symbol_not_found:"), path.getError());
+        assertEquals("缺少 symbol_id", path.getError());
         assertFalse(unknown.isSuccess());
         assertEquals("symbol_not_found: java:demo.Missing", unknown.getError());
     }

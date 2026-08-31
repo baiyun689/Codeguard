@@ -25,7 +25,6 @@ from codeguard_agent.config import Settings
 from codeguard_agent.git.diff_collector import (
     collect_diff,
     collect_head_revision,
-    parse_changed_files,
 )
 from codeguard_agent.llm.client import build_llm
 from codeguard_agent.models.schemas import ReviewResult, Severity
@@ -140,7 +139,6 @@ def main(argv: list[str] | None = None) -> int:
         # 否则 tool_client 为 None,走无工具直连(见 design.md D1)。mock 模式不建会话。
         tool_client = None
         repo_abspath = os.path.abspath(args.repo)
-        allowed_files = parse_changed_files(diff_text)
         evidence_revision = ""
         if settings.tool_server_url and llm is not None:
             try:
@@ -150,16 +148,11 @@ def main(argv: list[str] | None = None) -> int:
                 tool_client = create_tool_session(
                     settings.tool_server_url,
                     repo_abspath,
-                    allowed_files,
                     timeout=settings.graph_build_timeout_seconds + 15,
                     revision=evidence_revision,
                     token=settings.tool_server_token,
                 )
-                logger.info(
-                    "已创建工具会话(%s),审查员走 ReAct;允许文件 %d 个",
-                    tool_client.session_id,
-                    len(allowed_files),
-                )
+                logger.info("已创建工具会话(%s),审查员走 ReAct", tool_client.session_id)
             except Exception as exc:  # noqa: BLE001 工具服务不可用时降级为无工具,不中断审查
                 logger.warning("创建工具会话失败,降级为无工具直连: %s", exc)
                 tool_client = None
@@ -188,7 +181,6 @@ def main(argv: list[str] | None = None) -> int:
                 structured_method=settings.structured_method,
                 fp_verify_llm=fp_verify_llm,
                 repo_path=repo_abspath,
-                allowed_files=allowed_files,
                 tool_client=tool_client,
                 evidence_mode=settings.evidence_mode,
                 evidence_revision=evidence_revision,

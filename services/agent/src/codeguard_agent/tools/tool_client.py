@@ -152,13 +152,12 @@ class ToolClient:
 def create_tool_session(
     base_url: str,
     repo_path: str,
-    allowed_files: list[str],
     timeout: float = 30.0,
     revision: str = "",
     token: str = "",
 ) -> ToolClient:
     """在 Java 工具服务上创建会话,返回绑定该会话的 ToolClient。
-    repo_path 应为绝对路径(Java 侧据此解析文件相对路径并做沙箱校验)。
+    repo_path 应为绝对路径(Java 侧据此创建受限 ProjectSnapshot)。
     失败时抛 RuntimeError,由调用方决定是否回退到无工具直连。
     """
     if not token:
@@ -166,7 +165,6 @@ def create_tool_session(
     normalized = base_url.rstrip("/")
     payload = {
         "repo_path": repo_path,
-        "allowed_files": allowed_files,
         "revision": revision,
     }
     with httpx.Client(timeout=timeout) as client:

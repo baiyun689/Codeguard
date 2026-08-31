@@ -58,7 +58,7 @@ def _patch_artifact() -> EvidenceArtifact:
         source_kind=EvidenceSourceKind.TASK_PATCH, payload="+    exec(cmd);\n",
         availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.GENERATED,
-        arguments={"file_path": "src/A.java"},
+        arguments={"symbol_id": "java:A#run()"},
     )
 
 
@@ -66,7 +66,7 @@ def _tool_artifact() -> EvidenceArtifact:
     return EvidenceArtifact.build(
         task_id=TASK_ID, reviewer="threat_model", revision=REV,
         source_kind=EvidenceSourceKind.TOOL_CALL, tool="get_file_content",
-        arguments={"file_path": "src/A.java"},
+        arguments={"symbol_id": "java:A#run()"},
         payload="class A { void m() { exec(cmd); } }",
         availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.EXECUTED,
@@ -85,7 +85,7 @@ def _verification(cid: str, eligible: bool = True) -> CandidateVerification:
             ),
             VerifiedEvidence(
                 artifact_id="ev-tool", source_kind=EvidenceSourceKind.TOOL_CALL,
-                tool="get_file_content", arguments={"file_path": "src/A.java"},
+                tool="get_file_content", arguments={"symbol_id": "java:A#run()"},
                 content="class A { void m() { exec(cmd); } }",
                 validation_status=EvidenceValidationStatus.VALID,
             ),

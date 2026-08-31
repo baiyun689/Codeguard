@@ -13,7 +13,6 @@ import com.codeguard.agent.tools.ResolveChangeContextTool;
 import com.codeguard.agent.tools.ToolRegistry;
 
 import java.nio.file.Path;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
@@ -21,7 +20,7 @@ import java.util.concurrent.CompletableFuture;
 /**
  * 工具会话管理器。
  * <p>
- * 为每次审查创建一个会话,持有该次审查的 {@link AgentContext}、沙箱与 per-session 工具注册表。
+ * 为每次审查创建一个会话,持有该次审查的 {@link AgentContext} 与 per-session 工具注册表。
  * 会话超过 TTL 自动过期回收。所有工具调用经 {@code X-Session-Id} 关联到会话,
  * 会话不存在/过期则被上层拒绝。
  * <p>
@@ -57,12 +56,11 @@ public final class ToolSessionManager {
         Session(
                 String id,
                 Path repoRoot,
-                Set<String> allowedFiles,
                 String revision,
                 ProjectSnapshotManager snapshotManager
         ) {
             this.id = id;
-            this.context = new AgentContext(repoRoot, allowedFiles);
+            this.context = new AgentContext(repoRoot);
             this.createdAt = System.currentTimeMillis();
             this.projectKey = ProjectKey.of(repoRoot, revision);
             this.snapshot = snapshotManager.getOrBuild(projectKey);
@@ -102,16 +100,16 @@ public final class ToolSessionManager {
     }
 
     /** 创建会话,返回唯一 session id。 */
-    public String create(Path repoRoot, Set<String> allowedFiles) {
-        return create(repoRoot, allowedFiles, "working-tree");
+    public String create(Path repoRoot) {
+        return create(repoRoot, "working-tree");
     }
 
-    public String create(Path repoRoot, Set<String> allowedFiles, String revision) {
+    public String create(Path repoRoot, String revision) {
         cleanupExpired();
         Path approvedRoot = workspaceAccessPolicy.requireReviewRepository(repoRoot);
         String id = UUID.randomUUID().toString();
         sessions.put(id, new Session(
-                id, approvedRoot, allowedFiles, revision, snapshotManager));
+                id, approvedRoot, revision, snapshotManager));
         return id;
     }
 

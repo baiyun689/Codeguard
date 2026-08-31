@@ -113,7 +113,7 @@ def case_repo_root(case_repo_path: str | None, repo_base: str | None) -> str | N
       工程)才用它;否则返回 None。
 
     绝不隐式回退到 cwd:cwd 是 agent 自己的源码树(且恰好含 `evals/dataset/repo/**` 夹具),
-    对它建工具会话会让 `get_repo_map`/`get_file_content` 返回**真实但与本 diff 完全无关**的内容,
+    对它建工具会话会让图谱/源码工具返回**真实但与本 diff 完全无关**的内容,
     诱使 ReAct 审查员在无关文件间无界乱逛、永不收尾,直到撞 `recursion_limit` 失败——这正是
     ADR-016 里 clean/complex 合成用例在工具档下 ~40% 审查员失败、recall 崩塌的根因。
     """

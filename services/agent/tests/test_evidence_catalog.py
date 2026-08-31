@@ -81,7 +81,7 @@ def _record(
     return DiscoveryToolRecord(
         call_id=call_id,
         tool=tool,
-        arguments=arguments or {"file_path": "src/A.java"},
+        arguments=arguments or {"symbol_id": "java:A#run()"},
         output=output,
         duration_ms=1.0,
         status=status,
@@ -301,8 +301,8 @@ def test_共享协调器_跨任务复用_返回真实内容且记录指向首次
     coordinator = DiscoveryToolCoordinator()
     client_a = CoordinatedDiscoveryToolClient(_FakeDelegate(), coordinator)
     client_b = CoordinatedDiscoveryToolClient(_FakeDelegate(), coordinator)
-    resp_a = client_a.get_file_content("src/A.java")
-    resp_b = client_b.get_file_content("src/A.java")
+    resp_a = client_a.get_file_content("java:A#run()")
+    resp_b = client_b.get_file_content("java:A#run()")
     # 首发与跨任务复用都回显当前 task 的编号；复用命中仍返回真实内容。
     assert resp_a.result == "REAL CONTENT\n\n[证据编号 T01]"
     assert resp_b.result == "REAL CONTENT\n\n[证据编号 T01]"
@@ -351,8 +351,8 @@ def test_无目录降级上下文_图谱记录仍只暴露摘要():
 def test_同一客户端二次调用_返回短标记_但_record_解析真实payload():
     coordinator = DiscoveryToolCoordinator()
     client = CoordinatedDiscoveryToolClient(_FakeDelegate(), coordinator)
-    first = client.get_file_content("src/A.java")
-    second = client.get_file_content("src/A.java")
+    first = client.get_file_content("java:A#run()")
+    second = client.get_file_content("java:A#run()")
     assert first.result == "REAL CONTENT\n\n[证据编号 T01]"
     assert second.result == REPEATED_TOOL_RESULT
     record = client.trace_records[-1]

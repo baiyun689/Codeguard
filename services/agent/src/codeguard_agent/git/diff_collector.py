@@ -9,9 +9,6 @@ from __future__ import annotations
 import re
 import subprocess
 
-# 匹配 unified diff 的新文件头:`+++ b/path/to/file`(可带时间戳后缀,以 TAB 分隔)。
-# 删除的文件是 `+++ /dev/null`,不会被这条捕获(正是我们想要的:没有"现文件"可读)。
-_PLUS_HEADER = re.compile(r"^\+\+\+ b/(.+?)(?:\t.*)?$", re.MULTILINE)
 _DIFF_HEADER = re.compile(r"^diff --git a/(.+?) b/(.+)$")
 
 
@@ -53,28 +50,6 @@ def collect_head_revision(repo_path: str = ".") -> str:
     return result.stdout.strip()
 
 
-def parse_changed_files(diff_text: str) -> list[str]:
-    """从 unified diff 解析出本次变更涉及的"现文件"相对路径集合(去重、排序)。
-
-    用途:作为工具会话的 allowed_files 喂给 Java 沙箱,限定 Agent 只能读"本次该看的文件"
-    (见 design.md D6)。
-
-    设计要点:
-    - 确定性纯函数,可独立单测,不触发任何 IO。
-    - 只取 `+++ b/...` 头(变更后的文件);删除文件的 `+++ /dev/null` 自然被排除。
-    - 空 diff / 无可解析文件头 → 返回空列表,不报错。
-    - 路径统一为正斜杠(diff 本就是正斜杠),与 Java 侧白名单比对口径一致。
-    """
-    if not diff_text:
-        return []
-    # 常规文本 diff 走 +++ b/；纯重命名、二进制和仅 mode 变更没有该头，
-    # 需要复用 split_diff_by_file 从 diff --git 目标路径识别当前可读文件。
-    files = set(split_diff_by_file(diff_text))
-    files.update(m.group(1).strip() for m in _PLUS_HEADER.finditer(diff_text))
-    files.discard("")
-    return sorted(files)
-
-
 def split_diff_by_file(diff_text: str) -> dict[str, str]:
     """把 unified diff 按文件拆成 {现文件相对路径: 该文件的 diff 片段}。
 
@@ -84,7 +59,7 @@ def split_diff_by_file(diff_text: str) -> dict[str, str]:
     设计要点:
     - 以 `diff --git ` 行为分段边界,每段保留完整的文件头与 hunk。
     - 段的 key 优先取 `+++ b/<path>`，没有该头时退化到 `diff --git` 的新路径。
-      因而纯重命名、二进制和仅 mode 变更也可作为当前文件进入工具白名单。
+      因而纯重命名、二进制和仅 mode 变更也能稳定定位当前文件。
     - 删除文件的新文件头是 `+++ /dev/null`,没有"现文件"路径,跳过。
     - 确定性纯函数,可独立单测、不触发 IO;空 diff / 无法解析 → 返回空 dict。
     """

@@ -107,7 +107,7 @@ def test_失败信封_映射为_error_并加前缀():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"success": False, "error": "文件不在审查范围内"})
 
-    resp = _mock_client(handler).get_file_content("src/Other.java")
+    resp = _mock_client(handler).get_file_content("java:Other#run()")
     assert resp.success is False
     assert resp.as_tool_output() == "Error: 文件不在审查范围内"
 
@@ -116,7 +116,7 @@ def test_网络异常_收敛为失败信封_不抛出():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused")
 
-    resp = _mock_client(handler).get_file_content("src/App.java")
+    resp = _mock_client(handler).get_file_content("java:App#run()")
     assert resp.success is False
     assert resp.as_tool_output().startswith("Error:")
 
@@ -144,7 +144,7 @@ def test_创建会话失败_抛出_runtimeerror(monkeypatch):
 
     monkeypatch.setattr(httpx, "Client", _FakeClient)
     try:
-        create_tool_session("http://toolserver", "/repo", ["a.java"], token="test-token")
+        create_tool_session("http://toolserver", "/repo", token="test-token")
         assert False, "应抛出 RuntimeError"
     except RuntimeError as e:
         assert "缺少 repo_path" in str(e)
@@ -175,7 +175,7 @@ def test_tool_response_默认空输出():
 
 def test_创建会话缺少_token_快速失败():
     try:
-        create_tool_session("http://toolserver", "/repo", ["a.java"])
+        create_tool_session("http://toolserver", "/repo")
         assert False, "应抛出 RuntimeError"
     except RuntimeError as error:
         assert "CODEGUARD_TOOL_SERVER_TOKEN" in str(error)

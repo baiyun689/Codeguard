@@ -56,6 +56,23 @@ final class GraphToolSupport {
         return edge.sourceSet() == sourceScope;
     }
 
+    /** Parses the strict symbol-only request used by the source reader. */
+    static String symbolIdOnly(String input) {
+        if (input == null || input.isBlank()) {
+            return "";
+        }
+        try {
+            JsonNode root = JSON.readTree(input);
+            if (root == null || !root.isObject()) {
+                return "";
+            }
+            JsonNode symbol = root.get("symbol_id");
+            return symbol != null && symbol.isTextual() ? symbol.asText().trim() : "";
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
     static List<GraphEdge> potentialUnresolvedCallers(
             ProjectSnapshot snapshot,
             String subject,

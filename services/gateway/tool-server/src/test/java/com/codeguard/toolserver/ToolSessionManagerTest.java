@@ -7,14 +7,12 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.nio.file.Files;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 工具会话管理器测试:创建/取用/销毁,以及会话内工具注册。
@@ -35,7 +33,7 @@ class ToolSessionManagerTest {
     void createAndGetSession(@TempDir Path repo) throws Exception {
         gitWorktree(repo);
         ToolSessionManager mgr = managerFor(repo);
-        String id = mgr.create(repo, Set.of("src/App.java"));
+        String id = mgr.create(repo);
 
         assertNotNull(id);
         Session s = mgr.get(id);
@@ -63,7 +61,7 @@ class ToolSessionManagerTest {
     void removeSession(@TempDir Path repo) throws Exception {
         gitWorktree(repo);
         ToolSessionManager mgr = managerFor(repo);
-        String id = mgr.create(repo, Set.of());
+        String id = mgr.create(repo);
         assertNotNull(mgr.get(id));
 
         mgr.remove(id);
@@ -71,13 +69,13 @@ class ToolSessionManagerTest {
     }
 
     @Test
-    void contextCarriesScope(@TempDir Path repo) throws Exception {
+    void contextCarriesRepositoryRoot(@TempDir Path repo) throws Exception {
         gitWorktree(repo);
         ToolSessionManager mgr = managerFor(repo);
-        String id = mgr.create(repo, Set.of("a.java", "b.java"));
+        String id = mgr.create(repo);
         Session s = mgr.get(id);
 
-        assertTrue(s.getContext().getAllowedFiles().contains("a.java"));
+        assertEquals(repo.toAbsolutePath().normalize(), s.getContext().getRepoRoot());
         assertSame(s.getContext(), mgr.get(id).getContext());
     }
 
@@ -88,7 +86,7 @@ class ToolSessionManagerTest {
         ToolSessionManager manager = managerFor(root);
 
         assertThrows(WorkspaceAccessPolicy.RejectedWorkspaceException.class,
-                () -> manager.create(outside, Set.of(), "head"));
+                () -> manager.create(outside, "head"));
     }
 
     @Test
@@ -102,7 +100,7 @@ class ToolSessionManagerTest {
         ToolSessionManager manager = managerFor(root);
 
         assertThrows(WorkspaceAccessPolicy.RejectedWorkspaceException.class,
-                () -> manager.create(linkedRepository, Set.of(), "head"));
+                () -> manager.create(linkedRepository, "head"));
     }
 
     private static void createSymbolicLink(Path link, Path target) throws Exception {

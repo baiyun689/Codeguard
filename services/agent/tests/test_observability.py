@@ -141,7 +141,7 @@ def _flow_report_fixture() -> TraceReport:
             "tool-run",
             detail={
                 "tool_name": "get_file_content",
-                "input": {"file_path": "src/Foo.java"},
+                "input": {"symbol_id": "java:Foo#run()"},
             },
             invocation_id="tools-run",
         ),
@@ -1291,7 +1291,7 @@ def test_trace_view_keeps_legacy_native_tool_output_without_artifact_index():
         events=[
             _flow_event(
                 1, "tool_start", "get_file_content", "discover_behavior/tools",
-                "legacy-tool", detail={"input": {"file_path": "src/A.java"}},
+                "legacy-tool", detail={"input": {"symbol_id": "java:A#run()"}},
             ),
             _flow_event(
                 2, "tool_end", "get_file_content", "discover_behavior/tools",
@@ -1546,7 +1546,7 @@ class TestTraceSerialization:
                 {
                     "id": "call-1",
                     "name": "get_file_content",
-                    "args": {"file_path": "src/Foo.java"},
+                    "args": {"symbol_id": "java:Foo#run()"},
                 }
             ]
             invalid_tool_calls = []
@@ -1562,7 +1562,7 @@ class TestTraceSerialization:
 
         assert result["content"] == ""
         assert result["tool_calls"][0]["name"] == "get_file_content"
-        assert result["tool_calls"][0]["args"]["file_path"] == "src/Foo.java"
+        assert result["tool_calls"][0]["args"]["symbol_id"] == "java:Foo#run()"
         assert result["additional_kwargs"]["reasoning_content"] == "need source"
 
 
@@ -1887,7 +1887,7 @@ class TestCollectorLineage:
             "metadata": {},
             "data": {
                 "input": {
-                    "file_path": "src/Foo.java",
+            "symbol_id": "java:Foo#run()",
                     "content": "x" * 5000,
                 }
             },

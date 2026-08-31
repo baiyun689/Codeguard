@@ -108,7 +108,6 @@ class PipelineOrchestrator:
         structured_method: str = "function_calling",
         fp_verify_llm=None,
         repo_path: str | None = None,
-        allowed_files: list[str] | None = None,
         tool_client=None,
         enabled_tools: list[str] | None = None,
         enabled_evidence_tools: list[str] | None = None,

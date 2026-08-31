@@ -151,7 +151,7 @@ class _SuccessfulAgentEngine(ToolAgentEngine):
                     {
                         "id": "tool-1",
                         "name": "get_file_content",
-                        "args": {"file_path": "src/A.java"},
+                        "args": {"symbol_id": "java:A#run()"},
                     }
                 ]),
                 _ToolMsg("tool-1", "class A {}"),
@@ -493,11 +493,11 @@ def test_react_内联结果仍捕获全部工具调用用于审计():
         DiscoveryToolRecord(
             call_id="call-1",
             tool="get_file_content",
-            arguments={"file_path": "src/A.java"},
+            arguments={"symbol_id": "java:A#run()"},
             output="class A {}",
             duration_ms=1.0,
             status="complete",
-            reuse_key="get_file_content:src/A.java",
+            reuse_key='get_file_content:{"symbol_id":"java:A#run()"}',
         ),
         DiscoveryToolRecord(
             call_id="call-2",

@@ -10,7 +10,6 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -31,7 +30,7 @@ class GraphToolsTest {
                 """);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "behavior-path"));
-        AgentContext context = new AgentContext(repo, Set.of("src/main/java/demo/Service.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult result = new InspectPathTool(snapshot)
                 .execute("{\"symbol_id\":\"java:demo.Service#run()\",\"path_kind\":\"behavior\"}", context);
@@ -48,7 +47,7 @@ class GraphToolsTest {
         Files.writeString(repo.resolve("Service.java"), "class Service { void run() {} }");
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "invalid-path-kind"));
-        AgentContext context = new AgentContext(repo, Set.of("Service.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult result = new InspectPathTool(snapshot)
                 .execute("{\"symbol_id\":\"java:Service#run()\",\"path_kind\":\"other\"}", context);
@@ -71,7 +70,7 @@ class GraphToolsTest {
                 """);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "rev"));
-        AgentContext context = new AgentContext(repo, Set.of("src/main/java/demo/Service.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult resolved = new ResolveChangeContextTool(snapshot).execute(
                 """
@@ -95,12 +94,12 @@ class GraphToolsTest {
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "rev"));
         GetFileContentTool tool = new GetFileContentTool(snapshot);
-        AgentContext context = new AgentContext(repo, Set.of());
+        AgentContext context = new AgentContext(repo);
 
         ToolResult missing = tool.execute("GuessedController.java", context);
 
         assertFalse(missing.isSuccess());
-        assertTrue(missing.getError().startsWith("symbol_not_found:"), missing.getError());
+        assertEquals("缺少 symbol_id", missing.getError());
     }
 
     @Test
@@ -120,7 +119,7 @@ class GraphToolsTest {
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "test-caller"));
         AgentContext context =
-                new AgentContext(repo, Set.of("src/main/java/demo/Service.java"));
+                new AgentContext(repo);
 
         ToolResult impact = new InspectChangeImpactTool(snapshot)
                 .execute("java:demo.Service#run()", context);
@@ -154,7 +153,7 @@ class GraphToolsTest {
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "test-subject"));
         AgentContext context =
-                new AgentContext(repo, Set.of("src/test/java/demo/ServiceTest.java"));
+                new AgentContext(repo);
 
         ToolResult impact = new InspectChangeImpactTool(snapshot)
                 .execute("java:demo.ServiceTest#helper()", context);
@@ -182,7 +181,7 @@ class GraphToolsTest {
                 """);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "field-rev"));
-        AgentContext context = new AgentContext(repo, Set.of("src/main/java/demo/State.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult impact = new InspectChangeImpactTool(snapshot)
                 .execute("java:demo.State#counter", context);
@@ -208,7 +207,7 @@ class GraphToolsTest {
                 """);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "type-rev"));
-        AgentContext context = new AgentContext(repo, Set.of("src/main/java/demo/Base.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult impact = new InspectChangeImpactTool(snapshot)
                 .execute("java:demo.Base", context);
@@ -234,7 +233,7 @@ class GraphToolsTest {
                 """);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "field-sec"));
-        AgentContext context = new AgentContext(repo, Set.of("src/main/java/demo/State.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult impact = new InspectPathTool(snapshot)
                 .execute("{\"symbol_id\":\"java:demo.State#executor\",\"path_kind\":\"security\"}", context);
@@ -265,7 +264,7 @@ class GraphToolsTest {
                 """);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "type-sec"));
-        AgentContext context = new AgentContext(repo, Set.of("src/main/java/demo/Base.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult impact = new InspectPathTool(snapshot)
                 .execute("{\"symbol_id\":\"java:demo.Base\",\"path_kind\":\"security\"}", context);
@@ -285,7 +284,7 @@ class GraphToolsTest {
                 """);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "partial"));
-        AgentContext context = new AgentContext(repo, Set.of("Partial.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult impact = new InspectChangeImpactTool(snapshot)
                 .execute("java:Partial#missing()", context);
@@ -316,7 +315,7 @@ class GraphToolsTest {
         Files.writeString(repo.resolve("LargeCaller.java"), source);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "bounded"));
-        AgentContext context = new AgentContext(repo, Set.of("LargeCaller.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult result = new InspectChangeImpactTool(snapshot)
                 .execute("java:LargeCaller#target()", context);
@@ -345,8 +344,7 @@ class GraphToolsTest {
                 """);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "query-coverage"));
-        AgentContext context = new AgentContext(
-                repo, Set.of("src/main/java/demo/Service.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult result = new InspectChangeImpactTool(snapshot)
                 .execute("java:demo.Service#run()", context);
@@ -371,7 +369,7 @@ class GraphToolsTest {
                 """);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "mixed-relations"));
-        AgentContext context = new AgentContext(repo, Set.of("Mixed.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult result = new InspectPathTool(snapshot)
                 .execute("{\"symbol_id\":\"java:Mixed#run()\",\"path_kind\":\"security\"}", context);
@@ -394,7 +392,7 @@ class GraphToolsTest {
                 """);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "ordinary-unresolved-security"));
-        AgentContext context = new AgentContext(repo, Set.of("Ordinary.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult result = new InspectPathTool(snapshot)
                 .execute("{\"symbol_id\":\"java:Ordinary#run()\",\"path_kind\":\"security\"}", context);
@@ -418,7 +416,7 @@ class GraphToolsTest {
                 """);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "sensitive-unresolved-security"));
-        AgentContext context = new AgentContext(repo, Set.of("Sensitive.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult result = new InspectPathTool(snapshot)
                 .execute("{\"symbol_id\":\"java:Sensitive#run()\",\"path_kind\":\"security\"}", context);
@@ -441,7 +439,7 @@ class GraphToolsTest {
                 """);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "resolved-security-chain"));
-        AgentContext context = new AgentContext(repo, Set.of("ResolvedChain.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult result = new InspectPathTool(snapshot)
                 .execute("{\"symbol_id\":\"java:ResolvedChain#run()\",\"path_kind\":\"security\"}", context);
@@ -469,7 +467,7 @@ class GraphToolsTest {
                 """);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "security-depth-boundary"));
-        AgentContext context = new AgentContext(repo, Set.of("DepthBoundary.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult within = new InspectPathTool(snapshot)
                 .execute("{\"symbol_id\":\"java:DepthBoundary#within()\",\"path_kind\":\"security\"}", context);
@@ -497,7 +495,7 @@ class GraphToolsTest {
                 """);
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "potential-caller"));
-        AgentContext context = new AgentContext(repo, Set.of("Service.java"));
+        AgentContext context = new AgentContext(repo);
 
         ToolResult result = new InspectChangeImpactTool(snapshot)
                 .execute("java:Service#run()", context);
