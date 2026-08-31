@@ -57,11 +57,31 @@ class _ResolvedGraphClient(_FakeClient, _FakeGraphClient):
         self.structure_calls.append(symbol_id)
         return ToolResponse(
             True,
-            '{"schema_version":2,"outcome":"found","coverage":"full",'
-            '"source_scope":"MAIN","symbols":[{"id":"java:demo.B#n()",'
-            '"kind":"METHOD","file":"src/B.java","startLine":1,'
-            '"endLine":2,"source_set":"MAIN"}],"relationships":[],'
-            '"unresolved_relationships":[],"unresolved_count":0}',
+            '{"schema_version":2,"outcome":"found","coverage":"complete",'
+            '"source_scope":"MAIN","subject_symbol_id":"java:demo.A#m()",'
+            '"symbols":[{"id":"java:demo.A#m()","kind":"METHOD",'
+            '"file":"src/A.java","startLine":1,"endLine":2,"source_set":"MAIN"},'
+            '{"id":"java:demo.B#n()","kind":"METHOD","file":"src/B.java",'
+            '"startLine":1,"endLine":2,"source_set":"MAIN"}],'
+            '"relationships":[{"sourceId":"java:demo.A#m()",'
+            '"targetId":"java:demo.B#n()","kind":"CALLS","file":"src/A.java",'
+            '"line":2,"source_set":"MAIN","resolution":"RESOLVED"}],'
+            '"unresolved_relationships":[],"unresolved_count":0,"limitations":[]}',
+        )
+
+
+class _GraphWithHiddenSymbolClient(_FakeClient):
+    def inspect_structure(self, symbol_id: str) -> ToolResponse:
+        return ToolResponse(
+            True,
+            '{"schema_version":2,"outcome":"found","coverage":"complete",'
+            '"source_scope":"MAIN","subject_symbol_id":"java:demo.A#m()",'
+            '"symbols":['
+            '{"id":"java:demo.A#m()","kind":"METHOD",'
+            '"file":"src/A.java","startLine":1,"endLine":2,"source_set":"MAIN"},'
+            '{"id":"java:demo.Hidden#n()","kind":"METHOD",'
+            '"file":"src/Hidden.java","startLine":1,"endLine":2,"source_set":"MAIN"}'
+            '],"relationships":[],"unresolved_relationships":[],"unresolved_count":0,"limitations":[]}',
         )
 
 
@@ -165,6 +185,26 @@ def test_graph_resolved_symbol_can_be_read_after_query() -> None:
 
     assert response.success is True
     assert raw.calls == 1
+
+
+def test_source_read_allowlist_uses_symbols_visible_in_graph_projection() -> None:
+    raw = _GraphWithHiddenSymbolClient()
+    client = CoordinatedDiscoveryToolClient(
+        raw,
+        DiscoveryToolCoordinator(),
+        projection_focus=GraphProjectionFocus(
+            changed_file="src/A.java",
+            changed_lines=(1,),
+            changed_symbol_ids=("java:demo.A#m()",),
+        ),
+    )
+
+    client.inspect_structure("java:demo.A#m()")
+    response = client.get_file_content("java:demo.Hidden#n()")
+
+    assert response.success is False
+    assert (response.error or "").startswith("symbol_not_in_review_context")
+    assert raw.calls == 0
 
 
 def test_parallel_task_clients_share_single_flight_but_both_receive_full_result() -> None:

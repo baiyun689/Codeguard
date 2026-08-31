@@ -309,7 +309,7 @@ class CoordinatedDiscoveryToolClient:
             response, coordinator_reused, first_call_id = (
                 self._coordinator.execute_with_trace(key, call)
             )
-            self._remember_graph_symbols(tool_name, response)
+            self._remember_graph_symbols(tool_name, response, arguments)
             with self._lock:
                 if _cacheable(response):
                     self._seen.add(key)
@@ -349,18 +349,31 @@ class CoordinatedDiscoveryToolClient:
             raise
 
     def _remember_graph_symbols(
-        self, tool_name: str, response: ToolResponse
+        self,
+        tool_name: str,
+        response: ToolResponse,
+        arguments: dict[str, Any] | None = None,
     ) -> None:
-        """Extend the source-read allowlist with graph-resolved symbols.
+        """Extend the source-read allowlist with symbols visible to the reviewer.
 
-        Only IDs present in the Gateway's resolved ``symbols`` array are
-        trusted.  Relationship endpoints alone may be unresolved placeholders
-        and therefore must not become an arbitrary source-read capability.
+        The Gateway payload is retained separately as an Evidence Artifact, but
+        it is not the LLM-facing contract.  Only symbols that survive the same
+        deterministic projection shown to the reviewer may unlock a subsequent
+        source read.  In particular, a symbol present only in a truncated or
+        otherwise hidden raw ``symbols`` array must not become an implicit
+        source-read capability, and relationship endpoints without a resolved
+        symbol remain fail-closed.
         """
         if tool_name not in GRAPH_DISCOVERY_TOOLS or not response.success:
             return
+        visible_response = _reviewer_response(
+            tool_name,
+            response,
+            arguments,
+            self._projection_focus,
+        )
         try:
-            payload = json.loads(response.result or "")
+            payload = json.loads(visible_response.result or "")
         except (TypeError, ValueError, json.JSONDecodeError):
             return
         if not isinstance(payload, dict):
