@@ -181,14 +181,14 @@ def render_report(
             "",
             "审查员实际发起的工具调用画像(去重后取得有效上下文的调用)。",
             "",
-            "| 用例 | 工具调用 | 用到的工具 | 读取文件 |",
+            "| 用例 | 工具调用 | 用到的工具 | 读取符号 |",
             "|---|---|---|---|",
         ]
         for o in usage_rows:
             u = o.tool_usage
             lines.append(
                 f"| {o.case_id} | {u.tool_calls} | {', '.join(u.tools_used) or '—'} | "
-                f"{', '.join(u.files_read) or '—'} |"
+                f"{', '.join(u.symbols_read) or '—'} |"
             )
 
     council_rows = [o for o in runs[-1] if o.council_trace is not None]

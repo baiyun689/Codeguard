@@ -32,7 +32,7 @@ Agent tool sessions:
 - `DELETE /api/v1/tools/session/{id}` destroys a session.
 - `POST /api/v1/tools/{name}` dispatches an allowed tool using the `X-Session-Id` header.
 
-The default tool registry includes guarded file content, project-symbol
+The default tool registry includes guarded symbol source fragments, project-symbol
 resolution, and shared semantic graph queries (`get_file_content`,
 `resolve_change_context`, `inspect_path`, `inspect_change_impact`,
 `inspect_structure`). The legacy `find_sensitive_apis`, `get_code_metrics`,

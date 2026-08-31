@@ -24,7 +24,7 @@
 
 ### 公共工具能力地图（只用于理解覆盖边界）
 
-- `get_file_content(file_path)`：读取精确源码。它是高成本兜底，只用于 patch、symbol_context 和图谱事实都不足以核对局部实现时；不能替代调用关系、执行路径或 source-to-sink 查询。
+- `get_file_content(symbol_id)`：读取已解析 symbol 的有界源码片段（METHOD/CONSTRUCTOR 含注解、签名和方法体，TYPE 为类型定义，FIELD 为完整字段声明，FRAMEWORK_ENTRYPOINT 为对应注解）。它是高成本兜底，只用于 patch、symbol_context 和图谱事实都不足以核对局部实现时；不能替代调用关系、执行路径或 source-to-sink 查询。不得传文件路径或自行编造 symbol_id。
 - `inspect_structure(symbol_id)`：查询当前 symbol 的一跳双向关系，包括调用、实现/继承/覆写、字段读写和声明关系；不能证明多层路径或实际影响范围。
 - `inspect_change_impact(symbol_id)`：向上查询 caller、框架入口和受影响范围，最多三层；用于回答“谁调用它、从哪里进入、影响哪些调用方”。
 - `inspect_path(symbol_id, path_kind="behavior", max_depth=3)`：向下查询 callee、callback/listener、接口实现、状态读写和有界执行路径；用于回答执行顺序、状态传播和运行时后果。

@@ -1,6 +1,6 @@
 """从管线工具上下文 trace 提炼"工具使用画像"(评测可观测性)。
 
-回答 ADR-022 没答上的问题:审查员到底有没有调工具、有没有真读到 diff 之外的上下文——
+回答 ADR-022 没答上的问题:审查员到底有没有调工具、有没有真读到 diff 之外的符号上下文——
 还是纯靠 diff 推理蒙对。纯函数,吃 GatheredContext 形状的对象
 (带 ``.tool`` / ``.args`` / ``.content`` 属性),与管线/网络解耦,可独立单测。
 
@@ -17,10 +17,10 @@ from typing import Any
 from evals.schema import ToolUsage
 
 
-def _file_from_args(args: Any) -> str:
-    """从 get_file_content 的入参摘要里取出文件路径。
+def _symbol_from_args(args: Any) -> str:
+    """从 get_file_content 的入参摘要里取出稳定 symbol_id。
 
-    args 通常是 ``_summarize_args`` 产出的 JSON 串(如 ``{"file_path": "a/B.java"}``);
+    args 通常是 ``_summarize_args`` 产出的 JSON 串(如 ``{"symbol_id": "java:A#m()"}``);
     解析失败则回退原串,保证健壮(画像是锦上添花,不该因脏数据抛断)。
     """
     if not args:
@@ -28,7 +28,7 @@ def _file_from_args(args: Any) -> str:
     try:
         obj = json.loads(args)
         if isinstance(obj, dict):
-            return str(obj.get("file_path") or obj.get("path") or "").strip()
+            return str(obj.get("symbol_id") or "").strip()
     except (json.JSONDecodeError, TypeError):
         pass
     return str(args).strip()
@@ -40,9 +40,9 @@ def summarize_tool_usage(trace: list[Any]) -> ToolUsage:
     空 trace 返回全空画像(tool_calls=0);调用方(run_once)据此决定是否落 None。
     """
     tools = sorted({t.tool for t in trace if getattr(t, "tool", "")})
-    files = sorted(
+    symbols = sorted(
         {
-            _file_from_args(getattr(t, "args", ""))
+            _symbol_from_args(getattr(t, "args", ""))
             for t in trace
             if getattr(t, "tool", "") == "get_file_content"
         }
@@ -51,5 +51,5 @@ def summarize_tool_usage(trace: list[Any]) -> ToolUsage:
     return ToolUsage(
         tool_calls=len(trace),
         tools_used=tools,
-        files_read=files,
+        symbols_read=symbols,
     )

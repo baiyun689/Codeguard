@@ -774,8 +774,11 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
         ):
             if tool_client is None or _coordinator is None:
                 return None
-            complete_patch_files = (
-                {task.file}
+            complete_patch_symbol_ids = (
+                {
+                    symbol.symbol_id
+                    for symbol in (symbol_context.symbols if symbol_context is not None else ())
+                }
                 if task is not None
                 and task.patch_complete
                 and task.hunk_header.strip().startswith("@@ -0,0 +")
@@ -784,7 +787,7 @@ def make_reviewer_node(reviewer: Reviewer, checkpointer=None, llm=None, tool_cli
             return CoordinatedDiscoveryToolClient(
                 tool_client,
                 _coordinator,
-                complete_patch_files=complete_patch_files,
+                complete_patch_symbol_ids=complete_patch_symbol_ids,
                 projection_focus=(
                     graph_projection_focus(task, symbol_context)
                     if task is not None

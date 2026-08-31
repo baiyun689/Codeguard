@@ -5,7 +5,6 @@ import com.codeguard.agent.core.AgentTool;
 import com.codeguard.agent.graph.ProjectKey;
 import com.codeguard.agent.graph.ProjectSnapshot;
 import com.codeguard.agent.graph.ProjectSnapshotManager;
-import com.codeguard.agent.tools.FileAccessSandbox;
 import com.codeguard.agent.tools.GetFileContentTool;
 import com.codeguard.agent.tools.InspectChangeImpactTool;
 import com.codeguard.agent.tools.InspectPathTool;
@@ -68,10 +67,9 @@ public final class ToolSessionManager {
             this.projectKey = ProjectKey.of(repoRoot, revision);
             this.snapshot = snapshotManager.getOrBuild(projectKey);
 
-            FileAccessSandbox sandbox = new FileAccessSandbox(repoRoot);
             this.registry = new ToolRegistry();
             // 加工具 = 在这里 register 一个实现即可,无需改协议(扩展接缝 design.md D2)。
-            this.registry.register(new GetFileContentTool(sandbox, snapshot));
+            this.registry.register(new GetFileContentTool(snapshot));
             this.registry.register(new ResolveChangeContextTool(snapshot));
             this.registry.register(new InspectPathTool(snapshot));
             this.registry.register(new InspectChangeImpactTool(snapshot));

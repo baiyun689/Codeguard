@@ -364,9 +364,9 @@ def test_complete_patch_短标记记录_解析目标为_patch():
     client = CoordinatedDiscoveryToolClient(
         _FakeDelegate(),
         DiscoveryToolCoordinator(),
-        complete_patch_files={"src/New.java"},
+        complete_patch_symbol_ids={"java:New#m()"},
     )
-    resp = client.get_file_content("src/New.java")
+    resp = client.get_file_content("java:New#m()")
     assert resp.result == COMPLETE_PATCH_RESULT
     assert "P01" not in (resp.result or "")
     record = client.trace_records[-1]

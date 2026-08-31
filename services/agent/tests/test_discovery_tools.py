@@ -10,6 +10,7 @@ from codeguard_agent.pipeline.execution.discovery import (
     DiscoveryToolCoordinator,
     canonical_tool_key,
 )
+from codeguard_agent.pipeline.evidence.projection import GraphProjectionFocus
 from codeguard_agent.tools.tool_client import ToolResponse
 
 
@@ -47,6 +48,23 @@ class _FakeGraphClient:
         return ToolResponse(True, "STRUCTURE")
 
 
+class _ResolvedGraphClient(_FakeClient, _FakeGraphClient):
+    def __init__(self) -> None:
+        _FakeClient.__init__(self)
+        self.structure_calls: list[str] = []
+
+    def inspect_structure(self, symbol_id: str) -> ToolResponse:
+        self.structure_calls.append(symbol_id)
+        return ToolResponse(
+            True,
+            '{"schema_version":2,"outcome":"found","coverage":"full",'
+            '"source_scope":"MAIN","symbols":[{"id":"java:demo.B#n()",'
+            '"kind":"METHOD","file":"src/B.java","startLine":1,'
+            '"endLine":2,"source_set":"MAIN"}],"relationships":[],'
+            '"unresolved_relationships":[],"unresolved_count":0}',
+        )
+
+
 def test_graph_tools_decode_html_entities_in_symbol_id_before_gateway_call() -> None:
     raw = _FakeGraphClient()
     client = CoordinatedDiscoveryToolClient(raw, DiscoveryToolCoordinator())
@@ -62,10 +80,19 @@ def test_graph_tools_decode_html_entities_in_symbol_id_before_gateway_call() -> 
     assert raw.structure_calls == [canonical]
 
 
-def test_canonical_key_normalizes_slashes_and_dot_segments_without_lowercasing() -> None:
-    left = canonical_tool_key("get_file_content", {"file_path": "src\\.\\A.java"})
-    right = canonical_tool_key("get_file_content", {"file_path": "src/A.java"})
-    lower = canonical_tool_key("get_file_content", {"file_path": "src/a.java"})
+def test_canonical_key_normalizes_symbol_entities_without_lowercasing() -> None:
+    left = canonical_tool_key(
+        "get_file_content",
+        {"symbol_id": "java:demo.Retry#run(java.util.List&lt;T&gt;)"},
+    )
+    right = canonical_tool_key(
+        "get_file_content",
+        {"symbol_id": "java:demo.Retry#run(java.util.List<T>)"},
+    )
+    lower = canonical_tool_key(
+        "get_file_content",
+        {"symbol_id": "java:demo.retry#run(java.util.List<T>)"},
+    )
     assert left == right
     assert left != lower
 
@@ -90,15 +117,54 @@ def test_complete_patch_file_read_hides_internal_alias_without_delegate_call() -
     client = CoordinatedDiscoveryToolClient(
         raw,
         DiscoveryToolCoordinator(),
-        complete_patch_files={"src/A.java"},
+        complete_patch_symbol_ids={"java:demo.A#run()"},
     )
 
-    response = client.get_file_content("src\\.\\A.java")
+    response = client.get_file_content("java:demo.A#run()")
 
     assert response.success is True
     assert response.result == COMPLETE_PATCH_RESULT
     assert "P01" not in (response.result or "")
     assert raw.calls == 0
+
+
+def test_source_read_rejects_symbol_outside_review_context() -> None:
+    raw = _FakeClient()
+    client = CoordinatedDiscoveryToolClient(
+        raw,
+        DiscoveryToolCoordinator(),
+        projection_focus=GraphProjectionFocus(
+            changed_file="src/A.java",
+            changed_lines=(1,),
+            changed_symbol_ids=("java:demo.A#m()",),
+        ),
+    )
+
+    response = client.get_file_content("java:demo.B#n()")
+
+    assert response.success is False
+    assert (response.error or "").startswith("symbol_not_in_review_context")
+    assert raw.calls == 0
+    assert client.trace_records[-1].status == "failed"
+
+
+def test_graph_resolved_symbol_can_be_read_after_query() -> None:
+    raw = _ResolvedGraphClient()
+    client = CoordinatedDiscoveryToolClient(
+        raw,
+        DiscoveryToolCoordinator(),
+        projection_focus=GraphProjectionFocus(
+            changed_file="src/A.java",
+            changed_lines=(1,),
+            changed_symbol_ids=("java:demo.A#m()",),
+        ),
+    )
+
+    client.inspect_structure("java:demo.A#m()")
+    response = client.get_file_content("java:demo.B#n()")
+
+    assert response.success is True
+    assert raw.calls == 1
 
 
 def test_parallel_task_clients_share_single_flight_but_both_receive_full_result() -> None:

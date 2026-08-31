@@ -21,8 +21,8 @@ logger = logging.getLogger("codeguard.evals")
 
 # 能力标签:一条用例"审准它至少需要哪类上下文",对应工具背后的地面真值来源分层。
 #   diff-only  仅看 diff 即可判定
-#   file       需读改动文件之外的整文件(get_file_content)
-#   repo-map   需先定位"diff 调用的符号定义在哪个跨文件"再细读(get_repo_map 导航 + get_file_content)
+#   file       需读取改动文件之外的已解析 symbol(get_file_content)
+#   repo-map   需先定位"diff 调用的符号定义在哪个跨文件"再细读(图谱导航 + get_file_content)
 #   ast        需单文件结构/方法签名(未来 get_method_definition)
 #   call-graph 需跨文件调用/影响关系(未来 get_call_graph / get_related_files)
 #   rag        需按语义检索项目别处实现(未来 semantic_search)
@@ -232,8 +232,8 @@ class ToolUsage(BaseModel):
 
     tool_calls: int = Field(default=0, description="去重后取得有效上下文的工具调用条数")
     tools_used: list[str] = Field(default_factory=list, description="用到的工具名(去重排序)")
-    files_read: list[str] = Field(
-        default_factory=list, description="经 get_file_content 读取的文件路径(去重排序)"
+    symbols_read: list[str] = Field(
+        default_factory=list, description="经 get_file_content 读取的稳定 symbol_id(去重排序)"
     )
 
 

@@ -20,7 +20,7 @@ public interface AgentTool {
     /**
      * 执行工具。
      *
-     * @param input   工具输入(本期工具均为单字符串:文件路径或查询)
+     * @param input   工具输入(统一为单字符串；源码工具承载 symbol_id JSON，图谱工具承载 query)
      * @param context 当前会话上下文(仓库根、允许文件集等)
      * @return 统一信封的执行结果
      */

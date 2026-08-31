@@ -72,8 +72,8 @@ profiles:
     tools: []
     fp_verify: true
 
-  # 管线 + 文件工具:审查员走 ReAct,可调 get_file_content 读 diff 之外的文件。
-  # 与 pipeline-notools 仅差"是否开工具"这一个变量,用于量化 file 能力的工具增益。
+  # 管线 + 源码片段工具:审查员走 ReAct,可调 get_file_content 读 diff 之外的已解析 symbol。
+  # 与 pipeline-notools 仅差"是否开工具"这一个变量,用于量化局部源码读取能力的工具增益。
   pipeline-file:
     mode: pipeline
     orchestration: adr-032

@@ -27,8 +27,8 @@ class _FakeClient:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def get_file_content(self, file_path: str) -> _FakeResp:
-        self.calls.append(f"file:{file_path}")
+    def get_file_content(self, symbol_id: str) -> _FakeResp:
+        self.calls.append(f"symbol:{symbol_id}")
         return _FakeResp("文件内容")
 
 
@@ -40,6 +40,10 @@ def test_file_content_工具名称正确():
         "高成本兜底工具",
         "必须核对具体实现代码",
         "patch、symbol_context 和图谱工具都不足",
+        "symbol_id",
+        "METHOD/CONSTRUCTOR",
+        "FIELD",
+        "FRAMEWORK_ENTRYPOINT",
         "caller/callee",
         "listener/callback",
         "状态传播",
@@ -51,9 +55,9 @@ def test_file_content_工具名称正确():
         assert text in tool.description
 
 
-def test_file_content_工具透传路径():
+def test_file_content_工具透传符号():
     client = _FakeClient()
     tool = make_file_content_tool(client)
-    out = tool.invoke({"file_path": "src/App.java"})
+    out = tool.invoke({"symbol_id": "java:demo.Service#run()"})
     assert out == "文件内容"
-    assert client.calls == ["file:src/App.java"]
+    assert client.calls == ["symbol:java:demo.Service#run()"]

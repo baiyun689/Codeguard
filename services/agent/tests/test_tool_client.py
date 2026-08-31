@@ -28,9 +28,12 @@ def test_成功信封_映射为_result():
         assert request.headers["X-Session-Id"] == "sess-1"
         assert request.headers["X-Codeguard-Tool-Token"] == "test-token"
         assert request.url.path == "/api/v1/tools/get_file_content"
+        assert json.loads(json.loads(request.content)["query"]) == {
+            "symbol_id": "java:demo.Service#run()"
+        }
         return httpx.Response(200, json={"success": True, "result": "文件内容"})
 
-    resp = _mock_client(handler).get_file_content("src/App.java")
+    resp = _mock_client(handler).get_file_content("java:demo.Service#run()")
     assert resp.success is True
     assert resp.result == "文件内容"
     assert resp.as_tool_output() == "文件内容"

@@ -24,21 +24,21 @@ def test_empty_trace_is_all_blank():
     u = summarize_tool_usage([])
     assert u.tool_calls == 0
     assert u.tools_used == []
-    assert u.files_read == []
+    assert u.symbols_read == []
 
 
-def test_files_read_parsed_and_deduped_sorted():
+def test_symbols_read_parsed_and_deduped_sorted():
     trace = [
-        _FakeCtx(tool="get_file_content", args='{"file_path": "src/B.java"}', content="..."),
-        _FakeCtx(tool="get_file_content", args='{"file_path": "src/A.java"}', content="..."),
-        _FakeCtx(tool="get_file_content", args='{"file_path": "src/A.java"}', content="..."),
+        _FakeCtx(tool="get_file_content", args='{"symbol_id": "java:B#n()"}', content="..."),
+        _FakeCtx(tool="get_file_content", args='{"symbol_id": "java:A#m()"}', content="..."),
+        _FakeCtx(tool="get_file_content", args='{"symbol_id": "java:A#m()"}', content="..."),
     ]
     u = summarize_tool_usage(trace)
-    assert u.files_read == ["src/A.java", "src/B.java"]
+    assert u.symbols_read == ["java:A#m()", "java:B#n()"]
     assert u.tool_calls == 3
 
 
 def test_malformed_args_falls_back_to_raw_string():
     trace = [_FakeCtx(tool="get_file_content", args="not-json", content="x")]
     u = summarize_tool_usage(trace)
-    assert u.files_read == ["not-json"]
+    assert u.symbols_read == ["not-json"]

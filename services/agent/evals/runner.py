@@ -331,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
         "--repo-base",
         default="",
         help="工具开档下,工具会话的 repo 根路径。注意:当前数据集是合成 diff、磁盘上无对应文件,"
-        "get_file_content 会返回'文件不存在'——真要量化工具增益需用 repo-backed 用例(见 README)。",
+        "get_file_content 会返回'symbol_not_found'——真要量化工具增益需用 repo-backed 用例(见 README)。",
     )
     parser.add_argument(
         "--report",

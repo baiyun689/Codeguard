@@ -2,7 +2,7 @@
 
 三个审查员都可以使用以下事实工具。工具只返回仓库事实，不判断问题、严重程度或是否保留候选。调用前必须先使用 `<symbol_context>` 中实际提供的稳定 `symbol_id`；不得根据文件名、类名或惯用命名猜测 symbol。
 
-- `get_file_content(file_path)`：高成本兜底工具，会返回最多的上下文。仅在确实必须核对具体实现代码，且 patch、symbol context 和图谱事实都不足以回答当前缺口时调用。只要缺口是 caller、callee、listener、callback、状态传播、执行顺序、source-to-sink 或影响范围，必须优先使用对应图谱工具，不能用文件全文读取替代。新增文件的完整 patch 不要重复读取。
+- `get_file_content(symbol_id)`：`get_file_content` 是高成本兜底工具，按已解析 symbol 读取有界源码片段。METHOD/CONSTRUCTOR 返回注解、修饰符、签名和方法体；TYPE 返回类型定义；FIELD 返回完整字段声明；FRAMEWORK_ENTRYPOINT 返回对应注解。仅在确实必须核对具体实现代码，且 patch、symbol context 和图谱事实都不足以回答当前缺口时调用。只要缺口是 caller、callee、listener、callback、状态传播、执行顺序、source-to-sink 或影响范围，必须优先使用对应图谱工具，不能用文件全文读取替代，也不能用源码读取替代。symbol_id 必须来自 symbol_context 或先前图谱结果，不得传文件路径或自行编造 ID。新增文件的完整 patch 不要重复读取。
 - `inspect_structure(symbol_id)`：查询当前 symbol 的一跳双向结构关系，包括调用、实现/继承/覆写、字段读写和声明关系。它不提供多层调用路径。
 - `inspect_change_impact(symbol_id)`：向上查询 caller、框架入口和受影响范围，最多三层。凡是要确认“谁调用它、从哪里进入、影响哪些调用方”，必须使用它。
 - `inspect_path(symbol_id, path_kind="behavior", max_depth=3)`：向下查询 callee、callback/listener、接口实现、状态读写和有界执行路径。凡是要确认“它调用谁、执行顺序如何、状态如何传播”，必须使用 `path_kind="behavior"`。

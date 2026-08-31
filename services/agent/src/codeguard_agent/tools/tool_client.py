@@ -3,7 +3,7 @@
 保持**同步**(httpx.Client 而非 AsyncClient):阶段 3 的 ReAct 在现有线程池里 fan-out,
 不引入 async(见 ROADMAP "async 留到 chunking 再切" 的岔路口、design.md D4)。
 
-职责边界:本模块只发请求、解析统一信封;真正的文件读取与安全护栏都在 Java 侧
+职责边界:本模块只发请求、解析统一信封;真正的 symbol 源码读取与安全护栏都在 Java 侧
 (design.md D0:Python 编排、Java 护栏)。
 """
 
@@ -86,8 +86,16 @@ class ToolClient:
             logger.warning("工具调用 %s 失败: %s", name, exc)
             return ToolResponse(success=False, error=str(exc))
 
-    def get_file_content(self, file_path: str) -> ToolResponse:
-        return self._post_tool("get_file_content", {"file_path": file_path})
+    def get_file_content(self, symbol_id: str) -> ToolResponse:
+        """读取一个已由图谱解析出的 symbol 源码片段。
+
+        源码工具不再接受任意文件路径；Gateway 会根据 snapshot 中的稳定
+        ``symbol_id`` 解析方法、类型或字段的声明范围，并施加大小护栏。
+        """
+        return self._post_tool(
+            "get_file_content",
+            {"query": json.dumps({"symbol_id": unescape(symbol_id)}, ensure_ascii=False)},
+        )
 
     def resolve_change_context(self, changes: list[dict]) -> ToolResponse:
         """批量把变更文件/行解析为稳定图谱符号。"""

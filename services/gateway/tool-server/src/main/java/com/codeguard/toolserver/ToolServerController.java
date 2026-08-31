@@ -132,7 +132,8 @@ public final class ToolServerController {
 
         try {
             JsonNode body = mapper.readTree(ctx.body());
-            // 本期工具均为单字符串输入:文件类取 file_path,查询类取 query;都没有则空串。
+            // 工具请求统一承载在 query 字符串中；旧的 file_path 仍仅用于返回明确的
+            // symbol_not_found，不再触发任意文件读取。
             String input = firstNonEmpty(textOrEmpty(body, "file_path"), textOrEmpty(body, "query"));
 
             int n = session.getContext().incrementToolCalls();

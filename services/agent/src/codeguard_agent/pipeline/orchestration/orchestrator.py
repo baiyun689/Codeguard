@@ -234,7 +234,7 @@ def _artifact_tool_profile(artifacts: dict) -> list:
 
     只含 TOOL_CALL 且首次真实执行(EXECUTED)的 Artifact:reused 不重复计算
     实际调用,patch/context 不计 tool_calls。条目形状对齐 GatheredContext
-    (tool/args/content/status),供 eval 的 tools_used/files_read/tool_calls
+    (tool/args/content/status),供 eval 的 tools_used/symbols_read/tool_calls
     与严格工具降级检测读取。
     """
     from codeguard_agent.models.evidence import EvidenceCaptureMode, EvidenceSourceKind

@@ -24,6 +24,11 @@ DISCOVERY_GATEWAY_TOOLS = frozenset({
     "inspect_structure",
     "inspect_path",
 })
+GRAPH_DISCOVERY_TOOLS = frozenset({
+    "inspect_change_impact",
+    "inspect_structure",
+    "inspect_path",
+})
 REPEATED_TOOL_RESULT = (
     "该工具和参数已经在当前对话中成功返回；请复用前述结果，不要重复读取。"
 )
@@ -98,6 +103,9 @@ def _normalize_path(value: str) -> str:
 
 def _canonical_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(arguments)
+    symbol_id = normalized.get("symbol_id")
+    if isinstance(symbol_id, str):
+        normalized["symbol_id"] = unescape(symbol_id).strip()
     file_path = normalized.get("file_path")
     if isinstance(file_path, str):
         normalized["file_path"] = _normalize_path(file_path)
@@ -204,7 +212,7 @@ class CoordinatedDiscoveryToolClient:
         delegate: Any,
         coordinator: DiscoveryToolCoordinator,
         *,
-        complete_patch_files: set[str] | frozenset[str] = frozenset(),
+        complete_patch_symbol_ids: set[str] | frozenset[str] = frozenset(),
         projection_focus: GraphProjectionFocus | None = None,
     ) -> None:
         self._delegate = delegate
@@ -214,11 +222,28 @@ class CoordinatedDiscoveryToolClient:
         self._in_flight: dict[ToolKey, Future[ToolResponse]] = {}
         self._records: list[DiscoveryToolRecord] = []
         self._first_call_ids: dict[ToolKey, str] = {}
+        # 源码工具现在只接受 symbol_id。完整新增文件的 shortcut 仍由调用方
+        # 显式传入对应的 resolved symbol IDs，避免根据 LLM 提供的路径猜测。
         self._complete_patch_keys = {
-            canonical_tool_key("get_file_content", {"file_path": path})
-            for path in complete_patch_files
+            canonical_tool_key(
+                "get_file_content", {"symbol_id": unescape(symbol_id)}
+            )
+            for symbol_id in complete_patch_symbol_ids
         }
         self._projection_focus = projection_focus
+        # In a real reviewer run, source reads are limited to symbols exposed by
+        # SymbolResolution or returned by an earlier graph query.  A missing
+        # focus is retained for small, isolated clients/tests that do not have a
+        # task context; production reviewer clients always carry one.
+        self._allowed_symbol_ids: set[str] | None = (
+            {
+                unescape(symbol_id).strip()
+                for symbol_id in projection_focus.changed_symbol_ids
+                if symbol_id.strip()
+            }
+            if projection_focus is not None
+            else None
+        )
 
     @property
     def projection_focus(self) -> GraphProjectionFocus | None:
@@ -284,6 +309,7 @@ class CoordinatedDiscoveryToolClient:
             response, coordinator_reused, first_call_id = (
                 self._coordinator.execute_with_trace(key, call)
             )
+            self._remember_graph_symbols(tool_name, response)
             with self._lock:
                 if _cacheable(response):
                     self._seen.add(key)
@@ -321,6 +347,36 @@ class CoordinatedDiscoveryToolClient:
             with self._lock:
                 self._in_flight.pop(key, None)
             raise
+
+    def _remember_graph_symbols(
+        self, tool_name: str, response: ToolResponse
+    ) -> None:
+        """Extend the source-read allowlist with graph-resolved symbols.
+
+        Only IDs present in the Gateway's resolved ``symbols`` array are
+        trusted.  Relationship endpoints alone may be unresolved placeholders
+        and therefore must not become an arbitrary source-read capability.
+        """
+        if tool_name not in GRAPH_DISCOVERY_TOOLS or not response.success:
+            return
+        try:
+            payload = json.loads(response.result or "")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        symbols = payload.get("symbols")
+        if not isinstance(symbols, list):
+            return
+        ids = {
+            unescape(str(item.get("id", ""))).strip()
+            for item in symbols
+            if isinstance(item, dict) and str(item.get("id", "")).strip()
+        }
+        if not ids or self._allowed_symbol_ids is None:
+            return
+        with self._lock:
+            self._allowed_symbol_ids.update(ids)
 
     def _record(
         self,
@@ -388,13 +444,26 @@ class CoordinatedDiscoveryToolClient:
             )
         return f"T{count:02d}"
 
-    def get_file_content(self, file_path: str) -> ToolResponse:
-        key = canonical_tool_key("get_file_content", {"file_path": file_path})
+    def get_file_content(self, symbol_id: str) -> ToolResponse:
+        symbol_id = unescape(symbol_id)
+        if (
+            self._allowed_symbol_ids is not None
+            and symbol_id not in self._allowed_symbol_ids
+        ):
+            return self._invoke(
+                "get_file_content",
+                {"symbol_id": symbol_id},
+                lambda: ToolResponse(
+                    success=False,
+                    error="symbol_not_in_review_context",
+                ),
+            )
+        key = canonical_tool_key("get_file_content", {"symbol_id": symbol_id})
         if key in self._complete_patch_keys:
             response = ToolResponse(success=True, result=COMPLETE_PATCH_RESULT)
             self._record(
                 "get_file_content",
-                {"file_path": file_path},
+                {"symbol_id": symbol_id},
                 response,
                 perf_counter(),
                 "reused",
@@ -405,8 +474,8 @@ class CoordinatedDiscoveryToolClient:
             return response
         return self._invoke(
             "get_file_content",
-            {"file_path": file_path},
-            lambda: self._delegate.get_file_content(file_path),
+            {"symbol_id": symbol_id},
+            lambda: self._delegate.get_file_content(symbol_id),
         )
 
     def inspect_path(

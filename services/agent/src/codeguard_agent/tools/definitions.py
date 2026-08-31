@@ -14,29 +14,31 @@ from codeguard_agent.tools.tool_client import ToolClient
 def make_file_content_tool(client: ToolClient):
     """构造 get_file_content 工具。
 
-    返回一个 LangChain StructuredTool:Agent 给定文件相对路径,经 Java 沙箱读取内容。
+    返回一个 LangChain StructuredTool:Agent 给定稳定 symbol_id,经 Java 图谱快照读取源码片段。
     这是高成本兜底工具;涉及跨符号关系时应优先使用图谱工具。
     LangChain 相关导入延迟到此处,保证 mock 模式 / 没装 langchain 时本模块仍可被引用。
     """
     from langchain_core.tools import StructuredTool
 
-    def _get_file_content(file_path: str) -> str:
-        """仅在图谱事实不足以回答问题时读取指定文件的完整内容。
+    def _get_file_content(symbol_id: str) -> str:
+        """仅在图谱事实不足以回答问题时读取一个已解析 symbol 的源码片段。
 
-        参数 file_path:相对仓库根的文件路径(如 src/main/java/com/example/Service.java)。
-        可读取仓库内与当前候选相关的源码或配置文件;越权 / 不存在 / 过大会返回以 'Error:' 开头的说明。
+        参数 symbol_id:必须来自 symbol_context 或先前图谱结果，不能自行猜测。
+        METHOD/CONSTRUCTOR 返回完整声明与方法体；TYPE 返回类型定义；FIELD 返回完整字段声明。
+        过大或不存在会返回以 'Error:' 开头的说明。
         """
-        return client.get_file_content(file_path).as_tool_output()
+        return client.get_file_content(symbol_id).as_tool_output()
 
     return StructuredTool.from_function(
         func=_get_file_content,
         name="get_file_content",
         description=(
             "高成本兜底工具:仅在必须核对具体实现代码,且 patch、symbol_context 和图谱工具都不足以回答当前缺口时,"
-            "读取仓库中指定文件的完整内容。涉及 caller/callee、listener/callback、状态传播、执行顺序、"
+            "读取一个已由 SymbolResolution 或图谱结果提供的 symbol 源码片段。"
+            "METHOD/CONSTRUCTOR 返回声明和方法体，TYPE 返回类型定义，FIELD 返回完整字段声明，"
+            "FRAMEWORK_ENTRYPOINT 返回对应注解。涉及 caller/callee、listener/callback、状态传播、执行顺序、"
             "影响范围或 source-to-sink 的跨符号查询应优先使用 inspect_* 图谱工具。"
-            "输入为相对仓库根的文件路径;仅读取与当前候选相关的 repo 内源码或配置文件,"
-            "不要遍历无关文件。"
+            "输入只能是稳定 symbol_id，不得传文件路径、文件名或自行编造 ID。"
         ),
     )
 

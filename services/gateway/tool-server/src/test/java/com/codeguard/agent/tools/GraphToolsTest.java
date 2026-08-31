@@ -90,18 +90,17 @@ class GraphToolsTest {
     }
 
     @Test
-    void fileReaderRejectsPathsNotGroundedInSnapshotOrTask(@TempDir Path repo) throws Exception {
+    void fileReaderRejectsUnresolvedSymbol(@TempDir Path repo) throws Exception {
         Files.writeString(repo.resolve("Known.java"), "class Known {}");
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "rev"));
-        GetFileContentTool tool = new GetFileContentTool(
-                new FileAccessSandbox(repo), snapshot);
+        GetFileContentTool tool = new GetFileContentTool(snapshot);
         AgentContext context = new AgentContext(repo, Set.of());
 
         ToolResult missing = tool.execute("GuessedController.java", context);
 
         assertFalse(missing.isSuccess());
-        assertEquals("missing_file", missing.getError());
+        assertTrue(missing.getError().startsWith("symbol_not_found:"), missing.getError());
     }
 
     @Test
