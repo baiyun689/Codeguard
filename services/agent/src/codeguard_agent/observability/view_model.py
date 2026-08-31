@@ -7,6 +7,7 @@ from collections import defaultdict
 from typing import Any, Iterable
 
 from codeguard_agent.observability.models import TraceEvent, TraceReport
+from codeguard_agent.observability.serialization import normalize_tool_result
 
 REVIEWERS: dict[str, tuple[str, str, str]] = {
     "discover_threat_model": (
@@ -462,6 +463,14 @@ def _application_tool_steps(
                     if artifact is not None
                     else item.get("output")
                 )
+                reused_from_call_id = str(
+                    item.get("reused_from_call_id") or ""
+                )
+                normalized_output = normalize_tool_result(
+                    preview,
+                    status=status,
+                    reused_from_call_id=reused_from_call_id,
+                )
                 result.append(
                     {
                         "id": f"application-tool-record:{event.sequence}:{index}",
@@ -480,10 +489,13 @@ def _application_tool_steps(
                         ),
                         "status": status,
                         "summary": _application_tool_summary(
-                            tool_name, preview, status
+                            tool_name,
+                            normalized_output,
+                            status,
+                            reused_from_call_id=reused_from_call_id,
                         ),
                         "input": arguments,
-                        "output": preview,
+                        "output": normalized_output,
                         "artifact_id": artifact_id,
                         "payload_hash": (
                             artifact.payload_hash
@@ -491,9 +503,7 @@ def _application_tool_steps(
                             else ""
                         ),
                         "reuse_key": str(item.get("reuse_key") or ""),
-                        "reused_from_call_id": str(
-                            item.get("reused_from_call_id") or ""
-                        ),
+                        "reused_from_call_id": reused_from_call_id,
                         "reused_from_artifact_id": str(
                             item.get("reused_from_artifact_id") or ""
                         ),
@@ -521,6 +531,14 @@ def _application_tool_steps(
                 continue
             if call_id:
                 seen_application_call_ids.add(call_id)
+            reused_from_call_id = str(
+                detail.get("reused_from_call_id") or ""
+            )
+            normalized_output = normalize_tool_result(
+                detail.get("output"),
+                status="reused",
+                reused_from_call_id=reused_from_call_id,
+            )
             result.append(
                 {
                     "id": f"application-tool-reuse:{event.sequence}:{index}",
@@ -536,13 +554,16 @@ def _application_tool_steps(
                     "end_sequence": None,
                     "duration_ms": 0.0,
                     "status": "reused",
-                    "summary": "复用已缓存工具结果",
-                    "input": detail.get("arguments", {}),
-                    "output": detail.get("output", "复用首次调用结果"),
-                    "reuse_key": str(detail.get("reuse_key") or ""),
-                    "reused_from_call_id": str(
-                        detail.get("reused_from_call_id") or ""
+                    "summary": _application_tool_summary(
+                        tool_name,
+                        normalized_output,
+                        "reused",
+                        reused_from_call_id=reused_from_call_id,
                     ),
+                    "input": detail.get("arguments", {}),
+                    "output": normalized_output,
+                    "reuse_key": str(detail.get("reuse_key") or ""),
+                    "reused_from_call_id": reused_from_call_id,
                     "reused_from_artifact_id": str(
                         detail.get("reused_from_artifact_id") or ""
                     ),
@@ -551,8 +572,16 @@ def _application_tool_steps(
     return result
 
 
-def _application_tool_summary(tool: str, output: Any, status: str) -> str:
+def _application_tool_summary(
+    tool: str,
+    output: Any,
+    status: str,
+    *,
+    reused_from_call_id: str = "",
+) -> str:
     if status == "reused":
+        if reused_from_call_id == "task_patch":
+            return "复用当前 task patch（未执行 Gateway）"
         return "复用已缓存工具结果"
     if tool not in {
         "inspect_change_impact",
@@ -560,10 +589,7 @@ def _application_tool_summary(tool: str, output: Any, status: str) -> str:
         "inspect_structure",
     }:
         return f"应用级工具记录 · {status}"
-    try:
-        payload = json.loads(str(output or ""))
-    except (TypeError, json.JSONDecodeError):
-        return f"图谱查询 · {status}"
+    payload = output
     if not isinstance(payload, dict) or payload.get("schema_version") != 2:
         return "图谱协议不兼容"
     relations = payload.get("relationships")
@@ -596,6 +622,13 @@ def _tool_step(
     legacy_output = None
     if end is not None:
         legacy_output = end.detail.get("output", end.detail.get("result"))
+    step_status = (
+        "failed"
+        if failed
+        else "complete"
+        if start is not None and end is not None
+        else "missing"
+    )
     return {
         "id": f"tool:{run_id or sequence}",
         "sequence": sequence,
@@ -609,16 +642,13 @@ def _tool_step(
         "start_sequence": start.sequence if start is not None else None,
         "end_sequence": end.sequence if end is not None else None,
         "duration_ms": duration_ms,
-        "status": (
-            "failed"
-            if failed
-            else "complete"
-            if start is not None and end is not None
-            else "missing"
-        ),
+        "status": step_status,
         "summary": end.summary if end is not None else event.summary,
         "input": start.detail.get("input") if start is not None else None,
-        "output": artifact.preview if artifact is not None else legacy_output,
+        "output": normalize_tool_result(
+            artifact.preview if artifact is not None else legacy_output,
+            status=step_status,
+        ),
         "artifact_id": artifact_id,
         "payload_hash": artifact.payload_hash if artifact is not None else "",
     }

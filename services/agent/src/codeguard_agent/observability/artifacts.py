@@ -11,6 +11,7 @@ from codeguard_agent.models.evidence import (
     EvidenceSourceKind,
     payload_digest,
 )
+from codeguard_agent.observability.serialization import normalize_tool_result
 from codeguard_agent.observability.models import (
     TraceArtifactMeta,
     TraceEvent,
@@ -70,7 +71,9 @@ def normalize_trace_report(
             status=artifact.availability.value,
             capture_mode=artifact.capture_mode.value,
             payload_hash=artifact.payload_hash,
-            preview=projection.content or projection.summary,
+            preview=normalize_tool_result(
+                projection.content or projection.summary,
+            ),
             preview_truncated=projection.truncated,
             replayed_from_artifact_id=artifact.replayed_from_artifact_id,
         )

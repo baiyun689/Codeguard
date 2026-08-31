@@ -558,7 +558,7 @@ def test_trace_preview_reuses_runtime_focused_reviewer_projection():
         arguments=artifact.arguments,
         focus=focus,
     ).content
-    assert report.artifacts[artifact.id].preview == expected
+    assert report.artifacts[artifact.id].preview == json.loads(expected)
 
 
 def test_trace_view_summarizes_judge_and_causal_merge_results():
@@ -1213,7 +1213,11 @@ def test_trace_view_builds_reviewer_tool_steps_from_node_output_without_native_e
     assert behavior["tool_call_count"] == 1
     assert tool_step["code_name"] == "inspect_change_impact"
     assert tool_step["input"] == {"symbol_id": "java:demo.OrderService"}
-    assert tool_step["output"] == '{"schema_version":2,"outcome":"found","coverage":"complete"}'
+    assert tool_step["output"] == {
+        "schema_version": 2,
+        "outcome": "found",
+        "coverage": "complete",
+    }
     assert tool_step["status"] == "complete"
     assert "found/complete" in tool_step["summary"]
 
@@ -1284,6 +1288,47 @@ def test_trace_view_keeps_each_reviewer_tool_record_including_reuse():
     assert tool_steps[1]["reused_from_artifact_id"] == "artifact-1"
 
 
+def test_trace_view_explains_task_patch_reuse_and_normalizes_missing_output():
+    report = TraceReport(
+        run_id="task-patch-reuse",
+        timestamp="2026-08-31T00:00:00",
+        events=[
+            _flow_event(
+                1,
+                "node_end",
+                "discover_behavior",
+                "discover_behavior",
+                "discover-run",
+                detail={
+                    "output": {
+                        "tool_trace_records": [{
+                            "call_id": "patch-call",
+                            "tool": "get_file_content",
+                            "arguments": {"symbol_id": "java:demo.New#m()"},
+                            "status": "reused",
+                            "duration_ms": 0.0,
+                            "reused_from_call_id": "task_patch",
+                        }],
+                    }
+                },
+            ),
+        ],
+    )
+
+    view = build_trace_view(report)
+    step = next(
+        item for item in view["steps"].values()
+        if item["kind"] == "tool"
+    )
+
+    assert step["summary"] == "复用当前 task patch（未执行 Gateway）"
+    assert step["output"] == {
+        "status": "reused",
+        "source": "task_patch",
+        "message": "当前 task patch 已包含该 symbol 的完整源码",
+    }
+
+
 def test_trace_view_keeps_legacy_native_tool_output_without_artifact_index():
     report = TraceReport(
         run_id="legacy-tool-output",
@@ -1305,7 +1350,7 @@ def test_trace_view_keeps_legacy_native_tool_output_without_artifact_index():
         step for step in view["steps"].values() if step["kind"] == "tool"
     )
 
-    assert tool_step["output"] == "class A {}"
+    assert tool_step["output"] == {"content": "class A {}"}
 
 
 def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
@@ -1377,7 +1422,11 @@ def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
     assert tool_steps[0]["pair_id"] == "evidence-call-1"
     assert tool_steps[0]["reuse_key"] == "security:service"
     assert tool_steps[1]["input"] == {"symbol_id": "java:demo.Service"}
-    assert tool_steps[1]["output"] == '{"schema_version":2,"outcome":"found","coverage":"complete"}'
+    assert tool_steps[1]["output"] == {
+        "schema_version": 2,
+        "outcome": "found",
+        "coverage": "complete",
+    }
     assert tool_steps[1]["reuse_key"] == "security:service"
     assert tool_steps[1]["reused_from_call_id"] == "evidence-call-1"
 
@@ -2174,6 +2223,7 @@ class TestDashboard:
         assert "renderToolPayloads" in template
         assert "工具入参" in template
         assert "工具输出" in template
+        assert "复用当前 task patch（未执行 Gateway）" in template
 
     def test_trace_layout_shows_main_duration_and_collapses_reviewer_tools(self):
         template = _dashboard_template()

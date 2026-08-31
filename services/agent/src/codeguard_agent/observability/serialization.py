@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from enum import Enum
+import json
 from typing import Any
 
 _MAX_DEPTH = 40
@@ -13,6 +14,45 @@ _MAX_DEPTH = 40
 def serialize_trace_value(value: Any) -> Any:
     """递归序列化 Pydantic、dataclass、消息对象和普通容器。"""
     return _serialize(value, seen=set(), depth=0)
+
+
+def normalize_tool_result(
+    output: Any,
+    *,
+    status: str = "",
+    reused_from_call_id: str = "",
+) -> Any:
+    """把工具结果转换成 Dashboard 可展开的 JSON 值。
+
+    图谱工具返回的 JSON 文本解析为对象；源码和错误等普通文本放入
+    ``content``。没有真实 payload 的复用记录保留明确原因，避免 Trace
+    显示成 ``null``。
+    """
+    if status == "reused" and reused_from_call_id == "task_patch":
+        return {
+            "status": "reused",
+            "source": "task_patch",
+            "message": "当前 task patch 已包含该 symbol 的完整源码",
+        }
+    if status == "reused" and output in (None, ""):
+        return {
+            "status": "reused",
+            "source": "cache",
+            "message": "复用首次调用结果",
+        }
+    if isinstance(output, str):
+        if not output.strip():
+            return {"content": ""}
+        try:
+            parsed = json.loads(output)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {"content": output}
+        if parsed is None or isinstance(parsed, (str, int, float, bool)):
+            return {"value": parsed}
+        return parsed
+    if output is None:
+        return {"content": None}
+    return output
 
 
 def _serialize(value: Any, *, seen: set[int], depth: int) -> Any:

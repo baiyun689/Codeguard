@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -97,7 +99,7 @@ class TraceArtifactMeta(BaseModel):
     status: str = ""
     capture_mode: str = ""
     payload_hash: str
-    preview: str = ""
+    preview: Any = ""
     preview_truncated: bool = False
     replayed_from_artifact_id: str = ""
 

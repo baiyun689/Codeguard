@@ -438,13 +438,15 @@ function renderToolPayloads(input,output,step){
   var artifact=step&&step.artifact_id?(DATA.artifacts||{})[step.artifact_id]:null;
   var raw=artifact?(DATA.payload_store||{})[artifact.payload_hash]:null;
   var reused=step&&step.status==="reused";
-  var reuseInfo=reused?'<div class="step-summary">复用自 call '+
-    esc(step.reused_from_call_id||"-")+' / artifact '+
-    esc(step.reused_from_artifact_id||"-")+'</div>':'';
+  var reuseInfo=reused?'<div class="step-summary">'+
+    (step.reused_from_call_id==="task_patch"?
+      '复用当前 task patch（未执行 Gateway）':
+      '复用自 call '+esc(step.reused_from_call_id||"-")+' / artifact '+
+      esc(step.reused_from_artifact_id||"-"))+'</div>':'';
   var original=raw!==undefined&&raw!==null?'<details class="tool-payload" data-disclosure-id="'+
     esc(step.id)+':raw"><summary>'+
     '原始响应 · '+esc(countValue(raw))+'</summary>'+renderJsonTree(raw)+'</details>':'';
-  var outputDetails=reused?'':'<details class="tool-payload" data-disclosure-id="'+
+  var outputDetails='<details class="tool-payload" data-disclosure-id="'+
     esc(step.id)+':output"><summary>工具输出 · '+
     esc(countValue(output))+'</summary>'+renderJsonTree(output)+'</details>'+original;
   return'<div class="tool-payloads"><details class="tool-payload" data-disclosure-id="'+
