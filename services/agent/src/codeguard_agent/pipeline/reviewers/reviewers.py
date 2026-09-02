@@ -162,13 +162,15 @@ def build_reviewer_user_prompt(
             if domain == "behavior":
                 recommendation = (
                     "caller/入口/影响范围→inspect_change_impact; "
-                    "callee/listener/callback/状态/执行顺序→inspect_path(behavior); "
-                    "一跳关系→inspect_structure"
+                    "callee/listener/callback→inspect_path(behavior); "
+                    "字段读写/一跳关系→inspect_structure; "
+                    "条件/顺序/状态赋值→先定位后 get_file_content"
                 )
             elif domain == "threat-model":
                 recommendation = (
-                    "source/传播/guard/sink→inspect_path(security); "
-                    "入口/影响范围→inspect_change_impact; 一跳关系→inspect_structure"
+                    "下游敏感调用线索→inspect_path(security); "
+                    "上游入口/影响范围→inspect_change_impact; "
+                    "参数使用/保护条件→先定位后 get_file_content"
                 )
             else:
                 recommendation = (

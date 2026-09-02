@@ -36,8 +36,8 @@ def make_file_content_tool(client: ToolClient):
             "高成本兜底工具:仅在必须核对具体实现代码,且 patch、symbol_context 和图谱工具都不足以回答当前缺口时,"
             "读取一个已由 SymbolResolution 或图谱结果提供的 symbol 源码片段。"
             "METHOD/CONSTRUCTOR 返回声明和方法体，TYPE 返回类型定义，FIELD 返回完整字段声明，"
-            "FRAMEWORK_ENTRYPOINT 返回对应注解。涉及 caller/callee、listener/callback、状态传播、执行顺序、"
-            "影响范围或 source-to-sink 的跨符号查询应优先使用 inspect_* 图谱工具。"
+            "FRAMEWORK_ENTRYPOINT 返回对应注解。涉及 caller/callee、listener/callback、字段访问或影响范围时，"
+            "先用 inspect_* 定位相关 symbol；需要确认条件、顺序、状态赋值或参数使用时再读取源码。"
             "输入只能是稳定 symbol_id，不得传文件路径、文件名或自行编造 ID。"
         ),
     )
@@ -59,8 +59,9 @@ def make_path_tool(client: ToolClient):
         name="inspect_path",
         description=(
             "按 symbol_context 给出的稳定 symbol_id 查询有界下游路径。"
-            "path_kind=behavior 查询 callee、callback、listener、接口实现和状态访问；"
-            "path_kind=security 查询输入源、传播、防护和敏感 sink。"
+            "path_kind=behavior 查询有界下游调用并附带字段访问、继承实现和框架入口事实；"
+            "path_kind=security 在有界下游遍历中返回敏感调用命中及起始 symbol 的入口线索，"
+            "不表示完整数据流或连通路径。"
             "path_kind 只能是 behavior 或 security，max_depth 默认 3、最大 3。"
             "不得自行编造 symbol_id 或文件名。"
         ),
@@ -78,9 +79,9 @@ def make_change_impact_tool(client: ToolClient):
         func=_inspect_change_impact,
         name="inspect_change_impact",
         description=(
-            "按 symbol_context 给出的稳定 symbol_id 查询影响面：方法/构造器返回"
-            "调用方、框架入口与继承覆盖；字段返回读写它的方法；类型返回继承/实现它的"
-            "类型；并附解析覆盖状态。不得用惯用类名猜测路径。"
+            "按 symbol_context 给出的稳定 symbol_id 查询影响面：方法/构造器返回最多三层"
+            "调用方和框架入口，并附继承覆盖；字段返回一跳读写者；类型返回一跳继承/实现者；"
+            "结果只证明已返回关系存在。不得用惯用类名猜测路径。"
         ),
     )
 
