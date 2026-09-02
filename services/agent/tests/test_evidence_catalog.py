@@ -482,7 +482,7 @@ class _FakeLLM:
 
 
 class _SuccessfulAgentEngine(ToolAgentEngine):
-    def _run_agent(self, llm, system_prompt, user_prompt):  # noqa: ARG002
+    def _run_agent(self, llm, system_prompt, user_prompt, *, result_schema):  # noqa: ARG002
         return {"messages": []}
 
 

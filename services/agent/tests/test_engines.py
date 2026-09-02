@@ -135,7 +135,7 @@ class _FakeLLM:
 class _RecursingEngine(ToolAgentEngine):
     """让 ReAct 执行必撞递归上限,用于验证降级路径(不构造真实 agent/不调真实 LLM)。"""
 
-    def _run_agent(self, llm, system_prompt, user_prompt):  # noqa: ARG002
+    def _run_agent(self, llm, system_prompt, user_prompt, *, result_schema):  # noqa: ARG002
         from langgraph.errors import GraphRecursionError
 
         raise GraphRecursionError("Recursion limit of 12 reached without hitting a stop condition")
@@ -144,7 +144,7 @@ class _RecursingEngine(ToolAgentEngine):
 class _SuccessfulAgentEngine(ToolAgentEngine):
     """返回一次成功工具探索和同轨迹最终结构化结果。"""
 
-    def _run_agent(self, llm, system_prompt, user_prompt):  # noqa: ARG002
+    def _run_agent(self, llm, system_prompt, user_prompt, *, result_schema):  # noqa: ARG002
         return {
             "messages": [
                 _AIMsg([
@@ -178,8 +178,38 @@ class _RawFinalEngine(ToolAgentEngine):
         super().__init__(tool_client=type("Client", (), {"trace_records": []})())
         self._content = content
 
-    def _run_agent(self, llm, system_prompt, user_prompt):  # noqa: ARG002
+    def _run_agent(self, llm, system_prompt, user_prompt, *, result_schema):  # noqa: ARG002
         return {"messages": [_AIMsg([], self._content)]}
+
+
+class _StructuredResponseEngine(ToolAgentEngine):
+    """模拟 LangChain ToolStrategy 已在 Agent 内完成的结构化收口。"""
+
+    def _run_agent(self, llm, system_prompt, user_prompt, *, result_schema):  # noqa: ARG002
+        return {
+            "structured_response": DiscoveryReviewResult(
+                summary="agent structured", issues=[]
+            ),
+            "messages": [_AIMsg([], "不是 JSON 的自然语言终止消息")],
+        }
+
+
+def test_react_优先消费_agent_structured_response_不再二次结构化调用():
+    outcome = _StructuredResponseEngine(
+        tool_client=type("Client", (), {"trace_records": []})()
+    ).review(
+        _FailIfStructuredLLM(),
+        system_prompt="s",
+        user_prompt="u",
+        reviewer_name="logic",
+        max_retries=1,
+        structured_method="function_calling",
+        result_schema=DiscoveryReviewResult,
+    )
+
+    assert outcome.status is ReviewExecutionStatus.COMPLETE
+    assert outcome.result.summary == "agent structured"
+    assert outcome.execution_events == ["react_agent_structured"]
 
 
 class _RawMessagesEngine(ToolAgentEngine):
@@ -187,7 +217,7 @@ class _RawMessagesEngine(ToolAgentEngine):
         super().__init__(tool_client=type("Client", (), {"trace_records": []})())
         self._messages = messages
 
-    def _run_agent(self, llm, system_prompt, user_prompt):  # noqa: ARG002
+    def _run_agent(self, llm, system_prompt, user_prompt, *, result_schema):  # noqa: ARG002
         return {"messages": self._messages}
 
 

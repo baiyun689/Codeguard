@@ -170,7 +170,9 @@ class ToolAgentEngine(ReviewEngine):
 
     基于 langchain v1 的 ``create_agent``(langgraph 预构建图):
     - 工具循环 + 停止条件由图托管,无需手写 AgentExecutor;
-    - 终止消息按 ``result_schema`` 本地校验，失败时才进行一次结构化 synthesis;
+    - ``ToolStrategy`` 将 ``result_schema`` 注册为 Agent 的最终结果工具，正常路径
+      直接读取 ``structured_response``；
+    - 只有 Agent 未返回结构化响应时，才解析终止文本并进行一次结构化 synthesis;
     - 与图编排同源，均基于 LangGraph 预构建图。
 
     全部工具调用先进入 Evidence Ledger/Trace，再解释终止消息；候选只引用其中最小子集。
@@ -209,7 +211,9 @@ class ToolAgentEngine(ReviewEngine):
         from langgraph.errors import GraphRecursionError
 
         try:
-            raw = self._run_agent(llm, system_prompt, user_prompt)
+            raw = self._run_agent(
+                llm, system_prompt, user_prompt, result_schema=result_schema
+            )
         except GraphRecursionError:
             # HITL 开启时不吞异常，让它传播到上层 _review 节点的 interrupt handler，
             # 由人决定 continue/retry/skip。
@@ -272,6 +276,14 @@ class ToolAgentEngine(ReviewEngine):
             )
         tool_records = list(getattr(self._tool_client, "trace_records", ()))
         catalog, trace_refs = _capture_records(evidence_catalog, tool_records)
+        structured_result = _extract_agent_structured_response(raw, result_schema)
+        if structured_result is not None:
+            return ReviewOutcome(
+                structured_result,
+                tool_trace_records=list(trace_refs),
+                execution_events=["react_agent_structured"],
+                evidence_catalog=catalog,
+            )
         inline_result = _extract_inline_result(raw, result_schema)
         if inline_result is not None:
             return ReviewOutcome(
@@ -302,7 +314,14 @@ class ToolAgentEngine(ReviewEngine):
             event=REACT_SYNTHESIS_FALLBACK_INVALID_OUTPUT_EVENT,
         )
 
-    def _run_agent(self, llm: Any, system_prompt: str, user_prompt: str) -> Any:
+    def _run_agent(
+        self,
+        llm: Any,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        result_schema: Any,
+    ) -> Any:
         """构建 ReAct agent 并执行,返回原始状态。
 
         抽成独立方法是为了让"撞递归上限降级"逻辑可被单测覆盖(测试覆写本方法抛
@@ -310,6 +329,7 @@ class ToolAgentEngine(ReviewEngine):
         """
         # LangChain 相关导入延迟到此:mock 模式 / 无工具路径不需要它们。
         from langchain.agents import create_agent
+        from langchain.agents.structured_output import ToolStrategy
 
         from codeguard_agent.tools.definitions import (
             make_change_impact_tool,
@@ -334,11 +354,25 @@ class ToolAgentEngine(ReviewEngine):
             llm,
             tools,
             system_prompt=system_prompt,
+            response_format=ToolStrategy(result_schema, handle_errors=True),
         )
         return agent.invoke(
             {"messages": [("human", user_prompt)]},
             config={"recursion_limit": self._recursion_limit},
         )
+
+
+def _extract_agent_structured_response(raw: Any, result_schema: Any) -> Any | None:
+    """读取 ToolStrategy 的结构化收口结果，并再做本地 schema 校验。"""
+    if not isinstance(raw, dict) or "structured_response" not in raw:
+        return None
+    response = raw["structured_response"]
+    if isinstance(response, result_schema):
+        return response
+    try:
+        return result_schema.model_validate(response)
+    except Exception:  # noqa: BLE001 不合规结果沿用既有 fallback
+        return None
 
 
 def _run_structured_fallback(
