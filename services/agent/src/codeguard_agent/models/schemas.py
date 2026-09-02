@@ -84,7 +84,10 @@ class DiscoveredIssue(BaseModel):
     line: int = Field(default=0, description="问题所在行号,0 表示无法定位到具体行")
     location_snippet: str = Field(
         default="",
-        description="从当前 task 新增行原样复制的连续代码片段，仅用于定位",
+        description=(
+            "通常从当前 task 新增行原样复制的连续代码片段，仅用于定位；"
+            "删除型变更使用运行时提供的 current-revision anchor line 时必须为空"
+        ),
     )
     type: str = Field(description="问题类型")
     message: str = Field(description="问题描述")

@@ -138,6 +138,22 @@ def build_reviewer_user_prompt(
         _text(task.patch),
         "  </task_patch>",
     ])
+    if task.deletion_anchors:
+        parts.append("  <deletion_anchors>")
+        for anchor in task.deletion_anchors:
+            parts.extend([
+                (
+                    f'    <anchor line="{anchor.anchor_line}" '
+                    f'kind="{_attr(anchor.anchor_kind)}">'
+                ),
+                "当前 revision 中与 patch 删除块相邻的有效定位与符号查询入口。"
+                "报告该删除引入的问题时使用此 line，location_snippet 保持空字符串。",
+                "      <deleted_fragment>",
+                _text(anchor.deleted_snippet),
+                "      </deleted_fragment>",
+                "    </anchor>",
+            ])
+        parts.append("  </deletion_anchors>")
     if symbol_context is not None:
         parts.append(
             "  <symbol_context "
@@ -181,7 +197,8 @@ def build_reviewer_user_prompt(
             parts.append(
                 f'    <query_hint symbol_id="{_attr(symbol.symbol_id)}" '
                 f'range="{symbol.start_line}-{symbol.end_line}" '
-                f'changed_lines="{_attr(",".join(str(line) for line in task.changed_lines if symbol.start_line <= line <= symbol.end_line))}">'
+                f'changed_lines="{_attr(",".join(str(line) for line in task.changed_lines if symbol.start_line <= line <= symbol.end_line))}" '
+                f'deletion_anchor_lines="{_attr(",".join(str(anchor.anchor_line) for anchor in task.deletion_anchors if symbol.start_line <= anchor.anchor_line <= symbol.end_line))}">'
                 f'{_text(recommendation)}</query_hint>'
             )
         for limitation in symbol_context.limitations:

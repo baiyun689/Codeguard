@@ -18,6 +18,7 @@ from codeguard_agent.models.evidence import (
 )
 from codeguard_agent.models.schemas import EvidenceRole
 from codeguard_agent.models.tasks import (
+    DeletionAnchor,
     ResolvedSymbol,
     ReviewTask,
     SymbolResolutionStatus,
@@ -196,6 +197,118 @@ def test_context_fact_partial_标_limited():
     ]
     assert context_items[0].validation_status is EvidenceValidationStatus.LIMITED
     assert "symbol_context_truncated" in context_items[0].limitations
+
+
+def test_deletion_anchor_allows_enclosing_symbol_context() -> None:
+    task = ReviewTask(
+        id=TASK_ID,
+        file="src/A.java",
+        patch="-    if (blocked(value)) return;\n     execute(value);\n",
+        deletion_anchors=[
+            DeletionAnchor(
+                anchor_line=11,
+                anchor_kind="next_surviving",
+                deleted_snippet="    if (blocked(value)) return;",
+            )
+        ],
+    )
+    patch = _patch_artifact(task.patch)
+    symbol = ResolvedSymbol(
+        file="src/A.java",
+        symbol_id="java:A#run()",
+        kind="method",
+        start_line=9,
+        end_line=12,
+        source_set="MAIN",
+    )
+    context = EvidenceArtifact.build(
+        task_id=TASK_ID,
+        reviewer="threat_model",
+        revision=REV,
+        source_kind=EvidenceSourceKind.SYMBOL_CONTEXT,
+        tool="resolve_change_context",
+        arguments={"symbol_id": symbol.symbol_id},
+        payload=symbol.model_dump_json(),
+        availability=ArtifactAvailability.AVAILABLE,
+        capture_mode=EvidenceCaptureMode.GENERATED,
+    )
+    candidate = _candidate(patch.id, context.id).model_copy(update={"line": 11})
+    symbol_context = TaskSymbolContext(
+        task_id=TASK_ID,
+        status=SymbolResolutionStatus.RESOLVED,
+        symbols=(symbol,),
+    )
+
+    batch = verify_evidence(
+        [CandidateDossier(
+            candidate=candidate, task=task, symbol_context=symbol_context
+        )],
+        artifacts={patch.id: patch, context.id: context},
+        tool_client=None,
+        revision=REV,
+        enabled_replay_tools=None,
+    )
+
+    verification = batch.candidates[candidate.id]
+    assert verification.eligible_for_judge is True
+    assert any(item.artifact_id == context.id for item in verification.valid_evidence)
+
+
+def test_deletion_anchor_rejects_symbol_context_for_another_task_line() -> None:
+    task = ReviewTask(
+        id=TASK_ID,
+        file="src/A.java",
+        patch="-    if (blocked(value)) return;\n+    changed();\n     execute(value);\n",
+        changed_lines=[12],
+        deletion_anchors=[
+            DeletionAnchor(
+                anchor_line=13,
+                anchor_kind="next_surviving",
+                deleted_snippet="    if (blocked(value)) return;",
+            )
+        ],
+    )
+    patch = _patch_artifact(task.patch)
+    unrelated_symbol = ResolvedSymbol(
+        file="src/A.java",
+        symbol_id="java:A#changed()",
+        kind="method",
+        start_line=12,
+        end_line=12,
+        source_set="MAIN",
+    )
+    context = EvidenceArtifact.build(
+        task_id=TASK_ID,
+        reviewer="threat_model",
+        revision=REV,
+        source_kind=EvidenceSourceKind.SYMBOL_CONTEXT,
+        tool="resolve_change_context",
+        arguments={"symbol_id": unrelated_symbol.symbol_id},
+        payload=unrelated_symbol.model_dump_json(),
+        availability=ArtifactAvailability.AVAILABLE,
+        capture_mode=EvidenceCaptureMode.GENERATED,
+    )
+    candidate = _candidate(patch.id, context.id).model_copy(update={"line": 13})
+
+    batch = verify_evidence(
+        [CandidateDossier(
+            candidate=candidate,
+            task=task,
+            symbol_context=TaskSymbolContext(
+                task_id=TASK_ID,
+                status=SymbolResolutionStatus.RESOLVED,
+                symbols=(unrelated_symbol,),
+            ),
+        )],
+        artifacts={patch.id: patch, context.id: context},
+        tool_client=None,
+        revision=REV,
+        enabled_replay_tools=None,
+    )
+
+    verification = batch.candidates[candidate.id]
+    assert all(item.artifact_id != context.id for item in verification.valid_evidence)
+    assert any("symbol_scope_mismatch" in item.detail for item in verification.invalid_references)
 
 
 def test_symbol_context_scope_mismatch_is_invalid():

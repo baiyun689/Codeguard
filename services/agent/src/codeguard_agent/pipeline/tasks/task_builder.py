@@ -7,6 +7,7 @@ import re
 
 from codeguard_agent.git.diff_collector import split_diff_by_file
 from codeguard_agent.models.tasks import (
+    DeletionAnchor,
     DiffMetrics,
     ReviewBudget,
     ReviewMode,
@@ -253,6 +254,57 @@ def _changed_lines(hunk_body: str, new_start: int) -> list[int]:
     return changed
 
 
+def _deletion_anchors(hunk_body: str, new_start: int) -> list[DeletionAnchor]:
+    """为每段删除文本选择当前 revision 中邻近的可解析行。
+
+    统一 diff 的 ``-`` 行只存在于旧 revision，不能作为 AST 查询或 PR 评论
+    行。优先使用删除块后的存活行；只有删除位于 hunk 尾部时才回退到前一条
+    存活行。删除文本本身仍保留在 artifact patch 中作为机制证据。
+    """
+    anchors: list[DeletionAnchor] = []
+    pending: list[str] = []
+    previous_surviving: int | None = None
+    new_line = new_start
+
+    def flush(next_surviving: int | None = None) -> None:
+        nonlocal pending
+        if not pending:
+            return
+        if next_surviving is not None:
+            anchors.append(
+                DeletionAnchor(
+                    anchor_line=next_surviving,
+                    anchor_kind="next_surviving",
+                    deleted_snippet="\n".join(pending),
+                )
+            )
+        elif previous_surviving is not None:
+            anchors.append(
+                DeletionAnchor(
+                    anchor_line=previous_surviving,
+                    anchor_kind="previous_surviving",
+                    deleted_snippet="\n".join(pending),
+                )
+            )
+        pending = []
+
+    for line in hunk_body.splitlines():
+        if line.startswith(("@@", "+++", "---", "\\ ")):
+            continue
+        if line.startswith("-"):
+            pending.append(line[1:])
+            continue
+        if line.startswith(("+", " ")):
+            # 当前行已经在新 revision 中存在，可作为刚结束删除块的锚点。
+            flush(next_surviving=new_line)
+            previous_surviving = new_line
+            new_line += 1
+            continue
+        flush()
+    flush()
+    return anchors
+
+
 def _hunk_span(task: ReviewTask) -> tuple[int, int] | None:
     """从 task.hunk_header 解析该 hunk 覆盖的新文件行范围 [start, end]。
 
@@ -296,6 +348,7 @@ def build_tasks(diff_text: str) -> list[ReviewTask]:
                     hunk_header=header,
                     patch=body,
                     changed_lines=_changed_lines(body, new_start),
+                    deletion_anchors=_deletion_anchors(body, new_start),
                 )
             )
     for path, section in _fallback_targets(diff_text).items():
@@ -333,14 +386,17 @@ def build_file_tasks(diff_text: str) -> list[ReviewTask]:
             continue
         # 收集所有 hunk 的变更行
         all_changed: list[int] = []
+        all_deletion_anchors: list[DeletionAnchor] = []
         for _header, body, new_start in hunks:
             all_changed.extend(_changed_lines(body, new_start))
+            all_deletion_anchors.extend(_deletion_anchors(body, new_start))
         tasks.append(
             ReviewTask(
                 id=f"{file}#file",
                 file=file,
                 patch=section,
                 changed_lines=all_changed,
+                deletion_anchors=all_deletion_anchors,
             )
         )
     for path, section in _fallback_targets(diff_text).items():

@@ -109,7 +109,11 @@ def resolve_task_symbols(
     tool_client=None,
     max_chars_per_task: int | None = 4000,
 ) -> SymbolResolutionBatch:
-    """批量解析 task 的 changed_lines，并返回 task-scoped 强类型结果。"""
+    """批量解析 task 的当前 revision 变更入口，并返回 task-scoped 强类型结果。
+
+    ``changed_lines`` 仍只表示新增行；纯删除片段通过 task.deletion_anchors
+    提供当前版本中可解析的邻近行。
+    """
     ordered_tasks = list(tasks)
     if not ordered_tasks:
         return SymbolResolutionBatch(contexts={}, diagnostics={})
@@ -121,7 +125,7 @@ def resolve_task_symbols(
         )
 
     changes = [
-        {"file": task.file, "lines": list(task.changed_lines)} for task in ordered_tasks
+        {"file": task.file, "lines": task.resolution_lines} for task in ordered_tasks
     ]
     response = tool_client.resolve_change_context(changes)
     if not getattr(response, "success", False):
@@ -182,7 +186,7 @@ def resolve_task_symbols(
 
     by_task: dict[str, TaskSymbolContext] = {}
     for task in ordered_tasks:
-        task_lines = set(task.changed_lines)
+        task_lines = set(task.resolution_lines)
         matches = [
             symbol
             for symbol in symbols

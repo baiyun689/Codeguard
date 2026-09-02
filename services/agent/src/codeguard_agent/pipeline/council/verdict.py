@@ -83,7 +83,12 @@ def _evidence_item_payload(
             if dossier.candidate.line <= 0:
                 limitations.append("candidate_location_unresolved")
             elif dossier.candidate.line not in dossier.task.changed_lines:
-                limitations.append("candidate_line_unknown")
+                if dossier.candidate.line in {
+                    anchor.anchor_line for anchor in dossier.task.deletion_anchors
+                }:
+                    limitations.append("candidate_deletion_anchor")
+                else:
+                    limitations.append("candidate_line_unknown")
             content = evidence.content
         elif evidence.tool in GRAPH_TOOLS:
             content = project_tool_payload(

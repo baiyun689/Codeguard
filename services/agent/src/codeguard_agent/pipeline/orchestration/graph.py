@@ -481,6 +481,18 @@ def _symbol_resolution_node(tool_client):
             tool_client=tool_client,
             max_chars_per_task=scope.effective_budget.max_context_chars_per_task,
         )
+        deletion_anchor_count = sum(
+            len(task.deletion_anchors) for task in tasks
+        )
+        resolved_deletion_anchor_count = sum(
+            1
+            for task in tasks
+            for anchor in task.deletion_anchors
+            if any(
+                symbol.start_line <= anchor.anchor_line <= symbol.end_line
+                for symbol in resolution.contexts[task.id].symbols
+            )
+        )
         trace: list[CouncilTrace] = [
             CouncilTrace(
                 node="symbol_resolution",
@@ -488,7 +500,9 @@ def _symbol_resolution_node(tool_client):
                 detail=(
                     f"tasks={len(tasks)} "
                     f"resolved={sum(bool(item.symbols) for item in resolution.contexts.values())} "
-                    f"symbols={sum(len(item.symbols) for item in resolution.contexts.values())}"
+                    f"symbols={sum(len(item.symbols) for item in resolution.contexts.values())} "
+                    f"deletion_anchors={deletion_anchor_count} "
+                    f"deletion_anchors_resolved={resolved_deletion_anchor_count}"
                 ),
             )
         ]
@@ -501,6 +515,7 @@ def _symbol_resolution_node(tool_client):
                     detail=(
                         f"task={task.id} status={context.status.value} "
                         f"symbols={len(context.symbols)} "
+                        f"deletion_anchors={len(task.deletion_anchors)} "
                         f"limitations={','.join(context.limitations)} "
                         f"truncated={context.truncated}"
                     ),

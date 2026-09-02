@@ -123,8 +123,8 @@ def test_plan_prompt_requires_minimal_reviewer_set_and_selection_thresholds():
     assert "ThreatModelAgent 的选中门槛" in prompt
     assert "BehaviorAgent 的选中门槛" in prompt
     assert "MaintainabilityAgent 的选中门槛" in prompt
-    assert ".idea" in prompt
-    assert "仅仅因为工具可能发现隐藏问题" in prompt
+    assert "IDE 配置" in prompt
+    assert "外部关系才能确认" in prompt
     assert "不要为了显得全面而默认选择全部 Reviewer" in prompt
     assert "一个 Reviewer 足以覆盖当前变更时只选择一个" in prompt
     assert "普通业务计算" in prompt
@@ -141,15 +141,13 @@ def test_plan_prompt_describes_shared_tool_capabilities_without_fixed_assignment
         / "review-plan.txt"
     ).read_text(encoding="utf-8")
 
-    assert "公共工具能力地图" in prompt
     for text in (
-        "高成本兜底",
-        "一跳双向关系",
-        "caller、框架入口和受影响范围",
-        "callee、callback/listener、接口实现、状态读写",
-        "输入 source、传播、鉴权/清洗 guard 和敏感 sink",
-        "不是固定工具分配",
-        "你只选择审查员，不输出工具名",
+        "所有审查员共享同一组事实工具",
+        "具体查询策略由领域 Prompt 决定",
+        "不能输出工具名",
+        "不能把尚未查询的仓库关系写进 objective",
+        "调用方、下游行为、状态生命周期或权限边界",
+        "不能预设核对结果",
     ):
         assert text in prompt
 

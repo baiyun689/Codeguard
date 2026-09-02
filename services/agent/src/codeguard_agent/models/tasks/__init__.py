@@ -15,6 +15,7 @@ from codeguard_agent.models.tasks.symbols import (
 )
 from codeguard_agent.models.tasks.tasking import (
     AssignmentReason,
+    DeletionAnchor,
     DiffMetrics,
     ReviewBudget,
     ReviewMode,
@@ -30,6 +31,7 @@ from codeguard_agent.models.tasks.tasking import (
 
 __all__ = [
     "AssignmentReason",
+    "DeletionAnchor",
     "DiffMetrics",
     "PlanUnit",
     "ResolvedSymbol",

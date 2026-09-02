@@ -46,11 +46,10 @@ def test_file_content_工具名称正确():
         "FRAMEWORK_ENTRYPOINT",
         "caller/callee",
         "listener/callback",
-        "状态传播",
-        "执行顺序",
+        "字段访问",
+        "状态赋值",
         "影响范围",
-        "source-to-sink",
-        "优先使用 inspect_* 图谱工具",
+        "先用 inspect_* 定位相关 symbol",
     ):
         assert text in tool.description
 

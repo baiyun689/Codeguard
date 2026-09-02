@@ -331,9 +331,17 @@ def _verify_candidate(
                 same_file = symbol.file.replace("\\", "/").lower() == (
                     dossier.task.file.replace("\\", "/").lower()
                 )
+                deletion_anchor_lines = {
+                    anchor.anchor_line for anchor in dossier.task.deletion_anchors
+                }
+                scope_lines = (
+                    (candidate.line,)
+                    if candidate.line in deletion_anchor_lines
+                    else dossier.task.resolution_lines
+                )
                 overlaps_change = any(
                     symbol.start_line <= line <= symbol.end_line
-                    for line in dossier.task.changed_lines
+                    for line in scope_lines
                 )
                 if symbol_argument != symbol.symbol_id or not same_file or not overlaps_change:
                     raise ValueError("symbol_scope_mismatch")

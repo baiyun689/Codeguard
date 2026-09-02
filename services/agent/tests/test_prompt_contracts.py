@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from codeguard_agent.models.tasks import ReviewTask
+from codeguard_agent.models.tasks import DeletionAnchor, ReviewTask
 from codeguard_agent.pipeline.prompting import render_prompt_template
 from codeguard_agent.pipeline.reviewers.reviewers import (
     DEFAULT_REVIEWERS,
@@ -28,12 +28,11 @@ def _prompt(name: str) -> str:
 def test_reviewer_prompts_have_shared_review_contract():
     for reviewer in DEFAULT_REVIEWERS:
         prompt = build_reviewer_system_prompt(reviewer)
-        assert "## 审查步骤" in prompt
+        assert "## 分析方法" in prompt
+        assert "## 结论边界" in prompt
+        assert "## 候选要求" in prompt
         assert prompt.count("## ReAct 终止与输出合同") == 1
-        assert "EvidenceJudge" in prompt
-        assert "优先输出有代码依据" in prompt
         assert "宁可多报" not in prompt
-        assert "只有存在明确事实缺口时" in prompt
         assert '"summary"' in prompt
         assert '"issues"' in prompt
         assert "issues=[]" in prompt
@@ -73,6 +72,27 @@ def test_reviewer_user_prompts_end_with_shared_terminal_reminder():
         assert "最终消息不要混入工具调用、Markdown 围栏" in prompt
 
 
+def test_reviewer_user_prompt_exposes_deletion_anchor_without_faking_added_code():
+    task = ReviewTask(
+        id="task-delete",
+        file="src/A.java",
+        patch="@@ -10,2 +10 @@\n-    guard();\n     execute();",
+        deletion_anchors=[
+            DeletionAnchor(
+                anchor_line=10,
+                anchor_kind="next_surviving",
+                deleted_snippet="    guard();",
+            )
+        ],
+    )
+
+    prompt = build_reviewer_user_prompt(task=task)
+
+    assert '<deletion_anchors>' in prompt
+    assert '<anchor line="10" kind="next_surviving">' in prompt
+    assert "location_snippet 保持空字符串" in prompt
+
+
 def test_reviewer_prompts_define_tool_decision_protocol():
     for name in (
         "threat-model-base.txt",
@@ -81,14 +101,11 @@ def test_reviewer_prompts_define_tool_decision_protocol():
     ):
         prompt = _prompt(name)
         for text in (
-            "## 工具决策协议",
-            "只能使用 `symbol_context` 中已有的稳定 `symbol_id`",
-            "`get_file_content` 是高成本兜底工具",
-            "图谱事实无法回答时使用",
-            "不要为了收集信息调用所有工具",
-            "工具返回已经足以确认或否定",
-            "工具失败、`partial` 或 `indeterminate`",
-            "工具返回的事实必须通过 `evidence_refs` 引用",
+            "## 分析方法",
+            "## 结论边界",
+            "`get_file_content`",
+            "证据不足",
+            "不形成候选",
         ):
             assert text in prompt
     for reviewer in DEFAULT_REVIEWERS:
@@ -99,14 +116,13 @@ def test_reviewer_prompts_define_tool_decision_protocol():
 
 def test_reviewer_prompts_gate_non_local_claims_without_blocking_local_findings():
     shared = _prompt("discovery-context-contract.txt")
-    evidence = _prompt("discovery-evidence-contract.txt")
     output = _prompt("discovery-output-contract.txt")
 
     for text in (
         "## 终止前的轻量证据检查",
         "不要为了满足形式化清单而压缩探索",
         "局部机制已经足够成立时，可以直接输出",
-        "应至少查询一次最能改变结论的图谱事实",
+        "按领域 Prompt 执行一次最相关的关系查询",
         "不要为了“看完整张图”而穷举",
         "保留仍由现有事实支持的部分",
         "相对顺序变化只能直接证明局部顺序变化",
@@ -115,36 +131,25 @@ def test_reviewer_prompts_gate_non_local_claims_without_blocking_local_findings(
     for text in (
         "evidence_refs` 只填写你实际使用过",
         "不要因为分数不高就自动放弃",
-        "应缩小 message，而不是编造引用",
+        "缩小 message，而不是编造引用",
         "confidence` 只表达当前判断的把握程度",
     ):
         assert text in output
 
-    for name in (
-        "threat-model-base.txt",
-        "behavior-base.txt",
-        "maintainability-base.txt",
-    ):
-        prompt = _prompt(name)
-        assert "confidence 用于表达判断把握，不替代证据" in prompt
-
-
 def test_shared_tool_contract_prioritizes_graph_queries_over_full_file_reads():
     prompt = _prompt("discovery-tool-contract.txt")
     for text in (
-        "高成本兜底工具",
-        "确实必须核对具体实现代码",
-        "patch、symbol context 和图谱事实都不足",
+        "稳定 `symbol_id`",
+        "有界关系侦察",
+        "具体参数使用",
         "caller",
         "callee",
         "listener",
         "callback",
-        "状态传播",
         "执行顺序",
-        "source-to-sink",
         "影响范围",
-        "必须优先使用对应图谱工具",
-        "不能用文件全文读取替代",
+        "不得重复查询同一事实",
+        "不能代替跨文件关系查询",
     ):
         assert text in prompt
 

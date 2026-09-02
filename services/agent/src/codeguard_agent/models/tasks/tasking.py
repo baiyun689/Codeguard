@@ -31,6 +31,18 @@ class TaskRoute(BaseModel):
     reason: str = ""
 
 
+class DeletionAnchor(BaseModel):
+    """删除片段在当前 revision 中的可解析、可评论锚点。
+
+    deleted_snippet 只描述 patch 旧侧事实；anchor_line 必须是新版本仍存在的
+    邻近行。两者不能混入 changed_lines，后者始终只表示新增行。
+    """
+
+    anchor_line: StrictInt = Field(gt=0)
+    anchor_kind: Literal["next_surviving", "previous_surviving"]
+    deleted_snippet: str = Field(min_length=1)
+
+
 class ReviewTask(BaseModel):
     """最小调度单位：一个 hunk 或一个文件级 fallback 片段。"""
 
@@ -39,7 +51,16 @@ class ReviewTask(BaseModel):
     hunk_header: str = ""
     patch: str
     changed_lines: list[int] = Field(default_factory=list)
+    deletion_anchors: list[DeletionAnchor] = Field(default_factory=list)
     patch_complete: bool = True
+
+    @property
+    def resolution_lines(self) -> list[int]:
+        """返回可用于当前 revision 符号解析的行，不改变 changed_lines 语义。"""
+        return list(dict.fromkeys([
+            *self.changed_lines,
+            *(anchor.anchor_line for anchor in self.deletion_anchors),
+        ]))
 
 
 class ReviewMode(str, Enum):

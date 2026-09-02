@@ -15,7 +15,9 @@ from codeguard_agent.models.schemas import DiscoveredIssue
 from codeguard_agent.models.tasks import ReviewTask
 from codeguard_agent.pipeline.prompting import render_prompt_template
 
-LocationStatus = Literal["verified", "corrected", "relocated", "file_level"]
+LocationStatus = Literal[
+    "verified", "corrected", "relocated", "deletion_anchor", "file_level"
+]
 
 _HUNK_HEADER = re.compile(
     r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@"
@@ -167,6 +169,9 @@ def locate_issues(
     for index, issue in enumerate(issues):
         runs = _runs_for_file(runs_by_file, issue.file)
         changed_lines = {line for run in runs for line, _text in run}
+        deletion_anchor_lines = {
+            anchor.anchor_line for anchor in task.deletion_anchors
+        }
         original_line = issue.line
         matched_line = _match_snippet(issue.location_snippet, runs)
         if matched_line is not None:
@@ -203,6 +208,24 @@ def locate_issues(
                 "location_verified",
                 json.dumps(
                     {"index": index, "original_line": original_line, "line": original_line},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            ))
+            continue
+        if original_line in deletion_anchor_lines and not issue.location_snippet.strip():
+            located[index] = issue
+            records[index] = LocationRecord(
+                index=index,
+                status="deletion_anchor",
+                original_line=original_line,
+                resolved_line=original_line,
+                reason="reported_deletion_anchor",
+            )
+            trace.append((
+                "location_deletion_anchor",
+                json.dumps(
+                    {"index": index, "line": original_line, "task_id": task.id},
                     ensure_ascii=False,
                     sort_keys=True,
                 ),

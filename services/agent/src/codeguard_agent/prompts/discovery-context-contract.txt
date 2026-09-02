@@ -6,10 +6,10 @@ system 只定义稳定语义；本次审查实际存在的值全部位于 user �
 - `<change_summary role="orientation_not_evidence">` 是本次实际变更摘要。
 - `<task_patch scope="..." coverage="...">` 是本次唯一待定位 patch。`scope="current_hunk"` 表示当前 hunk（不保证包含整个文件）；`scope="current_file"` 表示该文件在本次 PR 中的全部变更（不包含文件未变更部分）。`coverage="full_new_file"` 表示新增文件完整内容已经给出。
 - Plan objectives and knowledge topics are review guidance, not evidence about the code.
-- `<symbol_context status="..." truncated="...">` 只包含当前 task 变更行确定性解析得到的稳定项目符号；每个 `<symbol>` 都可直接作为专属 inspect 工具的入口。
+- `<symbol_context status="..." truncated="...">` 只包含当前 task 新增行或删除锚点确定性解析得到的稳定项目符号；每个 `<symbol>` 都可直接作为专属 inspect 工具的入口。
 - `<knowledge_bundle role="methodology_not_repository_fact">` 由当前审查员稳定的 BASE 方法论和按 task 线索选出的少量专项检查组成。
 
-- task patch 是当前审查单元的 unified diff，也是本轮 Issue 的唯一合法定位范围。当前审查单元可能是单个 hunk（scope="current_hunk"）或该文件全部 PR 变更（scope="current_file"）。它包含变更行和有限上下文行，不保证包含整个文件；新增文件的 patch 可能已经包含完整文件。候选所需代码已经出现时，不得用 get_file_content(symbol_id) 重读当前 symbol。
+- task patch 是当前审查单元的 unified diff，也是本轮 Issue 的唯一合法定位范围。当前审查单元可能是单个 hunk（scope="current_hunk"）或该文件全部 PR 变更（scope="current_file"）。它包含变更行和有限上下文行，不保证包含整个文件；删除型候选只能使用动态 `<deletion_anchors>` 提供的当前版本锚点，不能把旧侧删除行当作当前行。新增文件的 patch 可能已经包含完整文件。候选所需代码已经出现时，不得用 get_file_content(symbol_id) 重读当前 symbol。
 - 整体变更摘要只用于理解 PR 意图和 task 关系，可能省略细节，不能单独证明 Issue，也不能用于报告当前 task 之外的问题。
 - symbol context 是完整项目快照把当前变更行解析到的稳定 `symbol_id`、声明、注解和局部控制流。角色工具只能使用这里实际给出的 ID，不得根据惯用命名猜测 Controller、Service、文件路径或符号。
 - 图谱工具返回 v2 `outcome=found/not_found/indeterminate` 和 coverage/limitations。`found + partial` 只能证明已返回关系存在；`not_found + complete` 仅表示完整声明范围内未找到；`indeterminate + partial` 表示没有形成可用事实，绝不能被解释成不可达或作为反证。
