@@ -55,6 +55,41 @@ def test_evidence_mode_invalid_falls_back_to_full(monkeypatch):
     assert Settings.from_env().evidence_mode == "full"
 
 
+def test_controlled_discovery_mode_and_budgets_are_configurable(monkeypatch):
+    monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
+    monkeypatch.setenv("CODEGUARD_DISCOVERY_MODE", "controlled")
+    monkeypatch.setenv("CODEGUARD_CONTROLLED_INITIAL_TOOL_BUDGET", "9")
+    monkeypatch.setenv("CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET", "0")
+    monkeypatch.setenv("CODEGUARD_CONTROLLED_MAX_PATH_DEPTH", "2")
+    settings = Settings.from_env()
+    assert settings.discovery_mode == "controlled"
+    assert settings.controlled_initial_tool_budget == 9
+    assert settings.controlled_delta_tool_budget == 0
+    assert settings.controlled_max_path_depth == 2
+
+
+def test_controlled_max_seed_and_topic_limits_can_disable_optional_work(monkeypatch):
+    monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
+    for name in (
+        "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_CHANGE_UNIT",
+        "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_REVIEWER",
+        "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_TASK",
+        "CODEGUARD_CONTROLLED_MAX_KNOWLEDGE_TOPICS",
+    ):
+        monkeypatch.setenv(name, "0")
+    settings = Settings.from_env()
+    assert settings.controlled_max_seeds_per_change_unit == 0
+    assert settings.controlled_max_seeds_per_reviewer == 0
+    assert settings.controlled_max_seeds_per_task == 0
+    assert settings.controlled_max_knowledge_topics == 0
+
+
+def test_unknown_discovery_mode_falls_back_to_react(monkeypatch):
+    monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
+    monkeypatch.setenv("CODEGUARD_DISCOVERY_MODE", "anything")
+    assert Settings.from_env().discovery_mode == "react"
+
+
 def test_phase2_budget_defaults(monkeypatch):
     monkeypatch.delenv("CODEGUARD_MAX_REVIEW_TASKS", raising=False)
     monkeypatch.delenv("CODEGUARD_MAX_TASKS_PER_FILE", raising=False)
@@ -133,3 +168,24 @@ def test_orchestrator_passes_budget_through_existing_state_field(monkeypatch):
 
     assert captured["review_budget"] == budget
     assert "review_budget" in ReviewState.__annotations__
+
+
+def test_direct_discovery_mode_forces_tool_client_off(monkeypatch):
+    captured: dict = {}
+
+    class _Graph:
+        def invoke(self, initial, config=None):  # noqa: ARG002
+            return {"summary": "", "final_issues": []}
+
+    def _build(**kwargs):
+        captured.update(kwargs)
+        return _Graph()
+
+    monkeypatch.setattr(orchestrator_module, "build_review_graph", _build)
+    orchestrator_module.PipelineOrchestrator(discovery_mode="direct").run(
+        None,
+        "some diff",
+        tool_client=object(),
+    )
+
+    assert captured["tool_client"] is None

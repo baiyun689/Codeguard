@@ -38,6 +38,17 @@ profiles:
     evidence_tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
     strict_tools: true
 
+  # 受控 Plan-and-Execute：三路 DirectTriage → GraphPlan → 有界 Execute，
+  # 仅在 GraphPlan 明确声明时调用工具；预算由 CODEGUARD_CONTROLLED_* 配置。
+  eval-controlled-codegraph:
+    mode: pipeline
+    execution: pipeline
+    orchestration: plan-and-execute
+    discovery_mode: controlled
+    tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
+    evidence_tools: []
+    strict_tools: true
+
   # 消融 5:证据链整链关闭——Council + 发现者工具照跑,候选由 DirectJudge
   # 直接终审(无取证/门控/证据综合)。与 eval-codeguard-full 仅差 evidence_mode
   # 这一个变量,用于量化证据链本体的净收益。

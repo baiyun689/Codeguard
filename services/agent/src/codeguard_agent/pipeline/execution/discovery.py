@@ -113,6 +113,9 @@ def _canonical_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     if isinstance(query, str) and "#" in query:
         path, method = query.split("#", 1)
         normalized["query"] = f"{_normalize_path(path)}#{method}"
+    max_depth = normalized.get("max_depth")
+    if isinstance(max_depth, str) and max_depth.strip().isdigit():
+        normalized["max_depth"] = int(max_depth.strip())
     return normalized
 
 

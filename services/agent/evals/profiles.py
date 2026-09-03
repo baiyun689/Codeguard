@@ -34,6 +34,8 @@ class Profile:
     evidence_tools: list[str] | None = None
     strict_tools: bool = False
     evidence_mode: str = "full"  # "off" = 无证据链消融档(DirectJudge 直接终审)
+    # 可选发现执行模式；未指定时沿用 CODEGUARD_DISCOVERY_MODE。
+    discovery_mode: str | None = None
 
     @property
     def wants_tools(self) -> bool:
@@ -66,6 +68,7 @@ def load_profiles(path: Path | None = None) -> dict[str, Profile]:
             ),
             strict_tools=bool(cfg.get("strict_tools", False)),
             evidence_mode=cfg.get("evidence_mode", "full"),
+            discovery_mode=cfg.get("discovery_mode"),
         )
     return profiles
 

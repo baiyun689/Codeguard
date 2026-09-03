@@ -8,6 +8,7 @@ large 构建 hunk task。所有 task 经过 DirectGate，Full task 进入 Plan�
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -22,8 +23,14 @@ from codeguard_agent.models.state import (
     ReviewerState,
     collect_candidate_reducer,
 )
-from codeguard_agent.models.schemas import DiscoveryReviewResult, Issue, ReviewResult
+from codeguard_agent.models.schemas import DiscoveredIssue, DiscoveryReviewResult, Issue, ReviewResult
 from codeguard_agent.models.tasks import (
+    AssessmentStatus,
+    CandidateSeed,
+    EvidenceAssessment,
+    KnowledgeRoutePlan,
+    ProofMatchStatus,
+    ReviewerGraphPlan,
     ReviewBudget,
     ReviewMode,
     ReviewRoute,
@@ -41,7 +48,7 @@ from codeguard_agent.pipeline.execution.discovery import (
     DiscoveryToolCoordinator,
 )
 from codeguard_agent.pipeline.knowledge.catalog import KnowledgeCatalog
-from codeguard_agent.pipeline.knowledge.selector import select_knowledge
+from codeguard_agent.pipeline.knowledge.selector import select_knowledge, select_shared_knowledge
 from codeguard_agent.pipeline.location import locate_issues
 from codeguard_agent.models.knowledge import KnowledgeBudget
 from codeguard_agent.pipeline.tasks.scope import LargeDiffPlan, plan_large_diff
@@ -50,6 +57,20 @@ from codeguard_agent.pipeline.planning import (
     plan_coverage,
     run_plan_units,
 )
+from codeguard_agent.pipeline.controlled.assessment import (
+    candidate_from_seed,
+    match_execution_proof,
+    run_evidence_assessment,
+    visible_symbol_ids,
+)
+from codeguard_agent.pipeline.controlled.executor import ControlledEvidenceExecutor
+from codeguard_agent.pipeline.controlled.graph_plan import (
+    run_graph_plan,
+    validate_delta_step,
+)
+from codeguard_agent.pipeline.controlled.planning import run_knowledge_route
+from codeguard_agent.pipeline.controlled.routing import route_seed
+from codeguard_agent.pipeline.controlled.triage import run_direct_triage
 from codeguard_agent.pipeline.execution.engines import (
     DirectEngine,
     REACT_DEGRADED_RECURSION_EVENT,
@@ -1268,6 +1289,519 @@ def _plan_node(llm):
     return _node
 
 
+def _controlled_plan_node(llm, *, knowledge_topics: int = 4):
+    """Controlled 模式的 ReviewPlan：只做 task 级知识路由。"""
+
+    def _node(state: ReviewState) -> dict:
+        tasks = list(state.get("review_tasks") or [])
+        routes = state.get("task_routes") or {}
+        selection = state.get("task_selection")
+        selected_ids = set(selection.selected_task_ids) if selection is not None else {
+            task.id for task in tasks
+        }
+        selected_tasks = [task for task in tasks if task.id in selected_ids]
+        units = build_plan_units(
+            selected_tasks,
+            routes,
+            review_mode=state.get("review_mode", "large"),
+        )
+        catalog = KnowledgeCatalog()
+
+        def plan_one(unit):
+            return run_knowledge_route(
+                plan_unit=unit,
+                tasks=selected_tasks,
+                llm=llm,
+                catalog=catalog,
+                max_retries=state.get("max_retries", 3),
+                structured_method=state.get("structured_method", "function_calling"),
+                max_topics=min(
+                    knowledge_topics,
+                    state.get("controlled_max_knowledge_topics", knowledge_topics),
+                ),
+            )
+
+        planned = run_bounded_parallel(units, plan_one, max_workers=8)
+        routes_by_unit: dict[str, KnowledgeRoutePlan] = {}
+        trace = [
+            CouncilTrace(
+                node="review_plan",
+                event="controlled_knowledge_plan",
+                detail=f"plan_units={len(units)}",
+            )
+        ]
+        for unit, outcome in zip(units, planned):
+            if outcome is None:
+                routes_by_unit[unit.id] = KnowledgeRoutePlan(plan_unit_id=unit.id)
+                trace.append(
+                    CouncilTrace(node="review_plan", event="knowledge_plan_failed", detail=unit.id)
+                )
+                continue
+            route, diagnostics = outcome
+            routes_by_unit[unit.id] = route
+            for diagnostic in diagnostics:
+                trace.append(
+                    CouncilTrace(
+                        node="review_plan",
+                        event="knowledge_plan_diagnostic",
+                        detail=f"plan_unit={unit.id} {diagnostic}",
+                    )
+                )
+        return {
+            "plan_units": units,
+            "task_plans": {},
+            "knowledge_route_plan": routes_by_unit,
+            "council_trace": trace,
+        }
+
+    return _node
+
+
+def _locate_controlled_seed(seed: CandidateSeed, task: ReviewTask) -> CandidateSeed:
+    """通过统一 CandidateLocator 校验受控候选的位置。
+
+    DirectTriage 已经把明显越界的行归一为 0；这里仍走同一个定位护栏，
+    这样 controlled 和 ReAct 候选对 changed-line/deletion-anchor 的合同完全
+    一致。受控路径不为定位再发起 LLM 调用。
+    """
+
+    issue = DiscoveredIssue(
+        file=seed.location_file,
+        line=seed.location_line,
+        location_snippet="",
+        type=seed.issue_type,
+        message=seed.claim,
+        suggestion=seed.suggestion,
+        confidence=seed.confidence,
+    )
+    located = locate_issues(
+        [issue],
+        task,
+        llm=None,
+        structured_method="function_calling",
+        max_retries=0,
+    )
+    if not located.issues:
+        return seed.model_copy(update={"location_line": 0})
+    resolved_line = located.issues[0].line
+    if resolved_line == 0 and seed.location_line in {
+        *task.changed_lines,
+        *(anchor.anchor_line for anchor in task.deletion_anchors),
+    }:
+        # Some unit/eval fixtures carry changed_lines but only a patch fragment
+        # without a @@ header.  The task contract is still authoritative for
+        # that already-validated line; do not erase it merely because the
+        # locator has no hunk metadata to parse.
+        resolved_line = seed.location_line
+    return seed.model_copy(update={"location_line": resolved_line})
+
+
+def _controlled_review_node(llm, tool_client=None):
+    """执行受控 DirectTriage → GraphPlan → EvidenceExecutor 链。"""
+
+    def _node(state: ReviewState) -> dict:
+        tasks = {task.id: task for task in state.get("review_tasks") or []}
+        selection = state.get("task_selection")
+        selected_ids = set(selection.selected_task_ids) if selection is not None else set(tasks)
+        selected_tasks = [task for task_id, task in tasks.items() if task_id in selected_ids]
+        symbol_contexts = state.get("task_symbol_contexts") or {}
+        route_plans = state.get("knowledge_route_plan") or {}
+        plan_units = state.get("plan_units") or []
+        unit_by_task = {
+            task_id: unit
+            for unit in plan_units
+            for task_id in unit.task_ids
+        }
+        catalog = KnowledgeCatalog()
+        knowledge_budget = KnowledgeBudget(
+            # The controlled-mode budget is user-configurable.  Do not apply
+            # the legacy three-fragment cap here: ReviewPlan already limits
+            # the routed topic count, and this value is the final per-task
+            # injection budget shared by all three reviewers.
+            max_specialized_fragments=max(
+                0,
+                state.get("controlled_max_knowledge_topics", 4),
+            )
+        )
+        all_candidates: list[CandidateIssue] = []
+        all_artifacts: dict[str, EvidenceArtifact] = {}
+        all_trace_refs: list[Any] = []
+        traces: list[CouncilTrace] = []
+        triage_state: dict[str, Any] = {}
+        graph_plan_state: dict[str, Any] = {}
+        assessment_state: dict[str, Any] = {}
+        proof_state: dict[str, Any] = {}
+
+        def shared_knowledge(task: ReviewTask) -> str:
+            unit = unit_by_task.get(task.id)
+            route = route_plans.get(unit.id) if unit is not None else None
+            task_route = next(
+                (item for item in (route.task_routes if route else ()) if item.task_id == task.id),
+                None,
+            )
+            bundle = select_shared_knowledge(
+                requested_topics=task_route.knowledge_topics if task_route else (),
+                catalog=catalog,
+                budget=knowledge_budget,
+                task_id=task.id,
+            )
+            return bundle.rendered_text
+
+        scope = _scope_plan(state)
+        for task in selected_tasks:
+            task_candidate_start = len(all_candidates)
+            context = symbol_contexts.get(task.id)
+            scoped_patch = scope.scoped_patch(task.patch)
+            scoped_task = task.model_copy(
+                update={
+                    "patch": scoped_patch,
+                    "patch_complete": task.patch_complete
+                    and scoped_patch == task.patch,
+                }
+            )
+            triage_jobs = [
+                (reviewer.source_agent, reviewer)
+                for reviewer in DEFAULT_REVIEWERS
+            ]
+
+            def triage_one(item):
+                reviewer_name, _reviewer = item
+                return run_direct_triage(
+                    reviewer=ReviewerKind(reviewer_name),
+                    task=scoped_task,
+                    symbol_context=context,
+                    llm=llm,
+                    diff_summary=state.get("diff_summary", ""),
+                    task_knowledge=shared_knowledge(task),
+                    max_retries=state.get("max_retries", 3),
+                    structured_method=state.get("structured_method", "function_calling"),
+                    max_seeds_per_change_unit=state.get("controlled_max_seeds_per_change_unit", 2),
+                    max_seeds_per_reviewer=state.get("controlled_max_seeds_per_reviewer", 4),
+                )
+
+            triage_results = run_bounded_parallel(triage_jobs, triage_one, max_workers=3)
+            seeds_by_reviewer: dict[str, list[CandidateSeed]] = {}
+            for reviewer_config, outcome in zip((item[1] for item in triage_jobs), triage_results):
+                if outcome is None:
+                    traces.append(CouncilTrace(node="direct_triage", event="reviewer_failed", detail=f"task={task.id} reviewer={reviewer_config.source_agent}"))
+                    continue
+                result, diagnostics = outcome
+                if result is None:
+                    traces.extend(CouncilTrace(node="direct_triage", event="diagnostic", detail=f"task={task.id} reviewer={reviewer_config.source_agent} {diagnostic}") for diagnostic in diagnostics)
+                    continue
+                seeds = [_locate_controlled_seed(seed, task) for seed in result.issues]
+                result = result.model_copy(update={"issues": tuple(seeds)})
+                triage_state[f"{task.id}:{reviewer_config.source_agent}"] = result
+                seeds_by_reviewer[reviewer_config.source_agent] = seeds
+                traces.extend(CouncilTrace(node="direct_triage", event="diagnostic", detail=f"task={task.id} reviewer={reviewer_config.source_agent} {diagnostic}") for diagnostic in diagnostics)
+                traces.append(CouncilTrace(node="direct_triage", event="completed", detail=f"task={task.id} reviewer={reviewer_config.source_agent} seeds={len(seeds)}"))
+
+            task_catalog = EvidenceCatalogBuilder().build_initial(
+                task=task,
+                symbol_context=context,
+                reviewer="controlled",
+                revision=state.get("evidence_revision", ""),
+            )
+            graph_plans_for_task: list[Any] = []
+            graph_seeds_by_id: dict[str, CandidateSeed] = {}
+            for reviewer_config in DEFAULT_REVIEWERS:
+                reviewer_kind = ReviewerKind(reviewer_config.source_agent)
+                reviewer_seeds = tuple(seeds_by_reviewer.get(reviewer_config.source_agent, ()))
+                direct_seeds = tuple(seed for seed in reviewer_seeds if route_seed(seed) == "direct_proven")
+                graph_seeds = tuple(seed for seed in reviewer_seeds if route_seed(seed) == "graph_required")
+                for index, seed in enumerate(direct_seeds, start=1):
+                    all_candidates.append(
+                        candidate_from_seed(
+                            seed=seed,
+                            task=task,
+                            catalog=task_catalog,
+                            reviewer=reviewer_config.source_agent,
+                            candidate_index=index,
+                        )
+                    )
+                if not graph_seeds:
+                    continue
+                graph_seeds_by_id.update({seed.seed_id: seed for seed in graph_seeds})
+                graph_plan, diagnostics = run_graph_plan(
+                    reviewer=reviewer_kind,
+                    task_id=task.id,
+                    seeds=graph_seeds,
+                    symbol_context=context,
+                    llm=llm,
+                    max_retries=state.get("max_retries", 3),
+                    structured_method=state.get("structured_method", "function_calling"),
+                    max_path_depth=state.get("controlled_max_path_depth", 3),
+                    enabled_tools=state.get("enabled_tools"),
+                )
+                graph_plan_state[f"{task.id}:{reviewer_config.source_agent}"] = graph_plan
+                traces.extend(
+                    CouncilTrace(
+                        node="graph_plan",
+                        event="diagnostic",
+                        detail=f"task={task.id} reviewer={reviewer_config.source_agent} {diagnostic}",
+                    )
+                    for diagnostic in diagnostics
+                )
+                if graph_plan.work_items:
+                    graph_plans_for_task.append(graph_plan)
+            if graph_plans_for_task:
+                execution = ControlledEvidenceExecutor(
+                    tool_client=tool_client,
+                    task=task,
+                    symbol_context=context,
+                    revision=state.get("evidence_revision", ""),
+                    enabled_tools=state.get("enabled_tools"),
+                    initial_budget=state.get("controlled_initial_tool_budget", 6),
+                    max_path_depth=state.get("controlled_max_path_depth", 3),
+                ).execute(tuple(graph_plans_for_task))
+                all_trace_refs.extend(execution.trace_refs)
+                all_artifacts.update(execution.artifacts)
+                delta_used_for_task = False
+                for graph_plan in graph_plans_for_task:
+                    reviewer_kind = ReviewerKind(graph_plan.reviewer)
+                    plan_seeds = {
+                        seed.seed_id: seed
+                        for seed in graph_seeds_by_id.values()
+                        if seed.reviewer is reviewer_kind
+                    }
+                    plan_proofs: dict[str, Any] = {}
+                    for work_item in graph_plan.work_items:
+                        seed_for_work = plan_seeds.get(work_item.seed_id)
+                        if seed_for_work is None:
+                            continue
+                        proof = match_execution_proof(
+                            work_item=work_item,
+                            seed=seed_for_work,
+                            steps=tuple(
+                                step
+                                for step in execution.steps
+                                if step.work_item_id == work_item.work_item_id
+                            ),
+                            subject_symbol_id=(
+                                seed_for_work.graph_question.subject_ref
+                                if seed_for_work.graph_question
+                                else ""
+                            ),
+                        )
+                        plan_proofs[work_item.work_item_id] = proof
+                        proof_state[work_item.work_item_id] = proof
+                    assessments, assessment_diagnostics = run_evidence_assessment(
+                        reviewer=reviewer_kind,
+                        task_id=task.id,
+                        work_items=tuple(graph_plan.work_items),
+                        seeds=plan_seeds,
+                        execution=execution,
+                        proof_matches=plan_proofs,
+                        llm=llm,
+                        max_retries=state.get("max_retries", 3),
+                        structured_method=state.get("structured_method", "function_calling"),
+                    )
+                    # A single explicit Delta step is permitted per task. It may
+                    # reference only a symbol returned by the initial graph facts;
+                    # no recursive discovery or fuzzy symbol resolution is allowed.
+                    for work_item in graph_plan.work_items:
+                        initial_assessment = assessments.get(work_item.work_item_id)
+                        if (
+                            delta_used_for_task
+                            or initial_assessment is None
+                            or initial_assessment.status is not AssessmentStatus.NEEDS_EVIDENCE
+                            or not initial_assessment.additional_steps
+                        ):
+                            continue
+                        delta_step = initial_assessment.additional_steps[0].model_copy(
+                            update={"depends_on": ()}
+                        )
+                        allowed_delta_symbols = visible_symbol_ids(execution)
+                        validated_delta_step, delta_diagnostics = validate_delta_step(
+                            delta_step,
+                            seed=plan_seeds[work_item.seed_id],
+                            reviewer=reviewer_kind,
+                            allowed_symbols=allowed_delta_symbols,
+                            max_path_depth=state.get("controlled_max_path_depth", 3),
+                            enabled_tools=set(state.get("enabled_tools") or ()),
+                        )
+                        if validated_delta_step is None:
+                            traces.append(
+                                CouncilTrace(
+                                    node="delta_plan",
+                                    event="rejected_invalid_step",
+                                    detail=(
+                                        f"task={task.id} work_item={work_item.work_item_id} "
+                                        f"{','.join(delta_diagnostics)}"
+                                    ),
+                                )
+                            )
+                            continue
+                        delta_step = validated_delta_step
+                        delta_item = work_item.model_copy(
+                            update={"evidence_steps": (delta_step,)}
+                        )
+                        delta_execution = ControlledEvidenceExecutor(
+                            tool_client=tool_client,
+                            task=task,
+                            symbol_context=context,
+                            revision=state.get("evidence_revision", ""),
+                            enabled_tools=state.get("enabled_tools"),
+                            initial_budget=state.get("controlled_delta_tool_budget", 2),
+                            max_path_depth=state.get("controlled_max_path_depth", 3),
+                            extra_symbol_ids=allowed_delta_symbols,
+                        ).execute((
+                            ReviewerGraphPlan(
+                                reviewer=reviewer_kind,
+                                task_id=task.id,
+                                work_items=(delta_item,),
+                            ),
+                        ), catalog=execution.catalog)
+                        execution = replace(
+                            execution,
+                            catalog=delta_execution.catalog,
+                            artifacts={**execution.artifacts, **delta_execution.artifacts},
+                            trace_refs=execution.trace_refs + delta_execution.trace_refs,
+                            steps=execution.steps + delta_execution.steps,
+                            diagnostics=execution.diagnostics + delta_execution.diagnostics,
+                        )
+                        all_trace_refs.extend(delta_execution.trace_refs)
+                        all_artifacts.update(delta_execution.artifacts)
+                        delta_seed = plan_seeds[work_item.seed_id]
+                        if delta_seed.graph_question is None:
+                            continue
+                        delta_proof = match_execution_proof(
+                            work_item=work_item,
+                            seed=delta_seed,
+                            steps=tuple(
+                                step
+                                for step in execution.steps
+                                if step.work_item_id == work_item.work_item_id
+                            ),
+                            subject_symbol_id=delta_seed.graph_question.subject_ref,
+                        )
+                        plan_proofs[work_item.work_item_id] = delta_proof
+                        proof_state[work_item.work_item_id] = delta_proof
+                        delta_assessments, delta_diagnostics = run_evidence_assessment(
+                            reviewer=reviewer_kind,
+                            task_id=task.id,
+                            work_items=(work_item,),
+                            seeds={work_item.seed_id: delta_seed},
+                            execution=execution,
+                            proof_matches={work_item.work_item_id: delta_proof},
+                            llm=llm,
+                            max_retries=state.get("max_retries", 3),
+                            structured_method=state.get("structured_method", "function_calling"),
+                        )
+                        assessments.update(delta_assessments)
+                        assessment_diagnostics = (*assessment_diagnostics, *delta_diagnostics)
+                        delta_used_for_task = True
+                        traces.append(
+                            CouncilTrace(
+                                node="delta_execute",
+                                event="completed",
+                                detail=f"task={task.id} work_item={work_item.work_item_id}",
+                            )
+                        )
+                        break
+                    traces.extend(
+                        CouncilTrace(
+                            node="evidence_assessment",
+                            event="diagnostic",
+                            detail=f"task={task.id} reviewer={reviewer_kind.value} {diagnostic}",
+                        )
+                        for diagnostic in assessment_diagnostics
+                    )
+                    assessment_state.update(assessments)
+                    for work_item in graph_plan.work_items:
+                        seed_for_work = plan_seeds.get(work_item.seed_id)
+                        proof_for_work = plan_proofs.get(work_item.work_item_id)
+                        if seed_for_work is None or proof_for_work is None:
+                            continue
+                        assessment = assessments.get(work_item.work_item_id)
+                        if (
+                            assessment is not None
+                            and assessment.status is AssessmentStatus.CANDIDATE
+                            and proof_for_work.status in {
+                                ProofMatchStatus.PROVED,
+                                ProofMatchStatus.PARTIAL,
+                            }
+                        ) or (
+                            assessment is None
+                            and proof_for_work.status is ProofMatchStatus.PROVED
+                        ):
+                            if assessment is None:
+                                aliases = tuple(
+                                    step.alias
+                                    for step in execution.steps
+                                    if (
+                                        step.work_item_id == work_item.work_item_id
+                                        and step.alias
+                                        and step.status in {"complete", "reused"}
+                                        and step.step.tool
+                                        in {
+                                            "inspect_path",
+                                            "inspect_structure",
+                                            "inspect_change_impact",
+                                        }
+                                    )
+                                )
+                                if not aliases:
+                                    aliases = tuple(
+                                        step.alias
+                                        for step in execution.steps
+                                        if (
+                                            step.work_item_id == work_item.work_item_id
+                                            and step.alias
+                                            and step.status in {"complete", "reused"}
+                                        )
+                                    )
+                                assessment = EvidenceAssessment(
+                                    work_item_id=work_item.work_item_id,
+                                    status=AssessmentStatus.CANDIDATE,
+                                    claim=seed_for_work.claim,
+                                    mechanism=seed_for_work.mechanism,
+                                    impact=seed_for_work.impact,
+                                    proof_scope=seed_for_work.proof_scope,
+                                    supporting_refs=aliases[:3],
+                                    counter_refs=(),
+                                    limitations=(
+                                        "assessment_llm_missing_but_complete_proof",
+                                    ),
+                                )
+                            all_candidates.append(
+                                candidate_from_seed(
+                                    seed=seed_for_work,
+                                    task=task,
+                                    catalog=execution.catalog,
+                                    reviewer=reviewer_kind.value,
+                                    candidate_index=len(all_candidates) + 1,
+                                    assessment=assessment,
+                                )
+                            )
+            task_candidate_limit = state.get("controlled_max_seeds_per_task", 12)
+            if len(all_candidates) - task_candidate_start > task_candidate_limit:
+                del all_candidates[task_candidate_start + task_candidate_limit :]
+                traces.append(
+                    CouncilTrace(
+                        node="controlled_review",
+                        event="seed_task_limit",
+                        detail=f"task={task.id} limit={task_candidate_limit}",
+                    )
+                )
+            all_artifacts.update(task_catalog.artifacts)
+
+        traces.append(CouncilTrace(node="controlled_review", event="completed", detail=f"candidates={len(all_candidates)} tools={len(all_trace_refs)}"))
+        return {
+            "raw_candidate_issues": all_candidates,
+            "candidate_issues": collect_candidate_reducer([], all_candidates),
+            "evidence_artifacts": all_artifacts,
+            "tool_trace_records": all_trace_refs,
+            "controlled_triage": triage_state,
+            "controlled_graph_plans": graph_plan_state,
+            "controlled_assessments": assessment_state,
+            "controlled_proof_matches": proof_state,
+            "council_trace": traces,
+        }
+
+    return _node
+
+
 def _direct_task_review_node(llm):
     """执行 DirectGate 判定的 task，跳过取证但仍交给 DirectJudge 定级。"""
     prompt_dir = Path(__file__).resolve().parents[1] / "prompts"
@@ -1502,6 +2036,14 @@ def build_review_graph(
     tool_client=None,
     discovery_only: bool = False,
     evidence_mode: str = "full",
+    discovery_mode: str = "react",
+    controlled_initial_tool_budget: int = 6,
+    controlled_delta_tool_budget: int = 2,
+    controlled_max_path_depth: int = 3,
+    controlled_max_seeds_per_change_unit: int = 2,
+    controlled_max_seeds_per_reviewer: int = 4,
+    controlled_max_seeds_per_task: int = 12,
+    controlled_max_knowledge_topics: int = 4,
 ):
     """编译审查状态图。
 
@@ -1532,6 +2074,10 @@ def build_review_graph(
     """
     from langgraph.graph import END, START, StateGraph
 
+    # Keep the public builder safe for direct callers too.  The orchestrator
+    # applies the same guard, but a direct build with a supplied client must
+    # not silently instantiate ReAct discovery nodes.
+    effective_tool_client = None if discovery_mode == "direct" else tool_client
     g = StateGraph(ReviewState)
     effective_judge_llm = fp_verify_llm or llm
 
@@ -1541,18 +2087,30 @@ def build_review_graph(
     g.add_node("task_route", _task_route_node())
     g.add_node("direct_task_review", _direct_task_review_node(llm))
     g.add_node("task_selection", _task_selection_node())
-    g.add_node("plan", _plan_node(llm))
-    g.add_node("review_plan", _review_plan_node(tool_client))
-    g.add_node("symbol_resolution", _symbol_resolution_node(tool_client))
-    for reviewer in DEFAULT_REVIEWERS:
-        g.add_node(
-            _discover_node_name(reviewer),
-            make_reviewer_node(reviewer, checkpointer=checkpointer, llm=llm, tool_client=tool_client),
-        )
+    if discovery_mode == "controlled":
+        g.add_node("plan", _controlled_plan_node(llm, knowledge_topics=controlled_max_knowledge_topics))
+    else:
+        g.add_node("plan", _plan_node(llm))
+    if discovery_mode != "controlled":
+        g.add_node("review_plan", _review_plan_node(effective_tool_client))
+    g.add_node("symbol_resolution", _symbol_resolution_node(effective_tool_client))
+    if discovery_mode != "controlled":
+        for reviewer in DEFAULT_REVIEWERS:
+            g.add_node(
+                _discover_node_name(reviewer),
+                make_reviewer_node(
+                    reviewer,
+                    checkpointer=checkpointer,
+                    llm=llm,
+                    tool_client=effective_tool_client,
+                ),
+            )
 
     # ── 模式特定节点 ──
     g.add_node("direct_review", _direct_review_node(llm))
     g.add_node("file_task_builder", _file_task_builder_node())
+    if discovery_mode == "controlled":
+        g.add_node("controlled_review", _controlled_review_node(llm, tool_client=tool_client))
 
     if discovery_only:
         g.add_node("discovery_collector", _discovery_collector_node())
@@ -1565,7 +2123,7 @@ def build_review_graph(
         g.add_node(
             "evidence_verifier",
             _evidence_verifier_node(
-                tool_client,
+                effective_tool_client,
                 judge_llm=effective_judge_llm,
             ),
         )
@@ -1610,21 +2168,29 @@ def build_review_graph(
 
     # ── 所有非 Direct task 共用管线 ──
     g.add_edge("task_selection", "plan")
-    g.add_edge("plan", "review_plan")
+    if discovery_mode != "controlled":
+        g.add_edge("plan", "review_plan")
     if enable_summary:
         g.add_node("summary", _summary_node(llm))
-        g.add_edge("review_plan", "summary")
+        g.add_edge("plan" if discovery_mode == "controlled" else "review_plan", "summary")
         g.add_edge("summary", "symbol_resolution")
     else:
-        g.add_edge("review_plan", "symbol_resolution")
+        g.add_edge("plan" if discovery_mode == "controlled" else "review_plan", "symbol_resolution")
 
-    for reviewer in DEFAULT_REVIEWERS:
-        node_name = _discover_node_name(reviewer)
-        g.add_edge("symbol_resolution", node_name)
+    if discovery_mode == "controlled":
+        g.add_edge("symbol_resolution", "controlled_review")
         if discovery_only:
-            g.add_edge(node_name, "discovery_collector")
+            g.add_edge("controlled_review", "discovery_collector")
         else:
-            g.add_edge(node_name, "council_coordinator")
+            g.add_edge("controlled_review", "council_coordinator")
+    else:
+        for reviewer in DEFAULT_REVIEWERS:
+            node_name = _discover_node_name(reviewer)
+            g.add_edge("symbol_resolution", node_name)
+            if discovery_only:
+                g.add_edge(node_name, "discovery_collector")
+            else:
+                g.add_edge(node_name, "council_coordinator")
 
     if discovery_only:
         g.add_edge("discovery_collector", END)

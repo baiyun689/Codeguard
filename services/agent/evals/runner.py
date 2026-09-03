@@ -464,11 +464,16 @@ def main(argv: list[str] | None = None) -> int:
         settings.model = profile.model  # profile 显式覆盖模型
 
     llm = build_llm(settings)
+    effective_discovery_mode = (
+        getattr(profile, "discovery_mode", None)
+        or getattr(settings, "discovery_mode", "react")
+    )
     runtime_identity = _runtime_identity(settings, llm)
     logger.info(
-        "profile=%s mode=%s orchestration=%s tools=%s fp_verify=%s provider=%s model=%s runs=%d judge=%s",
-        profile.name, profile.mode, profile.orchestration, profile.tools or "(无)", profile.fp_verify,
-        runtime_identity.provider, runtime_identity.model, args.runs, args.judge,
+        "profile=%s mode=%s orchestration=%s discovery=%s tools=%s fp_verify=%s provider=%s model=%s runs=%d judge=%s",
+        profile.name, profile.mode, profile.orchestration, effective_discovery_mode,
+        profile.tools or "(无)", profile.fp_verify, runtime_identity.provider,
+        runtime_identity.model, args.runs, args.judge,
     )
 
     if not runtime_identity.quality_metrics_meaningful:
@@ -527,7 +532,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # 工具实际启用 = profile 想开工具 + 真实 LLM + 配了工具服务地址,三者齐备。
     # 任一不满足则自动降级为无工具(沿用现有 harness 行为),并如实记录"工具实际启用状态"。
-    use_tools = tools_effective(profile, has_llm=llm is not None, tool_server_url=settings.tool_server_url)
+    use_tools = (
+        effective_discovery_mode != "direct"
+        and tools_effective(
+            profile,
+            has_llm=llm is not None,
+            tool_server_url=settings.tool_server_url,
+        )
+    )
     if profile.wants_tools and not use_tools:
         logger.warning(
             "profile %s 想开工具但本次降级为无工具:需真实 LLM + CODEGUARD_TOOL_SERVER_URL",
@@ -544,7 +556,15 @@ def main(argv: list[str] | None = None) -> int:
     # enable_supervisor 由 profile 控制(默认关):受控对照档保持确定性全派、不引入路由
     # 非确定性;仅 pipeline-supervisor 观测档置开(见 design D9)。
     orchestrator = PipelineOrchestrator(
-        review_budget=ReviewBudget()
+        review_budget=ReviewBudget(),
+        discovery_mode=effective_discovery_mode,
+        controlled_initial_tool_budget=getattr(settings, "controlled_initial_tool_budget", 6),
+        controlled_delta_tool_budget=getattr(settings, "controlled_delta_tool_budget", 2),
+        controlled_max_path_depth=getattr(settings, "controlled_max_path_depth", 3),
+        controlled_max_seeds_per_change_unit=getattr(settings, "controlled_max_seeds_per_change_unit", 2),
+        controlled_max_seeds_per_reviewer=getattr(settings, "controlled_max_seeds_per_reviewer", 4),
+        controlled_max_seeds_per_task=getattr(settings, "controlled_max_seeds_per_task", 12),
+        controlled_max_knowledge_topics=getattr(settings, "controlled_max_knowledge_topics", 4),
     )
     direct_prompt_path = (
         Path(__file__).resolve().parents[1]

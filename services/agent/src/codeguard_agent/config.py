@@ -31,6 +31,17 @@ def _positive_int_env(name: str, default: int) -> int:
     return value
 
 
+def _nonnegative_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative integer, got {raw!r}") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative integer, got {raw!r}")
+    return value
+
+
 def _load_dotenv() -> None:
     """从项目里就近向上查找并加载 .env 文件。
 
@@ -57,7 +68,8 @@ class Settings:
     max_retries: int        # LLM 调用最大重试次数
     structured_method: str  # 结构化输出方式:function_calling | json_schema | json_mode
     disable_thinking: bool  # 是否禁用思考模式(DeepSeek 等推理模型需要)
-    # 阶段 3:Java 工具服务地址。非空 → 发现者走 ReAct(可调工具);空 → 走直连基准。
+    # Java 工具服务地址。实际发现方式由 discovery_mode 决定；react/controlled
+    # 使用工具服务，direct 明确不创建工具会话。
     tool_server_url: str = ""
     # Java Tool Server 的内部鉴权 Token。仅在配置 tool_server_url 时需要。
     tool_server_token: str = ""
@@ -90,6 +102,18 @@ class Settings:
     trace_dir: str = "trace"
     # LLM 输出截断字符数,0=不截断。
     trace_max_llm_content: int = 0
+    # Discovery execution strategy: react (legacy/default), controlled (Plan + Execute),
+    # or direct (disable tool-backed discovery for an explicit no-tool baseline).
+    discovery_mode: str = "react"
+    # Controlled mode budgets. These are task-scoped and include failed tool calls;
+    # cache hits do not consume budget.
+    controlled_initial_tool_budget: int = 6
+    controlled_delta_tool_budget: int = 2
+    controlled_max_path_depth: int = 3
+    controlled_max_seeds_per_change_unit: int = 2
+    controlled_max_seeds_per_reviewer: int = 4
+    controlled_max_seeds_per_task: int = 12
+    controlled_max_knowledge_topics: int = 4
 
     @property
     def needs_api_key(self) -> bool:
@@ -145,6 +169,35 @@ class Settings:
         ).strip().lower() not in ("0", "false", "no", "off")
         trace_dir = os.environ.get("CODEGUARD_TRACE_DIR", "trace").strip()
         trace_max_llm_content = int(os.environ.get("CODEGUARD_TRACE_MAX_LLM_CONTENT", "0"))
+        discovery_mode = os.environ.get("CODEGUARD_DISCOVERY_MODE", "react").strip().lower()
+        if discovery_mode not in {"controlled", "react", "direct"}:
+            logger.warning(
+                "未知 CODEGUARD_DISCOVERY_MODE '%s',回退 'react'", discovery_mode
+            )
+            discovery_mode = "react"
+        controlled_initial_tool_budget = _nonnegative_int_env(
+            "CODEGUARD_CONTROLLED_INITIAL_TOOL_BUDGET", 6
+        )
+        controlled_delta_tool_budget = _nonnegative_int_env(
+            "CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET", 2
+        )
+        controlled_max_path_depth = _positive_int_env(
+            "CODEGUARD_CONTROLLED_MAX_PATH_DEPTH", 3
+        )
+        if controlled_max_path_depth > 3:
+            raise ValueError("CODEGUARD_CONTROLLED_MAX_PATH_DEPTH must be <= 3")
+        controlled_max_seeds_per_change_unit = _nonnegative_int_env(
+            "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_CHANGE_UNIT", 2
+        )
+        controlled_max_seeds_per_reviewer = _nonnegative_int_env(
+            "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_REVIEWER", 4
+        )
+        controlled_max_seeds_per_task = _nonnegative_int_env(
+            "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_TASK", 12
+        )
+        controlled_max_knowledge_topics = _nonnegative_int_env(
+            "CODEGUARD_CONTROLLED_MAX_KNOWLEDGE_TOPICS", 4
+        )
         return cls(
             provider=provider,
             model=model,
@@ -167,6 +220,14 @@ class Settings:
             trace_enabled=trace_enabled,
             trace_dir=trace_dir,
             trace_max_llm_content=trace_max_llm_content,
+            discovery_mode=discovery_mode,
+            controlled_initial_tool_budget=controlled_initial_tool_budget,
+            controlled_delta_tool_budget=controlled_delta_tool_budget,
+            controlled_max_path_depth=controlled_max_path_depth,
+            controlled_max_seeds_per_change_unit=controlled_max_seeds_per_change_unit,
+            controlled_max_seeds_per_reviewer=controlled_max_seeds_per_reviewer,
+            controlled_max_seeds_per_task=controlled_max_seeds_per_task,
+            controlled_max_knowledge_topics=controlled_max_knowledge_topics,
         )
 
     @classmethod

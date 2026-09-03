@@ -364,6 +364,11 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 | `CODEGUARD_GRAPH_CACHE_MAX_SNAPSHOTS` | `4` | 跨会话保留的完整项目快照上限 |
 | `CODEGUARD_GRAPH_CACHE_TTL_MINUTES` | `30` | 项目快照访问后过期时间 |
 | `CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS` | `120` | 全项目 AST 与语义图构建超时 |
+| `CODEGUARD_DISCOVERY_MODE` | `react` | 发现模式：`react`、`controlled`（Plan-and-Execute）或 `direct` |
+| `CODEGUARD_CONTROLLED_INITIAL_TOOL_BUDGET` | `6` | controlled 每 task 初始工具调用预算 |
+| `CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET` | `2` | controlled 每 task Delta 工具调用预算 |
+| `CODEGUARD_CONTROLLED_MAX_PATH_DEPTH` | `3` | controlled 路径最大深度（最大 3） |
+| `CODEGUARD_CONTROLLED_MAX_KNOWLEDGE_TOPICS` | `4` | 每 task 知识主题上限 |
 
 Compose 会设置打包部署所需的容器内部路径和端口，并在未显式设置时将
 `CODEGUARD_API_BASE_URL` 指向容器内的 LLM Proxy。除非维护自定义部署，否则不要修改

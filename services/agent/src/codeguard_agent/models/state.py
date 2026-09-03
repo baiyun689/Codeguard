@@ -26,6 +26,11 @@ from codeguard_agent.models.evidence import (
 )
 from codeguard_agent.models.schemas import DiscoveredIssue, DiscoveryReviewResult, Issue, ReviewResult
 from codeguard_agent.models.tasks import (
+    DirectTriageResult,
+    EvidenceAssessment,
+    ProofMatch,
+    ReviewerGraphPlan,
+    KnowledgeRoutePlan,
     PlanUnit,
     ReviewAssignments,
     ReviewBudget,
@@ -93,6 +98,19 @@ class ReviewState(TypedDict, total=False):
     direct_final_issues: list[Issue]
     task_selection: TaskSelection
     review_assignments: ReviewAssignments
+    discovery_mode: str
+    controlled_initial_tool_budget: int
+    controlled_delta_tool_budget: int
+    controlled_max_path_depth: int
+    controlled_max_seeds_per_change_unit: int
+    controlled_max_seeds_per_reviewer: int
+    controlled_max_seeds_per_task: int
+    controlled_max_knowledge_topics: int
+    knowledge_route_plan: dict[str, KnowledgeRoutePlan]
+    controlled_triage: dict[str, DirectTriageResult]
+    controlled_graph_plans: dict[str, ReviewerGraphPlan]
+    controlled_assessments: dict[str, EvidenceAssessment]
+    controlled_proof_matches: dict[str, ProofMatch]
 
     # Working: 跨节点传递、会影响后续决策的审查工作集
     diff_summary: str

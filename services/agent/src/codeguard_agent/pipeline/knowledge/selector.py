@@ -118,3 +118,57 @@ def select_knowledge(
         tuple(omitted),
         tuple(diagnostics),
     )
+
+
+def select_shared_knowledge(
+    *,
+    requested_topics: tuple[str, ...],
+    catalog: KnowledgeCatalog,
+    budget: KnowledgeBudget,
+    task_id: str = "plan",
+) -> KnowledgeBundle:
+    """为 controlled task 选择一个供三个 reviewer 共享的专项知识包。
+
+    这里不接受 reviewer 参数，也不根据领域拆分。主题必须来自合并后的闭集；
+    非法主题被记录并忽略，超出预算的主题按 Plan 顺序省略。
+    """
+    diagnostics: list[str] = []
+    by_topic = {
+        fragment.topic: fragment
+        for fragment in catalog.shared_specialized_fragments()
+    }
+    selected: list[SelectedKnowledge] = []
+    omitted: list[str] = []
+    seen: set[str] = set()
+    for topic in requested_topics:
+        if topic in seen:
+            diagnostics.append(f"duplicate_topic:{topic}")
+            continue
+        seen.add(topic)
+        fragment = by_topic.get(topic)
+        if fragment is None:
+            omitted.append(topic)
+            diagnostics.append(f"rejected_topic:{topic}")
+            continue
+        if len(selected) >= budget.max_specialized_fragments:
+            omitted.append(topic)
+            diagnostics.append(f"topic_limit:{topic}")
+            continue
+        selected.append(
+            SelectedKnowledge(
+                fragment=fragment,
+                score=1.0,
+                reasons=("selected by task ReviewPlan",),
+            )
+        )
+
+    # Use a neutral base marker; reviewer-specific BASE methodology is supplied by
+    # each direct prompt and is intentionally not routed by ReviewPlan.
+    return _render_bundle(
+        base=None,
+        specialized=selected,
+        reviewer=ReviewerKind.BEHAVIOR,
+        budget=budget,
+        omitted=tuple(omitted),
+        diagnostics=tuple(diagnostics),
+    ).model_copy(update={"task_id": task_id})

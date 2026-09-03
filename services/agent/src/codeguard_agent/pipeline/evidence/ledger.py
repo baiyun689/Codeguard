@@ -130,11 +130,11 @@ def capture_tool_records(
             getattr(record, "reused_from_call_id", "")
         )
         arguments = {
-            key: value
+            key: str(value)
             for key, value in dict(
                 getattr(record, "arguments", {}) or {}
             ).items()
-            if isinstance(value, str)
+            if isinstance(value, (str, int, float, bool))
         }
         reused_from_artifact_id = call_to_artifact.get(
             reused_from_call_id, ""

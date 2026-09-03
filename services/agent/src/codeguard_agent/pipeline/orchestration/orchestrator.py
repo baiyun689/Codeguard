@@ -93,12 +93,28 @@ class PipelineOrchestrator:
         checkpoint_backend: str = "",
         checkpoint_db: str = "codeguard_checkpoints.db",
         react_recursion_limit: int = 48,
+        discovery_mode: str = "react",
+        controlled_initial_tool_budget: int = 6,
+        controlled_delta_tool_budget: int = 2,
+        controlled_max_path_depth: int = 3,
+        controlled_max_seeds_per_change_unit: int = 2,
+        controlled_max_seeds_per_reviewer: int = 4,
+        controlled_max_seeds_per_task: int = 12,
+        controlled_max_knowledge_topics: int = 4,
     ) -> None:
         self._enable_summary = enable_summary
         self._review_budget = review_budget if review_budget is not None else ReviewBudget()
         self._recursion_limit = recursion_limit
         self._checkpointer = _create_checkpointer(checkpoint_backend, checkpoint_db)
         self._react_recursion_limit = react_recursion_limit
+        self._discovery_mode = discovery_mode
+        self._controlled_initial_tool_budget = controlled_initial_tool_budget
+        self._controlled_delta_tool_budget = controlled_delta_tool_budget
+        self._controlled_max_path_depth = controlled_max_path_depth
+        self._controlled_max_seeds_per_change_unit = controlled_max_seeds_per_change_unit
+        self._controlled_max_seeds_per_reviewer = controlled_max_seeds_per_reviewer
+        self._controlled_max_seeds_per_task = controlled_max_seeds_per_task
+        self._controlled_max_knowledge_topics = controlled_max_knowledge_topics
 
     def run(
         self,
@@ -124,7 +140,9 @@ class PipelineOrchestrator:
         """跑完整条管线,返回结构化的 ReviewResult。
 
         fp_verify_llm:裁决模型(异源千问 temperature=0);None 时回退到主 llm。
-        tool_client 非 None 时发现者走 ReAct(可调工具),否则走直连基准。
+        发现执行方式由 ``discovery_mode`` 决定：``controlled`` 使用
+        DirectTriage→GraphPlan→EvidenceExecutor，``react`` 在有 tool_client 时
+        使用 ReAct，``direct`` 明确关闭工具发现。
         enabled_tools:暴露给审查员的工具白名单(评测 profile 控制);None=全开(CLI 默认)。
         enabled_evidence_tools:EvidenceAgent 的独立白名单；None 时沿用 enabled_tools。
         allow_direct_fallback:ReAct 失败/空结果时是否允许无工具直连复审；严格 eval 关闭。
@@ -136,19 +154,33 @@ class PipelineOrchestrator:
             return ReviewResult(summary="没有检测到代码变更,无需审查。")
 
         _run_id = thread_id or str(uuid.uuid4())
+        # ``direct`` is an explicit no-tool baseline.  Enforce that boundary
+        # at the orchestration seam as well as in the CLI so API/eval callers
+        # cannot accidentally re-enable ReAct by passing a tool client.
+        effective_tool_client = (
+            None if self._discovery_mode == "direct" else tool_client
+        )
 
         graph = build_review_graph(
             enable_summary=self._enable_summary,
             checkpointer=self._checkpointer,
             llm=llm,
             fp_verify_llm=fp_verify_llm,
-            tool_client=tool_client,
+            tool_client=effective_tool_client,
             evidence_mode=evidence_mode,
+            discovery_mode=self._discovery_mode,
+            controlled_initial_tool_budget=self._controlled_initial_tool_budget,
+            controlled_delta_tool_budget=self._controlled_delta_tool_budget,
+            controlled_max_path_depth=self._controlled_max_path_depth,
+            controlled_max_seeds_per_change_unit=self._controlled_max_seeds_per_change_unit,
+            controlled_max_seeds_per_reviewer=self._controlled_max_seeds_per_reviewer,
+            controlled_max_seeds_per_task=self._controlled_max_seeds_per_task,
+            controlled_max_knowledge_topics=self._controlled_max_knowledge_topics,
         )
         initial: ReviewState = {
             "diff_text": diff_text,
             "evidence_revision": resolve_evidence_revision(
-                evidence_revision, tool_client, diff_text
+                evidence_revision, effective_tool_client, diff_text
             ),
             "enabled_tools": enabled_tools,
             "max_retries": max_retries,
@@ -156,6 +188,14 @@ class PipelineOrchestrator:
             "react_recursion_limit": self._react_recursion_limit,
             "allow_direct_fallback": allow_direct_fallback,
             "review_budget": self._review_budget,
+            "discovery_mode": self._discovery_mode,
+            "controlled_initial_tool_budget": self._controlled_initial_tool_budget,
+            "controlled_delta_tool_budget": self._controlled_delta_tool_budget,
+            "controlled_max_path_depth": self._controlled_max_path_depth,
+            "controlled_max_seeds_per_change_unit": self._controlled_max_seeds_per_change_unit,
+            "controlled_max_seeds_per_reviewer": self._controlled_max_seeds_per_reviewer,
+            "controlled_max_seeds_per_task": self._controlled_max_seeds_per_task,
+            "controlled_max_knowledge_topics": self._controlled_max_knowledge_topics,
         }
         if enabled_evidence_tools is not None:
             initial["enabled_evidence_tools"] = enabled_evidence_tools

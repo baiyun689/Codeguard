@@ -122,8 +122,9 @@ def main(argv: list[str] | None = None) -> int:
 
         llm = build_llm(settings)
         logger.info(
-            "审查方式:ADR-032/038 ReviewCouncil(summary → task/plan/context → "
-            "discover×3 → coordinator → evidence_verifier → council_judge → causal_merge)"
+            "审查方式=%s: summary → task/plan/context → discovery → coordinator → "
+            "evidence_verifier → council_judge → causal_merge",
+            settings.discovery_mode,
         )
         # 裁决模型(优先异源+低温,供 EvidenceJudge 与 causal_merge 使用;误报验证也复用)。
         # 只要配置了 CODEGUARD_JUDGE_* 就创建,不再仅依赖 fp_llm_verify 开关。
@@ -135,12 +136,13 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             logger.debug("无法创建裁决模型,回退到主 LLM: %s", exc)
 
-        # 配置了工具服务且为真实 LLM 时,为本次审查建工具会话,审查员走 ReAct;
+        # 配置了工具服务且为真实 LLM 时,为本次审查建工具会话；controlled 与 ReAct
+        # 共用 Gateway，direct 模式明确不创建工具会话。
         # 否则 tool_client 为 None,走无工具直连(见 design.md D1)。mock 模式不建会话。
         tool_client = None
         repo_abspath = os.path.abspath(args.repo)
         evidence_revision = ""
-        if settings.tool_server_url and llm is not None:
+        if settings.tool_server_url and llm is not None and settings.discovery_mode != "direct":
             try:
                 head_revision = collect_head_revision(repo_abspath)
                 working_tree_digest = sha256(diff_text.encode("utf-8")).hexdigest()
@@ -152,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
                     revision=evidence_revision,
                     token=settings.tool_server_token,
                 )
-                logger.info("已创建工具会话(%s),审查员走 ReAct", tool_client.session_id)
+                logger.info("已创建工具会话(%s),发现模式=%s", tool_client.session_id, settings.discovery_mode)
             except Exception as exc:  # noqa: BLE001 工具服务不可用时降级为无工具,不中断审查
                 logger.warning("创建工具会话失败,降级为无工具直连: %s", exc)
                 tool_client = None
@@ -166,6 +168,14 @@ def main(argv: list[str] | None = None) -> int:
             checkpoint_backend=settings.checkpoint_backend,
             checkpoint_db=settings.checkpoint_db,
             react_recursion_limit=settings.react_recursion_limit,
+            discovery_mode=settings.discovery_mode,
+            controlled_initial_tool_budget=settings.controlled_initial_tool_budget,
+            controlled_delta_tool_budget=settings.controlled_delta_tool_budget,
+            controlled_max_path_depth=settings.controlled_max_path_depth,
+            controlled_max_seeds_per_change_unit=settings.controlled_max_seeds_per_change_unit,
+            controlled_max_seeds_per_reviewer=settings.controlled_max_seeds_per_reviewer,
+            controlled_max_seeds_per_task=settings.controlled_max_seeds_per_task,
+            controlled_max_knowledge_topics=settings.controlled_max_knowledge_topics,
         )
 
         effective_thread_id = args.thread_id or str(uuid.uuid4())
