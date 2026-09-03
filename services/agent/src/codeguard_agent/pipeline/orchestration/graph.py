@@ -1723,7 +1723,8 @@ def _controlled_review_node(llm, tool_client=None):
                             }
                         ) or (
                             assessment is None
-                            and proof_for_work.status is ProofMatchStatus.PROVED
+                            and proof_for_work.status
+                            in {ProofMatchStatus.PROVED, ProofMatchStatus.PARTIAL}
                         ):
                             if assessment is None:
                                 aliases = tuple(
