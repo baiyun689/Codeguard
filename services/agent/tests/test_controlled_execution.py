@@ -32,6 +32,7 @@ from codeguard_agent.pipeline.controlled.executor import (
 )
 from codeguard_agent.pipeline.controlled.graph_plan import (
     _baseline_graph_plan,
+    run_graph_replan,
     run_graph_plan,
     validate_graph_plan,
 )
@@ -39,10 +40,12 @@ from codeguard_agent.pipeline.controlled.assessment import (
     build_evidence_pack,
     candidate_from_seed,
     collapse_candidate_duplicates,
+    finalize_evidence_assessment,
     match_execution_proof,
     run_evidence_assessment,
 )
 from codeguard_agent.pipeline.controlled.assessment import visible_symbol_ids
+from codeguard_agent.pipeline.controlled.routing import stable_seed_id
 from codeguard_agent.pipeline.controlled.triage import run_direct_triage
 from codeguard_agent.pipeline.controlled.triage import (
     _merge_protocol_repair_issues,
@@ -55,6 +58,7 @@ from codeguard_agent.pipeline.controlled.triage import (
 from codeguard_agent.pipeline.controlled.llm_contracts import (
     LlmCandidateSeed,
     LlmDirectTriageResult,
+    LlmReviewerGraphPlan,
 )
 from codeguard_agent.pipeline.orchestration.graph import (
     _assemble_state_dossiers,
@@ -63,6 +67,27 @@ from codeguard_agent.pipeline.orchestration.graph import (
 )
 from codeguard_agent.pipeline.orchestration.graph import _auto_context_delta_step
 from codeguard_agent.tools.tool_client import ToolResponse
+
+
+def test_finalize_evidence_assessment_requires_complete_proof():
+    assessment = EvidenceAssessment(
+        work_item_id="wi-1",
+        status=AssessmentStatus.PROVED,
+        claim="claim",
+        proof_scope=ProofScope.CROSS_FILE,
+    )
+    partial = ProofMatch(work_item_id="wi-1", status=ProofMatchStatus.PARTIAL)
+    proved = ProofMatch(work_item_id="wi-1", status=ProofMatchStatus.PROVED)
+
+    assert finalize_evidence_assessment(None, proved) == (None, "assessment_missing")
+    assert finalize_evidence_assessment(assessment, partial) == (
+        AssessmentStatus.UNRESOLVED,
+        "evidence_incomplete",
+    )
+    assert finalize_evidence_assessment(assessment, proved) == (
+        AssessmentStatus.CANDIDATE,
+        "evidence_satisfied",
+    )
 
 
 class _GraphClient:
@@ -153,6 +178,147 @@ def _plan() -> ReviewerGraphPlan:
             ),
         ),
     )
+
+
+def test_graph_replan_selects_one_new_visible_endpoint_step():
+    seed = CandidateSeed(
+        seed_id="seed-replan",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-A.java#h0",
+        claim="下游 listener 的状态顺序可能错误",
+        mechanism="listener 在状态注册前执行",
+        location_file="A.java",
+        proof_scope=ProofScope.CROSS_FILE,
+        evidence_basis=("changed_lines",),
+        evidence_need=EvidenceNeed.INSPECT_PATH,
+        graph_question=GraphQuestion(
+            subject_ref="s1",
+            direction="downstream",
+            path_kind="behavior",
+            expected_targets=("s2",),
+            required_relationships=("CALLS",),
+            question="确认下游 listener 的执行顺序",
+        ),
+    )
+    work_item = _plan().work_items[0].model_copy(
+        update={"seed_id": seed.seed_id, "work_item_id": "wi-replan"}
+    )
+    assessment = EvidenceAssessment(
+        work_item_id="wi-replan",
+        status=AssessmentStatus.NEEDS_EVIDENCE,
+        claim=seed.claim,
+        mechanism=seed.mechanism,
+        proof_scope=seed.proof_scope,
+        additional_evidence_question="读取 s2 的源码确认回调顺序",
+    )
+    replan = ReviewerGraphPlan(
+        reviewer=ReviewerKind.BEHAVIOR,
+        task_id="A.java#h0",
+        work_items=(
+            WorkItem(
+                seed_id=seed.seed_id,
+                work_item_id="wi-replan",
+                reviewer=ReviewerKind.BEHAVIOR,
+                hypothesis=seed.claim,
+                expected_mechanism=seed.mechanism,
+                evidence_steps=(
+                    EvidenceStep(
+                        tool="get_file_content",
+                        subject_ref="s2",
+                        purpose="读取下游 listener 源码",
+                        expected_fact="确认 listener 回调顺序",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    step, diagnostics = run_graph_replan(
+        reviewer=ReviewerKind.BEHAVIOR,
+        task_id="A.java#h0",
+        seed=seed,
+        work_item=work_item,
+        assessment=assessment,
+        visible_symbols={"s1", "s2"},
+        visible_source_symbols={"s2"},
+        executed_queries={("inspect_path", "s1", "behavior", 3)},
+        llm=_TriageLLM(LlmReviewerGraphPlan.model_validate(replan.model_dump())),
+        max_retries=1,
+        structured_method="function_calling",
+        enabled_tools={"get_file_content", "inspect_path"},
+    )
+
+    assert step is not None
+    assert step.tool == "get_file_content"
+    assert step.subject_ref == "s2"
+    assert "graph_replan_step:get_file_content:s2" in diagnostics
+
+
+def test_graph_replan_rejects_unknown_or_duplicate_step():
+    seed = CandidateSeed(
+        seed_id="seed-replan-invalid",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-A.java#h0",
+        claim="下游调用可能错误",
+        mechanism="调用链被截断",
+        location_file="A.java",
+        proof_scope=ProofScope.CROSS_FILE,
+        evidence_basis=("changed_lines",),
+        evidence_need=EvidenceNeed.INSPECT_PATH,
+        graph_question=GraphQuestion(
+            subject_ref="s1",
+            direction="downstream",
+            path_kind="behavior",
+            expected_targets=("s2",),
+            question="确认下游调用",
+        ),
+    )
+    work_item = _plan().work_items[0].model_copy(
+        update={"seed_id": seed.seed_id, "work_item_id": "wi-invalid"}
+    )
+    assessment = EvidenceAssessment(
+        work_item_id="wi-invalid",
+        status=AssessmentStatus.NEEDS_EVIDENCE,
+        claim=seed.claim,
+        proof_scope=seed.proof_scope,
+    )
+    invalid = ReviewerGraphPlan(
+        reviewer=ReviewerKind.BEHAVIOR,
+        task_id="A.java#h0",
+        work_items=(
+            WorkItem(
+                seed_id=seed.seed_id,
+                work_item_id="wi-invalid",
+                reviewer=ReviewerKind.BEHAVIOR,
+                hypothesis=seed.claim,
+                expected_mechanism=seed.mechanism,
+                evidence_steps=(
+                    EvidenceStep(
+                        tool="get_file_content",
+                        subject_ref="not-visible",
+                        purpose="无效 symbol",
+                        expected_fact="不应执行",
+                    ),
+                ),
+            ),
+        ),
+    )
+    step, diagnostics = run_graph_replan(
+        reviewer=ReviewerKind.BEHAVIOR,
+        task_id="A.java#h0",
+        seed=seed,
+        work_item=work_item,
+        assessment=assessment,
+        visible_symbols={"s1", "s2"},
+        visible_source_symbols={"s2"},
+        executed_queries={("inspect_path", "s1", "behavior", 3)},
+        llm=_TriageLLM(LlmReviewerGraphPlan.model_validate(invalid.model_dump())),
+        max_retries=1,
+        structured_method="function_calling",
+        enabled_tools={"get_file_content", "inspect_path"},
+    )
+    assert step is None
+    assert "unknown_subject_ref:not-visible" in diagnostics
 
 
 def test_graph_plan_binds_step_ids_and_executor_deduplicates_calls():
@@ -1522,6 +1688,7 @@ def test_controlled_review_binds_provider_assessment_into_candidate():
     from codeguard_agent.models.tasks import PlanUnit, TaskRoute
     from codeguard_agent.pipeline.controlled.llm_contracts import (
         LlmEvidenceAssessmentBatch,
+        LlmEvidenceAssessment,
         LlmReviewerGraphPlan,
     )
 
@@ -1601,7 +1768,13 @@ def test_controlled_review_binds_provider_assessment_into_candidate():
                     elif name == "LlmReviewerGraphPlan":
                         result = LlmReviewerGraphPlan.model_validate(plan.model_dump())
                     elif name == "LlmEvidenceAssessmentBatch":
-                        result = LlmEvidenceAssessmentBatch(assessments=(assessment,))
+                        result = LlmEvidenceAssessmentBatch(
+                            assessments=(
+                                LlmEvidenceAssessment.model_validate(
+                                    assessment.model_dump()
+                                ),
+                            )
+                        )
                     else:  # pragma: no cover - protects this test from hidden calls
                         raise AssertionError(f"unexpected schema: {name}")
                     return result
@@ -1632,6 +1805,132 @@ def test_controlled_review_binds_provider_assessment_into_candidate():
         item.event == "completed" and "candidates=1" in item.detail
         for item in output["council_trace"]
     )
+
+
+def test_controlled_review_replans_needs_evidence_once_before_candidate_gate():
+    """A missing fact triggers one Graph Replan and then re-enters assessment."""
+
+    from codeguard_agent.models.tasks import PlanUnit, TaskRoute
+    from codeguard_agent.pipeline.controlled.llm_contracts import (
+        LlmEvidenceAssessmentBatch,
+        LlmEvidenceAssessment,
+    )
+
+    task = ReviewTask(id="A.java#h0", file="A.java", patch="+call();", changed_lines=[2])
+    seed = CandidateSeed(
+        seed_id="seed-needs-replan",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-A.java#h0",
+        claim="下游调用的状态顺序可能错误",
+        mechanism="调用关系成立但缺少下游实现细节",
+        location_file="A.java",
+        location_line=2,
+        proof_scope=ProofScope.CROSS_FILE,
+        evidence_basis=("changed_lines",),
+        evidence_need=EvidenceNeed.INSPECT_PATH,
+        graph_question=GraphQuestion(
+            subject_ref="s1",
+            direction="downstream",
+            path_kind="behavior",
+            expected_targets=("s2",),
+            required_relationships=("CALLS",),
+            question="是否到达下游方法",
+        ),
+    )
+    bound_seed_id = stable_seed_id(seed)
+    triage_empty = DirectTriageResult(
+        coverage=(CoverageDeclaration(change_unit_id="CU-A.java#h0", decision=CoverageDecision.LOCAL_ONLY),),
+        issues=(),
+    )
+    triage_behavior = triage_empty.model_copy(
+        update={
+            "coverage": (CoverageDeclaration(
+                change_unit_id="CU-A.java#h0",
+                decision=CoverageDecision.GRAPH_NEEDED,
+            ),),
+            "issues": (seed,),
+        }
+    )
+    initial_plan = _plan().model_copy(update={
+        "work_items": (_plan().work_items[0].model_copy(update={"seed_id": bound_seed_id, "work_item_id": ""}),),
+    })
+    replan_plan = ReviewerGraphPlan(
+        reviewer=ReviewerKind.BEHAVIOR,
+        task_id=task.id,
+        work_items=(WorkItem(
+            seed_id=bound_seed_id,
+            work_item_id="wi-behavior-A.java#h0-1",
+            reviewer=ReviewerKind.BEHAVIOR,
+            hypothesis=seed.claim,
+            expected_mechanism=seed.mechanism,
+            evidence_steps=(EvidenceStep(
+                tool="inspect_structure",
+                subject_ref="s2",
+                purpose="读取下游结构事实",
+                expected_fact="确认下游实现细节",
+            ),),
+        ),),
+    )
+    assessments = [
+        EvidenceAssessment(
+            work_item_id="wi-behavior-A.java#h0-1",
+            status=AssessmentStatus.NEEDS_EVIDENCE,
+            claim=seed.claim,
+            mechanism=seed.mechanism,
+            proof_scope=seed.proof_scope,
+            additional_evidence_question="需要下游结构事实",
+        ),
+        EvidenceAssessment(
+            work_item_id="wi-behavior-A.java#h0-1",
+            status=AssessmentStatus.PROVED,
+            claim=seed.claim,
+            mechanism=seed.mechanism,
+            proof_scope=seed.proof_scope,
+            supporting_refs=("T01",),
+        ),
+    ]
+    calls = {"assessment": 0}
+
+    class _NodeLLM:
+        def with_structured_output(self, schema, method=None):  # noqa: ARG002
+            class _DynamicStructured:
+                def invoke(_, messages):  # noqa: ANN001
+                    name = schema.__name__
+                    prompt = " ".join(str(item) for item in messages)
+                    if name == "LlmDirectTriageResult":
+                        return triage_empty if "ThreatModelAgent" in prompt or "MaintainabilityAgent" in prompt else triage_behavior
+                    if name == "LlmReviewerGraphPlan":
+                        return LlmReviewerGraphPlan.model_validate(
+                            (replan_plan if "<graph_replan" in prompt else initial_plan).model_dump()
+                        )
+                    if name == "LlmEvidenceAssessmentBatch":
+                        result = assessments[min(calls["assessment"], len(assessments) - 1)]
+                        calls["assessment"] += 1
+                        return LlmEvidenceAssessmentBatch(
+                            assessments=(LlmEvidenceAssessment.model_validate(result.model_dump()),)
+                        )
+                    raise AssertionError(f"unexpected schema: {name}")
+
+            return _DynamicStructured()
+
+    output = _controlled_review_node(_NodeLLM(), tool_client=_GraphClient())({
+        "review_tasks": [task],
+        "task_selection": TaskSelection(selected_task_ids=[task.id]),
+        "task_routes": {task.id: TaskRoute(task_id=task.id, route="full", reason="test")},
+        "plan_units": [PlanUnit(id="A.java", file="A.java", task_ids=(task.id,))],
+        "knowledge_route_plan": {},
+        "task_symbol_contexts": {task.id: _context()},
+        "evidence_revision": "r1",
+        "max_retries": 1,
+        "structured_method": "function_calling",
+        "enabled_tools": {"get_file_content", "inspect_structure", "inspect_change_impact", "inspect_path"},
+        "controlled_delta_tool_budget": 1,
+    })
+
+    assert calls["assessment"] == 2
+    assert len(output["raw_candidate_issues"]) == 1
+    assert any(item.node == "graph_replan" and item.event == "completed" for item in output["council_trace"])
+    assert any(item.node == "delta_execute" and item.event == "completed" for item in output["council_trace"])
 
 
 def test_candidate_context_is_rehydrated_after_state_serialization():

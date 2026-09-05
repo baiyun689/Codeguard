@@ -9,7 +9,9 @@ from typing import Any
 
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.tasks import (
+    AssessmentStatus,
     CandidateSeed,
+    EvidenceAssessment,
     EvidenceNeed,
     EvidenceStep,
     ReviewerGraphPlan,
@@ -560,6 +562,146 @@ def validate_delta_step(
     )
 
 
+def build_graph_replan_user_prompt(
+    *,
+    reviewer: ReviewerKind,
+    task_id: str,
+    seed: CandidateSeed,
+    work_item: WorkItem,
+    assessment: EvidenceAssessment,
+    visible_symbols: tuple[str, ...],
+    visible_source_symbols: tuple[str, ...],
+    executed_queries: tuple[str, ...],
+    max_path_depth: int,
+    enabled_tools: frozenset[str] | set[str] | None = None,
+) -> str:
+    """构造一次性 Delta Replan 请求。
+
+    Replan 只接受运行时已经暴露的 symbol；它不是新的候选发现，也不能
+    修改原始 WorkItem。把缺口、可见 symbol 和已执行查询显式写入 prompt，
+    可让模型只回答“下一步补什么证据”，而不是恢复自由探索。
+    """
+
+    tool_text = ", ".join(sorted(enabled_tools)) if enabled_tools is not None else "全部已注册工具"
+    return (
+        f'<graph_replan reviewer="{reviewer.value}" task_id="{task_id}" '
+        f'work_item_id="{work_item.work_item_id}" max_path_depth="{max_path_depth}">\n'
+        f"<candidate_seed>\n{seed.model_dump_json(exclude_defaults=True)}\n</candidate_seed>\n"
+        f"<original_work_item>\n{work_item.model_dump_json(exclude_defaults=True)}\n</original_work_item>\n"
+        f"<assessment>\n{assessment.model_dump_json(exclude_defaults=True)}\n</assessment>\n"
+        f"<visible_symbols>{', '.join(visible_symbols) or '(none)'}</visible_symbols>\n"
+        f"<visible_source_symbols>{', '.join(visible_source_symbols) or '(none)'}</visible_source_symbols>\n"
+        f"<executed_queries>{'; '.join(executed_queries) or '(none)'}</executed_queries>\n"
+        f"允许工具：{tool_text}\n"
+        "只输出一个 ReviewerGraphPlan：必须保留同一 reviewer、task_id、seed_id；"
+        "work_item_id 按现有 schema 约定可以留空，运行时会绑定回原 WorkItem，"
+        "且恰好包含一个 evidence_step。该步骤只能补足 assessment 指出的一个明确事实缺口；"
+        "不能重复已执行查询，不能创建新 WorkItem，不能改变 GraphQuestion，不能猜测未出现的 symbol。"
+    )
+
+
+def run_graph_replan(
+    *,
+    reviewer: ReviewerKind,
+    task_id: str,
+    seed: CandidateSeed,
+    work_item: WorkItem,
+    assessment: EvidenceAssessment,
+    visible_symbols: set[str],
+    visible_source_symbols: set[str],
+    executed_queries: set[tuple[str, str, str, int | None]],
+    llm: Any,
+    max_retries: int,
+    structured_method: str,
+    max_path_depth: int = 3,
+    enabled_tools: frozenset[str] | set[str] | None = None,
+) -> tuple[EvidenceStep | None, tuple[str, ...]]:
+    """为单个 ``needs_evidence`` WorkItem 生成并校验一次 Delta Plan。
+
+    该函数故意返回一个 ``EvidenceStep`` 而不是完整计划：调用方已经持有
+    原始 WorkItem，追加步骤不会删除、改写或扩展首轮计划。任何协议错误、
+    未知 symbol、重复查询或多步骤输出都 fail-closed，交由上层按预算丢弃。
+    """
+
+    diagnostics: list[str] = ["graph_replan_requested"]
+    if assessment.status is not AssessmentStatus.NEEDS_EVIDENCE:
+        return None, ("graph_replan_not_needed",)
+    if llm is None:
+        return None, ("graph_replan_llm_unavailable",)
+    if not visible_symbols:
+        return None, ("graph_replan_no_visible_symbols",)
+
+    enabled_tool_set = set(enabled_tools) if enabled_tools is not None else None
+    system = _system_prompt(reviewer) + "\n\n你现在处于一次性 Delta Replan；只生成一个补充 EvidenceStep。"
+    user = build_graph_replan_user_prompt(
+        reviewer=reviewer,
+        task_id=task_id,
+        seed=seed,
+        work_item=work_item,
+        assessment=assessment,
+        visible_symbols=tuple(sorted(visible_symbols)),
+        visible_source_symbols=tuple(sorted(visible_source_symbols)),
+        executed_queries=tuple(
+            f"{tool}:{subject}:{path}:{depth or ''}"
+            for tool, subject, path, depth in sorted(
+                executed_queries,
+                key=lambda item: tuple("" if part is None else str(part) for part in item),
+            )
+        ),
+        max_path_depth=max_path_depth,
+        enabled_tools=enabled_tool_set,
+    )
+    try:
+        raw = invoke_with_retry(
+            llm.with_structured_output(LlmReviewerGraphPlan, method=structured_method),
+            [("system", system), ("human", user)],
+            max_retries=max(1, max_retries),
+        )
+        if raw is None:
+            return None, ("graph_replan_empty_response",)
+        parsed = ReviewerGraphPlan.model_validate(
+            LlmReviewerGraphPlan.model_validate(
+                raw.model_dump() if hasattr(raw, "model_dump") else raw
+            ).model_dump()
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("controlled graph replan failed: %s", exc)
+        return None, (f"graph_replan_invalid:{type(exc).__name__}",)
+
+    if parsed.reviewer is not reviewer or parsed.task_id != task_id:
+        return None, ("graph_replan_scope_mismatch",)
+    if len(parsed.work_items) != 1:
+        return None, ("graph_replan_requires_one_work_item",)
+    item = parsed.work_items[0]
+    if item.seed_id != seed.seed_id or item.work_item_id not in {"", work_item.work_item_id}:
+        return None, ("graph_replan_work_item_mismatch",)
+    if len(item.evidence_steps) != 1:
+        return None, ("graph_replan_requires_one_step",)
+    step = item.evidence_steps[0].model_copy(update={"depends_on": ()})
+    allowed = visible_source_symbols if step.tool == "get_file_content" else visible_symbols
+    normalized, validation = validate_delta_step(
+        step,
+        seed=seed,
+        reviewer=reviewer,
+        allowed_symbols=set(allowed),
+        max_path_depth=max_path_depth,
+        enabled_tools=enabled_tool_set,
+    )
+    diagnostics.extend(validation)
+    if normalized is None:
+        return None, tuple((*diagnostics, "graph_replan_rejected"))
+    query_key = (
+        normalized.tool,
+        normalized.subject_ref,
+        normalized.path_kind or "",
+        normalized.max_depth,
+    )
+    if query_key in executed_queries:
+        return None, ("graph_replan_duplicate_query",)
+    diagnostics.append(f"graph_replan_step:{normalized.tool}:{normalized.subject_ref}")
+    return normalized, tuple(diagnostics)
+
+
 def _baseline_graph_plan(
     *,
     reviewer: ReviewerKind,
@@ -802,6 +944,8 @@ __all__ = [
     "DOMAIN_TOOL_ALLOWLIST",
     "_baseline_graph_plan",
     "build_graph_plan_user_prompt",
+    "build_graph_replan_user_prompt",
+    "run_graph_replan",
     "run_graph_plan",
     "prompt_hash",
     "validate_delta_step",

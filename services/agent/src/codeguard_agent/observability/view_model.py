@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from typing import Any, Iterable
 
@@ -41,6 +42,8 @@ _NODE_TITLES: dict[str, str] = {
     "controlled_review": "受控审查",
     "direct_triage": "Direct 初筛",
     "graph_plan": "图谱取证计划",
+    "graph_replan": "证据补充计划",
+    "delta_execute": "补充证据执行",
     "evidence_assessment": "证据评估",
     "controlled_diagnostics": "受控审查诊断",
     "discover_threat_model": "安全候选发现",
@@ -1251,7 +1254,8 @@ def _controlled_sections(
     """把 ``controlled_review`` 的批量 State 拆成可导航的审查面板。
 
     受控模式 deliberately 只有一个 LangGraph 节点，但节点内部仍有四类
-    有顺序的工作：DirectTriage → GraphPlan → 工具执行 → EvidenceAssessment。
+    有顺序的工作：DirectTriage → GraphPlan → 工具执行 → EvidenceAssessment，
+    必要时再显示一次受控 Graph Replan/Delta 执行。
     如果只展示那个节点，Trace 会看起来像“只调用了一个模型”；这里生成
     轻量的索引步骤，不改变 State 或 Evidence Artifact 原文。
     """
@@ -1590,6 +1594,59 @@ def _controlled_sections(
                 for work_item_id in sorted(proofs_by_section[section_key])
             ],
         )
+
+    # A controlled WorkItem may receive at most one Graph Replan.  Render the
+    # decision as a separate step after EvidenceAssessment so the trace makes
+    # the bounded loop visible without pretending it is a new LangGraph node.
+    # Trace events are emitted for diagnostics as well as completion/rejection.
+    # Aggregate one card per WorkItem so a bounded replan is readable as one
+    # decision, rather than a noisy sequence of implementation events.
+    for trace_node, code_name, title in (
+        ("graph_replan", "graph_replan", "证据补充计划"),
+        ("delta_execute", "delta_execute", "补充证据执行"),
+    ):
+        grouped_events: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for item in traces:
+            if not isinstance(item, dict) or item.get("node") != trace_node:
+                continue
+            detail = str(item.get("detail") or "")
+            work_item_match = re.search(r"work_item=([^ ]+)", detail)
+            work_item_id = work_item_match.group(1) if work_item_match else ""
+            grouped_events[work_item_id or "<unknown>"].append(item)
+        for index, (work_item_id, events) in enumerate(sorted(grouped_events.items())):
+            owners = work_item_owners.get(work_item_id, set())
+            section_key = (
+                next(iter(owners)) if len(owners) == 1 else "controlled_shared"
+            )
+            task_ids: set[str] = set()
+            summaries: list[str] = []
+            for event in events:
+                detail = str(event.get("detail") or "")
+                task_match = re.search(r"task=([^ ]+)", detail)
+                if task_match:
+                    task_ids.add(task_match.group(1))
+                summaries.append(
+                    f"{event.get('event') or 'event'}: {detail}".rstrip()
+                )
+            section_tasks[section_key].update(task_ids)
+            failed = any(
+                str(event.get("event") or "")
+                in {"rejected", "rejected_invalid_step"}
+                for event in events
+            )
+            register_step(
+                section_key,
+                step_id=f"controlled:{code_name}:{index}",
+                code_name=code_name,
+                title=title,
+                summary=" · ".join(summaries),
+                input_value={
+                    "work_item_id": "" if work_item_id == "<unknown>" else work_item_id,
+                    "events": [str(event.get("event") or "") for event in events],
+                },
+                output_value={"events": events},
+                status="failed" if failed else "complete",
+            )
 
     # 三个受控 reviewer 都是固定执行单元。即使某个 reviewer 的 triage
     # 超时、返回 None 或节点在写回前失败，也要在 Trace 中留下失败/缺失卡片，

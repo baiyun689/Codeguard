@@ -18,7 +18,8 @@ git diff → PRModeClassifier → FileTaskBuilder/HunkTaskBuilder
          ├─ direct task → DirectTaskReview
          └─ full task → TaskSelection → PlanUnit(按文件复用)
               → Plan → [Summary] → SymbolResolution
-              → controlled_review(DirectTriage → GraphPlan → Execute → EvidenceAssessment)
+              → controlled_review(DirectTriage → GraphPlan → Execute → EvidenceAssessment
+                                  → [一次 Graph Replan/Delta Execute])
               → CandidateLocator → CouncilCoordinator → EvidenceVerifier(账本验证,零 LLM)
               → CouncilJudge(批量 EvidenceJudge)→ ReviewResult
 ```
@@ -55,7 +56,8 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 
 ```
 默认(受控):git diff → task 构建/DirectGate → Plan → [Summary] → SymbolResolution
-            → controlled_review(DirectTriage → GraphPlan → Execute → EvidenceAssessment)
+            → controlled_review(DirectTriage → GraphPlan → Execute → EvidenceAssessment
+                                → [一次 Graph Replan/Delta Execute])
             → CandidateLocator → EvidenceVerifier → 批量 Judge → 打印
 默认(有工具):配置 CODEGUARD_TOOL_SERVER_URL 后,Tool Server 按 revision 构建完整 Java ProjectSnapshot；
               controlled_review 按 GraphPlan 有界调用 inspect_structure / inspect_change_impact / inspect_path，

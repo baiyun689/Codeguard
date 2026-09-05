@@ -33,7 +33,6 @@ from codeguard_agent.models.tasks import (
     EvidenceAssessment,
     EvidenceStep,
     KnowledgeRoutePlan,
-    ProofMatchStatus,
     ReviewerGraphPlan,
     ReviewBudget,
     ReviewMode,
@@ -64,6 +63,7 @@ from codeguard_agent.pipeline.planning import (
 from codeguard_agent.pipeline.controlled.assessment import (
     candidate_from_seed,
     collapse_candidate_duplicates,
+    finalize_evidence_assessment,
     match_execution_proof,
     run_evidence_assessment,
     visible_source_symbol_ids,
@@ -71,8 +71,8 @@ from codeguard_agent.pipeline.controlled.assessment import (
 )
 from codeguard_agent.pipeline.controlled.executor import ControlledEvidenceExecutor
 from codeguard_agent.pipeline.controlled.graph_plan import (
+    run_graph_replan,
     run_graph_plan,
-    validate_delta_step,
 )
 from codeguard_agent.pipeline.controlled.planning import run_knowledge_route
 from codeguard_agent.pipeline.controlled.routing import route_seed
@@ -1763,13 +1763,8 @@ def _controlled_review_node(llm, tool_client=None):
                 all_trace_refs.extend(execution.trace_refs)
                 all_artifacts.update(execution.artifacts)
                 delta_budget = max(0, int(state.get("controlled_delta_tool_budget", 2)))
-                delta_work_item_ids = _select_delta_work_items(
-                    graph_plans=graph_plans_for_task,
-                    seeds=graph_seeds_by_id,
-                    execution=execution,
-                    budget=delta_budget,
-                )
                 delta_used_count = 0
+                replanned_work_items: set[str] = set()
                 for graph_plan in graph_plans_for_task:
                     reviewer_kind = ReviewerKind(graph_plan.reviewer)
                     plan_seeds = {
@@ -1814,131 +1809,99 @@ def _controlled_review_node(llm, tool_client=None):
                     # no recursive discovery or fuzzy symbol resolution is allowed.
                     for work_item in graph_plan.work_items:
                         initial_assessment = assessments.get(work_item.work_item_id)
-                        initial_proof = plan_proofs.get(work_item.work_item_id)
                         if (
                             delta_used_count >= delta_budget
                             or initial_assessment is None
-                            or (
-                                delta_work_item_ids
-                                and work_item.work_item_id not in delta_work_item_ids
-                            )
                         ):
                             continue
-                        # Build the deterministic endpoint enrichment before
-                        # accepting a provider-proposed Delta. A provider can
-                        # legally ask for another valid symbol, but it often
-                        # echoes an already-read subject or picks a nearby
-                        # field/caller that does not close the candidate's
-                        # declared graph seam. If the bounded graph already
-                        # exposes a source-backed endpoint, prefer that exact
-                        # endpoint; the choice is based on visible facts and
-                        # candidate text only, never on an issue name.
-                        auto_delta_step = _auto_context_delta_step(
-                            seed=plan_seeds[work_item.seed_id],
-                            assessment=initial_assessment,
-                            execution=execution,
-                            task=task,
-                            allow_partial_proof_enrichment=(
-                                initial_proof is not None
-                                and initial_proof.status is ProofMatchStatus.PARTIAL
+                        if initial_assessment.status is not AssessmentStatus.NEEDS_EVIDENCE:
+                            # Other uncertain statuses are terminal for this
+                            # WorkItem in the controlled Execute stage.  They
+                            # are never turned into an implicit exploratory
+                            # Delta query.
+                            continue
+                        # The first Delta decision belongs to GraphPlan, not
+                        # to the assessment model.  Assessment only describes
+                        # the missing fact; Graph Replan chooses one
+                        # executable step from this WorkItem's visible facts.
+                        work_item_execution = replace(
+                            execution,
+                            steps=tuple(
+                                step_execution
+                                for step_execution in execution.steps
+                                if step_execution.work_item_id == work_item.work_item_id
                             ),
                         )
-                        if initial_assessment.status is AssessmentStatus.NEEDS_EVIDENCE:
-                            if not initial_assessment.additional_steps:
-                                delta_step = auto_delta_step
-                                if delta_step is None:
-                                    continue
-                            else:
-                                delta_step = initial_assessment.additional_steps[0]
-                            # Providers sometimes echo the already executed
-                            # source step instead of selecting a newly visible
-                            # consumer. Reusing it would spend the Delta budget
-                            # without adding evidence, so switch to the
-                            # bounded endpoint enrichment below when possible.
-                            duplicate = any(
-                                prior.step.tool == delta_step.tool
-                                and prior.step.subject_ref == delta_step.subject_ref
-                                and prior.step.path_kind == delta_step.path_kind
-                                and prior.step.max_depth == delta_step.max_depth
-                                for prior in execution.steps
+                        visible_for_item = visible_symbol_ids(work_item_execution)
+                        source_for_item = visible_source_symbol_ids(work_item_execution)
+                        executed_for_item = {
+                            (
+                                step_execution.step.tool,
+                                step_execution.step.subject_ref,
+                                step_execution.step.path_kind or "",
+                                step_execution.step.max_depth,
                             )
-                            if duplicate and auto_delta_step is not None:
-                                delta_step = auto_delta_step
-                            elif (
-                                auto_delta_step is not None
-                                and delta_step.subject_ref != auto_delta_step.subject_ref
-                            ):
-                                # Keep one Delta slot focused on the
-                                # candidate's visible endpoint instead of an
-                                # unrelated provider-selected symbol.
-                                delta_step = auto_delta_step
-                        else:
-                            delta_step = auto_delta_step
-                            if delta_step is None:
-                                continue
-                        delta_step = delta_step.model_copy(update={"depends_on": ()})
-                        allowed_delta_symbols = visible_symbol_ids(execution)
-                        if delta_step.tool == "get_file_content":
-                            allowed_delta_symbols = visible_source_symbol_ids(execution)
-                        validated_delta_step, delta_diagnostics = validate_delta_step(
-                            delta_step,
-                            seed=plan_seeds[work_item.seed_id],
+                            for step_execution in work_item_execution.steps
+                        }
+                        replan_step, replan_diagnostics = run_graph_replan(
                             reviewer=reviewer_kind,
-                            allowed_symbols=allowed_delta_symbols,
+                            task_id=task.id,
+                            seed=plan_seeds[work_item.seed_id],
+                            work_item=work_item,
+                            assessment=initial_assessment,
+                            visible_symbols=visible_for_item,
+                            visible_source_symbols=source_for_item,
+                            executed_queries=executed_for_item,
+                            llm=llm,
+                            max_retries=state.get("max_retries", 3),
+                            structured_method=state.get("structured_method", "function_calling"),
                             max_path_depth=state.get("controlled_max_path_depth", 3),
-                            enabled_tools=set(state.get("enabled_tools") or ()),
+                            enabled_tools=(
+                                set(state["enabled_tools"])
+                                if state.get("enabled_tools") is not None
+                                else None
+                            ),
                         )
-                        if validated_delta_step is None:
-                            # A provider may attach graph-only fields to a
-                            # source step (or name a class rather than a
-                            # visible symbol).  Try the deterministic,
-                            # exact-symbol endpoint enrichment before giving up
-                            # this candidate's Delta slot.
-                            fallback_delta = _auto_context_delta_step(
-                                seed=plan_seeds[work_item.seed_id],
-                                assessment=initial_assessment,
-                                execution=execution,
-                                task=task,
-                                allow_partial_proof_enrichment=(
-                                    initial_proof is not None
-                                    and initial_proof.status is ProofMatchStatus.PARTIAL
+                        traces.extend(
+                            CouncilTrace(
+                                node="graph_replan",
+                                event="diagnostic",
+                                detail=(
+                                    f"task={task.id} work_item={work_item.work_item_id} "
+                                    f"{diagnostic}"
                                 ),
                             )
-                            if fallback_delta is not None:
-                                fallback_delta = fallback_delta.model_copy(
-                                    update={"depends_on": ()}
+                            for diagnostic in replan_diagnostics
+                        )
+                        if replan_step is not None:
+                            traces.append(
+                                CouncilTrace(
+                                    node="graph_replan",
+                                    event="completed",
+                                    detail=(
+                                        f"task={task.id} work_item={work_item.work_item_id} "
+                                        f"tool={replan_step.tool} subject={replan_step.subject_ref}"
+                                    ),
                                 )
-                                validated_delta_step, fallback_diagnostics = validate_delta_step(
-                                    fallback_delta,
-                                    seed=plan_seeds[work_item.seed_id],
-                                    reviewer=reviewer_kind,
-                                    allowed_symbols=allowed_delta_symbols,
-                                    max_path_depth=state.get("controlled_max_path_depth", 3),
-                                    enabled_tools=set(state.get("enabled_tools") or ()),
+                            )
+                            replanned_work_items.add(work_item.work_item_id)
+                        if replan_step is None:
+                            traces.append(
+                                CouncilTrace(
+                                    node="graph_replan",
+                                    event="rejected",
+                                    detail=(
+                                        f"task={task.id} work_item={work_item.work_item_id} "
+                                        "reason=no_valid_plan"
+                                    ),
                                 )
-                                delta_diagnostics = (
-                                    *delta_diagnostics,
-                                    "provider_delta_replaced",
-                                    *fallback_diagnostics,
-                                )
-                                if validated_delta_step is not None:
-                                    delta_step = validated_delta_step
-                            if validated_delta_step is not None:
-                                # Continue with the validated fallback below.
-                                pass
-                            else:
-                                traces.append(
-                                    CouncilTrace(
-                                        node="delta_plan",
-                                        event="rejected_invalid_step",
-                                        detail=(
-                                            f"task={task.id} work_item={work_item.work_item_id} "
-                                            f"{','.join(delta_diagnostics)}"
-                                        ),
-                                    )
-                                )
-                                continue
-                        delta_step = validated_delta_step
+                            )
+                            continue
+                        delta_step = replan_step
+                        delta_step = delta_step.model_copy(update={"depends_on": ()})
+                        allowed_delta_symbols = visible_for_item
+                        if delta_step.tool == "get_file_content":
+                            allowed_delta_symbols = source_for_item
                         delta_item = work_item.model_copy(
                             update={"evidence_steps": (delta_step,)}
                         )
@@ -2041,149 +2004,39 @@ def _controlled_review_node(llm, tool_client=None):
                             )
                             continue
                         assessment = assessments.get(work_item.work_item_id)
-                        # EvidenceAssessment is a semantic review of the
-                        # proof, not a second routing gate.  A model can
-                        # truthfully say "indeterminate" or "unresolved"
-                        # while the deterministic matcher has found a
-                        # positive (possibly partial) graph fact.  Preserve
-                        # that bounded candidate for CouncilJudge, which can
-                        # combine the patch and graph refs and make the final
-                        # keep/drop decision.  Explicit rejection/failure is
-                        # still fail-closed and never becomes a candidate.
-                        assessment_eligible = assessment is None or assessment.status in {
-                            AssessmentStatus.PROVED,
-                            AssessmentStatus.CANDIDATE,
-                            AssessmentStatus.NEEDS_EVIDENCE,
-                            AssessmentStatus.UNRESOLVED,
-                            AssessmentStatus.INDETERMINATE,
-                            AssessmentStatus.PARTIAL,
-                        }
-                        # An indeterminate graph result is an evidence gap,
-                        # not a negative fact.  Keep the bounded seed for
-                        # CouncilJudge so local patch/source evidence can
-                        # still establish a behavior issue, while preserving
-                        # the fail-closed rule for explicit NOT_FOUND.
-                        proof_usable = proof_for_work.status in {
-                            ProofMatchStatus.PROVED,
-                            ProofMatchStatus.PARTIAL,
-                            ProofMatchStatus.INDETERMINATE,
-                        }
-                        # Assessment is a semantic annotation, not the final
-                        # keep/drop authority. If the deterministic matcher
-                        # has a positive proof, preserve even an explicit
-                        # provider ``rejected`` annotation as a bounded
-                        # candidate so CouncilJudge can weigh the verified
-                        # patch/source/graph facts and the rejection reason
-                        # together. A rejected item without positive proof
-                        # remains fail-closed and never becomes a candidate.
-                        if (
-                            assessment is not None
-                            and assessment.status is AssessmentStatus.REJECTED
-                            and proof_usable
-                        ):
-                            assessment_eligible = True
-                            traces.append(
-                                CouncilTrace(
-                                    node="controlled_review",
-                                    event="candidate_rejected_preserved_for_judge",
-                                    detail=(
-                                        f"task={task.id} work_item={work_item.work_item_id} "
-                                        "reason=positive_proof"
-                                    ),
-                                )
+                        final_status, finalize_reason = finalize_evidence_assessment(
+                            assessment,
+                            proof_for_work,
+                        )
+                        if final_status is not AssessmentStatus.CANDIDATE:
+                            reason = (
+                                "replan_required_or_budget_exhausted"
+                                if finalize_reason in {
+                                    "assessment_missing",
+                                    "evidence_incomplete",
+                                }
+                                else finalize_reason
                             )
-                        if not assessment_eligible or not proof_usable:
                             traces.append(
                                 CouncilTrace(
                                     node="controlled_review",
-                                    event="candidate_gate_skip",
+                                    event="candidate_dropped_after_replan",
                                     detail=(
                                         f"task={task.id} work_item={work_item.work_item_id} "
-                                        f"reason=assessment_or_proof_not_eligible "
+                                        f"reason={reason} "
+                                        f"replanned={work_item.work_item_id in replanned_work_items} "
                                         f"assessment={getattr(assessment, 'status', None)} "
                                         f"proof={proof_for_work.status}"
                                     ),
                                 )
                             )
                             continue
-                        if assessment is None:
-                            work_steps = tuple(
-                                step
-                                for step in execution.steps
-                                if step.work_item_id == work_item.work_item_id
-                            )
-                            aliases = tuple(
-                                step.alias
-                                for step in work_steps
-                                if (
-                                    step.alias
-                                    and step.status in {"complete", "reused"}
-                                    and step.step.tool in {
-                                        "inspect_path",
-                                        "inspect_structure",
-                                        "inspect_change_impact",
-                                    }
-                                )
-                            )
-                            source_steps = tuple(
-                                step
-                                for step in work_steps
-                                if (
-                                    step.alias
-                                    and step.status in {"complete", "reused"}
-                                    and step.step.tool == "get_file_content"
-                                )
-                            )
-                            # A graph candidate needs a graph fact and,
-                            # when the subject source was executed, the
-                            # local mechanism excerpt as well.  This is
-                            # a generic transport fallback for an
-                            # unavailable/invalid Assessment response;
-                            # it does not infer a claim or promote a
-                            # candidate.  Prefer the GraphQuestion
-                            # subject, then retain one endpoint source.
-                            subject_ref = (
-                                seed_for_work.graph_question.subject_ref
-                                if seed_for_work.graph_question is not None
-                                else ""
-                            )
-                            subject_sources = tuple(
-                                step.alias
-                                for step in source_steps
-                                if step.step.subject_ref == subject_ref
-                            )
-                            preferred_sources = list(subject_sources[:1])
-                            for step in source_steps:
-                                if step.alias not in preferred_sources:
-                                    preferred_sources.append(step.alias)
-                                if len(preferred_sources) >= 2:
-                                    break
-                            aliases = tuple(
-                                dict.fromkeys(
-                                    (*aliases[:1], *preferred_sources, *aliases[1:])
-                                )
-                            )[:3]
-                            assessment = EvidenceAssessment(
-                                work_item_id=work_item.work_item_id,
-                                status=AssessmentStatus.CANDIDATE,
-                                claim=seed_for_work.claim,
-                                mechanism=seed_for_work.mechanism,
-                                impact=seed_for_work.impact,
-                                proof_scope=seed_for_work.proof_scope,
-                                supporting_refs=aliases[:3],
-                                counter_refs=(),
-                                limitations=(
-                                    "assessment_llm_missing_but_complete_proof",
-                                ),
-                            )
-                        # The assessment is a semantic annotation, not the
-                        # construction branch for a candidate.  Both a
-                        # provider-produced assessment and the bounded
-                        # transport fallback above must flow into the same
-                        # CandidateIssue binding path.  Previously the append
-                        # lived inside ``assessment is None`` and silently
-                        # discarded every normally parsed assessment after the
-                        # proof gate had accepted it.
+                        # CandidateFinalize deliberately changes only the
+                        # internal status; the original claim and evidence
+                        # references remain owned by EvidenceAssessment.
+                        assessment = assessment.model_copy(
+                            update={"status": AssessmentStatus.CANDIDATE}
+                        )
                         all_candidates.append(
                             candidate_from_seed(
                                 seed=seed_for_work,

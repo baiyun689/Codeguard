@@ -12,6 +12,7 @@ from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.evidence import EvidenceCatalog
 from codeguard_agent.models.schemas import DiscoveredIssue, EvidenceRefSelection, EvidenceRole
 from codeguard_agent.models.tasks import (
+    AssessmentStatus,
     CandidateSeed,
     EvidenceAssessment,
     EvidenceAssessmentBatch,
@@ -193,6 +194,32 @@ def match_execution_proof(
         ProofMatchStatus.NOT_FOUND: 3,
     }
     return min(matches, key=lambda item: priority[item.status])
+
+
+def finalize_evidence_assessment(
+    assessment: EvidenceAssessment | None,
+    proof: ProofMatch,
+) -> tuple[AssessmentStatus | None, str]:
+    """把 Execute 阶段状态收敛成候选门控结果。
+
+    这是受控管线的 CandidateFinalize 合同：只有评估明确接受且确定性
+    ProofMatcher 给出完整正向证明，WorkItem 才能进入 CouncilJudge。工具
+    partial、assessment 缺失或第二次仍需补证都统一变成 unresolved；它们
+    不是“没有 bug”，但也不能被当成可裁决候选。
+    """
+
+    if assessment is None:
+        return None, "assessment_missing"
+    if assessment.status in {AssessmentStatus.REJECTED, AssessmentStatus.NOT_FOUND}:
+        return AssessmentStatus.REJECTED, "assessment_rejected"
+    if proof.status is ProofMatchStatus.NOT_FOUND:
+        return AssessmentStatus.REJECTED, "proof_not_found"
+    if (
+        assessment.status in {AssessmentStatus.PROVED, AssessmentStatus.CANDIDATE}
+        and proof.status is ProofMatchStatus.PROVED
+    ):
+        return AssessmentStatus.CANDIDATE, "evidence_satisfied"
+    return AssessmentStatus.UNRESOLVED, "evidence_incomplete"
 
 
 def visible_symbol_ids(execution: ExecutionBatch) -> set[str]:
@@ -1054,6 +1081,7 @@ __all__ = [
     "build_evidence_pack",
     "candidate_from_seed",
     "collapse_candidate_duplicates",
+    "finalize_evidence_assessment",
     "match_execution_proof",
     "run_evidence_assessment",
     "visible_symbol_ids",
