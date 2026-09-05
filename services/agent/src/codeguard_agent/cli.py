@@ -120,7 +120,14 @@ def main(argv: list[str] | None = None) -> int:
             print("没有检测到代码变更,无需审查。")
             return 0
 
-        llm = build_llm(settings)
+        # Controlled Plan-and-Execute has explicit routing/termination
+        # contracts, so keep the reviewer sampling deterministic as well.
+        # ReAct/direct profiles retain the provider default temperature for
+        # backwards-compatible comparison runs.
+        llm = build_llm(
+            settings,
+            temperature=0 if settings.discovery_mode == "controlled" else None,
+        )
         logger.info(
             "审查方式=%s: summary → task/plan/context → discovery → coordinator → "
             "evidence_verifier → council_judge → causal_merge",

@@ -19,7 +19,11 @@ from codeguard_agent.models.evidence import (
 )
 from codeguard_agent.models.schemas import EvidenceRole, Severity
 from codeguard_agent.models.tasks import ReviewTask
-from codeguard_agent.pipeline.council.verdict import judge_direct, judge_with_evidence
+from codeguard_agent.pipeline.council.verdict import (
+    _bounded_graph_path_facts,
+    judge_direct,
+    judge_with_evidence,
+)
 from codeguard_agent.pipeline.evidence.planner import (
     CandidateDossier,
     DossierAssembly,
@@ -109,6 +113,24 @@ def _artifacts() -> dict[str, EvidenceArtifact]:
     return {"ev-patch": patch, "ev-tool": tool_artifact}
 
 
+def test_judge_path_facts_are_only_a_bounded_rendering_of_projected_edges():
+    payload = {
+        "schema_version": 2,
+        "subject_symbol_id": "s1",
+        "relationships": [
+            {"sourceId": "s1", "targetId": "s2", "kind": "CALLS"},
+            {"sourceId": "s2", "targetId": "s3", "kind": "CALLS"},
+            {"sourceId": "s3", "targetId": "s4", "kind": "WRITES"},
+        ],
+    }
+    paths = _bounded_graph_path_facts(
+        json.dumps(payload), arguments={"symbol_id": "s1"}
+    )
+    assert paths == [
+        {"symbols": ["s1", "s2", "s3"], "relationships": ["CALLS", "CALLS"]}
+    ]
+
+
 class _FakeJudgeLLM:
     """按输入候选数分派的伪 Judge LLM:批>1 返回 None(触发二分),单候选返回裁决。"""
 
@@ -132,6 +154,26 @@ class _FakeJudgeLLM:
         if isinstance(self._result, Exception):
             raise self._result
         return self._result
+
+
+class _ContractRetryJudgeLLM:
+    """First response omits one candidate; the bounded retry returns it."""
+
+    def __init__(self, first_id: str, second_id: str):
+        self.first_id = first_id
+        self.second_id = second_id
+        self.calls = 0
+
+    def with_structured_output(self, _schema, method=None):
+        return self
+
+    def invoke(self, messages):
+        self.calls += 1
+        payload = json.loads(messages[1][1])
+        ids = [item["candidate_id"] for item in payload["candidates"]]
+        if ids == [self.first_id, self.second_id]:
+            return EvidenceJudgeBatch(assessments=[_assessment(self.first_id)])
+        return EvidenceJudgeBatch(assessments=[_assessment(self.second_id)])
 
 
 def _assessment(cid: str, action: str = "keep", severity: Severity | None = Severity.WARNING,
@@ -162,6 +204,9 @@ def test_file_level_candidate_exposes_unresolved_location_limitation():
 
     limitations = llm.payloads[0]["candidates"][0]["evidence"][0]["limitations"]
     assert "candidate_location_unresolved" in limitations
+    assert llm.payloads[0]["candidates"][0]["verified_evidence"] == (
+        llm.payloads[0]["candidates"][0]["evidence"]
+    )
 
 
 def test_evidence_gap_is_visible_but_has_no_evidence_id():
@@ -233,6 +278,23 @@ def test_keep裁决_产出issue():
     assert batch.final_issues[0].severity is Severity.CRITICAL
 
 
+def test_judge_contract_retry_recovers_missing_candidate_assessment():
+    candidates = [_candidate("c1"), _candidate("c2")]
+    llm = _ContractRetryJudgeLLM("c1", "c2")
+    batch = judge_with_evidence(
+        _assembly(candidates),
+        {"c1": _verification("c1"), "c2": _verification("c2")},
+        _artifacts(),
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+    assert llm.calls == 2
+    assert {verdict.candidate_id for verdict in batch.verdicts} == {"c1", "c2"}
+    assert all(verdict.action == "keep" for verdict in batch.verdicts)
+    assert len(batch.final_issues) == 2
+
+
 def test_drop裁决_不产出issue():
     candidate = _candidate("c1")
     llm = _FakeJudgeLLM(EvidenceJudgeBatch(
@@ -248,6 +310,148 @@ def test_drop裁决_不产出issue():
     )
     assert batch.verdicts[0].action == "drop"
     assert batch.final_issues == []
+
+
+def test_judge_drop_does_not_discard_verified_return_state_observation():
+    """Model wording must not erase a ledger-closed state propagation fact."""
+
+    patch = "-\treturn context;\n+\treturn doOpenInternal(retryPolicy, state);\n"
+    source = """
+        if (this.retryContextCache.containsKey(key)) {
+            RetryContext context = this.retryContextCache.get(key);
+            context.removeAttribute(RetryContext.CLOSED);
+            return doOpenInternal(retryPolicy, state);
+        }
+    """
+    graph = json.dumps({
+        "schema_version": 2,
+        "subject_symbol_id": "java:A#open()",
+        "relationships": [
+            {
+                "sourceId": "java:A#open()",
+                "targetId": "java:A#doOpenInternal()",
+                "kind": "CALLS",
+            }
+        ],
+    })
+    task = ReviewTask(
+        id=TASK_ID,
+        file="src/A.java",
+        patch=patch,
+        changed_lines=[500],
+    )
+    candidate = CandidateIssue(
+        id="c-return-state",
+        task_id=TASK_ID,
+        source_agent="behavior",
+        file="src/A.java",
+        line=500,
+        type="state-propagation",
+        claim="open 返回对象可能丢失缓存中的重试状态",
+        mechanism="局部 context 清理后 return 改为调用内部 opener",
+        impact="调用方可能观察到缓存状态或重试计数不一致",
+        evidence_observation="源码显示缓存 context 被读取并清理后未作为返回值传出",
+        evidence_refs=[
+            EvidenceRef(artifact_id="ev-patch", declared_role=EvidenceRole.MECHANISM),
+            EvidenceRef(artifact_id="ev-source", declared_role=EvidenceRole.MECHANISM),
+            EvidenceRef(artifact_id="ev-graph", declared_role=EvidenceRole.REACHABILITY),
+        ],
+    )
+
+    patch_artifact = EvidenceArtifact.build(
+        task_id=TASK_ID,
+        reviewer="behavior",
+        revision=REV,
+        source_kind=EvidenceSourceKind.TASK_PATCH,
+        payload=patch,
+        availability=ArtifactAvailability.AVAILABLE,
+        capture_mode=EvidenceCaptureMode.GENERATED,
+    )
+    source_artifact = EvidenceArtifact.build(
+        task_id=TASK_ID,
+        reviewer="behavior",
+        revision=REV,
+        source_kind=EvidenceSourceKind.TOOL_CALL,
+        tool="get_file_content",
+        arguments={"symbol_id": "java:A#open()"},
+        payload=source,
+        availability=ArtifactAvailability.AVAILABLE,
+        capture_mode=EvidenceCaptureMode.EXECUTED,
+    )
+    graph_artifact = EvidenceArtifact.build(
+        task_id=TASK_ID,
+        reviewer="behavior",
+        revision=REV,
+        source_kind=EvidenceSourceKind.TOOL_CALL,
+        tool="inspect_path",
+        arguments={
+            "symbol_id": "java:A#open()",
+            "path_kind": "behavior",
+            "max_depth": "3",
+        },
+        payload=graph,
+        availability=ArtifactAvailability.AVAILABLE,
+        capture_mode=EvidenceCaptureMode.EXECUTED,
+    )
+    verification = CandidateVerification(
+        candidate_id=candidate.id,
+        source_kinds={EvidenceSourceKind.TASK_PATCH, EvidenceSourceKind.TOOL_CALL},
+        valid_evidence=[
+            VerifiedEvidence(
+                artifact_id="ev-patch",
+                source_kind=EvidenceSourceKind.TASK_PATCH,
+                content=patch,
+                validation_status=EvidenceValidationStatus.VALID,
+            ),
+            VerifiedEvidence(
+                artifact_id="ev-source",
+                source_kind=EvidenceSourceKind.TOOL_CALL,
+                tool="get_file_content",
+                arguments={"symbol_id": "java:A#open()"},
+                content=source,
+                validation_status=EvidenceValidationStatus.VALID,
+            ),
+            VerifiedEvidence(
+                artifact_id="ev-graph",
+                source_kind=EvidenceSourceKind.TOOL_CALL,
+                tool="inspect_path",
+                arguments={
+                    "symbol_id": "java:A#open()",
+                    "path_kind": "behavior",
+                    "max_depth": "3",
+                },
+                content=graph,
+                validation_status=EvidenceValidationStatus.VALID,
+            ),
+        ],
+        grounding_status="grounded",
+        eligible_for_judge=True,
+    )
+    llm = _FakeJudgeLLM(EvidenceJudgeBatch(
+        assessments=[_assessment(candidate.id, action="drop", severity=None, evidence=["F001", "F002"])]
+    ))
+    assembly = DossierAssembly(
+        (CandidateDossier(candidate=candidate, task=task, symbol_context=None),),
+        (),
+        (),
+    )
+
+    batch = judge_with_evidence(
+        assembly,
+        {candidate.id: verification},
+        {
+            "ev-patch": patch_artifact,
+            "ev-source": source_artifact,
+            "ev-graph": graph_artifact,
+        },
+        judge_llm=llm,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+
+    assert batch.verdicts[0].action == "keep"
+    assert batch.verdicts[0].reason_code == "deterministic_evidence_keep"
+    assert batch.final_issues[0].severity is Severity.WARNING
 
 
 def test_不可裁决候选_按验证淘汰原因drop():

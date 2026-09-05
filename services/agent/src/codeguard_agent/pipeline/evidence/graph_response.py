@@ -52,6 +52,10 @@ class GraphProjectionFocus:
 
     changed_file: str | None = None
     changed_lines: tuple[int, ...] = ()
+    # Deleted lines do not exist in the current revision and therefore stay
+    # separate from ``changed_lines``.  Their surviving anchor lines are still
+    # valid relevance facts for ranking graph edges around a deletion.
+    deletion_anchor_lines: tuple[int, ...] = ()
     changed_symbol_ids: tuple[str, ...] = ()
 
 
@@ -86,6 +90,8 @@ def summarize_graph(
     tool: str = "",
     arguments: Mapping[str, Any] | None = None,
     focus: GraphProjectionFocus | None = None,
+    max_chars: int = _GRAPH_SUMMARY_MAX_CHARS,
+    hard_max_chars: int = _GRAPH_SUMMARY_HARD_MAX_CHARS,
 ) -> str:
     """对 inspect_* 图响应做确定性、路径感知的结构化压缩(零 LLM)。
 
@@ -93,12 +99,17 @@ def summarize_graph(
     maximal path，其他关系只作为附着事实；预算不足时丢弃整个路径，不截断
     JSON 或路径尾部。raw payload 永远由 Evidence Artifact 原样保存。
     """
+    # Controlled evidence assessment can have a smaller per-step budget than
+    # the reviewer view.  Request a smaller complete-path projection instead
+    # of slicing serialized JSON after projection.
+    target_max_chars = max(512, min(max_chars, hard_max_chars))
+    safety_max_chars = max(target_max_chars, hard_max_chars)
     try:
         payload = json.loads(raw)
     except (TypeError, ValueError, json.JSONDecodeError):
-        return raw[:_GRAPH_SUMMARY_MAX_CHARS]
+        return raw[:target_max_chars]
     if not isinstance(payload, dict):
-        return raw[:_GRAPH_SUMMARY_MAX_CHARS]
+        return raw[:target_max_chars]
 
     summary: dict[str, Any] = {
         key: payload.get(key) for key in _GRAPH_HEADER_KEYS if key in payload
@@ -128,6 +139,8 @@ def summarize_graph(
         focus=focus,
         symbols=raw_symbols,
         summary_seed=summary_seed,
+        target_max_chars=target_max_chars,
+        hard_max_chars=safety_max_chars,
     )
     selected_edges = list(selection.relationships)
     selected_signatures = {edge.signature for edge in selected_edges}
@@ -144,6 +157,7 @@ def summarize_graph(
         unresolved_relationships,
         selected_edges,
         symbols,
+        max_chars=target_max_chars,
     )
     omitted_relationships = len({edge.signature for edge in edges}) - len(
         selected_signatures
@@ -176,7 +190,7 @@ def summarize_graph(
     summary["omitted_path_count"] = selection.omitted_path_count
     summary["limitations"] = list(dict.fromkeys(limitations))
     rendered = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
-    if len(rendered) <= _GRAPH_SUMMARY_HARD_MAX_CHARS:
+    if len(rendered) <= safety_max_chars:
         return rendered
 
     # A single path larger than the hard safety limit must never be half emitted.
@@ -245,6 +259,8 @@ def _select_graph_facts(
     focus: GraphProjectionFocus | None,
     symbols: list[dict[str, Any]],
     summary_seed: Mapping[str, Any],
+    target_max_chars: int = _GRAPH_SUMMARY_MAX_CHARS,
+    hard_max_chars: int = _GRAPH_SUMMARY_HARD_MAX_CHARS,
 ) -> _ProjectionSelection:
     subject_kind = next(
         (
@@ -313,7 +329,7 @@ def _select_graph_facts(
             ),
             limitations=list(summary_seed.get("limitations") or []),
         )
-        return len(value) <= _GRAPH_SUMMARY_MAX_CHARS
+        return len(value) <= target_max_chars
 
     # Reserve branch coverage before filling the remaining budget greedily. A
     # changed path can otherwise consume the whole budget and hide a listener,
@@ -328,14 +344,14 @@ def _select_graph_facts(
         ]
         if path.edges and _serialized_size(
             summary_seed, list(path.edges), symbols, subject
-        ) > _GRAPH_SUMMARY_HARD_MAX_CHARS:
+        ) > hard_max_chars:
             hard_limit_exceeded = True
             return False
         candidate = [*selected_edges.values(), *additions]
         if not selected_paths and not fits(candidate):
             # The first path may exceed target_budget, but only as a complete unit.
             if _serialized_size(summary_seed, candidate, symbols, subject) <= (
-                _GRAPH_SUMMARY_HARD_MAX_CHARS
+                hard_max_chars
             ):
                 for edge in additions:
                     selected_edges[edge.signature] = edge
@@ -348,7 +364,7 @@ def _select_graph_facts(
         if not additions or fits(candidate) or (
             allow_target_overflow
             and _serialized_size(summary_seed, candidate, symbols, subject)
-            <= _GRAPH_SUMMARY_HARD_MAX_CHARS
+            <= hard_max_chars
         ):
             for edge in additions:
                 selected_edges[edge.signature] = edge
@@ -397,8 +413,16 @@ def _select_graph_facts(
     for ordinal in range(_TARGET_BRANCH_REPRESENTATIVE_LIMIT):
         for group in target_groups:
             families = sorted(
-                family for family in target_representatives
-                if family.startswith(f"{group}:")
+                (
+                    family for family in target_representatives
+                    if family.startswith(f"{group}:")
+                ),
+                key=lambda family: _path_priority(
+                    target_representatives[family][0],
+                    attached,
+                    focus=focus,
+                    subject=subject,
+                ),
             )[:_TARGET_BRANCH_REPRESENTATIVE_LIMIT]
             if ordinal >= len(families):
                 continue
@@ -457,7 +481,7 @@ def _select_graph_facts(
             candidate = [*selected_edges.values(), edge]
             if not selected_edges and not fits(candidate):
                 if _serialized_size(summary_seed, candidate, symbols, subject) > (
-                    _GRAPH_SUMMARY_HARD_MAX_CHARS
+                    hard_max_chars
                 ):
                     continue
             if fits(candidate) or not selected_edges:
@@ -607,10 +631,32 @@ def _path_priority(
     return (
         0 if _path_hits_changed_fact(path, focus) else 1,
         0 if _hits_non_subject_symbol(path_edges, focus, subject) else 1,
+        _path_lifecycle_rank(path),
         _path_semantic_rank(path, attached, subject),
         len(path.edges),
         path.signature,
     )
+
+
+def _path_lifecycle_rank(path: _GraphPath) -> int:
+    """Prefer entry/open lifecycle callbacks when semantic branches compete.
+
+    A bounded graph commonly contains sibling ``open``, ``onSuccess``,
+    ``onError`` and ``close`` callbacks.  They are all useful, but an ``open``
+    path is the first observer of newly-created state and is therefore the
+    shortest proof for registration/initialisation timing changes.  This rank
+    only breaks ties after changed-line and symbol focus; it never overrides a
+    path explicitly anchored by the task's changed line.
+    """
+
+    targets = " ".join(edge.target.lower() for edge in path.edges)
+    if "#open(" in targets or "#open" in targets:
+        return 0
+    if "#onerror" in targets or "#onsuccess" in targets:
+        return 1
+    if "#close(" in targets or "#close" in targets:
+        return 2
+    return 3
 
 
 def _attached_priority(
@@ -635,9 +681,11 @@ def _hits_changed_line(
     edges: tuple[_GraphEdge, ...] | list[_GraphEdge],
     focus: GraphProjectionFocus | None,
 ) -> bool:
-    if focus is None or not focus.changed_file or not focus.changed_lines:
+    if focus is None or not focus.changed_file:
         return False
-    lines = set(focus.changed_lines)
+    lines = set(focus.changed_lines) | set(focus.deletion_anchor_lines)
+    if not lines:
+        return False
     if any(
         str(edge.payload.get("file", "")) == focus.changed_file
         and _as_int(edge.payload.get("line")) in lines
@@ -826,6 +874,8 @@ def _select_unresolved_relationships(
     unresolved: list[dict[str, Any]],
     edges: list[_GraphEdge],
     symbols: list[dict[str, Any]],
+    *,
+    max_chars: int = _GRAPH_SUMMARY_MAX_CHARS,
 ) -> tuple[tuple[dict[str, Any], ...], int]:
     """在不挤掉完整 resolved 路径的前提下保留未解析事实。"""
     selected: list[dict[str, Any]] = []
@@ -843,7 +893,7 @@ def _select_unresolved_relationships(
                 0, len(unresolved) - len(candidate_unresolved)
             ),
         )
-        if len(candidate) <= _GRAPH_SUMMARY_MAX_CHARS:
+        if len(candidate) <= max_chars:
             selected.append(relationship)
     return tuple(selected), max(0, len(unresolved) - len(selected))
 

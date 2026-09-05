@@ -22,6 +22,8 @@ import re
 import sys
 from pathlib import Path
 
+import yaml
+
 _CASES_DIR = Path(__file__).resolve().parent / "dataset" / "selected-20-v2"
 _GT_FILE = _CASES_DIR / "cases" / "_bugs_gt.json"
 _PROFILES = {
@@ -51,6 +53,39 @@ _RETRY_CASES = {
 
 def _norm(s: object) -> str:
     return re.sub(r"\s+", "", str(s or "")).lower()
+
+
+def load_case_gold() -> dict[str, list[dict]]:
+    """加载 selected-20-v2 的正式标答。
+
+    `case.yaml.expected` 是 runner 实际使用的权威标答。`_bugs_gt.json`
+    是由 planted-bugs.diff 按 hunk 生成的诊断数据，可能包含未确认的附带改动，
+    不能和正式标答混用。
+    """
+    out: dict[str, list[dict]] = {}
+    for case_dir in sorted(_CASES_DIR.joinpath("cases").iterdir()):
+        if not case_dir.is_dir() or case_dir.name.startswith("_"):
+            continue
+        case_file = case_dir / "case.yaml"
+        if not case_file.is_file():
+            continue
+        raw = yaml.safe_load(case_file.read_text(encoding="utf-8")) or {}
+        expected: list[dict] = []
+        for issue in raw.get("expected") or []:
+            keywords = issue.get("type_keywords") or []
+            note = issue.get("note", "")
+            root_cause = issue.get("root_cause", "")
+            expected.append(
+                {
+                    "file": issue.get("file", ""),
+                    "line": int(issue.get("line", 0) or 0),
+                    "desc": " | ".join(
+                        str(part) for part in (keywords, note, root_cause) if part
+                    ),
+                }
+            )
+        out[str(raw.get("id") or case_dir.name)] = expected
+    return out
 
 
 def match(issue: dict, bug: dict) -> bool:
@@ -138,11 +173,22 @@ def analyze(profile: str, bugs: dict, retry_db: Path | None) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="planted-bugs 级命中分析")
     parser.add_argument("--retry-db", default="", help="补跑 checkpoint 文件名(覆盖同 case 旧轮)")
+    parser.add_argument(
+        "--gold",
+        choices=("cases", "hunks"),
+        default="cases",
+        help="正式标答来源:case.yaml.expected(默认);hunks 仅用于旧 hunk 诊断",
+    )
     args = parser.parse_args()
     retry_db = Path(args.retry_db) if args.retry_db else None
     if retry_db is not None:
         retry_db = _CASES_DIR / retry_db.name
-    bugs = json.loads(_GT_FILE.read_text(encoding="utf-8"))
+    if args.gold == "cases":
+        bugs = load_case_gold()
+        print("gold=case.yaml.expected(正式标答)")
+    else:
+        bugs = json.loads(_GT_FILE.read_text(encoding="utf-8"))
+        print("gold=_bugs_gt.json(hunk 诊断,不作为正式标答)")
     results = [analyze(p, bugs, retry_db) for p in ("direct", "full")]
     print(f"{'profile':8s} {'Recall':>8s} {'命中':>7s} {'报告':>6s} {'P严格':>7s} {'P宽松':>7s} {'空轮case':>10s}")
     for r in results:

@@ -29,7 +29,6 @@ REVIEWERS: dict[str, tuple[str, str, str]] = {
 
 _NODE_TITLES: dict[str, str] = {
     "classify_mode": "PR 规模判定",
-    "direct_review": "整 PR 直接审查",
     "file_task_builder": "文件级任务构建",
     "summary": "变更摘要",
     "diff_task_builder": "Hunk 级任务构建",
@@ -97,11 +96,6 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
         node_steps,
         visible_node_steps,
         events_by_sequence,
-    )
-    small_complete = (
-        routing.get("initial_mode") == "small"
-        and not routing.get("fallback", False)
-        and routing.get("outcome") == "completed"
     )
     decision_summary = _decision_summary(report.events)
     review_council_step = _review_council_step(node_steps)
@@ -174,17 +168,6 @@ def _routing_view(events: Iterable[TraceEvent]) -> dict[str, Any]:
                     }[mode],
                 )
                 route.setdefault("fallback", False)
-        if event.node_name != "direct_review":
-            continue
-        status = output.get("direct_review_status")
-        if status == "completed":
-            route.setdefault("outcome", "completed")
-        elif status == "fallback":
-            route.update({
-                "effective_mode": "medium",
-                "selected_node": "file_task_builder",
-                "fallback": True,
-            })
     return route
 
 
@@ -324,15 +307,6 @@ def _node_state_summary(code_name: str, event: TraceEvent | None) -> str:
                 f"{metrics.get('hunk_count', 0)} hunks · "
                 f"{metrics.get('diff_chars', 0)} 字符"
             )
-    if code_name == "direct_review":
-        route = output.get("review_route")
-        if isinstance(route, dict) and route.get("fallback"):
-            return (
-                "Direct 失败，降级到文件级完整管线 · "
-                f"{route.get('fallback_reason', 'unknown')}"
-            )
-        if output.get("direct_review_status") == "completed":
-            return f"整 PR 审查完成 · {len(output.get('final_issues') or [])} 个问题"
     traces = output.get("council_trace")
     if code_name == "controlled_review":
         traces = []
@@ -718,7 +692,6 @@ def _is_visible_node_step(step: dict[str, Any]) -> bool:
     code_name = step["code_name"]
     if code_name in {
         "classify_mode",
-        "direct_review",
         "file_task_builder",
         "diff_task_builder",
         "task_route",
@@ -794,12 +767,6 @@ def _main_stages(
             _NODE_TITLES["classify_mode"],
             by_name["classify_mode"],
         ))
-        if "direct_review" in by_name:
-            stages.append(_main_stage(
-                "direct_review",
-                _NODE_TITLES["direct_review"],
-                by_name["direct_review"],
-            ))
         builder = str(routing.get("selected_node") or "")
         if builder not in {"file_task_builder", "diff_task_builder"}:
             if "file_task_builder" in by_name:
@@ -1127,11 +1094,6 @@ def _missing_main_steps(
 ) -> list[dict[str, Any]]:
     present = {step["code_name"] for step in node_steps}
     placeholders: list[dict[str, Any]] = []
-    small_complete = (
-        routing.get("initial_mode") == "small"
-        and not routing.get("fallback", False)
-        and routing.get("outcome") == "completed"
-    )
     discovery_only = "discovery_collector" in present
     controlled_flow = "controlled_review" in present
     has_task_plan_flow = any(
@@ -1170,7 +1132,6 @@ def _missing_main_steps(
             )
     elif "classify_mode" in present:
         expected = (
-            *(("direct_review",) if routing.get("initial_mode") == "small" else ()),
             "task_selection",
             "review_plan",
             "summary",
@@ -1190,7 +1151,7 @@ def _missing_main_steps(
         discovery_skip = discovery_only and code_name == "council_judge"
         status = (
             "skipped"
-            if small_complete or configured_skip or discovery_skip
+            if configured_skip or discovery_skip
             else "missing"
         )
         placeholders.append({
@@ -1207,9 +1168,7 @@ def _missing_main_steps(
             "duration_ms": 0.0,
             "status": status,
             "summary": (
-                "small 模式按设计跳过"
-                if small_complete
-                else "Summary 未启用，按配置跳过"
+                "Summary 未启用，按配置跳过"
                 if configured_skip
                 else "discovery_only 模式按设计跳过"
                 if discovery_skip

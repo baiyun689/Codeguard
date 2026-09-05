@@ -6,6 +6,7 @@ from codeguard_agent.models.schemas import DiscoveredIssue
 from codeguard_agent.models.tasks import SymbolResolutionStatus
 from codeguard_agent.pipeline.location import locate_issues
 from codeguard_agent.pipeline.evidence.projection import graph_projection_focus
+from codeguard_agent.pipeline.controlled.triage import build_triage_user_prompt
 from codeguard_agent.pipeline.symbols.resolver import resolve_task_symbols
 from codeguard_agent.pipeline.tasks.task_builder import build_file_tasks
 from codeguard_agent.tools.tool_client import ToolResponse
@@ -25,6 +26,16 @@ index 1111111..2222222 100644
  }
 """
 
+_DELETED_FILE_DIFF = """diff --git a/src/Removed.java b/src/Removed.java
+deleted file mode 100644
+index 1111111..0000000
+--- a/src/Removed.java
++++ /dev/null
+@@ -1,2 +0,0 @@
+-void run() {
+-    dangerous();
+"""
+
 
 def test_file_task_preserves_deleted_text_and_current_anchor() -> None:
     task = build_file_tasks(_DELETION_ONLY_DIFF)[0]
@@ -35,6 +46,15 @@ def test_file_task_preserves_deleted_text_and_current_anchor() -> None:
     assert anchor.anchor_line == 11
     assert anchor.anchor_kind == "next_surviving"
     assert anchor.deleted_snippet == "        if (blocked(value)) {\n            return;\n        }"
+
+
+def test_deleted_file_fallback_keeps_patch_for_file_level_review() -> None:
+    task = build_file_tasks(_DELETED_FILE_DIFF)[0]
+
+    assert task.file == "src/Removed.java"
+    assert task.changed_lines == []
+    assert task.deletion_anchors == []
+    assert "dangerous();" in task.patch
 
 
 class _GraphClient:
@@ -105,3 +125,14 @@ def test_graph_projection_preserves_new_side_changed_line_semantics() -> None:
     focus = graph_projection_focus(task)
 
     assert focus.changed_lines == ()
+    assert focus.deletion_anchor_lines == (11,)
+
+
+def test_controlled_triage_exposes_deletion_anchor_to_direct_review() -> None:
+    task = build_file_tasks(_DELETION_ONLY_DIFF)[0]
+
+    prompt = build_triage_user_prompt(task=task, symbol_context=None)
+
+    assert "<deletion_anchors>" in prompt
+    assert 'line="11"' in prompt
+    assert "blocked(value)" in prompt

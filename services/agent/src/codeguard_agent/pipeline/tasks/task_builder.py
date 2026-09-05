@@ -147,8 +147,6 @@ def file_matches_task(file: str, task: ReviewTask) -> bool:
     单 task 调用不再做行号级映射（prompt 只含这一个 task），但仍需要
     这道最基本的一致性校验，防止模型报告了完全无关的文件却被直接绑定到该 task。
     """
-    if task.file == "<whole-diff>":
-        return bool(file.strip())
     return _norm(file) == _norm(task.file) or _basename(file) == _basename(task.file)
 
 
@@ -408,30 +406,6 @@ def build_file_tasks(diff_text: str) -> list[ReviewTask]:
     if skipped_artifacts:
         logger.info("build_file_tasks: 跳过 %d 个构建产物文件", skipped_artifacts)
     return tasks
-
-
-def build_whole_diff_task(diff_text: str) -> list[ReviewTask]:
-    """SMALL 模式保持单 task，但仍进入统一 ReviewCouncil 管线。"""
-    sections = {
-        file: section
-        for file, section in split_diff_by_file(diff_text).items()
-        if not _is_build_artifact(file)
-    }
-    files = list(sections)
-    filtered_diff = "\n".join(sections.values())
-    changed_lines: list[int] = []
-    for section in sections.values():
-        for _header, body, new_start in _split_hunks(section):
-            changed_lines.extend(_changed_lines(body, new_start))
-    return [
-        ReviewTask(
-            id="whole_diff#task",
-            file=files[0] if len(files) == 1 else "<whole-diff>",
-            patch=filtered_diff,
-            changed_lines=changed_lines,
-            patch_complete=False,
-        )
-    ] if filtered_diff.strip() else []
 
 
 def diff_metrics(diff_text: str) -> DiffMetrics:

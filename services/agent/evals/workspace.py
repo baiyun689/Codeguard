@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+import posixpath
 import stat
 import subprocess
 import tempfile
@@ -29,6 +30,27 @@ class MaterializedWorkspace:
             import shutil
 
             shutil.rmtree(self.path, onerror=_remove_readonly)
+
+
+def tool_server_repo_path(repo_path: str | Path) -> str:
+    """Map a host workspace to the path visible inside a containerized Gateway.
+
+    The evaluator still materializes and cleans up the workspace on the host,
+    while Docker Compose mounts ``CODEGUARD_PROJECTS_DIR`` at a different
+    container path.  Mapping is opt-in through ``CODEGUARD_TOOL_SERVER_PROJECT_ROOT``;
+    without it, the original path is preserved for native Gateway deployments.
+    """
+
+    host_root = os.environ.get("CODEGUARD_PROJECTS_DIR", "").strip()
+    container_root = os.environ.get("CODEGUARD_TOOL_SERVER_PROJECT_ROOT", "").strip()
+    if not host_root or not container_root or not container_root.startswith("/"):
+        return str(repo_path)
+    try:
+        relative = Path(repo_path).resolve().relative_to(Path(host_root).resolve())
+    except ValueError:
+        return str(repo_path)
+    root = container_root.replace("\\", "/").rstrip("/")
+    return posixpath.join(root, relative.as_posix()) if relative.parts else root
 
 
 def materialize_case_workspace(

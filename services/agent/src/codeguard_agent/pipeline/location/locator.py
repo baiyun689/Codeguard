@@ -79,7 +79,7 @@ def _added_runs(
     """按文件解析各 hunk 的连续新增行，并保留 new-side 绝对行号。"""
     runs_by_file: dict[str, list[tuple[tuple[int, str], ...]]] = {}
     current: list[tuple[int, str]] = []
-    current_file = "" if fallback_file == "<whole-diff>" else _norm_path(fallback_file)
+    current_file = _norm_path(fallback_file)
     new_line: int | None = None
 
     def flush() -> None:
@@ -91,7 +91,7 @@ def _added_runs(
     for raw in patch.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         if raw.startswith("diff --git "):
             flush()
-            current_file = "" if fallback_file == "<whole-diff>" else _norm_path(fallback_file)
+            current_file = _norm_path(fallback_file)
             new_line = None
             continue
         if raw.startswith("+++ b/"):

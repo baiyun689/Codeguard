@@ -57,7 +57,7 @@ from evals.profiles import case_repo_root, resolve_profile, tools_effective
 from evals.report import render_history_views, render_report
 from evals.schema import CouncilTraceStats, EvalCase, MatchOutcome
 from evals.tool_usage import summarize_tool_usage
-from evals.workspace import MaterializedWorkspace, materialize_case_workspace
+from evals.workspace import MaterializedWorkspace, materialize_case_workspace, tool_server_repo_path
 
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s", stream=sys.stderr)
 logger = logging.getLogger("codeguard.evals")
@@ -463,7 +463,14 @@ def main(argv: list[str] | None = None) -> int:
     if profile.model:
         settings.model = profile.model  # profile 显式覆盖模型
 
-    llm = build_llm(settings)
+    # Keep controlled discovery reproducible: tool selection is already
+    # bounded by the plan, and a zero-temperature reviewer avoids sampling
+    # different candidate sets for the same task.  Other eval profiles keep
+    # their historical provider-default sampling for comparison.
+    llm = build_llm(
+        settings,
+        temperature=0 if getattr(settings, "discovery_mode", "") == "controlled" else None,
+    )
     effective_discovery_mode = (
         getattr(profile, "discovery_mode", None)
         or getattr(settings, "discovery_mode", "react")
@@ -561,7 +568,7 @@ def main(argv: list[str] | None = None) -> int:
         controlled_initial_tool_budget=getattr(settings, "controlled_initial_tool_budget", 6),
         controlled_delta_tool_budget=getattr(settings, "controlled_delta_tool_budget", 2),
         controlled_max_path_depth=getattr(settings, "controlled_max_path_depth", 3),
-        controlled_max_seeds_per_change_unit=getattr(settings, "controlled_max_seeds_per_change_unit", 2),
+        controlled_max_seeds_per_change_unit=getattr(settings, "controlled_max_seeds_per_change_unit", 4),
         controlled_max_seeds_per_reviewer=getattr(settings, "controlled_max_seeds_per_reviewer", 4),
         controlled_max_seeds_per_task=getattr(settings, "controlled_max_seeds_per_task", 12),
         controlled_max_knowledge_topics=getattr(settings, "controlled_max_knowledge_topics", 4),
@@ -629,7 +636,7 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     tool_client = create_tool_session(
                         settings.tool_server_url,
-                        repo_root,
+                        tool_server_repo_path(repo_root),
                         timeout=settings.graph_build_timeout_seconds + 15,
                         revision=case_revision,
                         token=settings.tool_server_token,

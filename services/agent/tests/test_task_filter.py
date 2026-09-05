@@ -3,7 +3,6 @@
 from codeguard_agent.pipeline.tasks.task_builder import (
     build_file_tasks,
     build_tasks,
-    build_whole_diff_task,
 )
 
 
@@ -34,7 +33,7 @@ def test_ide_metadata_is_filtered_from_all_task_granularities() -> None:
         "src/App.java",
     ])
 
-    for builder in (build_tasks, build_file_tasks, build_whole_diff_task):
+    for builder in (build_tasks, build_file_tasks):
         tasks = builder(diff)
         assert [task.file for task in tasks] == ["src/App.java"]
         assert all(".idea" not in task.patch for task in tasks)
@@ -53,4 +52,3 @@ def test_metadata_only_diff_produces_no_review_task() -> None:
 
     assert build_tasks(diff) == []
     assert build_file_tasks(diff) == []
-    assert build_whole_diff_task(diff) == []

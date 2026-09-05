@@ -10,6 +10,7 @@ from typing import Any
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.tasks import (
     CandidateSeed,
+    EvidenceNeed,
     EvidenceStep,
     ReviewerGraphPlan,
     ReviewerKind,
@@ -17,6 +18,7 @@ from codeguard_agent.models.tasks import (
     WorkItem,
 )
 from codeguard_agent.pipeline.controlled.contracts import get_tool_proof_contract
+from codeguard_agent.pipeline.controlled.llm_contracts import LlmReviewerGraphPlan
 from codeguard_agent.pipeline.controlled.routing import validate_graph_question
 
 logger = logging.getLogger("codeguard")
@@ -68,7 +70,12 @@ def build_graph_plan_user_prompt(
         if symbol_context is not None and symbol_context.symbols
         else "(无已解析 symbol；不能生成可执行图谱步骤)"
     )
-    seed_text = "\n".join(seed.model_dump_json() for seed in seeds)
+    # Do not echo provider-compatibility defaults into the next LLM prompt;
+    # they are transport-only fields and their empty values invite the model
+    # to reproduce metadata instead of planning executable evidence steps.
+    seed_text = "\n".join(
+        seed.model_dump_json(exclude_defaults=True) for seed in seeds
+    )
     tool_text = ", ".join(sorted(enabled_tools)) if enabled_tools is not None else "全部已注册工具"
     return (
         f'<graph_plan reviewer="{reviewer.value}" task_id="{task_id}" '
@@ -103,6 +110,14 @@ def _normalise_step(
     question = seed.graph_question
     if question is None:
         return None, ("seed_graph_question_missing",)
+    if not step.purpose or not step.expected_fact:
+        step = step.model_copy(
+            update={
+                "purpose": step.purpose or "获取该步骤允许的直接证据",
+                "expected_fact": step.expected_fact or question.question,
+            }
+        )
+        diagnostics.append("step_explanation_filled")
     if step.tool == "inspect_path":
         if question.direction != "downstream":
             return None, ("inspect_path_requires_downstream_question",)
@@ -148,6 +163,13 @@ def validate_graph_plan(
         for symbol in (symbol_context.symbols if symbol_context is not None else ())
         if symbol.symbol_id
     }
+    source_symbols = {
+        symbol.symbol_id
+        for symbol in (symbol_context.symbols if symbol_context is not None else ())
+        if symbol.symbol_id
+        and str(symbol.kind).upper()
+        in {"METHOD", "CONSTRUCTOR", "FIELD", "FRAMEWORK_ENTRYPOINT"}
+    }
     valid_items: list[WorkItem] = []
     seen_seeds: set[str] = set()
     for item_index, item in enumerate(plan.work_items, start=1):
@@ -171,17 +193,82 @@ def validate_graph_plan(
                 f"{item.seed_id}:unknown_question_subject:{seed.graph_question.subject_ref}"
             )
             continue
-        if len(item.evidence_steps) > 2:
-            diagnostics.append(f"too_many_steps:{item.seed_id}")
+        # Models often describe the same graph query twice with different
+        # prose (for example, one step for the path and another for the
+        # listener branch).  Deduplicate by executable query before enforcing
+        # the two-step budget; otherwise a harmless wording difference causes
+        # the whole WorkItem to fall back to the weak one-step baseline.
+        raw_steps = list(item.evidence_steps)
+        deduped_steps: list[EvidenceStep] = []
+        step_aliases: dict[str, str] = {}
+        query_owner: dict[tuple[str, str, str, int | None], str] = {}
+        for original_index, step in enumerate(raw_steps, start=1):
+            original_id = step.step_id or f"step-{original_index}"
+            query_key = (
+                step.tool,
+                step.subject_ref,
+                step.path_kind or "",
+                step.max_depth,
+            )
+            owner = query_owner.get(query_key)
+            if owner is not None:
+                step_aliases[original_id] = owner
+                diagnostics.append(f"duplicate_query:{item.seed_id}:{original_id}:{owner}")
+                continue
+            query_owner[query_key] = original_id
+            step_aliases[original_id] = original_id
+            deduped_steps.append(step)
+        if len(deduped_steps) > 2:
+            diagnostics.append(f"too_many_steps_trimmed:{item.seed_id}")
+            # Do not trim here.  The first two provider steps are not
+            # necessarily the two contractually useful steps (providers often
+            # emit an unrelated impact query before the requested path).  The
+            # stabilizer below selects the required graph fact and the subject
+            # source from the complete, already bounded provider response.
+        if _dependency_cycle(tuple(deduped_steps)):
+            diagnostics.append(f"dependency_cycle:{item.seed_id}")
+            diagnostics.append(f"work_item_isolated:{item.seed_id}")
+            continue
+        deduped_steps, lifecycle_diagnostics = _stabilize_graph_steps(
+            deduped_steps,
+            seed=seed,
+            allowed_symbols=allowed_symbols,
+            source_symbols=source_symbols,
+            symbol_context=symbol_context,
+            max_path_depth=max_path_depth,
+            enabled_tools=enabled_tools,
+        )
+        diagnostics.extend(
+            f"{item.seed_id}:{diagnostic}" for diagnostic in lifecycle_diagnostics
+        )
+        if not deduped_steps:
+            diagnostics.append(f"work_item_isolated:{item.seed_id}")
             continue
         steps: list[EvidenceStep] = []
         invalid = False
         step_names: set[str] = set()
         step_id_map = {
-            step.step_id or f"step-{step_index}": f"step-{step_index}"
-            for step_index, step in enumerate(item.evidence_steps, start=1)
+            original_id: f"step-{step_index}"
+            for step_index, step in enumerate(deduped_steps, start=1)
+            for original_id in (
+                step.step_id or f"step-{step_index}",
+            )
         }
-        for step_index, step in enumerate(item.evidence_steps, start=1):
+        # Map a duplicate's declared id to the canonical step id as well.
+        # Dependencies are checked after this remapping, so duplicate query
+        # aliases cannot create a false unknown-dependency failure.
+        canonical_names = {
+            step.step_id or f"step-{step_index}": f"step-{step_index}"
+            for step_index, step in enumerate(deduped_steps, start=1)
+        }
+        step_id_map.update(
+            {
+                original_id: canonical_names.get(owner, owner)
+                for original_id, owner in step_aliases.items()
+                if owner in canonical_names
+            }
+        )
+        for step_index, step in enumerate(deduped_steps, start=1):
             if step.step_id and step.step_id in step_names:
                 diagnostics.append(f"duplicate_step:{item.seed_id}:{step.step_id}")
                 invalid = True
@@ -231,6 +318,198 @@ def validate_graph_plan(
             )
         )
     return ReviewerGraphPlan(reviewer=reviewer, task_id=task_id, work_items=tuple(valid_items)), tuple(diagnostics)
+
+
+def _stabilize_graph_steps(
+    steps: list[EvidenceStep],
+    *,
+    seed: CandidateSeed,
+    allowed_symbols: set[str],
+    source_symbols: set[str] | None = None,
+    symbol_context: TaskSymbolContext | None = None,
+    max_path_depth: int,
+    enabled_tools: frozenset[str] | set[str] | None = None,
+) -> tuple[list[EvidenceStep], tuple[str, ...]]:
+    """Make every graph-required WorkItem carry complementary proof.
+
+    GraphPlan remains LLM-owned: the model chooses the target symbols and
+    purpose.  This deterministic contract only repairs an under-specified
+    plan.  A downstream question must have one ``inspect_path`` step; an
+    upstream question must have one ``inspect_change_impact`` step.  When the
+    source tool is enabled, the second bounded slot reads the question's
+    subject symbol so the Judge always sees the changed method's direct code
+    alongside the graph fact.  Existing model-selected steps are preserved
+    whenever they already satisfy those two roles.
+    """
+
+    diagnostics: list[str] = []
+    question = seed.graph_question
+    if question is None:
+        return steps[:2], ()
+
+    graph_tool = _graph_tool_for_seed(seed)
+    graph_enabled = enabled_tools is None or graph_tool in enabled_tools
+
+    # A GraphQuestion is the executable contract.  Search the whole bounded
+    # provider plan for a step satisfying that contract instead of trusting
+    # provider ordering.  A model may emit an impact query, a duplicate path,
+    # or an endpoint source before the actual requested graph fact.
+    graph_step: EvidenceStep | None = None
+    for step in steps:
+        if step.tool != graph_tool or step.subject_ref != question.subject_ref:
+            continue
+        if graph_tool == "inspect_path" and (
+            step.path_kind != question.path_kind
+            or step.path_kind not in {"behavior", "security"}
+        ):
+            continue
+        if graph_tool != "inspect_path" and (
+            step.path_kind is not None or step.max_depth is not None
+        ):
+            continue
+        graph_step = step
+        break
+
+    if graph_step is None and graph_enabled:
+        graph_step = EvidenceStep(
+            step_id="graph-proof",
+            tool=graph_tool,
+            subject_ref=question.subject_ref,
+            path_kind=(
+                question.path_kind
+                if graph_tool == "inspect_path"
+                else None
+            ),
+            max_depth=(
+                min(question.max_depth, max_path_depth)
+                if graph_tool == "inspect_path"
+                else None
+            ),
+            purpose="执行 GraphQuestion 要求的有界关系查询",
+            expected_fact=question.question,
+            required=True,
+        )
+        diagnostics.append(f"{graph_tool}_step_inserted")
+
+    # If the configured tool budget intentionally disables the required graph
+    # tool, there is no truthful graph proof to execute.  Keep only a bounded
+    # provider step; normal validation will isolate it when its direction is
+    # incompatible, rather than silently changing the question.
+    if graph_step is None:
+        return steps[:2], tuple(diagnostics)
+
+    selected: list[EvidenceStep] = [graph_step]
+    source_enabled = enabled_tools is None or "get_file_content" in enabled_tools
+    source_subject_ref = _source_subject_for_seed(
+        seed=seed,
+        subject_ref=question.subject_ref,
+        source_symbols=source_symbols,
+        symbol_context=symbol_context,
+    )
+    if (
+        source_enabled
+        and source_subject_ref in allowed_symbols
+    ):
+        source_step = next(
+            (
+                step
+                for step in steps
+                if step.tool == "get_file_content"
+                and step.subject_ref == source_subject_ref
+                and step.path_kind is None
+                and step.max_depth is None
+            ),
+            None,
+        )
+        if source_step is None:
+            source_step = EvidenceStep(
+                step_id="subject-source",
+                tool="get_file_content",
+                subject_ref=source_subject_ref,
+                purpose="读取 GraphQuestion 主体 symbol 的局部源码",
+                expected_fact="确认候选涉及的主体方法及其变更相关语义",
+                required=True,
+            )
+            diagnostics.append("subject_source_step_added")
+        selected.append(source_step)
+
+    # The initial plan has exactly two proof slots: the canonical graph fact
+    # and the subject's local source.  Any endpoint/branch exploration remains
+    # a Delta decision after the graph response, so it cannot evict the
+    # contractually required fact here.
+    return selected[:2], tuple(diagnostics)
+
+
+def _source_subject_for_seed(
+    *,
+    seed: CandidateSeed,
+    subject_ref: str,
+    source_symbols: set[str] | None,
+    symbol_context: TaskSymbolContext | None,
+) -> str:
+    """Choose a bounded source symbol when a provider selected a type symbol.
+
+    Graph questions sometimes use an owning type as their subject even though
+    the changed line belongs to a field or method.  A type-level source read
+    is intentionally rejected by the Gateway size guard; resolving to one
+    already-parsed member at the candidate line keeps the complementary local
+    proof executable without guessing a new symbol or changing the graph
+    question itself.
+    """
+
+    allowed = source_symbols or set()
+    if subject_ref in allowed:
+        return subject_ref
+    if symbol_context is None or seed.location_line <= 0:
+        return ""
+    task_file = seed.location_file.replace("\\", "/").strip().lower()
+    candidates = [
+        symbol
+        for symbol in symbol_context.symbols
+        if symbol.symbol_id in allowed
+        and symbol.file.replace("\\", "/").strip().lower() == task_file
+        and symbol.start_line <= seed.location_line <= symbol.end_line
+    ]
+    if not candidates:
+        return ""
+    # Exact field/constructor declarations are the smallest and most precise
+    # source unit for modifier/initialization changes.  Otherwise select one
+    # enclosing method only when the line identifies it unambiguously.
+    exact_fields = [
+        symbol
+        for symbol in candidates
+        if str(symbol.kind).upper() == "FIELD"
+        and symbol.start_line == seed.location_line
+    ]
+    if len(exact_fields) == 1:
+        return exact_fields[0].symbol_id
+    methods = [
+        symbol
+        for symbol in candidates
+        if str(symbol.kind).upper() in {"METHOD", "CONSTRUCTOR", "FRAMEWORK_ENTRYPOINT"}
+    ]
+    if len(methods) == 1:
+        return methods[0].symbol_id
+    return ""
+
+
+def _graph_tool_for_seed(seed: CandidateSeed) -> str:
+    """Map a typed evidence need to its one canonical graph tool.
+
+    This is a protocol repair, not a domain-specific rule: the triage model's
+    declared need wins, while the GraphQuestion direction is the compatibility
+    fallback for older providers that omitted ``evidence_need``.
+    """
+
+    if seed.evidence_need is EvidenceNeed.INSPECT_CHANGE_IMPACT:
+        return "inspect_change_impact"
+    if seed.evidence_need is EvidenceNeed.INSPECT_STRUCTURE:
+        return "inspect_structure"
+    if seed.evidence_need is EvidenceNeed.INSPECT_PATH:
+        return "inspect_path"
+    if seed.graph_question is not None and seed.graph_question.direction == "upstream":
+        return "inspect_change_impact"
+    return "inspect_path"
 
 
 def _dependency_cycle(steps: tuple[EvidenceStep, ...]) -> bool:
@@ -298,9 +577,26 @@ def _baseline_graph_plan(
     """
 
     items: list[WorkItem] = []
+    allowed_symbols = {
+        symbol.symbol_id
+        for symbol in (symbol_context.symbols if symbol_context is not None else ())
+        if symbol.symbol_id
+    }
+    diagnostics: list[str] = []
     for seed in seeds:
         question = seed.graph_question
         if question is None:
+            continue
+        # Baseline construction is deliberately defensive: a malformed
+        # provider question must be isolated, not allowed to instantiate an
+        # EvidenceStep with an empty/unknown subject and crash the whole
+        # review (which would force a full pipeline retry).  The normal
+        # validator applies the same boundary; checking before construction
+        # keeps the fallback itself total.
+        if not question.subject_ref or question.subject_ref not in allowed_symbols:
+            diagnostics.append(
+                f"{seed.seed_id}:baseline_unknown_subject:{question.subject_ref}"
+            )
             continue
         if question.direction == "downstream":
             step = EvidenceStep(
@@ -329,7 +625,7 @@ def _baseline_graph_plan(
                 rejection_criteria="响应缺少目标、关系或完整性不足以支持主张",
             )
         )
-    return validate_graph_plan(
+    normalized, validation = validate_graph_plan(
         ReviewerGraphPlan(
             reviewer=reviewer,
             task_id=task_id,
@@ -342,6 +638,7 @@ def _baseline_graph_plan(
         max_path_depth=max_path_depth,
         enabled_tools=enabled_tools,
     )
+    return normalized, (*diagnostics, *validation)
 
 
 def run_graph_plan(
@@ -388,11 +685,19 @@ def run_graph_plan(
     diagnostics: list[str] = [f"graph_plan_prompt_hash:{prompt_hash(reviewer)}"]
     try:
         raw = invoke_with_retry(
-            llm.with_structured_output(ReviewerGraphPlan, method=structured_method),
+            llm.with_structured_output(LlmReviewerGraphPlan, method=structured_method),
             [("system", system), ("human", user)],
             max_retries=max_retries,
         )
-        parsed = ReviewerGraphPlan.model_validate(raw) if raw is not None else None
+        parsed = (
+            ReviewerGraphPlan.model_validate(
+                LlmReviewerGraphPlan.model_validate(
+                    raw.model_dump() if hasattr(raw, "model_dump") else raw
+                ).model_dump()
+            )
+            if raw is not None
+            else None
+        )
     except Exception as exc:  # noqa: BLE001
         parsed = None
         diagnostics.append(f"graph_plan_error:{type(exc).__name__}")
@@ -403,11 +708,19 @@ def run_graph_plan(
         )
         try:
             raw = invoke_with_retry(
-                llm.with_structured_output(ReviewerGraphPlan, method=structured_method),
+                llm.with_structured_output(LlmReviewerGraphPlan, method=structured_method),
                 [("system", system), ("human", repair_user)],
                 max_retries=1,
             )
-            parsed = ReviewerGraphPlan.model_validate(raw) if raw is not None else None
+            parsed = (
+                ReviewerGraphPlan.model_validate(
+                    LlmReviewerGraphPlan.model_validate(
+                        raw.model_dump() if hasattr(raw, "model_dump") else raw
+                    ).model_dump()
+                )
+                if raw is not None
+                else None
+            )
         except Exception as exc:  # noqa: BLE001
             parsed = None
             diagnostics.append(f"graph_plan_repair_error:{type(exc).__name__}")
@@ -431,6 +744,45 @@ def run_graph_plan(
         enabled_tools=enabled_tool_set,
     )
     diagnostics.extend(validation)
+    # A provider may return a mixed plan where one WorkItem is valid but
+    # another is rejected (for example a dependency self-cycle).  Do not let
+    # that partial validation silently erase the rejected seed: add the
+    # deterministic one-step baseline for every missing seed and validate the
+    # merged plan again so IDs/dependencies remain canonical.
+    planned_seed_ids = {item.seed_id for item in normalized.work_items}
+    missing_seeds = tuple(seed for seed in seeds if seed.seed_id not in planned_seed_ids)
+    if missing_seeds and normalized.work_items:
+        baseline_missing, baseline_validation = _baseline_graph_plan(
+            reviewer=reviewer,
+            task_id=task_id,
+            seeds=missing_seeds,
+            symbol_context=symbol_context,
+            max_path_depth=max_path_depth,
+            enabled_tools=enabled_tool_set,
+        )
+        if baseline_missing.work_items:
+            merged, merged_validation = validate_graph_plan(
+                ReviewerGraphPlan(
+                    reviewer=reviewer,
+                    task_id=task_id,
+                    work_items=(*normalized.work_items, *baseline_missing.work_items),
+                ),
+                reviewer=reviewer,
+                task_id=task_id,
+                seeds=seeds,
+                symbol_context=symbol_context,
+                max_path_depth=max_path_depth,
+                enabled_tools=enabled_tool_set,
+            )
+            normalized = merged
+            diagnostics.extend(
+                (
+                    f"graph_plan_baseline_for_missing_seed:{seed.seed_id}"
+                    for seed in missing_seeds
+                )
+            )
+            diagnostics.extend(baseline_validation)
+            diagnostics.extend(merged_validation)
     if not normalized.work_items:
         fallback, fallback_validation = _baseline_graph_plan(
             reviewer=reviewer,

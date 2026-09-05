@@ -100,6 +100,11 @@ def graph_projection_focus(task: Any, symbol_context: Any = None) -> GraphProjec
         changed_lines=tuple(
             int(line) for line in (getattr(task, "changed_lines", ()) or ())
         ),
+        deletion_anchor_lines=tuple(
+            int(anchor.anchor_line)
+            for anchor in (getattr(task, "deletion_anchors", ()) or ())
+            if getattr(anchor, "anchor_line", None)
+        ),
         changed_symbol_ids=tuple(
             str(getattr(symbol, "symbol_id", ""))
             for symbol in symbols

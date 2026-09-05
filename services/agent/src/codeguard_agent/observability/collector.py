@@ -26,7 +26,6 @@ logger = logging.getLogger("codeguard.observability")
 _NODE_PHASE_MAP: dict[str, str] = {
     "summary": "outer_graph",
     "classify_mode": "task_routing",
-    "direct_review": "task_routing",
     "file_task_builder": "task_routing",
     "diff_task_builder": "task_routing",
     "task_route": "task_routing",

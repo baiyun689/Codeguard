@@ -56,7 +56,11 @@ def route_seed(seed: CandidateSeed) -> CandidateRoute:
     """按主张范围和证据需求路由，不使用 confidence。"""
 
     if seed.proof_scope is ProofScope.LOCAL and seed.evidence_need is EvidenceNeed.NONE:
-        if set(seed.evidence_basis) & {"changed_lines", "local_source"}:
+        if set(seed.evidence_basis) & {
+            "changed_lines",
+            "deletion_patch",
+            "local_source",
+        }:
             return "direct_proven"
         return "unresolved"
     if seed.graph_question is None:

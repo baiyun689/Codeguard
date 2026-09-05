@@ -90,7 +90,6 @@ class ReviewState(TypedDict, total=False):
     # Plan: 确定性规划结果
     review_mode: str
     review_route: ReviewRoute
-    direct_review_status: str
     review_tasks: list[ReviewTask]
     task_routes: dict[str, TaskRoute]
     plan_units: list[PlanUnit]
@@ -111,6 +110,11 @@ class ReviewState(TypedDict, total=False):
     controlled_graph_plans: dict[str, ReviewerGraphPlan]
     controlled_assessments: dict[str, EvidenceAssessment]
     controlled_proof_matches: dict[str, ProofMatch]
+    # CandidateIssue keeps explanatory fields out of generic model dumps so
+    # they cannot accidentally become product output. LangGraph may serialize
+    # CandidateIssue values between nodes, so controlled review carries this
+    # explicit non-product context map for EvidenceJudge dossier rehydration.
+    controlled_candidate_contexts: dict[str, dict[str, str]]
 
     # Working: 跨节点传递、会影响后续决策的审查工作集
     diff_summary: str

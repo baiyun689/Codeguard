@@ -282,6 +282,8 @@ public class RetryTemplate implements RetryOperations {
 
 		// Make sure the context is available globally for clients who need
 		// it...
+		RetrySynchronizationManager.register(context);
+
 		Throwable lastException = null;
 
 		boolean exhausted = false;
@@ -293,8 +295,6 @@ public class RetryTemplate implements RetryOperations {
 			if (!running) {
 				throw new TerminatedRetryException("Retry terminated abnormally by interceptor before first attempt");
 			}
-
-			RetrySynchronizationManager.register(context);
 
 			// Get or Start the backoff context...
 			BackOffContext backOffContext = null;
@@ -497,7 +497,7 @@ public class RetryTemplate implements RetryOperations {
 		context.removeAttribute(RetryContext.CLOSED);
 		context.removeAttribute(RetryContext.EXHAUSTED);
 		context.removeAttribute(RetryContext.RECOVERED);
-		return doOpenInternal(retryPolicy, state);
+		return context;
 
 	}
 

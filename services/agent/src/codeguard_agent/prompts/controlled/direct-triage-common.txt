@@ -6,13 +6,26 @@
 
 1. 只能依据 <task_patch>、<symbol_context>、<change_units> 和 <knowledge_bundle>。知识只是审查方法，不是当前仓库事实。
 2. 不能编造 symbol_id、调用方、被调用方、listener、入口、sink、线程、配置或运行时行为。diff 中没有出现的关系一律视为未知。
+   claim、mechanism、graph_question 中出现的标识符必须逐字复制自 <task_patch> 或 <symbol_context>；
+   如果只能确认某个调用点/当前方法而不能确认完整名称，使用“当前方法”“该调用点”等中性表述，
+   不要根据名称、知识或上下文猜出另一个 enclosing method、listener 或调用方。未经上下文明确给出的
+   方法名，即使看起来与 diff 语义相符，也不能写入候选事实。
 3. 每个 ChangeUnit 必须在 coverage 中出现且只出现一次：
-   - local_only：候选的成立只需要变更行和已给出的局部源码/符号事实；候选可以进入 direct_proven。
+   - local_only：候选的成立只需要变更行、删除 patch（整文件删除时没有新侧行）和已给出的局部源码/符号事实；候选可以进入 direct_proven。
    - graph_needed：主张涉及跨 symbol、调用顺序、入口/影响范围、下游传播、继承实现或其它图谱事实；必须填写 graph_question。
    - not_applicable：该 ChangeUnit 不构成该领域的问题，也不能为了凑数生成候选。
 4. confidence 只是记录你的把握，不参与路由。不要因为置信度低而把局部事实改写成 graph_needed，也不要因为置信度高而省略图谱证明。
-5. issues 只填写具体、可定位、可验证的候选。一个候选只表达一个机制；不要输出“可能有风险”而不说明改变了什么、为什么造成影响。
+5. issues 只填写具体、可定位、可验证的候选。一个候选只表达一个机制；claim 必须是陈述句，说明 diff 改变了什么、为什么可能造成影响以及需要核验的事实；不得写成“是否……？”、“会不会……？”或仅列出待调查问题。尚不能确认的部分放在 graph_question 和 coverage 中，不要把疑问句冒充候选主张。
+   候选不能只是“重新执行逻辑”“增加耦合”“职责边界变模糊”“可能有影响”等抽象评价。必须把变更前后的具体表达式、分支、状态/返回值或调用时序写进 claim，并把可观察后果限定到该机制实际可能影响的对象；如果只能提出调查方向而无法写出具体机制，不要创建候选。
 6. location_file 必须是 task 文件；location_line 使用 diff 中新增行或删除锚点附近的有效行，无法定位时使用 0。不要引用未提供的行号。
 7. proof_scope=local 只允许 local_only 候选；其它范围必须 graph_needed，并描述最短可验证主张。
+
+8. 一个 task 可能包含多个相互独立的变更行区间。逐个区间检查，不要用同一候选重复占用多个名额；对返回值、工厂/内部方法替换、状态注册/清理移动等变化，分别写出对应的具体机制。若某个区间没有问题，coverage 仍须声明，但不要为了凑数生成泛化的可维护性问题。
+
+候选边界是硬约束：一个 CandidateSeed 只能描述一个连续变更区间和一个机制。
+不要在同一 claim、mechanism 或 impact 中把两个相距的 hunk 串成一个因果链，也不要用
+“同时”“并且”“因此”把独立的返回值替换与调用顺序/状态移动合并。若多个区间各自
+存在可疑机制，分别输出、分别定位；每个 graph_question 只验证该候选所在区间的最短
+跨 symbol 事实。若只能确认一个区间，保留该区间的具体机制，另一区间不要编造事实。
 
 若没有候选，仍然必须返回所有 ChangeUnit 的 coverage，并将 issues 设为空数组。不要输出 Markdown、解释文字或额外字段，直接返回符合 DirectTriageResult 的结构化对象。

@@ -369,6 +369,7 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 | `CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET` | `2` | controlled 每 task Delta 工具调用预算 |
 | `CODEGUARD_CONTROLLED_MAX_PATH_DEPTH` | `3` | controlled 路径最大深度（最大 3） |
 | `CODEGUARD_CONTROLLED_MAX_KNOWLEDGE_TOPICS` | `4` | 每 task 知识主题上限 |
+| `CODEGUARD_TOOL_SERVER_PROJECT_ROOT` | 空 | 宿主 Agent 连接 Docker Gateway 时的容器项目根路径（Compose 通常为 `/workspace/projects`） |
 
 Compose 会设置打包部署所需的容器内部路径和端口，并在未显式设置时将
 `CODEGUARD_API_BASE_URL` 指向容器内的 LLM Proxy。除非维护自定义部署，否则不要修改

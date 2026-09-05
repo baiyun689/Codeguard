@@ -99,6 +99,7 @@ def test_phase2_budget_defaults(monkeypatch):
     assert settings.max_review_tasks == 100
     assert settings.max_tasks_per_file == 10
     assert settings.graph_build_timeout_seconds == 120
+    assert settings.controlled_max_seeds_per_change_unit == 4
 
 
 def test_phase2_budget_env_override(monkeypatch):

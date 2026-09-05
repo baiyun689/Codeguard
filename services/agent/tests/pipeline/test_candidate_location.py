@@ -141,37 +141,6 @@ def test_unresolved_issues_share_one_batch_relocation_call():
     assert [record.status for record in batch.records] == ["relocated", "relocated"]
 
 
-def test_whole_diff_matches_snippet_within_candidate_file():
-    task = ReviewTask(
-        id="whole-diff",
-        file="<whole-diff>",
-        patch=(
-            "diff --git a/src/A.java b/src/A.java\n"
-            "--- a/src/A.java\n"
-            "+++ b/src/A.java\n"
-            "@@ -1 +1 @@\n"
-            "+    run();\n"
-            "diff --git a/src/B.java b/src/B.java\n"
-            "--- a/src/B.java\n"
-            "+++ b/src/B.java\n"
-            "@@ -20 +20 @@\n"
-            "+    run();\n"
-        ),
-        changed_lines=[],
-    )
-
-    batch = locate_issues(
-        [_issue(file="src/B.java", line=99, location_snippet="    run();")],
-        task,
-        llm=None,
-        structured_method="function_calling",
-        max_retries=1,
-    )
-
-    assert batch.issues[0].line == 20
-    assert batch.records[0].status == "corrected"
-
-
 def test_ambiguous_snippet_and_invalid_relocation_stays_file_level():
     task = ReviewTask(
         id="src/A.java#file",

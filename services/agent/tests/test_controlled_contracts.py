@@ -3,6 +3,7 @@ import json
 import pytest
 
 from codeguard_agent.models.tasks import (
+    AssessmentStatus,
     CandidateSeed,
     CoverageDeclaration,
     CoverageDecision,
@@ -24,6 +25,7 @@ from codeguard_agent.pipeline.controlled import (
 )
 from codeguard_agent.models.tasks.symbols import ResolvedSymbol, SymbolResolutionStatus
 from codeguard_agent.pipeline.controlled.graph_plan import run_graph_plan
+from codeguard_agent.pipeline.controlled.llm_contracts import LlmDirectTriageResult
 
 
 def _seed(**updates) -> CandidateSeed:
@@ -140,6 +142,98 @@ def test_proof_matcher_requires_complete_path_for_proved():
     assert partial.status is ProofMatchStatus.PARTIAL
 
 
+def test_proof_matcher_resolves_class_and_method_name_aliases():
+    payload = {
+        "schema_version": 2,
+        "outcome": "found",
+        "coverage": "complete",
+        "subject_symbol_id": "java:pkg.Entry#run()",
+        "relationships": [
+            {
+                "sourceId": "java:pkg.Entry#run()",
+                "targetId": "java:pkg.RetryTemplate#open()",
+                "kind": "CALLS",
+            },
+            {
+                "sourceId": "java:pkg.RetryTemplate#open()",
+                "targetId": "java:pkg.RetryContextCache#get(java.lang.Object)",
+                "kind": "CALLS",
+            },
+        ],
+        "unresolved_count": 0,
+        "limitations": [],
+    }
+    question = GraphQuestion(
+        subject_ref="java:pkg.Entry#run()",
+        direction="downstream",
+        path_kind="behavior",
+        expected_targets=("RetryContextCache",),
+        required_relationships=("calls",),
+        max_depth=3,
+        question="是否到达缓存？",
+    )
+    match = match_graph_proof(
+        work_item_id="WI-ALIAS",
+        payload=json.dumps(payload),
+        question=question,
+        subject_symbol_id="java:pkg.Entry#run()",
+    )
+    assert match.status is ProofMatchStatus.PROVED
+    assert match.matched_targets == ("java:pkg.RetryContextCache#get(java.lang.Object)",)
+
+
+def test_proof_matcher_resolves_role_aliases_at_camelcase_boundary():
+    """A reviewer may name a reachable type by its role rather than its class."""
+
+    payload = {
+        "schema_version": 2,
+        "outcome": "found",
+        "coverage": "complete",
+        "subject_symbol_id": "java:pkg.Entry#run()",
+        "relationships": [
+            {
+                "sourceId": "java:pkg.Entry#run()",
+                "targetId": "java:pkg.RetryTemplate#open()",
+                "kind": "CALLS",
+            },
+            {
+                "sourceId": "java:pkg.RetryTemplate#open()",
+                "targetId": "java:pkg.RetryListener#open()",
+                "kind": "CALLS",
+            },
+            {
+                "sourceId": "java:pkg.RetryTemplate#open()",
+                "targetId": "java:pkg.RetryCallback#doWithRetry()",
+                "kind": "CALLS",
+            },
+        ],
+        "unresolved_count": 0,
+        "limitations": [],
+    }
+    question = GraphQuestion(
+        subject_ref="java:pkg.Entry#run()",
+        direction="downstream",
+        path_kind="behavior",
+        expected_targets=("listener", "callback"),
+        required_relationships=("CALLS",),
+        max_depth=3,
+        question="是否到达 listener 和 callback？",
+    )
+
+    match = match_graph_proof(
+        work_item_id="WI-ROLE-ALIASES",
+        payload=json.dumps(payload),
+        question=question,
+        subject_symbol_id="java:pkg.Entry#run()",
+    )
+
+    assert match.status is ProofMatchStatus.PROVED
+    assert match.matched_targets == (
+        "java:pkg.RetryCallback#doWithRetry()",
+        "java:pkg.RetryListener#open()",
+    )
+
+
 def test_proof_matcher_does_not_turn_partial_not_found_into_absence():
     payload = {
         "schema_version": 2,
@@ -164,6 +258,40 @@ def test_proof_matcher_does_not_turn_partial_not_found_into_absence():
         subject_symbol_id="s1",
     )
     assert match.status is ProofMatchStatus.INDETERMINATE
+
+
+def test_proof_matcher_preserves_positive_partial_relationship_when_target_is_omitted():
+    """A found partial edge must reach the semantic Judge, not vanish early."""
+
+    payload = {
+        "schema_version": 2,
+        "outcome": "found",
+        "coverage": "partial",
+        "subject_symbol_id": "s1",
+        "relationships": [
+            {"sourceId": "s1", "targetId": "s3", "kind": "CALLS"},
+        ],
+        "unresolved_count": 3,
+        "limitations": ["projection_truncated"],
+    }
+    question = GraphQuestion(
+        subject_ref="S01",
+        direction="downstream",
+        path_kind="behavior",
+        expected_targets=("s2",),
+        required_relationships=("CALLS",),
+        question="是否到达 s2？",
+    )
+
+    match = match_graph_proof(
+        work_item_id="WI-PARTIAL-POSITIVE",
+        payload=json.dumps(payload),
+        question=question,
+        subject_symbol_id="s1",
+    )
+
+    assert match.status is ProofMatchStatus.PARTIAL
+    assert "proof_positive_relation_target_unresolved" in match.limitations
 
 
 def test_proof_matcher_does_not_combine_disconnected_target_and_relationship():
@@ -207,6 +335,35 @@ def test_proof_contracts_are_machine_readable():
 def test_controlled_models_reject_unknown_fields():
     with pytest.raises(Exception):
         _seed(unexpected="nope")
+
+
+def test_provider_envelope_drops_display_metadata_before_strict_runtime_validation():
+    raw = {
+        "coverage": [{
+            "change_unit_id": "CU-01",
+            "decision": "local_only",
+            "reason": "局部证据足够",
+            "provider_display_note": "ignored",
+        }],
+        "issues": [{
+            **_seed().model_dump(),
+            "provider_display_note": "ignored",
+        }],
+    }
+    tolerant = LlmDirectTriageResult.model_validate(raw)
+    strict = DirectTriageResult.model_validate(tolerant.model_dump())
+    assert strict.issues[0].claim == "局部条件扩大了异常捕获范围"
+    with pytest.raises(Exception):
+        DirectTriageResult.model_validate(raw)
+
+
+def test_controlled_model_accepts_common_mechanism_note_alias():
+    seed = _seed(mechanism_note="模型补充的机制说明")
+    assert seed.mechanism_note == "模型补充的机制说明"
+
+
+def test_assessment_accepts_indeterminate_status():
+    assert AssessmentStatus("indeterminate") is AssessmentStatus.INDETERMINATE
 
 
 def test_graph_plan_failure_uses_minimal_baseline_plan():

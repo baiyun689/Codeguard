@@ -110,7 +110,7 @@ class Settings:
     controlled_initial_tool_budget: int = 6
     controlled_delta_tool_budget: int = 2
     controlled_max_path_depth: int = 3
-    controlled_max_seeds_per_change_unit: int = 2
+    controlled_max_seeds_per_change_unit: int = 4
     controlled_max_seeds_per_reviewer: int = 4
     controlled_max_seeds_per_task: int = 12
     controlled_max_knowledge_topics: int = 4
@@ -187,7 +187,7 @@ class Settings:
         if controlled_max_path_depth > 3:
             raise ValueError("CODEGUARD_CONTROLLED_MAX_PATH_DEPTH must be <= 3")
         controlled_max_seeds_per_change_unit = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_CHANGE_UNIT", 2
+            "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_CHANGE_UNIT", 4
         )
         controlled_max_seeds_per_reviewer = _nonnegative_int_env(
             "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_REVIEWER", 4

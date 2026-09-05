@@ -97,7 +97,7 @@ class PipelineOrchestrator:
         controlled_initial_tool_budget: int = 6,
         controlled_delta_tool_budget: int = 2,
         controlled_max_path_depth: int = 3,
-        controlled_max_seeds_per_change_unit: int = 2,
+        controlled_max_seeds_per_change_unit: int = 4,
         controlled_max_seeds_per_reviewer: int = 4,
         controlled_max_seeds_per_task: int = 12,
         controlled_max_knowledge_topics: int = 4,

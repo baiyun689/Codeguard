@@ -1,13 +1,16 @@
 
 """ReviewCouncil 编排图。
 
-默认先按 PR 体量路由：small 构建 whole-diff task；medium 构建 file task；
-large 构建 hunk task。所有 task 经过 DirectGate，Full task 进入 Plan、发现、举证与裁决链。
+默认先按 PR 体量路由：small / medium 构建 file task；large 构建 hunk task。
+所有 task 经过 DirectGate，Full task 进入 Plan、发现、举证与裁决链。
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import re
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
@@ -28,6 +31,7 @@ from codeguard_agent.models.tasks import (
     AssessmentStatus,
     CandidateSeed,
     EvidenceAssessment,
+    EvidenceStep,
     KnowledgeRoutePlan,
     ProofMatchStatus,
     ReviewerGraphPlan,
@@ -59,8 +63,10 @@ from codeguard_agent.pipeline.planning import (
 )
 from codeguard_agent.pipeline.controlled.assessment import (
     candidate_from_seed,
+    collapse_candidate_duplicates,
     match_execution_proof,
     run_evidence_assessment,
+    visible_source_symbol_ids,
     visible_symbol_ids,
 )
 from codeguard_agent.pipeline.controlled.executor import ControlledEvidenceExecutor
@@ -220,125 +226,18 @@ def _classify_mode_node():
     return _node
 
 
-def _direct_review_node(llm):
-    """小型 PR：单次 LLM 直接审查完整 diff，不走管线。"""
-    _prompt_dir = Path(__file__).resolve().parents[1] / "prompts"
-
-    def _node(state: ReviewState) -> dict:
-        route_value = state.get("review_route")
-        route = (
-            route_value
-            if isinstance(route_value, ReviewRoute)
-            else ReviewRoute.model_validate(route_value)
-        )
-        if llm is None:
-            result = mock_review_result()
-            route = route.model_copy(update={"outcome": "completed"})
-            return {
-                "final_issues": result.issues,
-                "summary": result.summary,
-                "direct_review_status": "completed",
-                "review_route": route,
-                "council_trace": [
-                    CouncilTrace(
-                        node="direct_review",
-                        event="completed",
-                        detail=f"mode=small mock=true issues={len(result.issues)}",
-                    )
-                ],
-            }
-        system = (_prompt_dir / "eval-direct-reviewer.txt").read_text(encoding="utf-8")
-        user = (
-            "请审查以下 unified diff，报告所有由变更引入或暴露的、"
-            "具有具体运行时影响的问题。\n\n"
-            f"```diff\n{state['diff_text']}\n```"
-        )
-        try:
-            outcome = DirectEngine().review(
-                llm,
-                system_prompt=system,
-                user_prompt=user,
-                reviewer_name="direct_review",
-                max_retries=state.get("max_retries", 3),
-                structured_method=state.get("structured_method", "function_calling"),
-            )
-        except Exception as exc:
-            logger.warning("direct_review 失败，回退文件级完整管线", exc_info=True)
-            route = route.model_copy(update={
-                "effective_mode": ReviewMode.MEDIUM,
-                "selected_node": "file_task_builder",
-                "fallback": True,
-                "fallback_reason": "direct_review_exception",
-                "fallback_exception_type": type(exc).__name__,
-            })
-            return {
-                "direct_review_status": "fallback",
-                "review_mode": "medium",
-                "review_route": route,
-                "council_trace": [
-                    CouncilTrace(
-                        node="direct_review",
-                        event="fallback",
-                        detail="direct review exception; route=file_task_builder",
-                    )
-                ],
-            }
-        if outcome.status is not ReviewExecutionStatus.COMPLETE:
-            route = route.model_copy(update={
-                "effective_mode": ReviewMode.MEDIUM,
-                "selected_node": "file_task_builder",
-                "fallback": True,
-                "fallback_reason": outcome.failure_reason or "review_execution_failed",
-            })
-            return {
-                "direct_review_status": "fallback",
-                "review_mode": "medium",
-                "review_route": route,
-                "council_trace": [
-                    CouncilTrace(
-                        node="direct_review",
-                        event="fallback",
-                        detail=(
-                            f"{outcome.failure_reason or 'review execution failed'}; "
-                            "route=file_task_builder"
-                        ),
-                    )
-                ],
-            }
-        structured_result = outcome.result
-        assert structured_result is not None
-        route = route.model_copy(update={"outcome": "completed"})
-        return {
-            "final_issues": structured_result.issues,
-            "summary": structured_result.summary,
-            "direct_review_status": "completed",
-            "review_route": route,
-            "council_trace": [
-                CouncilTrace(
-                    node="direct_review",
-                    event="completed",
-                    detail=(
-                        f"mode=small issues={len(structured_result.issues)} "
-                        f"diff_chars={len(state['diff_text'])}"
-                    ),
-                )
-            ],
-        }
-
-    return _node
-
-
 def _file_task_builder_node():
-    """SMALL 保持单 task；MEDIUM 构建文件级 task。"""
+    """SMALL / MEDIUM 均构建文件级 task。
+
+    SMALL 与 MEDIUM 的下游管线完全一致，仅预算不同；两者统一按文件拆分，
+    使每个 task 携带真实文件路径与该文件的变更行，让 symbol_resolution
+    能逐文件解析出稳定符号——发现者据此获得图工具入口。
+    """
 
     def _node(state: ReviewState) -> dict:
         diff_text = state.get("diff_text", "")
         mode = state.get("review_mode", "medium")
-        tasks = (
-            task_prep.build_whole_diff_task(diff_text)
-            if mode == "small"
-            else task_prep.build_file_tasks(diff_text)
-        )
+        tasks = task_prep.build_file_tasks(diff_text)
         file_count = len({t.file for t in tasks})
         hunk_fallback_count = len([t for t in tasks if t.hunk_header])
         return {
@@ -1130,8 +1029,32 @@ def _coordinator_node(effective_judge_llm):
 
 
 def _assemble_state_dossiers(state: ReviewState):
+    candidates = list(state.get("candidate_issues") or [])
+    contexts = state.get("controlled_candidate_contexts") or {}
+    if contexts:
+        rehydrated: list[CandidateIssue] = []
+        for candidate in candidates:
+            context = contexts.get(candidate.id)
+            if not isinstance(context, Mapping):
+                rehydrated.append(candidate)
+                continue
+            updates = {
+                key: str(context[key])
+                for key in (
+                    "mechanism",
+                    "impact",
+                    "impact_locale",
+                    "claim_type",
+                    "evidence_observation",
+                )
+                if context.get(key)
+            }
+            rehydrated.append(
+                candidate.model_copy(update=updates) if updates else candidate
+            )
+        candidates = rehydrated
     return assemble_dossiers(
-        state.get("candidate_issues") or [],
+        candidates,
         state.get("review_tasks") or [],
         state.get("task_symbol_contexts") or {},
     )
@@ -1396,6 +1319,288 @@ def _locate_controlled_seed(seed: CandidateSeed, task: ReviewTask) -> CandidateS
     return seed.model_copy(update={"location_line": resolved_line})
 
 
+def _auto_context_delta_step(
+    *,
+    seed: CandidateSeed,
+    assessment: EvidenceAssessment,
+    execution: Any,
+    task: ReviewTask,
+    allow_partial_proof_enrichment: bool = False,
+) -> EvidenceStep | None:
+    """Choose one bounded source lookup from symbols visible in graph facts.
+
+    DirectTriage and GraphPlan remain LLM-owned.  This deterministic fallback
+    is deliberately domain-neutral: when an assessment says that the bounded
+    proof is incomplete, it may read one exact endpoint already returned by a
+    successful graph query.  The fallback never guesses a symbol from a name,
+    never reads the raw Gateway payload, and never infers a defect.
+    """
+
+    if assessment.status not in {
+        AssessmentStatus.PARTIAL,
+        AssessmentStatus.INDETERMINATE,
+        AssessmentStatus.UNRESOLVED,
+        AssessmentStatus.NEEDS_EVIDENCE,
+    } and not (
+        assessment.status is AssessmentStatus.REJECTED
+        and bool(assessment.additional_evidence_question.strip())
+    ) and not (
+        allow_partial_proof_enrichment
+        and assessment.status
+        in {
+            AssessmentStatus.PROVED,
+            AssessmentStatus.CANDIDATE,
+            AssessmentStatus.REJECTED,
+        }
+    ):
+        return None
+    question = seed.graph_question
+    if question is None:
+        return None
+    queried = {
+        step.step.subject_ref
+        for step in execution.steps
+        if step.step.tool == "get_file_content"
+    }
+    visible: set[str] = set()
+    source_available: set[str] = set()
+    adjacent: set[str] = set()
+    adjacent_lines: dict[str, list[int]] = {}
+    expected = set(question.expected_targets)
+    hypothesis_text = " ".join(
+        value
+        for value in (
+            seed.claim,
+            seed.mechanism,
+            seed.impact,
+            question.question,
+        )
+        if value
+    ).lower()
+    mentioned_targets: set[str] = set()
+    for item in execution.steps:
+        if item.step.tool not in {"inspect_path", "inspect_structure", "inspect_change_impact"}:
+            continue
+        payload_text = item.projected_payload
+        if not payload_text:
+            continue
+        try:
+            payload = json.loads(payload_text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for symbol in payload.get("symbols") or ():
+            if isinstance(symbol, dict) and str(symbol.get("id", "")).strip():
+                symbol_id = str(symbol["id"])
+                visible.add(symbol_id)
+                # A relationship endpoint may be a library/external symbol
+                # without source in the current snapshot.  Only symbols with
+                # an explicit source file are eligible for a source lookup;
+                # this keeps Delta inside the Gateway's resolvable domain.
+                if str(symbol.get("file", "")).strip():
+                    source_available.add(symbol_id)
+        for relation in payload.get("relationships") or ():
+            if not isinstance(relation, dict):
+                continue
+            source = str(relation.get("sourceId", "")).strip()
+            target = str(relation.get("targetId", "")).strip()
+            if source:
+                visible.add(source)
+            if target:
+                visible.add(target)
+            if question.direction == "downstream" and source == question.subject_ref:
+                adjacent.add(target)
+                try:
+                    adjacent_lines.setdefault(target, []).append(int(relation.get("line", 0)))
+                except (TypeError, ValueError):
+                    pass
+            elif question.direction == "upstream" and target == question.subject_ref:
+                adjacent.add(source)
+                try:
+                    adjacent_lines.setdefault(source, []).append(int(relation.get("line", 0)))
+                except (TypeError, ValueError):
+                    pass
+    # A graph response can contain several valid nearby methods and fields.
+    # If the candidate itself names one of those exact endpoints, prefer it
+    # for the single bounded source lookup. This uses only provider-declared
+    # hypothesis text and already-visible symbol IDs; it does not invent a
+    # symbol or decide that the hypothesis is true.
+    for symbol_id in visible & source_available:
+        simple_name = symbol_id.rsplit("#", 1)[-1].split("(", 1)[0]
+        if simple_name and re.search(
+            rf"(?<![a-z0-9_]){re.escape(simple_name.lower())}(?![a-z0-9_])",
+            hypothesis_text,
+        ):
+            mentioned_targets.add(symbol_id)
+    candidates = [
+        symbol_id
+        for symbol_id in visible & source_available
+        if symbol_id not in queried and symbol_id != question.subject_ref
+    ]
+    if not candidates:
+        return None
+
+    def score(symbol_id: str) -> tuple[int, int, int, str]:
+        # A Delta slot is most valuable when it reads the first observable
+        # endpoint of the declared path (listener/callback/state consumer),
+        # not merely whichever changed-line helper happens to be closest. The
+        # classifier is intentionally lexical and domain-neutral; it only
+        # orders symbols that the Gateway already returned and never invents a
+        # target or treats the name as proof.
+        lowered = symbol_id.lower()
+        semantic_rank = next(
+            (
+                index
+                for index, tokens in enumerate(
+                    (
+                        ("listener", "callback", "consumer", "sink"),
+                        ("state", "context", "synchronization", "cache"),
+                        ("interceptor", "event", "route"),
+                    )
+                )
+                if any(token in lowered for token in tokens)
+            ),
+            3,
+        )
+        if symbol_id in expected:
+            rank = 0
+        elif symbol_id in mentioned_targets:
+            rank = 1
+        elif semantic_rank < 3:
+            rank = 2 + semantic_rank
+        elif symbol_id in adjacent:
+            rank = 5
+        else:
+            rank = 6
+        # Prefer an endpoint whose call site is closest to the changed line.
+        # This is a generic locality tie-breaker: it does not inspect names or
+        # infer a defect, but avoids spending the only Delta read on an
+        # unrelated helper when several endpoints share the same first hop.
+        lines = [line for line in adjacent_lines.get(symbol_id, ()) if line > 0]
+        reference_lines = {
+            line for line in (*task.changed_lines, seed.location_line) if line > 0
+        }
+        if reference_lines and lines:
+            distance = min(
+                abs(line - reference)
+                for line in lines
+                for reference in reference_lines
+            )
+        else:
+            distance = 10**9
+        return rank, distance, len(symbol_id), symbol_id
+
+    subject_ref = min(candidates, key=score)
+    return EvidenceStep(
+        tool="get_file_content",
+        subject_ref=subject_ref,
+        purpose="补充读取有界图谱事实中已出现的直接端点源码",
+        expected_fact=(
+            assessment.additional_evidence_question.strip()
+            or seed.mechanism
+            or seed.claim
+        ),
+        required=True,
+    )
+
+
+def _select_delta_work_items(
+    *,
+    graph_plans: list[ReviewerGraphPlan],
+    seeds: dict[str, CandidateSeed],
+    execution: Any,
+    budget: int,
+) -> set[str]:
+    """Reserve bounded Delta slots fairly across candidate change locations.
+
+    Delta is a task-level budget, while the fixed reviewers may emit the same
+    changed mechanism several times.  Consuming the slots in reviewer/plan
+    order lets one reviewer starve a different hunk before its source can be
+    read.  Reserve at most one slot per concrete candidate location first,
+    then fill remaining slots by stable relevance order.  Relevance uses only
+    the seed's declared target/words and symbols already returned by the
+    initial graph facts; it is not a semantic verdict and never creates a
+    symbol or a new candidate.
+    """
+
+    if budget <= 0:
+        return set()
+    visible: set[str] = set()
+    for item in getattr(execution, "steps", ()):
+        if item.step.tool not in {
+            "inspect_path",
+            "inspect_structure",
+            "inspect_change_impact",
+        }:
+            continue
+        try:
+            payload = json.loads(item.projected_payload or "")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for symbol in payload.get("symbols") or ():
+            if isinstance(symbol, dict) and str(symbol.get("id", "")).strip():
+                visible.add(str(symbol["id"]))
+
+    def relevance(item: tuple[str, Any, CandidateSeed]) -> tuple[int, int, int, str]:
+        work_item_id, _work_item, seed = item
+        question = seed.graph_question
+        hypothesis = " ".join(
+            value
+            for value in (
+                seed.claim,
+                seed.mechanism,
+                seed.impact,
+                question.question if question is not None else "",
+            )
+            if value
+        ).lower()
+        declared = bool(question is not None and question.expected_targets)
+        mentioned = any(
+            name
+            and re.search(
+                rf"(?<![a-z0-9_]){re.escape(name.lower())}(?![a-z0-9_])",
+                hypothesis,
+            )
+            for symbol_id in visible
+            for name in (symbol_id.rsplit("#", 1)[-1].split("(", 1)[0],)
+        )
+        # Prefer explicit/mentioned endpoints, then stable location, then the
+        # fixed reviewer order.  A location of zero remains deterministic.
+        relevance_rank = 0 if declared else 1 if mentioned else 2
+        location = seed.location_line if seed.location_line > 0 else 10**9
+        reviewer_rank = {ReviewerKind.BEHAVIOR: 0, ReviewerKind.THREAT_MODEL: 1, ReviewerKind.MAINTAINABILITY: 2}.get(seed.reviewer, 9)
+        return relevance_rank, location, reviewer_rank, work_item_id
+
+    entries: list[tuple[str, Any, CandidateSeed]] = []
+    for plan in graph_plans:
+        for work_item in plan.work_items:
+            seed = seeds.get(work_item.seed_id)
+            if seed is not None:
+                entries.append((work_item.work_item_id, work_item, seed))
+    entries.sort(key=relevance)
+    selected: list[tuple[str, Any, CandidateSeed]] = []
+    location_keys: set[tuple[str, int]] = set()
+    for entry in entries:
+        if len(selected) >= budget:
+            break
+        seed = entry[2]
+        location_key = (seed.change_unit_id, seed.location_line)
+        if location_key in location_keys:
+            continue
+        selected.append(entry)
+        location_keys.add(location_key)
+    if len(selected) < budget:
+        selected_ids = {entry[0] for entry in selected}
+        selected.extend(
+            entry for entry in entries
+            if entry[0] not in selected_ids
+        )
+    return {entry[0] for entry in selected[:budget]}
+
+
 def _controlled_review_node(llm, tool_client=None):
     """执行受控 DirectTriage → GraphPlan → EvidenceExecutor 链。"""
 
@@ -1475,7 +1680,7 @@ def _controlled_review_node(llm, tool_client=None):
                     task_knowledge=shared_knowledge(task),
                     max_retries=state.get("max_retries", 3),
                     structured_method=state.get("structured_method", "function_calling"),
-                    max_seeds_per_change_unit=state.get("controlled_max_seeds_per_change_unit", 2),
+                    max_seeds_per_change_unit=state.get("controlled_max_seeds_per_change_unit", 4),
                     max_seeds_per_reviewer=state.get("controlled_max_seeds_per_reviewer", 4),
                 )
 
@@ -1553,10 +1758,18 @@ def _controlled_review_node(llm, tool_client=None):
                     enabled_tools=state.get("enabled_tools"),
                     initial_budget=state.get("controlled_initial_tool_budget", 6),
                     max_path_depth=state.get("controlled_max_path_depth", 3),
+                    seed_by_id=graph_seeds_by_id,
                 ).execute(tuple(graph_plans_for_task))
                 all_trace_refs.extend(execution.trace_refs)
                 all_artifacts.update(execution.artifacts)
-                delta_used_for_task = False
+                delta_budget = max(0, int(state.get("controlled_delta_tool_budget", 2)))
+                delta_work_item_ids = _select_delta_work_items(
+                    graph_plans=graph_plans_for_task,
+                    seeds=graph_seeds_by_id,
+                    execution=execution,
+                    budget=delta_budget,
+                )
+                delta_used_count = 0
                 for graph_plan in graph_plans_for_task:
                     reviewer_kind = ReviewerKind(graph_plan.reviewer)
                     plan_seeds = {
@@ -1596,22 +1809,77 @@ def _controlled_review_node(llm, tool_client=None):
                         max_retries=state.get("max_retries", 3),
                         structured_method=state.get("structured_method", "function_calling"),
                     )
-                    # A single explicit Delta step is permitted per task. It may
+                    # A bounded Delta step is permitted per task. It may
                     # reference only a symbol returned by the initial graph facts;
                     # no recursive discovery or fuzzy symbol resolution is allowed.
                     for work_item in graph_plan.work_items:
                         initial_assessment = assessments.get(work_item.work_item_id)
+                        initial_proof = plan_proofs.get(work_item.work_item_id)
                         if (
-                            delta_used_for_task
+                            delta_used_count >= delta_budget
                             or initial_assessment is None
-                            or initial_assessment.status is not AssessmentStatus.NEEDS_EVIDENCE
-                            or not initial_assessment.additional_steps
+                            or (
+                                delta_work_item_ids
+                                and work_item.work_item_id not in delta_work_item_ids
+                            )
                         ):
                             continue
-                        delta_step = initial_assessment.additional_steps[0].model_copy(
-                            update={"depends_on": ()}
+                        # Build the deterministic endpoint enrichment before
+                        # accepting a provider-proposed Delta. A provider can
+                        # legally ask for another valid symbol, but it often
+                        # echoes an already-read subject or picks a nearby
+                        # field/caller that does not close the candidate's
+                        # declared graph seam. If the bounded graph already
+                        # exposes a source-backed endpoint, prefer that exact
+                        # endpoint; the choice is based on visible facts and
+                        # candidate text only, never on an issue name.
+                        auto_delta_step = _auto_context_delta_step(
+                            seed=plan_seeds[work_item.seed_id],
+                            assessment=initial_assessment,
+                            execution=execution,
+                            task=task,
+                            allow_partial_proof_enrichment=(
+                                initial_proof is not None
+                                and initial_proof.status is ProofMatchStatus.PARTIAL
+                            ),
                         )
+                        if initial_assessment.status is AssessmentStatus.NEEDS_EVIDENCE:
+                            if not initial_assessment.additional_steps:
+                                delta_step = auto_delta_step
+                                if delta_step is None:
+                                    continue
+                            else:
+                                delta_step = initial_assessment.additional_steps[0]
+                            # Providers sometimes echo the already executed
+                            # source step instead of selecting a newly visible
+                            # consumer. Reusing it would spend the Delta budget
+                            # without adding evidence, so switch to the
+                            # bounded endpoint enrichment below when possible.
+                            duplicate = any(
+                                prior.step.tool == delta_step.tool
+                                and prior.step.subject_ref == delta_step.subject_ref
+                                and prior.step.path_kind == delta_step.path_kind
+                                and prior.step.max_depth == delta_step.max_depth
+                                for prior in execution.steps
+                            )
+                            if duplicate and auto_delta_step is not None:
+                                delta_step = auto_delta_step
+                            elif (
+                                auto_delta_step is not None
+                                and delta_step.subject_ref != auto_delta_step.subject_ref
+                            ):
+                                # Keep one Delta slot focused on the
+                                # candidate's visible endpoint instead of an
+                                # unrelated provider-selected symbol.
+                                delta_step = auto_delta_step
+                        else:
+                            delta_step = auto_delta_step
+                            if delta_step is None:
+                                continue
+                        delta_step = delta_step.model_copy(update={"depends_on": ()})
                         allowed_delta_symbols = visible_symbol_ids(execution)
+                        if delta_step.tool == "get_file_content":
+                            allowed_delta_symbols = visible_source_symbol_ids(execution)
                         validated_delta_step, delta_diagnostics = validate_delta_step(
                             delta_step,
                             seed=plan_seeds[work_item.seed_id],
@@ -1621,17 +1889,55 @@ def _controlled_review_node(llm, tool_client=None):
                             enabled_tools=set(state.get("enabled_tools") or ()),
                         )
                         if validated_delta_step is None:
-                            traces.append(
-                                CouncilTrace(
-                                    node="delta_plan",
-                                    event="rejected_invalid_step",
-                                    detail=(
-                                        f"task={task.id} work_item={work_item.work_item_id} "
-                                        f"{','.join(delta_diagnostics)}"
-                                    ),
-                                )
+                            # A provider may attach graph-only fields to a
+                            # source step (or name a class rather than a
+                            # visible symbol).  Try the deterministic,
+                            # exact-symbol endpoint enrichment before giving up
+                            # this candidate's Delta slot.
+                            fallback_delta = _auto_context_delta_step(
+                                seed=plan_seeds[work_item.seed_id],
+                                assessment=initial_assessment,
+                                execution=execution,
+                                task=task,
+                                allow_partial_proof_enrichment=(
+                                    initial_proof is not None
+                                    and initial_proof.status is ProofMatchStatus.PARTIAL
+                                ),
                             )
-                            continue
+                            if fallback_delta is not None:
+                                fallback_delta = fallback_delta.model_copy(
+                                    update={"depends_on": ()}
+                                )
+                                validated_delta_step, fallback_diagnostics = validate_delta_step(
+                                    fallback_delta,
+                                    seed=plan_seeds[work_item.seed_id],
+                                    reviewer=reviewer_kind,
+                                    allowed_symbols=allowed_delta_symbols,
+                                    max_path_depth=state.get("controlled_max_path_depth", 3),
+                                    enabled_tools=set(state.get("enabled_tools") or ()),
+                                )
+                                delta_diagnostics = (
+                                    *delta_diagnostics,
+                                    "provider_delta_replaced",
+                                    *fallback_diagnostics,
+                                )
+                                if validated_delta_step is not None:
+                                    delta_step = validated_delta_step
+                            if validated_delta_step is not None:
+                                # Continue with the validated fallback below.
+                                pass
+                            else:
+                                traces.append(
+                                    CouncilTrace(
+                                        node="delta_plan",
+                                        event="rejected_invalid_step",
+                                        detail=(
+                                            f"task={task.id} work_item={work_item.work_item_id} "
+                                            f"{','.join(delta_diagnostics)}"
+                                        ),
+                                    )
+                                )
+                                continue
                         delta_step = validated_delta_step
                         delta_item = work_item.model_copy(
                             update={"evidence_steps": (delta_step,)}
@@ -1690,7 +1996,7 @@ def _controlled_review_node(llm, tool_client=None):
                         )
                         assessments.update(delta_assessments)
                         assessment_diagnostics = (*assessment_diagnostics, *delta_diagnostics)
-                        delta_used_for_task = True
+                        delta_used_count += 1
                         traces.append(
                             CouncilTrace(
                                 node="delta_execute",
@@ -1698,7 +2004,6 @@ def _controlled_review_node(llm, tool_client=None):
                                 detail=f"task={task.id} work_item={work_item.work_item_id}",
                             )
                         )
-                        break
                     traces.extend(
                         CouncilTrace(
                             node="evidence_assessment",
@@ -1711,70 +2016,184 @@ def _controlled_review_node(llm, tool_client=None):
                     for work_item in graph_plan.work_items:
                         seed_for_work = plan_seeds.get(work_item.seed_id)
                         proof_for_work = plan_proofs.get(work_item.work_item_id)
-                        if seed_for_work is None or proof_for_work is None:
-                            continue
-                        assessment = assessments.get(work_item.work_item_id)
-                        if (
-                            assessment is not None
-                            and assessment.status is AssessmentStatus.CANDIDATE
-                            and proof_for_work.status in {
-                                ProofMatchStatus.PROVED,
-                                ProofMatchStatus.PARTIAL,
-                            }
-                        ) or (
-                            assessment is None
-                            and proof_for_work.status
-                            in {ProofMatchStatus.PROVED, ProofMatchStatus.PARTIAL}
-                        ):
-                            if assessment is None:
-                                aliases = tuple(
-                                    step.alias
-                                    for step in execution.steps
-                                    if (
-                                        step.work_item_id == work_item.work_item_id
-                                        and step.alias
-                                        and step.status in {"complete", "reused"}
-                                        and step.step.tool
-                                        in {
-                                            "inspect_path",
-                                            "inspect_structure",
-                                            "inspect_change_impact",
-                                        }
-                                    )
-                                )
-                                if not aliases:
-                                    aliases = tuple(
-                                        step.alias
-                                        for step in execution.steps
-                                        if (
-                                            step.work_item_id == work_item.work_item_id
-                                            and step.alias
-                                            and step.status in {"complete", "reused"}
-                                        )
-                                    )
-                                assessment = EvidenceAssessment(
-                                    work_item_id=work_item.work_item_id,
-                                    status=AssessmentStatus.CANDIDATE,
-                                    claim=seed_for_work.claim,
-                                    mechanism=seed_for_work.mechanism,
-                                    impact=seed_for_work.impact,
-                                    proof_scope=seed_for_work.proof_scope,
-                                    supporting_refs=aliases[:3],
-                                    counter_refs=(),
-                                    limitations=(
-                                        "assessment_llm_missing_but_complete_proof",
+                        if seed_for_work is None:
+                            traces.append(
+                                CouncilTrace(
+                                    node="controlled_review",
+                                    event="candidate_gate_skip",
+                                    detail=(
+                                        f"task={task.id} work_item={work_item.work_item_id} "
+                                        "reason=seed_not_bound"
                                     ),
                                 )
-                            all_candidates.append(
-                                candidate_from_seed(
-                                    seed=seed_for_work,
-                                    task=task,
-                                    catalog=execution.catalog,
-                                    reviewer=reviewer_kind.value,
-                                    candidate_index=len(all_candidates) + 1,
-                                    assessment=assessment,
+                            )
+                            continue
+                        if proof_for_work is None:
+                            traces.append(
+                                CouncilTrace(
+                                    node="controlled_review",
+                                    event="candidate_gate_skip",
+                                    detail=(
+                                        f"task={task.id} work_item={work_item.work_item_id} "
+                                        "reason=proof_not_bound"
+                                    ),
                                 )
                             )
+                            continue
+                        assessment = assessments.get(work_item.work_item_id)
+                        # EvidenceAssessment is a semantic review of the
+                        # proof, not a second routing gate.  A model can
+                        # truthfully say "indeterminate" or "unresolved"
+                        # while the deterministic matcher has found a
+                        # positive (possibly partial) graph fact.  Preserve
+                        # that bounded candidate for CouncilJudge, which can
+                        # combine the patch and graph refs and make the final
+                        # keep/drop decision.  Explicit rejection/failure is
+                        # still fail-closed and never becomes a candidate.
+                        assessment_eligible = assessment is None or assessment.status in {
+                            AssessmentStatus.PROVED,
+                            AssessmentStatus.CANDIDATE,
+                            AssessmentStatus.NEEDS_EVIDENCE,
+                            AssessmentStatus.UNRESOLVED,
+                            AssessmentStatus.INDETERMINATE,
+                            AssessmentStatus.PARTIAL,
+                        }
+                        # An indeterminate graph result is an evidence gap,
+                        # not a negative fact.  Keep the bounded seed for
+                        # CouncilJudge so local patch/source evidence can
+                        # still establish a behavior issue, while preserving
+                        # the fail-closed rule for explicit NOT_FOUND.
+                        proof_usable = proof_for_work.status in {
+                            ProofMatchStatus.PROVED,
+                            ProofMatchStatus.PARTIAL,
+                            ProofMatchStatus.INDETERMINATE,
+                        }
+                        # Assessment is a semantic annotation, not the final
+                        # keep/drop authority. If the deterministic matcher
+                        # has a positive proof, preserve even an explicit
+                        # provider ``rejected`` annotation as a bounded
+                        # candidate so CouncilJudge can weigh the verified
+                        # patch/source/graph facts and the rejection reason
+                        # together. A rejected item without positive proof
+                        # remains fail-closed and never becomes a candidate.
+                        if (
+                            assessment is not None
+                            and assessment.status is AssessmentStatus.REJECTED
+                            and proof_usable
+                        ):
+                            assessment_eligible = True
+                            traces.append(
+                                CouncilTrace(
+                                    node="controlled_review",
+                                    event="candidate_rejected_preserved_for_judge",
+                                    detail=(
+                                        f"task={task.id} work_item={work_item.work_item_id} "
+                                        "reason=positive_proof"
+                                    ),
+                                )
+                            )
+                        if not assessment_eligible or not proof_usable:
+                            traces.append(
+                                CouncilTrace(
+                                    node="controlled_review",
+                                    event="candidate_gate_skip",
+                                    detail=(
+                                        f"task={task.id} work_item={work_item.work_item_id} "
+                                        f"reason=assessment_or_proof_not_eligible "
+                                        f"assessment={getattr(assessment, 'status', None)} "
+                                        f"proof={proof_for_work.status}"
+                                    ),
+                                )
+                            )
+                            continue
+                        if assessment is None:
+                            work_steps = tuple(
+                                step
+                                for step in execution.steps
+                                if step.work_item_id == work_item.work_item_id
+                            )
+                            aliases = tuple(
+                                step.alias
+                                for step in work_steps
+                                if (
+                                    step.alias
+                                    and step.status in {"complete", "reused"}
+                                    and step.step.tool in {
+                                        "inspect_path",
+                                        "inspect_structure",
+                                        "inspect_change_impact",
+                                    }
+                                )
+                            )
+                            source_steps = tuple(
+                                step
+                                for step in work_steps
+                                if (
+                                    step.alias
+                                    and step.status in {"complete", "reused"}
+                                    and step.step.tool == "get_file_content"
+                                )
+                            )
+                            # A graph candidate needs a graph fact and,
+                            # when the subject source was executed, the
+                            # local mechanism excerpt as well.  This is
+                            # a generic transport fallback for an
+                            # unavailable/invalid Assessment response;
+                            # it does not infer a claim or promote a
+                            # candidate.  Prefer the GraphQuestion
+                            # subject, then retain one endpoint source.
+                            subject_ref = (
+                                seed_for_work.graph_question.subject_ref
+                                if seed_for_work.graph_question is not None
+                                else ""
+                            )
+                            subject_sources = tuple(
+                                step.alias
+                                for step in source_steps
+                                if step.step.subject_ref == subject_ref
+                            )
+                            preferred_sources = list(subject_sources[:1])
+                            for step in source_steps:
+                                if step.alias not in preferred_sources:
+                                    preferred_sources.append(step.alias)
+                                if len(preferred_sources) >= 2:
+                                    break
+                            aliases = tuple(
+                                dict.fromkeys(
+                                    (*aliases[:1], *preferred_sources, *aliases[1:])
+                                )
+                            )[:3]
+                            assessment = EvidenceAssessment(
+                                work_item_id=work_item.work_item_id,
+                                status=AssessmentStatus.CANDIDATE,
+                                claim=seed_for_work.claim,
+                                mechanism=seed_for_work.mechanism,
+                                impact=seed_for_work.impact,
+                                proof_scope=seed_for_work.proof_scope,
+                                supporting_refs=aliases[:3],
+                                counter_refs=(),
+                                limitations=(
+                                    "assessment_llm_missing_but_complete_proof",
+                                ),
+                            )
+                        # The assessment is a semantic annotation, not the
+                        # construction branch for a candidate.  Both a
+                        # provider-produced assessment and the bounded
+                        # transport fallback above must flow into the same
+                        # CandidateIssue binding path.  Previously the append
+                        # lived inside ``assessment is None`` and silently
+                        # discarded every normally parsed assessment after the
+                        # proof gate had accepted it.
+                        all_candidates.append(
+                            candidate_from_seed(
+                                seed=seed_for_work,
+                                task=task,
+                                catalog=execution.catalog,
+                                reviewer=reviewer_kind.value,
+                                candidate_index=len(all_candidates) + 1,
+                                assessment=assessment,
+                            )
+                        )
             task_candidate_limit = state.get("controlled_max_seeds_per_task", 12)
             if len(all_candidates) - task_candidate_start > task_candidate_limit:
                 del all_candidates[task_candidate_start + task_candidate_limit :]
@@ -1787,16 +2206,57 @@ def _controlled_review_node(llm, tool_client=None):
                 )
             all_artifacts.update(task_catalog.artifacts)
 
-        traces.append(CouncilTrace(node="controlled_review", event="completed", detail=f"candidates={len(all_candidates)} tools={len(all_trace_refs)}"))
+        deduped_candidates, collapsed_count = collapse_candidate_duplicates(all_candidates)
+        if collapsed_count:
+            traces.append(
+                CouncilTrace(
+                    node="controlled_review",
+                    event="candidate_duplicates_collapsed",
+                    detail=f"collapsed={collapsed_count} remaining={len(deduped_candidates)}",
+                )
+            )
+        traces.append(CouncilTrace(node="controlled_review", event="completed", detail=f"candidates={len(deduped_candidates)} tools={len(all_trace_refs)}"))
+        # CandidateIssue's explanatory fields are deliberately excluded from
+        # its generic ``model_dump`` (they are not product Issue fields). A
+        # LangGraph checkpoint can consequently carry the candidate shell but
+        # lose the mechanism/impact context before EvidenceJudge runs. Keep a
+        # separate context map in graph state and rehydrate it at dossier
+        # assembly; this is transport preservation, not a semantic decision
+        # or an issue-specific rule.
+        candidate_contexts = {
+            candidate.id: {
+                key: str(value)
+                for key in (
+                    "mechanism",
+                    "impact",
+                    "impact_locale",
+                    "claim_type",
+                    "evidence_observation",
+                )
+                if (value := getattr(candidate, key, ""))
+            }
+            for candidate in deduped_candidates
+            if any(
+                getattr(candidate, key, "")
+                for key in (
+                    "mechanism",
+                    "impact",
+                    "impact_locale",
+                    "claim_type",
+                    "evidence_observation",
+                )
+            )
+        }
         return {
-            "raw_candidate_issues": all_candidates,
-            "candidate_issues": collect_candidate_reducer([], all_candidates),
+            "raw_candidate_issues": deduped_candidates,
+            "candidate_issues": collect_candidate_reducer([], deduped_candidates),
             "evidence_artifacts": all_artifacts,
             "tool_trace_records": all_trace_refs,
             "controlled_triage": triage_state,
             "controlled_graph_plans": graph_plan_state,
             "controlled_assessments": assessment_state,
             "controlled_proof_matches": proof_state,
+            "controlled_candidate_contexts": candidate_contexts,
             "council_trace": traces,
         }
 
@@ -2041,7 +2501,7 @@ def build_review_graph(
     controlled_initial_tool_budget: int = 6,
     controlled_delta_tool_budget: int = 2,
     controlled_max_path_depth: int = 3,
-    controlled_max_seeds_per_change_unit: int = 2,
+    controlled_max_seeds_per_change_unit: int = 4,
     controlled_max_seeds_per_reviewer: int = 4,
     controlled_max_seeds_per_task: int = 12,
     controlled_max_knowledge_topics: int = 4,
@@ -2049,15 +2509,14 @@ def build_review_graph(
     """编译审查状态图。
 
     按 PR 体量自动路由：
-      - small：直接审查完整 diff，不走管线
+      - small：文件级 task 拆分 + 完整管线（与 medium 同拓扑，仅预算不同）
       - medium：文件级 task 拆分 + 完整管线
       - large：hunk 级 task 拆分 + 预算控制（现状）
 
     默认拓扑:
         START → classify_mode
-          ├─ small  → direct_review → END
-          ├─ medium → file_task_builder → task_route → task_selection → plan → review_plan
-          └─ large  → diff_task_builder → task_route → task_selection → plan → review_plan → summary?
+          ├─ small / medium → file_task_builder → task_route → task_selection → plan → review_plan
+          └─ large          → diff_task_builder → task_route → task_selection → plan → review_plan → summary?
                        → symbol_resolution → discover_*(×3)
                        → council_coordinator(fan-in)
                          ├─ evidence_mode=full → evidence_verifier
@@ -2067,10 +2526,9 @@ def build_review_graph(
 
     discovery_only 拓扑:
         START → classify_mode
-          ├─ small  → direct_review → END
-          ├─ medium → file_task_builder → task_selection → plan → review_plan → discover_*(×3)
-          │           → discovery_collector → END
-          └─ large  → diff_task_builder → task_selection → plan → review_plan → discover_*(×3)
+          ├─ small / medium → file_task_builder → task_selection → plan → review_plan → discover_*(×3)
+          │                    → discovery_collector → END
+          └─ large           → diff_task_builder → task_selection → plan → review_plan → discover_*(×3)
                        → discovery_collector → END
     """
     from langgraph.graph import END, START, StateGraph
@@ -2108,7 +2566,6 @@ def build_review_graph(
             )
 
     # ── 模式特定节点 ──
-    g.add_node("direct_review", _direct_review_node(llm))
     g.add_node("file_task_builder", _file_task_builder_node())
     if discovery_mode == "controlled":
         g.add_node("controlled_review", _controlled_review_node(llm, tool_client=tool_client))
@@ -2148,16 +2605,6 @@ def build_review_graph(
             "small": "file_task_builder",
             "medium": "file_task_builder",
             "large": "diff_task_builder",
-        },
-    )
-
-    # ── small 路径 ──
-    g.add_conditional_edges(
-        "direct_review",
-        lambda state: state.get("direct_review_status", "fallback"),
-        {
-            "completed": END,
-            "fallback": "file_task_builder",
         },
     )
 

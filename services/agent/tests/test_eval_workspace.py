@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 
 from evals.schema import EvalCase
-from evals.workspace import materialize_case_workspace
+from evals.workspace import materialize_case_workspace, tool_server_repo_path
 
 
 def _git(cwd, *args: str, input_text: str | None = None) -> str:
@@ -50,3 +50,20 @@ def test_materialize_case_workspace_applies_diff_without_mutating_base(tmp_path)
         workspace.cleanup()
 
     assert not workspace.path.exists()
+
+
+def test_tool_server_repo_path_maps_host_workspace_to_container(monkeypatch, tmp_path):
+    host_root = tmp_path / "projects"
+    workspace = host_root / "eval-workspaces" / "case-1"
+    monkeypatch.setenv("CODEGUARD_PROJECTS_DIR", str(host_root))
+    monkeypatch.setenv("CODEGUARD_TOOL_SERVER_PROJECT_ROOT", "/workspace/projects")
+
+    assert tool_server_repo_path(workspace) == "/workspace/projects/eval-workspaces/case-1"
+
+
+def test_tool_server_repo_path_preserves_native_path_without_mapping(monkeypatch, tmp_path):
+    monkeypatch.delenv("CODEGUARD_PROJECTS_DIR", raising=False)
+    monkeypatch.delenv("CODEGUARD_TOOL_SERVER_PROJECT_ROOT", raising=False)
+    workspace = tmp_path / "case-1"
+
+    assert tool_server_repo_path(workspace) == str(workspace)

@@ -5,7 +5,7 @@
 
 正式的 60 例真实仓库素材库与 selected-20-v2 真实评测(每 case 植入 5-6 个 L3 深层 bug,2 轮 × 多 profile
 对照,人工按 planted bugs 计指标)见 `reports/selected-20-v2-real/`。`runner` 是统一跑批入口,
-`profiles.yaml` 声明被测编排(直接 diff / ReviewCouncil 全编排等)。
+`profiles.yaml` 声明被测编排(直接 diff / ReviewCouncil 全编排 / Plan-and-Execute 受控发现等)。
 
 ## 为什么需要它
 
@@ -37,13 +37,14 @@ python -m evals.runner --runs 3 --judge
 ## profile:把"被测系统"做成可插拔(统一标准下做对照)
 
 评测的**统一标准 = 固定数据集 + 固定指标**;"用什么配置跑"由 **profile** 描述,见
-`evals/profiles.yaml`(`mode` + `orchestration` + 启用工具集 + 可选模型)。**加一个工具 / 换一种编排 = 加一行
+`evals/profiles.yaml`(`mode` + `orchestration` + `discovery_mode` + 启用工具集 + 可选模型)。**加一个工具 / 换一种编排 = 加一行
 profile,数据集与指标零改动。**
 
 ```bash
 # 按 profile 跑(覆盖 --tools);不指定则用 --tools 合成 ad-hoc(管线 + 工具开/关)
 python -m evals.runner --profile pipeline-notools --runs 1
 python -m evals.runner --profile adr-032-smoke --runs 1
+python -m evals.runner --profile eval-controlled-codegraph --runs 1  # Plan-and-Execute 受控发现
 CODEGUARD_TOOL_SERVER_URL=http://localhost:9090 \
   python -m evals.runner --profile pipeline-file --runs 1   # 工具开档,需先起工具服务
 ```
@@ -76,9 +77,19 @@ Phase 2 最小样本包括：删除 `@PreAuthorize`、新增 repository update�
 `evals/dataset` 中的旧合成案例继续用于廉价工程回归，其中没有 `repo_path` 的案例不能量化项目图工具增益。严格工具 profile 遇到这类案例会直接失败，不会静默降级。
 
 `dataset/` 下有 **60 例真实仓库素材库**(gitbug + vul4j,每例
-`repo/ + changes.diff + case.yaml`,对应项目代码的漏洞版本快照)。它是本地素材库,不参与 `load_cases`
+`repo/ + changes.diff + case.yaml`,其中 `repo/` 是干净基线快照，运行器会在临时 clone
+中应用 `changes.diff` 后再启动工具会话)。它是本地素材库,不参与 `load_cases`
 (见 `dataset.py:_LOCAL_ONLY_DIRS`),选材/造 diff 时参考。`dataset/selected-20-v2/` 是已跑评测集
 (`manifest.yaml + cases/<case_id>/`,含 planted-bugs.diff 与 checkpoint 数据)。
+
+`selected-20-v2` 的正式评测口径是每个 `case.yaml` 中的 `expected`，当前共 100 条已确认问题。
+`cases/_bugs_gt.json` 是从 `planted-bugs.diff` 按 hunk 生成的 115 条变更区域诊断记录，包含未单独确认的
+附带改动，只用于旧的 hunk/跨文件分析，不作为正式 Recall 分母。`recall_analyzer` 默认使用正式标答；
+只有显式传 `--gold hunks` 时才读取 hunk 诊断数据。
+
+该评测集的 20 个 case 全部是 `known-issue-only` 的漏洞/回归样本，没有 clean case 或 distractor，
+因此报告中的 Precision 只能表示“未匹配已知标答的报告比例”，不能替代真实误报率。使用严格工具 profile
+时，运行器还会在建工具会话前校验 repo-backed 快照的内容是否干净且与 provenance 源码树一致。
 
 ## 指标含义
 
@@ -166,7 +177,7 @@ distractors:               # 诱饵:报了就是"中诱饵"误报
 
 ```
 <case_id>/
-├── repo/          # 变更后的完整工程快照(工具据此读文件;关键上下文应放在被改文件之外)
+├── repo/          # 干净基线工程快照(运行器应用 changes.diff 后供工具读取)
 │   └── src/main/java/...
 ├── changes.diff   # 被审查的 unified diff(diff 来源,优先于 case.yaml 内联)
 └── case.yaml      # 标答 + 能力标签等元数据(无需写 diff,由 changes.diff 提供)
@@ -189,7 +200,8 @@ expected:
     note: filename 经 diff 外的 PathUtil.join 拼接,未规范化
 ```
 
-设计要点:**`repo/` 是"变更后"的工程**,且要刻意把"判定所需的关键上下文"放在被改文件**之外**
+设计要点:**`repo/` 是"变更前"的干净工程**,运行器会把 `changes.diff` 应用到临时 clone；
+并刻意把"判定所需的关键上下文"放在被改文件**之外**
 (如被调用方法的定义、父类约定),这样"开工具 vs 关工具"才有可量化的差距。能力标签取值见
 `schema.py:VALID_CAPABILITIES`(`diff-only`/`file`/`ast`/`call-graph`/`rag`)。
 

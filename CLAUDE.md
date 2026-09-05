@@ -13,8 +13,8 @@ Codeguard 是一个 **AI 代码审查引擎**,以 Agent 为最终核心,双语�
 审查核心为证据驱动的 ReviewCouncil 多 Agent 编排；GitHub PR 自动审查链路由 Java Gateway 接收 webhook、调度 Python Agent，并把结果回写到 GitHub。
 
 ```
-START → classify_mode ─┬─ small  → direct_review
-(PR 规模路由)          └─ medium → file_task_builder → task_selection → plan
+START → classify_mode ─┬─ small ─┐
+(PR 规模路由)          ├─ medium → file_task_builder → task_selection → plan
                         └─ large  → diff_task_builder ─┘     │
                                                              ├─ summary(可选) → symbol_resolution
                                                              └─ (无摘要时直达) →──┘
@@ -45,7 +45,7 @@ START → classify_mode ─┬─ small  → direct_review
                                                    END
 ```
 
-管线入口 `classify_mode` 按 PR 体量做纯确定性路由：small 构建 whole-diff task，medium 按文件拆分，large 按 hunk 拆分并应用确定性任务上限。所有 task 先经过 DirectGate；Full task 按文件复用 Plan，Plan 选择 Reviewer、审查目标和知识主题。`symbol_resolution` 通过 `resolve_change_context` 把 Full task 的变更行解析为强类型稳定符号，只为领域工具、Evidence Ledger 与 guard 扫描提供入口。
+管线入口 `classify_mode` 按 PR 体量做纯确定性路由：small / medium 均按文件拆分（仅预算不同），large 按 hunk 拆分并应用确定性任务上限。small 逐文件拆分而非合并为 whole-diff，是为了让 `symbol_resolution` 能拿到真实文件路径逐文件解析出稳定符号——否则 `<whole-diff>` 占位路径会让符号解析全数落空、发现者失去图工具入口。所有 task 先经过 DirectGate；Full task 按文件复用 Plan，Plan 选择 Reviewer、审查目标和知识主题。`symbol_resolution` 通过 `resolve_change_context` 把 Full task 的变更行解析为强类型稳定符号，只为领域工具、Evidence Ledger 与 guard 扫描提供入口。
 
 三个发现者 Agent（ThreatModel / Behavior / Maintainability）并行运行，共享 `get_file_content`、`inspect_structure`、`inspect_change_impact`、`inspect_path`，走 ReAct 引擎；领域 Prompt 决定查询时机和 `path_kind`。每个 Agent 的 prompt = 领域 BASE 知识 + Plan 显式选择的主题文件（`prompts/knowledge/`）。
 
@@ -239,9 +239,9 @@ Codeguard/
 3. **`git/diff_collector.py:collect_diff`** 调系统 `git diff <base>` 拿 unified diff 文本;空 diff 直接结束。
 4. **`llm/client.py:build_llm`** 按 provider 造 LangChain Chat 模型;`provider=mock` 返回 `None`(下游走假数据)。
 5. **`pipeline/graph.py` 的 ReviewCouncil 状态图**是核心:
-   - `classify_mode` 按 diff 体量路由(small→`direct_review` 单次直审 / medium→`file_task_builder` 按文件 / large→`diff_task_builder` 按 hunk)。
+   - `classify_mode` 按 diff 体量路由(small / medium→`file_task_builder` 按文件 / large→`diff_task_builder` 按 hunk)。
    - Full task 走完整管线:`task_selection` 构造工作集 → `plan` 选择 Reviewer 和知识主题 → 可选 `summary` → `symbol_resolution` 解析稳定符号 → 三路发现者并行(ReAct,输出带 `evidence_refs` 证据编号引用)→ `council_coordinator` 汇集 → `evidence_verifier` 证据验证(Artifact 健康检查/图护栏/异常重放,零 LLM)→ `council_judge` 批量 EvidenceJudge → `causal_merge` 语义合并后产出 `Issue`。
-   - `llm is None`(mock)→ 各阶段返回 mock 假数据(如 `direct_review` 返回 `mock_review_result()`)。
+   - `llm is None`(mock)→ 各阶段返回 mock 假数据(如 ThreatModel 发现者返回 `mock_review_result()`)。
    - 工具服务不可用时显式降级(ReAct 退直连 / 空证据不炸管线)。
 6. **`cli.py:_print_result`** 打印;加 `--report` 时渲染 Markdown 报告写入 `<repo>/reports/`(仅本地 CLI 路径,CI 链路不生成)。**退出码**:发现任一 `CRITICAL` 返回 1,否则 0(方便接 CI 门禁)。
 

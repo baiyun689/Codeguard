@@ -11,7 +11,7 @@ index abc1d90..f331bbd 100644
  		Throwable lastException = null;
  
  		boolean exhausted = false;
-@@ -296,6 +294,8 @@ public class RetryTemplate implements RetryOperations {
+@@ -293,7 +293,9 @@ public class RetryTemplate implements RetryOperations {
  			if (!running) {
  				throw new TerminatedRetryException("Retry terminated abnormally by interceptor before first attempt");
  			}
@@ -21,7 +21,7 @@ index abc1d90..f331bbd 100644
  			// Get or Start the backoff context...
  			BackOffContext backOffContext = null;
  			Object resource = context.getAttribute("backOffContext");
-@@ -497,7 +497,7 @@ public class RetryTemplate implements RetryOperations {
+@@ -497,6 +497,6 @@ public class RetryTemplate implements RetryOperations {
  		context.removeAttribute(RetryContext.CLOSED);
  		context.removeAttribute(RetryContext.EXHAUSTED);
  		context.removeAttribute(RetryContext.RECOVERED);
