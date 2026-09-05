@@ -39,6 +39,11 @@ _NODE_TITLES: dict[str, str] = {
     "plan": "审查规划",
     "review_plan": "审查分配",
     "symbol_resolution": "符号解析",
+    "controlled_review": "受控审查",
+    "direct_triage": "Direct 初筛",
+    "graph_plan": "图谱取证计划",
+    "evidence_assessment": "证据评估",
+    "controlled_diagnostics": "受控审查诊断",
     "discover_threat_model": "安全候选发现",
     "discover_behavior": "行为候选发现",
     "discover_maintainability": "可维护性候选发现",
@@ -58,6 +63,7 @@ _COORDINATION_NODES = {
     "council_judge",
     "causal_merge",
 }
+_STATE_REF_UNSET = object()
 
 
 def _event_state_write(event: TraceEvent | None) -> Any:
@@ -98,10 +104,7 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
         and routing.get("outcome") == "completed"
     )
     decision_summary = _decision_summary(report.events)
-    review_council_step = _review_council_step(
-        node_steps,
-        skip_reason="small 模式按设计跳过" if small_complete else "",
-    )
+    review_council_step = _review_council_step(node_steps)
     steps = _index_steps(
         visible_node_steps
         + state_node_steps
@@ -109,6 +112,11 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
         + tool_steps
         + application_tool_steps
         + [review_council_step]
+    )
+    controlled_sections = _controlled_sections(
+        steps,
+        report.events,
+        report.artifacts,
     )
     degradation = report.degradation
     return {
@@ -120,6 +128,7 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
         ),
         "routing": routing,
         "reviewer_sections": _reviewer_sections(steps),
+        "controlled_sections": controlled_sections,
         "decision_summary": decision_summary,
         "steps": steps,
         "state_writes": _state_writes(steps, events_by_sequence),
@@ -325,6 +334,8 @@ def _node_state_summary(code_name: str, event: TraceEvent | None) -> str:
         if output.get("direct_review_status") == "completed":
             return f"整 PR 审查完成 · {len(output.get('final_issues') or [])} 个问题"
     traces = output.get("council_trace")
+    if code_name == "controlled_review":
+        traces = []
     if isinstance(traces, list):
         for trace in reversed(traces):
             if (
@@ -333,7 +344,43 @@ def _node_state_summary(code_name: str, event: TraceEvent | None) -> str:
                 and str(trace.get("detail") or "").strip()
             ):
                 return str(trace["detail"])
+    if code_name == "controlled_review":
+        return _controlled_review_summary(output)
     return ""
+
+
+def _controlled_review_summary(output: dict[str, Any]) -> str:
+    """从受控审查节点的 State patch 派生可读摘要。
+
+    受控审查把多个 task/reviewer 的中间结果一次性写回节点，Trace 中不再
+    有旧 ReAct 的 discover_* 子节点。因此主流程需要显示真实的工作量，而
+    不是把该节点误标为“未采集到审查员执行”。
+    """
+    triage = output.get("controlled_triage")
+    plans = output.get("controlled_graph_plans")
+    assessments = output.get("controlled_assessments")
+    proofs = output.get("controlled_proof_matches")
+    records = output.get("tool_trace_records")
+    candidates = output.get("candidate_issues")
+    if not isinstance(triage, dict):
+        triage = {}
+    if not isinstance(plans, dict):
+        plans = {}
+    if not isinstance(assessments, dict):
+        assessments = {}
+    if not isinstance(proofs, dict):
+        proofs = {}
+    if not isinstance(records, list):
+        records = []
+    if not isinstance(candidates, list):
+        candidates = output.get("raw_candidate_issues")
+    if not isinstance(candidates, list):
+        candidates = []
+    return (
+        f"{len(triage)} 个初筛单元 · {len(plans)} 个图谱计划 · "
+        f"{len(records)} 次工具 · {len(assessments)} 条证据评估 · "
+        f"{len(proofs)} 条证明匹配 · {len(candidates)} 个候选"
+    )
 
 
 def _evidence_batch_metrics(event: TraceEvent | None) -> dict[str, Any]:
@@ -681,6 +728,7 @@ def _is_visible_node_step(step: dict[str, Any]) -> bool:
         "review_plan",
         "summary",
         "symbol_resolution",
+        "controlled_review",
         "discovery_collector",
         "council_judge",
     }:
@@ -782,10 +830,11 @@ def _main_stages(
         by_name.get("symbol_resolution"),
     ))
 
+    council_code_name = review_council_step["code_name"]
     stages.append({
-        "id": "main:review_council",
-        "title": "多维审查",
-        "code_name": "review_council",
+        "id": f"main:{council_code_name}",
+        "title": review_council_step.get("title") or "多维审查",
+        "code_name": council_code_name,
         "status": review_council_step["status"],
         "step_id": review_council_step["id"],
         "sequence": review_council_step["sequence"],
@@ -881,9 +930,21 @@ def _direct_task_count_from_event(event: TraceEvent | None) -> int:
 
 def _review_council_step(
     node_steps: list[dict[str, Any]],
-    *,
-    skip_reason: str = "",
 ) -> dict[str, Any]:
+    controlled_candidates = [
+        step for step in node_steps if step["code_name"] == "controlled_review"
+    ]
+    controlled = max(
+        controlled_candidates,
+        key=lambda step: step.get("end_sequence") or step.get("sequence") or -1,
+        default=None,
+    )
+    if controlled is not None:
+        # 受控模式的单个节点本身就是审查阶段的真实执行实例。直接复用
+        # 配对信息可让主流程、状态演进和 Inspector 指向同一条事件链。
+        result = dict(controlled)
+        result["title"] = "受控审查"
+        return result
     discoverers = [
         step
         for step in node_steps
@@ -907,17 +968,11 @@ def _review_council_step(
             (float(step.get("duration_ms") or 0.0) for step in discoverers),
             default=0.0,
         ),
-        "status": (
-            "complete"
-            if discoverers
-            else "skipped"
-            if skip_reason
-            else "missing"
-        ),
+        "status": "complete" if discoverers else "missing",
         "summary": (
             f"{len(discoverers)} 名审查员并行执行"
             if discoverers
-            else skip_reason or "未采集到审查员执行"
+            else "未采集到审查员执行"
         ),
     }
 
@@ -1078,20 +1133,41 @@ def _missing_main_steps(
         and routing.get("outcome") == "completed"
     )
     discovery_only = "discovery_collector" in present
+    controlled_flow = "controlled_review" in present
     has_task_plan_flow = any(
         name in present for name in ("task_route", "direct_task_review", "plan")
     )
     if has_task_plan_flow:
-        expected: tuple[str, ...] = (
-            "task_route",
-            "direct_task_review",
-            "task_selection",
-            "plan",
-            "review_plan",
-            "summary",
-            "symbol_resolution",
-            "council_judge",
-        )
+        if controlled_flow:
+            expected = (
+                "task_route",
+                "task_selection",
+                "plan",
+                "summary",
+                "symbol_resolution",
+                "council_judge",
+            )
+            if "direct_task_review" in present:
+                expected = (
+                    "task_route",
+                    "direct_task_review",
+                    "task_selection",
+                    "plan",
+                    "summary",
+                    "symbol_resolution",
+                    "council_judge",
+                )
+        else:
+            expected = (
+                "task_route",
+                "direct_task_review",
+                "task_selection",
+                "plan",
+                "review_plan",
+                "summary",
+                "symbol_resolution",
+                "council_judge",
+            )
     elif "classify_mode" in present:
         expected = (
             *(("direct_review",) if routing.get("initial_mode") == "small" else ()),
@@ -1206,6 +1282,469 @@ def _reviewer_sections(
             ),
         })
     return sections
+
+
+def _controlled_sections(
+    steps: dict[str, dict[str, Any]],
+    events: Iterable[TraceEvent],
+    artifacts: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """把 ``controlled_review`` 的批量 State 拆成可导航的审查面板。
+
+    受控模式 deliberately 只有一个 LangGraph 节点，但节点内部仍有四类
+    有顺序的工作：DirectTriage → GraphPlan → 工具执行 → EvidenceAssessment。
+    如果只展示那个节点，Trace 会看起来像“只调用了一个模型”；这里生成
+    轻量的索引步骤，不改变 State 或 Evidence Artifact 原文。
+    """
+    output = _latest_node_output(events, "controlled_review")
+
+    triage = output.get("controlled_triage")
+    plans = output.get("controlled_graph_plans")
+    assessments = output.get("controlled_assessments")
+    proofs = output.get("controlled_proof_matches")
+    records = output.get("tool_trace_records")
+    traces = output.get("council_trace")
+    triage = triage if isinstance(triage, dict) else {}
+    plans = plans if isinstance(plans, dict) else {}
+    assessments = assessments if isinstance(assessments, dict) else {}
+    proofs = proofs if isinstance(proofs, dict) else {}
+    records = records if isinstance(records, list) else []
+    traces = traces if isinstance(traces, list) else []
+
+    controlled_candidates = [
+        step
+        for step in steps.values()
+        if step.get("code_name") == "controlled_review"
+    ]
+    controlled_node = max(
+        controlled_candidates,
+        key=lambda step: step.get("end_sequence") or step.get("sequence") or -1,
+        default=None,
+    )
+    if controlled_node is None:
+        return []
+    base_sequence = float(
+        (controlled_node or {}).get("end_sequence")
+        or (controlled_node or {}).get("sequence")
+        or 0
+    )
+    counter = 0
+
+    def next_sequence() -> float:
+        nonlocal counter
+        counter += 1
+        return base_sequence + (counter / 1000)
+
+    section_steps: dict[str, list[str]] = defaultdict(list)
+    section_tasks: dict[str, set[str]] = defaultdict(set)
+
+    def section_for_reviewer(reviewer: str) -> str:
+        reviewer = reviewer.strip() or "shared"
+        return (
+            f"controlled_{reviewer}"
+            if reviewer in {item[0] for item in REVIEWERS.values()}
+            else "controlled_shared"
+        )
+
+    def register_step(
+        section_key: str,
+        *,
+        step_id: str,
+        code_name: str,
+        title: str,
+        summary: str,
+        input_value: Any,
+        output_value: Any = _STATE_REF_UNSET,
+        state_refs: list[dict[str, Any]] | None = None,
+        status: str = "complete",
+    ) -> None:
+        step = {
+            "id": step_id,
+            "sequence": next_sequence(),
+            "kind": "controlled",
+            "title": title,
+            "code_name": code_name,
+            "node_path": f"controlled_review/{section_key}/{code_name}",
+            "reviewer_root": "controlled_review",
+            "invocation_id": (controlled_node or {}).get("invocation_id", ""),
+            "pair_id": "",
+            "start_sequence": None,
+            "end_sequence": None,
+            "duration_ms": 0.0,
+            "status": status,
+            "summary": summary,
+            "metrics": {},
+            "input": input_value,
+            "reviewer": section_key,
+        }
+        if output_value is not _STATE_REF_UNSET:
+            step["output"] = output_value
+        if state_refs:
+            step["state_refs"] = state_refs
+        steps[step_id] = step
+        section_steps[section_key].append(step_id)
+
+    def split_work_key(key: Any, value: Any = None) -> tuple[str, str]:
+        text = str(key or "")
+        if ":" in text:
+            task_id, reviewer = text.rsplit(":", 1)
+        else:
+            task_id = text
+            reviewer = ""
+        if not reviewer and isinstance(value, dict):
+            reviewer = str(value.get("reviewer") or "")
+        return task_id, reviewer
+
+    for index, (key, value) in enumerate(
+        sorted(triage.items(), key=lambda item: str(item[0]))
+    ):
+        task_id, reviewer = split_work_key(key, value)
+        section_key = section_for_reviewer(reviewer)
+        section_tasks[section_key].add(task_id)
+        issues = value.get("issues") if isinstance(value, dict) else None
+        coverage = value.get("coverage") if isinstance(value, dict) else None
+        issues = issues if isinstance(issues, list) else []
+        coverage = coverage if isinstance(coverage, list) else []
+        decisions = sorted({
+            str(item.get("decision"))
+            for item in coverage
+            if isinstance(item, dict) and item.get("decision")
+        })
+        suffix = f" · {', '.join(decisions)}" if decisions else ""
+        register_step(
+            section_key,
+            step_id=f"controlled:triage:{index}",
+            code_name="direct_triage",
+            title=f"Direct 初筛 · {reviewer or '共享'} · {task_id}",
+            summary=(
+                f"初筛候选 {len(issues)} · coverage {len(coverage)}"
+                f"{suffix}"
+            ),
+            input_value={"task_id": task_id, "reviewer": reviewer},
+            state_refs=[{
+                "sequence": (controlled_node or {}).get("end_sequence"),
+                "field": "controlled_triage",
+                "key": str(key),
+            }],
+        )
+
+    work_item_owners: dict[str, set[str]] = defaultdict(set)
+    query_owners: dict[tuple[str, str, str, str], set[str]] = defaultdict(set)
+    for plan_index, (key, value) in enumerate(
+        sorted(plans.items(), key=lambda item: str(item[0]))
+    ):
+        task_id, reviewer = split_work_key(key, value)
+        section_key = section_for_reviewer(reviewer)
+        section_tasks[section_key].add(task_id)
+        work_items = value.get("work_items") if isinstance(value, dict) else None
+        work_items = work_items if isinstance(work_items, list) else []
+        for work_item in work_items:
+            if not isinstance(work_item, dict):
+                continue
+            work_item_id = str(work_item.get("work_item_id") or "")
+            if work_item_id:
+                work_item_owners[work_item_id].add(section_key)
+            evidence_steps = work_item.get("evidence_steps")
+            if not isinstance(evidence_steps, list):
+                continue
+            for evidence_step in evidence_steps:
+                query_key = _controlled_query_key(
+                    evidence_step.get("tool") if isinstance(evidence_step, dict) else "",
+                    {
+                        "symbol_id": evidence_step.get("subject_ref")
+                        if isinstance(evidence_step, dict)
+                        else "",
+                        "path_kind": evidence_step.get("path_kind")
+                        if isinstance(evidence_step, dict)
+                        else "",
+                        "max_depth": evidence_step.get("max_depth")
+                        if isinstance(evidence_step, dict)
+                        else "",
+                    },
+                )
+                if query_key[0]:
+                    query_owners[query_key].add(section_key)
+
+        tool_names = sorted({
+            str(item.get("tool") or "")
+            for work_item in work_items
+            if isinstance(work_item, dict)
+            for item in (work_item.get("evidence_steps") or [])
+            if isinstance(item, dict) and item.get("tool")
+        })
+        register_step(
+            section_key,
+            step_id=f"controlled:graph-plan:{plan_index}",
+            code_name="graph_plan",
+            title=f"图谱取证计划 · {reviewer or '共享'} · {task_id}",
+            summary=(
+                f"{len(work_items)} 个 WorkItem · "
+                f"工具: {', '.join(tool_names) if tool_names else '无'}"
+            ),
+            input_value={"task_id": task_id, "reviewer": reviewer},
+            state_refs=[{
+                "sequence": (controlled_node or {}).get("end_sequence"),
+                "field": "controlled_graph_plans",
+                "key": str(key),
+            }],
+        )
+
+    # 节点输出中的 application tool record 不带 reviewer 字段。根据 GraphPlan
+    # 的规范化查询键归属它；多个 reviewer 共享同一查询时放入共享面板，避免
+    # 在三个面板里重复渲染同一个 Evidence Artifact。
+    tool_steps_by_call_id = {
+        str(step.get("pair_id")): step
+        for step in steps.values()
+        if step.get("kind") == "tool"
+        and str(step.get("node_path", "")).startswith("controlled_review/")
+        and step.get("pair_id")
+    }
+    for index, item in enumerate(records):
+        if not isinstance(item, dict):
+            continue
+        call_id = str(item.get("call_id") or "")
+        step = tool_steps_by_call_id.get(call_id)
+        if step is None:
+            # 旧/裁剪 Trace 可能没有 pair_id，按工具参数做一次保守匹配。
+            query_key = _controlled_query_key(item.get("tool"), item.get("arguments"))
+            candidates = [
+                candidate
+                for candidate in steps.values()
+                if candidate.get("kind") == "tool"
+                and str(candidate.get("node_path", "")).startswith("controlled_review/")
+                and _controlled_query_key(
+                    candidate.get("code_name"), candidate.get("input")
+                ) == query_key
+            ]
+            step = candidates[0] if candidates else None
+        query_key = _controlled_query_key(item.get("tool"), item.get("arguments"))
+        owners = query_owners.get(query_key, set())
+        section_key = next(iter(owners)) if len(owners) == 1 else "controlled_shared"
+        if step is not None:
+            step["reviewer"] = section_key
+            step["reviewer_root"] = "controlled_review"
+            section_steps[section_key].append(step["id"])
+            arguments = step.get("input")
+            task_id = ""
+            if isinstance(arguments, dict):
+                task_id = str(arguments.get("task_id") or "")
+            if task_id:
+                section_tasks[section_key].add(task_id)
+        else:
+            # 某些 provider 会产生原生 tool_start/tool_end，但不会把
+            # application record 合并成可见的 controlled_review/* 路径。
+            # 这时用节点已捕获的记录补一个同构卡片，仍然不复制 Artifact 原文。
+            status = str(item.get("status") or "complete")
+            reused_from_call_id = str(item.get("reused_from_call_id") or "")
+            artifact_id = str(item.get("artifact_id") or "")
+            reused_from_artifact_id = str(
+                item.get("reused_from_artifact_id") or ""
+            )
+            display_artifact_id = artifact_id or reused_from_artifact_id
+            artifact = (artifacts or {}).get(display_artifact_id)
+            normalized_output = normalize_tool_result(
+                artifact.preview if artifact is not None else item.get("output"),
+                status=status,
+                reused_from_call_id=reused_from_call_id,
+            )
+            step_id = f"controlled:tool:{index}"
+            steps[step_id] = {
+                "id": step_id,
+                "sequence": next_sequence(),
+                "kind": "tool",
+                "title": "工具调用",
+                "code_name": str(item.get("tool") or "unknown"),
+                "node_path": f"controlled_review/{section_key}/tool",
+                "reviewer_root": "controlled_review",
+                "invocation_id": (controlled_node or {}).get("invocation_id", ""),
+                "pair_id": call_id,
+                "start_sequence": None,
+                "end_sequence": None,
+                "duration_ms": max(0.0, float(item.get("duration_ms") or 0.0)),
+                "status": status,
+                "summary": _application_tool_summary(
+                    str(item.get("tool") or "unknown"),
+                    normalized_output,
+                    status,
+                    reused_from_call_id=reused_from_call_id,
+                ),
+                "input": item.get("arguments", {}),
+                "output": normalized_output,
+                "artifact_id": display_artifact_id,
+                "payload_hash": (
+                    artifact.payload_hash if artifact is not None else ""
+                ),
+                "reuse_key": str(item.get("reuse_key") or ""),
+                "reused_from_call_id": reused_from_call_id,
+                "reused_from_artifact_id": reused_from_artifact_id,
+            }
+            section_steps[section_key].append(step_id)
+
+    assessments_by_section: dict[str, dict[str, Any]] = defaultdict(dict)
+    proofs_by_section: dict[str, dict[str, Any]] = defaultdict(dict)
+    for work_item_id, assessment in sorted(
+        assessments.items(), key=lambda item: str(item[0])
+    ):
+        owners = work_item_owners.get(str(work_item_id), set())
+        section_key = next(iter(owners)) if len(owners) == 1 else "controlled_shared"
+        assessments_by_section[section_key][str(work_item_id)] = assessment
+        if str(work_item_id) in proofs:
+            proofs_by_section[section_key][str(work_item_id)] = proofs[str(work_item_id)]
+
+    for section_key in sorted(assessments_by_section):
+        section_assessments = assessments_by_section[section_key]
+        statuses = [
+            str(item.get("status") or "unknown")
+            for item in section_assessments.values()
+            if isinstance(item, dict)
+        ]
+        summary = (
+            f"{len(section_assessments)} 条 assessment · "
+            + ", ".join(
+                f"{status} {statuses.count(status)}"
+                for status in sorted(set(statuses))
+            )
+            + f" · proof_match {len(proofs_by_section[section_key])}"
+        )
+        register_step(
+            section_key,
+            step_id=f"controlled:evidence-assessment:{section_key}",
+            code_name="evidence_assessment",
+            title="证据评估与证明匹配",
+            summary=summary,
+            input_value={"work_item_ids": sorted(section_assessments)},
+            state_refs=[
+                {
+                    "sequence": (controlled_node or {}).get("end_sequence"),
+                    "field": "controlled_assessments",
+                    "key": work_item_id,
+                    "label": "assessments",
+                }
+                for work_item_id in sorted(section_assessments)
+            ] + [
+                {
+                    "sequence": (controlled_node or {}).get("end_sequence"),
+                    "field": "controlled_proof_matches",
+                    "key": work_item_id,
+                    "label": "proof_matches",
+                }
+                for work_item_id in sorted(proofs_by_section[section_key])
+            ],
+        )
+
+    # 三个受控 reviewer 都是固定执行单元。即使某个 reviewer 的 triage
+    # 超时、返回 None 或节点在写回前失败，也要在 Trace 中留下失败/缺失卡片，
+    # 否则“没有面板”会被误读成“没有执行”。
+    triage_sections = {
+        section_key
+        for section_key, ids in section_steps.items()
+        if any(
+            steps[step_id].get("code_name") == "direct_triage"
+            for step_id in ids
+        )
+    }
+    controlled_status = str((controlled_node or {}).get("status") or "missing")
+    missing_status = "failed" if controlled_status == "failed" else "missing"
+    reviewer_labels = {
+        f"controlled_{key}": title
+        for key, title, _code_name in REVIEWERS.values()
+    }
+    for section_key, reviewer_title in reviewer_labels.items():
+        if section_key in triage_sections:
+            continue
+        missing_step_id = f"controlled:triage-missing:{section_key}"
+        register_step(
+            section_key,
+            step_id=missing_step_id,
+            code_name="direct_triage",
+            title=f"Direct 初筛 · {reviewer_title}",
+            summary=(
+                "该 reviewer 未返回初筛结果 · 受控审查节点失败"
+                if missing_status == "failed"
+                else "该 reviewer 未返回初筛结果 · 可能超时或未写回"
+            ),
+            input_value={"reviewer": section_key.removeprefix("controlled_")},
+            output_value={"status": missing_status},
+            status=missing_status,
+        )
+        section_steps[section_key].remove(missing_step_id)
+        section_steps[section_key].insert(0, missing_step_id)
+
+    if traces:
+        diagnostics = [
+            item for item in traces
+            if isinstance(item, dict) and item.get("event") == "diagnostic"
+        ]
+        completed = [
+            item for item in traces
+            if isinstance(item, dict) and item.get("event") == "completed"
+        ]
+        register_step(
+            "controlled_shared",
+            step_id="controlled:diagnostics",
+            code_name="controlled_diagnostics",
+            title="受控审查诊断",
+            summary=f"{len(traces)} 条诊断 · diagnostic {len(diagnostics)} · completed {len(completed)}",
+            input_value={},
+            state_refs=[{
+                "sequence": (controlled_node or {}).get("end_sequence"),
+                "field": "council_trace",
+            }],
+        )
+
+    # 同一工具可能因为缓存/跨 reviewer 复用而多次出现在记录中，面板只去重
+    # step id，不去重调用次数；用户需要看到预算是否被消耗以及哪些调用复用。
+    section_defs: list[dict[str, Any]] = []
+    reviewer_meta = {
+        key: (title, code_name)
+        for key, title, code_name in REVIEWERS.values()
+    }
+    ordered_keys = [
+        f"controlled_{key}" for key, _title, _code_name in REVIEWERS.values()
+    ] + ["controlled_shared"]
+    for section_key in ordered_keys:
+        ids = list(dict.fromkeys(section_steps.get(section_key, [])))
+        if not ids:
+            continue
+        if section_key.startswith("controlled_") and section_key != "controlled_shared":
+            reviewer = section_key[len("controlled_"):]
+            title, code_name = reviewer_meta.get(
+                reviewer,
+                (reviewer, "ControlledReviewer"),
+            )
+            title = f"{title} · 受控"
+        else:
+            title, code_name = "共享受控证据", "ControlledEvidence"
+        section_defs.append({
+            "key": section_key,
+            "title": title,
+            "code_name": code_name,
+            "path_root": "controlled_review",
+            "mode": "controlled",
+            "step_ids": ids,
+            "tool_step_ids": [
+                step_id for step_id in ids if steps[step_id].get("kind") == "tool"
+            ],
+            "tool_call_count": sum(
+                steps[step_id].get("kind") == "tool" for step_id in ids
+            ),
+            "task_count": len(section_tasks.get(section_key, set())),
+        })
+    return section_defs
+
+
+def _controlled_query_key(
+    tool: Any,
+    arguments: Any,
+) -> tuple[str, str, str, str]:
+    """生成 GraphPlan 与实际工具记录之间稳定、无 prose 的匹配键。"""
+    args = arguments if isinstance(arguments, dict) else {}
+    return (
+        str(tool or ""),
+        str(args.get("symbol_id") or args.get("subject_ref") or ""),
+        str(args.get("path_kind") or ""),
+        str(args.get("max_depth") or ""),
+    )
 
 
 def _state_writes(

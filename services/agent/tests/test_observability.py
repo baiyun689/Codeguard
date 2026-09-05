@@ -26,6 +26,7 @@ from codeguard_agent.observability.models import (
     NodeStats,
     TokenUsage,
     TraceEvent,
+    TraceArtifactMeta,
     TraceReport,
     TraceSummary,
 )
@@ -303,6 +304,303 @@ def test_trace_view_groups_reviewer_react_steps_and_state_writes():
     assert tool_step["duration_ms"] == 10.0
     assert view["state_writes"]["raw_candidate_issues"][0]["step_id"]
     assert view["integrity"]["missing_end_count"] == 0
+
+
+def _controlled_review_report_fixture() -> TraceReport:
+    """受控审查节点的最小回放：triage → plan → tool → assessment。"""
+    task_id = "task-a"
+    subject = "java:demo.Service#execute()"
+    work_item_id = "wi-behavior-task-a-1"
+    output = {
+        "raw_candidate_issues": [{"id": "seed-1", "type": "behavior"}],
+        "candidate_issues": [{"id": "candidate-1", "type": "behavior"}],
+        "tool_trace_records": [{
+            "call_id": "controlled-call-1",
+            "artifact_id": "",
+            "tool": "inspect_path",
+            "arguments": {
+                "symbol_id": subject,
+                "path_kind": "behavior",
+                "max_depth": "3",
+            },
+            "status": "complete",
+            "duration_ms": 12.0,
+            "output": {
+                "schema_version": 2,
+                "outcome": "found",
+                "coverage": "complete",
+                "relationships": [{
+                    "sourceId": subject,
+                    "targetId": "java:demo.Listener#open()",
+                    "kind": "CALLS",
+                }],
+            },
+        }],
+        "controlled_triage": {
+            f"{task_id}:behavior": {
+                "coverage": [{"decision": "graph_needed"}],
+                "issues": [{"seed_id": "seed-1", "claim": "callback timing"}],
+            },
+            f"{task_id}:threat_model": {
+                "coverage": [{"decision": "local_only"}],
+                "issues": [],
+            },
+            f"{task_id}:maintainability": {
+                "coverage": [{"decision": "local_only"}],
+                "issues": [],
+            },
+        },
+        "controlled_graph_plans": {
+            f"{task_id}:behavior": {
+                "reviewer": "behavior",
+                "task_id": task_id,
+                "work_items": [{
+                    "work_item_id": work_item_id,
+                    "seed_id": "seed-1",
+                    "reviewer": "behavior",
+                    "evidence_steps": [{
+                        "tool": "inspect_path",
+                        "subject_ref": subject,
+                        "path_kind": "behavior",
+                        "max_depth": 3,
+                        "purpose": "verify callback path",
+                        "required": True,
+                    }],
+                }],
+            },
+            # 第二个 reviewer 的计划用于覆盖步骤 ID 不冲突；它没有工具，
+            # 但仍应在对应面板中显示为独立的 GraphPlan。
+            f"{task_id}:threat_model": {
+                "reviewer": "threat_model",
+                "task_id": task_id,
+                "work_items": [],
+            },
+        },
+        "controlled_assessments": {
+            work_item_id: {
+                "work_item_id": work_item_id,
+                "status": "proved",
+                "supporting_refs": ["T01"],
+            }
+        },
+        "controlled_proof_matches": {
+            work_item_id: {
+                "status": "proved",
+                "matched_relationships": ["CALLS"],
+            }
+        },
+        "council_trace": [
+            {"node": "direct_triage", "event": "diagnostic", "detail": "seed route"},
+            {"node": "controlled_review", "event": "completed", "detail": "task-a"},
+        ],
+    }
+    return TraceReport(
+        run_id="controlled-run",
+        timestamp="2026-09-05T00:00:00",
+        events=[
+            _flow_event(
+                1,
+                "node_start",
+                "controlled_review",
+                "controlled_review",
+                "controlled-node",
+            ),
+            _flow_event(
+                2,
+                "node_end",
+                "controlled_review",
+                "controlled_review",
+                "controlled-node",
+                detail={"output": output},
+            ),
+        ],
+    )
+
+
+def test_trace_view_expands_controlled_review_into_reviewer_workstreams():
+    view = build_trace_view(_controlled_review_report_fixture())
+
+    assert "controlled_review" in [
+        stage["code_name"] for stage in view["main_stages"]
+    ]
+    assert "review_plan" not in [
+        stage["code_name"] for stage in view["main_stages"]
+    ]
+    controlled = view["steps"]["node:controlled-node"]
+    assert controlled["title"] == "受控审查"
+    assert "2 个图谱计划" in controlled["summary"]
+    assert "1 次工具" in controlled["summary"]
+
+    sections = {
+        section["key"]: section for section in view["controlled_sections"]
+    }
+    assert {"controlled_behavior", "controlled_threat_model",
+            "controlled_maintainability", "controlled_shared"} <= sections.keys()
+    behavior = sections["controlled_behavior"]
+    behavior_steps = [view["steps"][step_id] for step_id in behavior["step_ids"]]
+    assert [step["code_name"] for step in behavior_steps] == [
+        "direct_triage", "graph_plan", "inspect_path", "evidence_assessment"
+    ]
+    assert behavior["tool_call_count"] == 1
+    assert behavior_steps[2]["reviewer"] == "controlled_behavior"
+    assert behavior_steps[2]["pair_id"] == "controlled-call-1"
+    assert "output" not in behavior_steps[3]
+    assert behavior_steps[3]["state_refs"][0]["field"] == "controlled_assessments"
+    assert behavior_steps[3]["state_refs"][-1]["field"] == "controlled_proof_matches"
+
+    graph_plan_ids = [
+        step_id
+        for section in sections.values()
+        for step_id in section["step_ids"]
+        if view["steps"][step_id]["code_name"] == "graph_plan"
+    ]
+    assert len(graph_plan_ids) == len(set(graph_plan_ids)) == 2
+
+    # 没有候选的 reviewer 也保留一个明确的 triage 卡片，避免 Trace 看起来像
+    # 该 reviewer 根本没有被执行。
+    threat = sections["controlled_threat_model"]
+    triage = view["steps"][threat["step_ids"][0]]
+    assert triage["code_name"] == "direct_triage"
+    assert "初筛候选 0" in triage["summary"]
+    assert any(
+        view["steps"][step_id]["code_name"] == "controlled_diagnostics"
+        for step_id in sections["controlled_shared"]["step_ids"]
+    )
+
+
+def test_dashboard_renders_controlled_sections_instead_of_empty_react_panels():
+    html = render_dashboard(_controlled_review_report_fixture())
+
+    assert "return controlled.concat" in html
+    assert "受控审查（未产出）" in html
+    assert "stateReferenceValue" in html
+    assert "stepSequenceLabel" in html
+    assert "受控审查" in html
+    assert "Direct 初筛" in html
+    assert "图谱取证计划" in html
+
+
+def test_controlled_trace_recovers_tool_record_when_native_path_is_unscoped():
+    report = _controlled_review_report_fixture()
+    report.events.extend([
+        _flow_event(
+            3,
+            "tool_start",
+            "tools",
+            "controlled_review",
+            "native-tool",
+            detail={
+                "tool_name": "inspect_path",
+                "input": {
+                    "symbol_id": "java:demo.Service#execute()",
+                    "path_kind": "behavior",
+                    "max_depth": "3",
+                },
+            },
+        ),
+        _flow_event(
+            4,
+            "tool_end",
+            "tools",
+            "controlled_review",
+            "native-tool",
+            detail={
+                "tool_name": "inspect_path",
+                "output": {
+                    "schema_version": 2,
+                    "outcome": "found",
+                    "coverage": "complete",
+                },
+            },
+        ),
+    ])
+
+    view = build_trace_view(report)
+    behavior = next(
+        section
+        for section in view["controlled_sections"]
+        if section["key"] == "controlled_behavior"
+    )
+    synthetic_tools = [
+        view["steps"][step_id]
+        for step_id in behavior["tool_step_ids"]
+        if step_id.startswith("controlled:tool:")
+    ]
+    assert len(synthetic_tools) == 1
+    assert synthetic_tools[0]["pair_id"] == "controlled-call-1"
+    assert synthetic_tools[0]["output"]["outcome"] == "found"
+
+
+def test_controlled_tool_fallback_uses_artifact_preview_and_hash():
+    report = _controlled_review_report_fixture()
+    report.events.extend([
+        _flow_event(
+            3,
+            "tool_start",
+            "tools",
+            "controlled_review",
+            "native-tool",
+            detail={
+                "tool_name": "inspect_path",
+                "input": {
+                    "symbol_id": "java:demo.Service#execute()",
+                    "path_kind": "behavior",
+                    "max_depth": "3",
+                },
+            },
+        ),
+        _flow_event(
+            4,
+            "tool_end",
+            "tools",
+            "controlled_review",
+            "native-tool",
+            detail={"tool_name": "inspect_path", "output": {}},
+        ),
+    ])
+    report.artifacts["artifact-fallback"] = TraceArtifactMeta(
+        artifact_id="artifact-fallback",
+        payload_hash="hash-fallback",
+        preview={"schema_version": 2, "outcome": "found", "coverage": "complete"},
+    )
+    report.events[-1].detail["output"] = {}
+    report.events[1].detail["output"]["tool_trace_records"][0][
+        "artifact_id"
+    ] = "artifact-fallback"
+
+    view = build_trace_view(report)
+    fallback = next(
+        view["steps"][step_id]
+        for section in view["controlled_sections"]
+        for step_id in section["tool_step_ids"]
+        if step_id.startswith("controlled:tool:")
+    )
+    assert fallback["output"]["outcome"] == "found"
+    assert fallback["artifact_id"] == "artifact-fallback"
+    assert fallback["payload_hash"] == "hash-fallback"
+
+
+def test_controlled_failed_trace_keeps_all_reviewer_panels_visible():
+    report = _controlled_review_report_fixture()
+    report.events[1].detail["output"] = {}
+
+    view = build_trace_view(report)
+    sections = {
+        section["key"]: section for section in view["controlled_sections"]
+    }
+    assert {
+        "controlled_threat_model",
+        "controlled_behavior",
+        "controlled_maintainability",
+    } <= sections.keys()
+    for section_key in (
+        "controlled_threat_model",
+        "controlled_behavior",
+        "controlled_maintainability",
+    ):
+        step = view["steps"][sections[section_key]["step_ids"][0]]
+        assert step["status"] == "missing"
+        assert step["code_name"] == "direct_triage"
 
 
 def test_trace_normalization_stores_identical_raw_payload_once_and_events_only_reference_it():

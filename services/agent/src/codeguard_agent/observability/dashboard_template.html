@@ -81,6 +81,7 @@ body{display:flex;flex-direction:column;overflow:hidden}
   border-left:4px solid var(--blue);border-radius:8px;background:#0d1425;cursor:pointer}
 .step:after{content:"↓";position:absolute;left:50%;bottom:-21px;color:#52617f}
 .step:last-child:after{display:none}.step.llm{border-left-color:var(--purple)}
+.step.controlled{border-left-color:var(--cyan)}
 .step.tool{border-left-color:var(--orange)}
 .step.tool.failed{border-color:var(--red)}
 .step.output{border-left-color:var(--green)}.step.missing{border-color:var(--red)}
@@ -214,7 +215,7 @@ function initialStepId(){
   var anomalous=firstAnomalousStep();
   if(anomalous)return anomalous.id;
   var council=(VIEW.main_stages||[]).find(function(stage){
-    return stage.code_name==="review_council"
+    return stage.code_name==="controlled_review"||stage.code_name==="review_council"
   });
   if(council&&council.step_id)return council.step_id;
   var all=orderedSteps();return all.length?all[0].id:null
@@ -336,12 +337,28 @@ function renderActiveView(){
 function renderFlow(){
   document.getElementById("trace-outline").innerHTML=renderOutline();
   document.getElementById("trace-story").innerHTML=renderMainFlow()+
-    (VIEW.reviewer_sections||[]).map(renderReviewerSection).join("")
+    allReviewerSections().map(renderReviewerSection).join("")
+}
+function allReviewerSections(){
+  var controlled=VIEW.controlled_sections||[];
+  if(controlled.length){
+    return controlled.concat((VIEW.reviewer_sections||[]).filter(function(section){
+      return section.step_ids&&section.step_ids.length
+    }))
+  }
+  var hasControlled=(VIEW.main_stages||[]).some(function(stage){
+    return stage.code_name==="controlled_review"
+  });
+  return hasControlled?[{
+    key:"controlled_shared",title:"受控审查（未产出）",code_name:"ControlledEvidence",
+    path_root:"controlled_review",mode:"controlled",step_ids:[],tool_step_ids:[],
+    tool_call_count:0,task_count:0
+  }]: (VIEW.reviewer_sections||[])
 }
 function renderOutline(){
   var html='<div class="outline-title">审查目录</div>'+
     '<button data-outline-target="main-flow">主执行流</button>';
-  (VIEW.reviewer_sections||[]).forEach(function(section){
+  allReviewerSections().forEach(function(section){
     html+='<button data-outline-target="reviewer-'+esc(section.key)+'">'+
       esc(section.title)+' <small>('+section.step_ids.length+')</small></button>'
   });
@@ -425,7 +442,7 @@ function renderStepCard(step){
   var input=stepInput(step),output=stepOutput(step);
   return'<div class="step '+esc(step.kind)+selected+missing+failed+relation+
     '" data-step-id="'+
-    esc(step.id)+'"><div class="step-top"><span class="seq">#'+step.sequence+
+    esc(step.id)+'"><div class="step-top"><span class="seq">'+stepSequenceLabel(step)+
     '</span><span class="kind">'+esc(kind)+'</span><span class="step-name">'+
     esc(step.title)+'</span><span class="duration">'+formatMs(step.duration_ms)+
     '</span></div><div class="code">'+esc(step.code_name)+(step.round?
@@ -433,6 +450,9 @@ function renderStepCard(step){
     esc(step.summary)+' · 输入 '+esc(countValue(input))+' → 输出 '+
     esc(countValue(output))+'</div>'+
     (step.kind==="tool"?renderToolPayloads(input,output,step):"")+'</div>'
+}
+function stepSequenceLabel(step){
+  return step&&step.kind==="controlled"?"受控阶段":"#"+step.sequence
 }
 function renderToolPayloads(input,output,step){
   var artifact=step&&step.artifact_id?(DATA.artifacts||{})[step.artifact_id]:null;
@@ -458,7 +478,7 @@ function stepRelationClass(step){
   var selected=selectedStep();
   if(!selected||!selected.reviewer||step.reviewer!==selected.reviewer||
     step.id===selected.id)return"";
-  var section=(VIEW.reviewer_sections||[]).find(function(item){
+  var section=allReviewerSections().find(function(item){
     return item.key===selected.reviewer
   });
   if(!section)return"";
@@ -475,7 +495,36 @@ function stepInput(step){
   return start&&start.detail&&start.detail.input!==undefined?start.detail.input:
     end&&end.detail?end.detail.input:null
 }
+function stateReferenceValue(step){
+  var refs=step&&step.state_refs||[];
+  if(!refs.length)return undefined;
+  var values={},hasValue=false;
+  refs.forEach(function(ref){
+    var event=eventAt(ref.sequence);
+    if(!event||!event.detail)return;
+    var state=event.detail.state_write!==undefined?
+      event.detail.state_write:event.detail.output;
+    if(!state||typeof state!=="object")return;
+    var value=state[ref.field];
+    if(ref.key!==undefined&&value&&typeof value==="object"){
+      if(!Object.prototype.hasOwnProperty.call(value,ref.key))return;
+      value=value[ref.key]
+    }
+    if(value===undefined)return;
+    hasValue=true;
+    if(ref.label){
+      if(!values[ref.label]||typeof values[ref.label]!=="object"||
+        Array.isArray(values[ref.label]))values[ref.label]={};
+      values[ref.label][ref.key===undefined?ref.field:ref.key]=value
+    }else values[ref.field]=value
+  });
+  if(!hasValue)return undefined;
+  if(refs.length===1&&!refs[0].label)return values[refs[0].field];
+  return values
+}
 function stepOutput(step){
+  var referenced=stateReferenceValue(step);
+  if(referenced!==undefined)return referenced;
   if(step&&step.output!==undefined)return step.output;
   var end=eventAt(step.end_sequence);
   if(!end||!end.detail)return null;
@@ -550,7 +599,7 @@ function renderInspector(){
   if(!step){inspector.innerHTML='<div class="empty">选择一个执行步骤</div>';return}
   var tabs=[["overview","概览"],["input","节点输入"],["output","节点输出"],
     ["changes","状态变化"],["internal","内部步骤"],["raw","原始 JSON"]];
-  inspector.innerHTML='<div class="inspect-head"><span class="seq">#'+step.sequence+
+  inspector.innerHTML='<div class="inspect-head"><span class="seq">'+stepSequenceLabel(step)+
     '</span><h2>'+esc(step.title)+'</h2><div class="code">'+esc(step.node_path)+
     '</div><div class="summary">'+esc(step.summary)+'</div></div>'+
     '<div class="inspect-tabs">'+tabs.map(function(tab){return'<button class="inspect-tab '+
@@ -576,7 +625,7 @@ function renderInspectorBody(step){
 }
 function renderStateChanges(step){
   if(step.kind==="group")return renderJsonValue("ReviewCouncil 总览",
-    (VIEW.reviewer_sections||[]).map(function(section){return{
+    allReviewerSections().map(function(section){return{
       reviewer:section.title,code_name:section.code_name,
       observable_steps:section.step_ids.length
     }}));
