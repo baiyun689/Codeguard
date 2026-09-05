@@ -11,10 +11,10 @@ Codeguard 接收 GitHub Pull Request 事件，由 Python 审查委员会分析�
 - 从安全、行为正确性和可维护性三个维度审查 Pull Request。
 - 内置 OpenAI 兼容 LLM 代理网关，按 model 名自动路由到 DeepSeek/Claude/千问，支持降级链、Resilience4j 熔断/限流/重试。
 - Python Agent 无需持有 LLM 提供商密钥——所有密钥集中由 LLM Proxy 管理。
-- 按 diff 规模构建 task，经确定性 DirectGate 路由后，由 Plan 为 Full task 选择专业审查员与知识主题。
-- 向审查员显式提供当前任务的摘要、Plan 目标、AST、敏感 API、调用方和代码指标，并标明来源、范围、截断及不可用原因。
+- 按 diff 规模构建 task，经确定性 DirectGate 路由后，由 Plan 为 Full task 生成任务级审查计划和知识主题；受控模式固定执行三类审查员，ReAct 模式沿用 ReviewPlan 分派。
+- 向审查员显式提供当前任务的摘要、Plan 目标、稳定 `symbol_id`、AST、敏感 API、调用方和代码指标，并标明来源、范围、截断及不可用原因。
 - 在单个审查员范围内合并并发和重复工具调用，避免重复文件读取和重复上下文注入；不同审查员保持隔离。
-- 证据所有权在运行时：工具调用、上下文与 patch 由运行时代码捕获为内容寻址 Artifact（证据账本），审查员只输出短编号引用，无法伪造证据；验证器零 LLM 证明证据真实可用，批量 EvidenceJudge 一次完成支持/反驳/去留/定级。
+- 证据所有权在运行时：工具调用、上下文与 patch 由运行时代码捕获为内容寻址 Artifact（证据账本），审查员只输出短编号引用，无法伪造证据；验证器零 LLM 证明证据真实可用，批量 EvidenceJudge 一次完成支持/反驳/去留/定级，最后由因果合并去除重复问题。
 - 通过 GitHub Check Run、Diff Annotation 和高置信度严重问题评论反馈结果。
 - 校验 Webhook 签名，并按仓库、PR 和 Commit SHA 对任务去重。
 - 使用 MySQL 持久化任务，进程重启后可恢复未完成任务（测试用 H2 的 MySQL 兼容模式）。
@@ -23,7 +23,7 @@ Codeguard 接收 GitHub Pull Request 事件，由 Python 审查委员会分析�
 
 ## 工作原理
 
-Codeguard 由 Java Gateway 和 Python Agent 组成。Java 负责请求接入、任务调度和确定性代码工具；Python 负责审查计划、Agent 推理、证据验证和结果裁决。
+Codeguard 由 Java Gateway 和 Python Agent 组成。Java 负责请求接入、任务调度和确定性代码工具；Python 负责任务级审查计划、ReAct 或受控审查编排、证据验证和结果裁决。
 
 ### 整体架构
 
@@ -59,10 +59,15 @@ flowchart LR
     Diff[代码变更] --> Tasks[任务构建]
     Tasks --> Route{任务路由}
 
-    Route -->|Direct| Direct[直接审查]
-    Route -->|Full| Plan[审查规划]
-    Plan --> Reviewers[多维审查<br/>安全 / 行为 / 可维护性]
-    Reviewers --> Locate[候选定位]
+    Route -->|直接任务| Direct[直接审查]
+    Route -->|完整任务| Plan[审查计划]
+    Plan --> Summary[变更摘要]
+    Summary --> Symbols[符号解析]
+    Symbols --> Triage[直接初筛]
+    Triage --> GraphPlan[图谱计划]
+    GraphPlan --> Execute[受控执行]
+    Execute --> Assess[证据评估]
+    Assess --> Locate[候选定位]
     Locate --> Collect[候选汇总]
     Collect --> Verify[证据验证]
     Verify --> Judge[结果裁决]
@@ -76,13 +81,16 @@ flowchart LR
 
 - **任务构建**：按照变更规模生成审查任务。
 - **任务路由**：确定任务进入 Direct 或 Full 流程。
-- **审查规划**：为 Full task 选择审查员和审查重点。
-- **多维审查**：从安全、运行行为和可维护性三个角度发现候选问题。
+- **审查计划**：为完整任务路由知识主题，不负责选择审查员；三个审查员固定执行。
+- **直接初筛**：从安全、运行行为和可维护性三个角度提出候选问题。
+- **图谱计划**：为需要查证的候选生成工具、符号和查询顺序。
+- **受控执行**：按候选逐步执行有界工具计划，使用初始预算、Delta 预算、路径深度和调用缓存，工具结果进入证据账本。
+- **证据评估**：结合 patch、源码和图谱事实确定 proof 状态；证据不足作为缺口交给后续裁决，不伪造事实。
 - **候选定位**：校验问题是否准确对应本次新增代码。
 - **候选汇总**：汇集并规范化各审查员的发现。
 - **证据验证**：检查候选引用的代码和工具事实是否真实可用。
 - **结果裁决**：根据候选和证据判断保留、丢弃及严重程度。
-- **语义合并**：合并因果语义相同的重复问题。
+- **语义合并**：合并语义相同的重复问题，不跨独立机制合并。
 
 本地审查输出 Markdown 报告和 HTML Trace；GitHub App 审查则进一步将结果回写到 Check Run、行内标注和 PR 评论。
 
@@ -174,8 +182,9 @@ Prometheus 数据均使用命名卷持久化。
 ### 本地 Web 审查界面
 
 启动 `codeguard` 服务后，可访问 `http://localhost:8501` 打开本地审查界面。
-在界面中填写宿主机上的 Git 项目根目录，选择 Diff 基线后即可开始审查。界面默认使用完整审查管线，摘要、代码图谱、
-Evidence Ledger、Judge 和因果合并不会被拆成相互独立的开关；报告和 Agent Trace
+在界面中填写宿主机上的 Git 项目根目录，选择 Diff 基线后即可开始审查。界面默认使用完整审查管线，发现模式由
+`CODEGUARD_DISCOVERY_MODE` 选择（`react` / `controlled` / `direct`）；摘要、代码图谱、Evidence Ledger、Judge
+和因果合并不会被拆成相互独立的开关；报告和 Agent Trace
 作为展示选项提供。
 
 ```powershell
@@ -222,7 +231,8 @@ Webhook 直接指向映射端口。
 
 ### Agent Trace
 
-Trace 展示 LangGraph 主执行流、Task 路由、Plan、三类审查员、证据验证、Judge 和语义合并，并可展开查看工具调用与节点输入输出。
+Trace 展示 LangGraph 主执行流、Task 路由、Plan、SymbolResolution、三类审查员、受控 DirectTriage/GraphPlan/Execute、
+证据验证、Judge 和因果合并，并可展开查看工具调用、预算、证据引用与节点输入输出。
 
 ![Agent Trace 执行流](docs/showcase/agent-trace.png)
 
@@ -368,6 +378,9 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 | `CODEGUARD_CONTROLLED_INITIAL_TOOL_BUDGET` | `6` | controlled 每 task 初始工具调用预算 |
 | `CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET` | `2` | controlled 每 task Delta 工具调用预算 |
 | `CODEGUARD_CONTROLLED_MAX_PATH_DEPTH` | `3` | controlled 路径最大深度（最大 3） |
+| `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_CHANGE_UNIT` | `4` | 每个变更单元保留的初筛候选上限 |
+| `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_REVIEWER` | `4` | 每个 reviewer/task 保留的初筛候选上限 |
+| `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_TASK` | `12` | 每个 task 的初筛候选硬上限 |
 | `CODEGUARD_CONTROLLED_MAX_KNOWLEDGE_TOPICS` | `4` | 每 task 知识主题上限 |
 | `CODEGUARD_TOOL_SERVER_PROJECT_ROOT` | 空 | 宿主 Agent 连接 Docker Gateway 时的容器项目根路径（Compose 通常为 `/workspace/projects`） |
 
@@ -432,7 +445,10 @@ mvn --batch-mode verify     # 构建全部四个子模块：shared、tool-server
 docker build -t codeguard:local .
 ```
 
-真实质量评测使用 20 个真实 Java 仓库、115 个植入缺陷（含 Vul4J 真实 CVE 漏洞），按 profile 对照「单模型只看 diff（direct）vs 完整 ReviewCouncil + 代码图谱（full）」：Recall 86.1% → 93.0%，需跨文件上下文确认的缺陷从 0/8 提升到 7/8。评测框架、profile 定义与报告见 [`services/agent/evals/README.md`](services/agent/evals/README.md)。
+真实质量评测使用 `selected-20-v2` 的 20 个真实 Java 仓库；正式标答以各 case 的 `expected` 为准，另有
+`planted-bugs.diff` 生成的 hunk 诊断记录用于辅助分析。评测 profile 覆盖 direct、ReviewCouncil、代码图谱和
+Plan-and-Execute 受控发现，具体 Recall、Precision、F1 与稳定性结果以评测报告为准。评测框架、profile 定义与报告见
+[`services/agent/evals/README.md`](services/agent/evals/README.md)。
 
 ## 参与贡献
 
