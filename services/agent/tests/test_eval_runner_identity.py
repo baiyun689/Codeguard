@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from evals import runner
 from evals.archive import build_archive_record
 from evals.metrics import aggregate
-from evals.runner import _runtime_identity
+from evals.runner import _effective_discovery_mode, _runtime_identity
 from evals.schema import MatchOutcome
 
 
@@ -26,6 +26,20 @@ def test_real_llm_identity_preserves_executed_model():
 
     assert identity.model == "gpt-4o-mini"
     assert identity.quality_metrics_meaningful is True
+
+
+def test_runner_discovery_mode_defaults_to_controlled_when_unspecified():
+    assert _effective_discovery_mode(
+        SimpleNamespace(),
+        SimpleNamespace(),
+    ) == "controlled"
+
+
+def test_runner_profile_discovery_mode_overrides_global_default():
+    assert _effective_discovery_mode(
+        SimpleNamespace(discovery_mode="react"),
+        SimpleNamespace(discovery_mode="controlled"),
+    ) == "react"
 
 
 def test_archive_uses_runtime_identity_model_label():

@@ -93,7 +93,7 @@ class PipelineOrchestrator:
         checkpoint_backend: str = "",
         checkpoint_db: str = "codeguard_checkpoints.db",
         react_recursion_limit: int = 48,
-        discovery_mode: str = "react",
+        discovery_mode: str = "controlled",
         controlled_initial_tool_budget: int = 6,
         controlled_delta_tool_budget: int = 2,
         controlled_max_path_depth: int = 3,

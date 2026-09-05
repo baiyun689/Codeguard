@@ -188,6 +188,14 @@ def _runtime_identity(settings: Any, llm: Any) -> _RuntimeIdentity:
     )
 
 
+def _effective_discovery_mode(profile: Any, settings: Any) -> str:
+    """Resolve the profile override, falling back to the controlled default."""
+    return (
+        getattr(profile, "discovery_mode", None)
+        or getattr(settings, "discovery_mode", "controlled")
+    )
+
+
 def run_once(
     cases,
     review_fn,
@@ -418,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--tools",
         action="store_true",
-        help="工具开档:pipeline 审查员走 ReAct,可调 Java 工具服务(需配 CODEGUARD_TOOL_SERVER_URL)。"
+        help="工具开档:pipeline 审查员走受控 Plan-and-Execute,可调 Java 工具服务(需配 CODEGUARD_TOOL_SERVER_URL)。"
         "用于做'工具开 vs 关'两档对照(仅此一个变量不同)。",
     )
     parser.add_argument(
@@ -463,17 +471,15 @@ def main(argv: list[str] | None = None) -> int:
     if profile.model:
         settings.model = profile.model  # profile 显式覆盖模型
 
+    effective_discovery_mode = _effective_discovery_mode(profile, settings)
     # Keep controlled discovery reproducible: tool selection is already
     # bounded by the plan, and a zero-temperature reviewer avoids sampling
-    # different candidate sets for the same task.  Other eval profiles keep
-    # their historical provider-default sampling for comparison.
+    # different candidate sets for the same task.  Use the profile override
+    # here as well as at orchestration time so legacy ReAct profiles retain
+    # their provider-default sampling after controlled becomes the default.
     llm = build_llm(
         settings,
-        temperature=0 if getattr(settings, "discovery_mode", "") == "controlled" else None,
-    )
-    effective_discovery_mode = (
-        getattr(profile, "discovery_mode", None)
-        or getattr(settings, "discovery_mode", "react")
+        temperature=0 if effective_discovery_mode == "controlled" else None,
     )
     runtime_identity = _runtime_identity(settings, llm)
     logger.info(

@@ -2497,7 +2497,7 @@ def build_review_graph(
     tool_client=None,
     discovery_only: bool = False,
     evidence_mode: str = "full",
-    discovery_mode: str = "react",
+    discovery_mode: str = "controlled",
     controlled_initial_tool_budget: int = 6,
     controlled_delta_tool_budget: int = 2,
     controlled_max_path_depth: int = 3,
@@ -2513,22 +2513,27 @@ def build_review_graph(
       - medium：文件级 task 拆分 + 完整管线
       - large：hunk 级 task 拆分 + 预算控制（现状）
 
-    默认拓扑:
+    默认受控拓扑:
         START → classify_mode
-          ├─ small / medium → file_task_builder → task_route → task_selection → plan → review_plan
-          └─ large          → diff_task_builder → task_route → task_selection → plan → review_plan → summary?
-                       → symbol_resolution → discover_*(×3)
+          ├─ small / medium → file_task_builder → task_route → task_selection → plan → summary?
+          └─ large          → diff_task_builder → task_route → task_selection → plan → summary?
+                       → symbol_resolution → controlled_review
+                       (DirectTriage → GraphPlan → Execute → EvidenceAssessment)
                        → council_coordinator(fan-in)
                          ├─ evidence_mode=full → evidence_verifier
                          │    → council_judge → causal_merge → END
                          └─ evidence_mode=off  → direct_judge → END
                            (无证据链消融基线:跳过取证/门控,DirectJudge 直接终审)
 
+    显式 ``discovery_mode="react"`` 的兼容拓扑:
+        ... → plan → review_plan → summary? → symbol_resolution → discover_*(×3)
+                       → discovery_collector → END
+
     discovery_only 拓扑:
         START → classify_mode
-          ├─ small / medium → file_task_builder → task_selection → plan → review_plan → discover_*(×3)
+          ├─ small / medium → file_task_builder → task_selection → plan → controlled_review
           │                    → discovery_collector → END
-          └─ large           → diff_task_builder → task_selection → plan → review_plan → discover_*(×3)
+          └─ large           → diff_task_builder → task_selection → plan → controlled_review
                        → discovery_collector → END
     """
     from langgraph.graph import END, START, StateGraph

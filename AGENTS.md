@@ -17,7 +17,8 @@ git diff → PRModeClassifier → FileTaskBuilder/HunkTaskBuilder
          → TaskRoute(DirectGate)
          ├─ direct task → DirectTaskReview
          └─ full task → TaskSelection → PlanUnit(按文件复用)
-              → Plan → ReviewPlan → [Summary] → SymbolResolution → task-scoped Discover
+              → Plan → [Summary] → SymbolResolution
+              → controlled_review(DirectTriage → GraphPlan → Execute → EvidenceAssessment)
               → CandidateLocator → CouncilCoordinator → EvidenceVerifier(账本验证,零 LLM)
               → CouncilJudge(批量 EvidenceJudge)→ ReviewResult
 ```
@@ -53,10 +54,13 @@ Reviewer 分派和知识注入完全由 Full task 的 Plan 决定；Plan 失败�
 Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执行方式按是否配置工具服务分流:
 
 ```
-默认(无工具):git diff → task 构建/DirectGate → Plan → Reviewer 直连 → 证据账本验证 → 批量 Judge → 打印
+默认(受控):git diff → task 构建/DirectGate → Plan → [Summary] → SymbolResolution
+            → controlled_review(DirectTriage → GraphPlan → Execute → EvidenceAssessment)
+            → CandidateLocator → EvidenceVerifier → 批量 Judge → 打印
 默认(有工具):配置 CODEGUARD_TOOL_SERVER_URL 后,Tool Server 按 revision 构建完整 Java ProjectSnapshot；
-              Full task 经 Plan 选择 Reviewer，SymbolResolution 注入稳定 symbol context，三路发现者分别使用
-              inspect_structure / inspect_change_impact / inspect_path，工具结果由运行时捕获为 Txx Artifact 进账
+              controlled_review 按 GraphPlan 有界调用 inspect_structure / inspect_change_impact / inspect_path，
+              工具结果由运行时捕获为 Txx Artifact 进账；无工具时保留受控审查链，但图谱证据不可用。
+显式(兼容):设置 CODEGUARD_DISCOVERY_MODE=react 后，Full task 才进入 ReviewPlan 和 ReAct 发现者。
 ```
 
 默认节点:
@@ -65,7 +69,7 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 - **PR 规模与 Task 路由**:`PRModeClassifier` 只按 diff 体量选择 task 粒度：SMALL 整个 diff 一个 task，MEDIUM 按文件建 task，LARGE 按 hunk 建 task。TaskBuilder 之后由确定性 DirectGate 逐 task 决定 direct/full；低风险文档/注释任务走 Direct，其余默认 Full。SMALL 不再绕过统一管线。LARGE 同一文件的 Full hunk 共享一个 PlanUnit，Plan 只调用一次；HTML Trace 展示 TaskRoute、DirectTaskReview 和 Plan。
 - **SymbolResolution**:在 ReviewCouncil 前把 Full task 的变更文件与行号批量解析为强类型 `TaskSymbolContext`。它只提供稳定 `symbol_id`、声明范围、注解、局部控制流和来源集合，供领域工具与 Evidence Ledger 使用；不负责摘要、知识选择、Reviewer 分派、深层图谱查询或问题判断。
 - **大 diff 降级**:仅在超过 5000 行时，Python 确定性收紧为最多 20 个任务、每文件 3 个、每任务上下文 2000 字符；普通 diff 全选 Full task。Plan 不引入新的总 Token 预算，成本由 task 粒度、同文件 Plan 复用、并发限制、超时和现有重试控制。Java 不重复判断。
-- **Plan 与 ReviewCouncilSubgraph**:Full task 按 PlanUnit 并发执行结构化 Plan；Plan 显式选择 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent`、审查重点和知识主题，不选择工具。三个 task-scoped 发现者 fan-out 产出 raw `CandidateIssue`;三个 Reviewer 共享 `get_file_content` / `inspect_structure` / `inspect_change_impact` / `inspect_path`，领域 Prompt 决定工具时机和 `path_kind`。user prompt 携带 Plan 重点、预取事实和 Plan 选中的 BASE+专项 knowledge bundle。`CouncilCoordinator` 在显式 fan-in 后构建局部候选块并保守归并。
+- **Plan 与 ReviewCouncilSubgraph**:默认受控模式的 Full task 按 PlanUnit 执行结构化 Plan，Plan 只路由知识主题；`controlled_review` 固定运行 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent` 的 DirectTriage，再由 GraphPlan 选择工具、符号和顺序，交给 Execute 有界取证。显式选择 `react` 时才由 Plan 生成 Reviewer 分派并进入 ReAct 发现者。`CouncilCoordinator` 在显式 fan-in 后构建局部候选块并保守归并。
 - **安全路径查询边界**:`inspect_path(path_kind=security)` 只沿已解析调用关系执行最多三层传播；未解析调用仅在目标名称直接命中敏感 sink 时进入 `unresolved_relationships`。普通未解析调用不作为安全事实且不输出关系明细，但会汇总进 `unresolved_count` 并保持 `partial`，避免通用解析噪声膨胀响应，也不把无法遍历的下游误判为完整缺席。
 - **图谱响应合同**:schema v2 只输出当前 `source_scope` 的 canonical `symbols`、`relationships`、`unresolved_relationships`；每项 `source_set` 必须与 scope 一致，不再双写 MAIN/TEST/GENERATED 专用数组。带旧 scope 数组的 Gateway 响应视为协议不兼容。
 - **CandidateLocator(节点内定位护栏)**:Full 与 Direct 的 `DiscoveredIssue` 在绑定稳定候选 ID 前统一校验 `location_snippet`。只允许当前 task 新增行中的 1～5 行连续原文；唯一匹配可修正 Reviewer 行号，合法原行号可兜底，其余按 task 每批最多 8 条调用 LLM 重新提取片段并确定性复验。最终失败保留为 `line=0` 文件级候选，并向 Judge 暴露 `candidate_location_unresolved` 限制；该步骤不新增 LangGraph 节点，定位片段也不进入产品输出或证据账本。
@@ -173,8 +177,8 @@ Codeguard/
 5. **工具会话(可选)**:配置 `CODEGUARD_TOOL_SERVER_URL` 且非 mock 时,CLI 为本次 diff 创建 Java 工具会话;否则走无工具直连基准。
 6. **`pipeline/orchestration/orchestrator.py:PipelineOrchestrator.run`** 是审查唯一门面,内部构建 `pipeline/orchestration/graph.py` 的 ADR-032 LangGraph:
    - `PRModeClassifier` 先按规模选择 whole-diff、file task 或 hunk task；所有规模都进入统一 task 管线。
-   - TaskBuilder 后执行确定性 `TaskRoute(DirectGate)`；Direct task 独立直审，Full task 进入 `TaskSelection → Plan → ReviewPlan`。
-   - `Plan` 按 PlanUnit 并发生成 Reviewer、审查重点和知识主题；LARGE 模式同文件 hunk 复用文件级 Plan。
+   - TaskBuilder 后执行确定性 `TaskRoute(DirectGate)`；Direct task 独立直审，Full task 进入 `TaskSelection → Plan`，默认受控模式随后进入 `controlled_review`；显式选择 `react` 时才进入 `ReviewPlan` 和 ReAct 发现者。
+   - 默认受控模式的 `Plan` 按 PlanUnit 路由知识主题；显式选择 `react` 时由 Plan 生成 Reviewer 分派和审查重点。LARGE 模式同文件 hunk 复用文件级 Plan。
    - `[Summary]` 对 TaskRank 选中范围产出可选变更摘要。
    - `SymbolResolution` 把选中 Full task 的变更行解析为只读 `TaskSymbolContext`。
    - `ReviewCouncil` 并行运行 task-scoped 发现者 Agent；没有匹配任务的 reviewer 记录 `no_tasks_routed`。发现结果在绑定候选 ID 前经过统一新增行定位校验，必要时按 task 批量重定位。
@@ -209,9 +213,12 @@ mvn package                # 跑单测 + 出 fat jar
 mvn test                   # 只跑单测
 java -jar ci-webhook/target/codeguard-gateway.jar  # 同 JVM 启动 CI(8080)/工具(9090)/LLM Proxy(9091)
 
-# —— 真实 ReAct 审查(工具开档:先起 Java 工具服务,再设 URL)——
+# —— 真实受控审查(默认模式;工具开档:先起 Java 工具服务,再设 URL)——
 $env:CODEGUARD_TOOL_SERVER_URL="http://localhost:9090"
 conda run -n codeguard python -m codeguard_agent review --repo <repo> --trace
+
+# 如需兼容旧 ReAct 发现模式,在运行前显式设置:
+# $env:CODEGUARD_DISCOVERY_MODE="react"
 ```
 
 ### 命令行审查
@@ -268,7 +275,7 @@ python -m evals.runner --profile eval-codeguard-full --runs 1   # 完整档单�
 | `CODEGUARD_STRUCTURED_METHOD` | `function_calling` | 结构化输出方式 |
 | `CODEGUARD_DISABLE_THINKING` | `false` | 用 DeepSeek 推理模型时设 `true` |
 | `CODEGUARD_MAX_RETRIES` | `3` | LLM 调用重试次数 |
-| `CODEGUARD_ENABLE_SUMMARY` | `true` | ADR-032 选中范围摘要开关;关闭则 ReviewPlan 后直接进入 SymbolResolution |
+| `CODEGUARD_ENABLE_SUMMARY` | `true` | 选中范围摘要开关;关闭则 Plan 后直接进入 SymbolResolution |
 | `CODEGUARD_EVIDENCE_MODE` | `full` | 证据开关;`off` 跳过取证,候选由 DirectJudge 直接终审(无证据链消融基线档) |
 | `CODEGUARD_MAX_REVIEW_TASKS` | `100` | 仅作为大 diff 的更严格总任务上限 |
 | `CODEGUARD_MAX_TASKS_PER_FILE` | `10` | 仅作为大 diff 的更严格单文件上限 |
@@ -284,7 +291,7 @@ python -m evals.runner --profile eval-codeguard-full --runs 1   # 完整档单�
 | `CODEGUARD_GRAPH_CACHE_MAX_SNAPSHOTS` | `4` | 完整项目快照缓存上限 |
 | `CODEGUARD_GRAPH_CACHE_TTL_MINUTES` | `30` | 项目快照访问后过期分钟数 |
 | `CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS` | `120` | 全项目 AST/语义图构建超时 |
-| `CODEGUARD_DISCOVERY_MODE` | `react` | 发现执行模式：`react` / `controlled` / `direct` |
+| `CODEGUARD_DISCOVERY_MODE` | `controlled` | 发现执行模式：`controlled`（Plan-and-Execute，默认）/ `react` / `direct` |
 | `CODEGUARD_CONTROLLED_INITIAL_TOOL_BUDGET` | `6` | controlled 每 task 初始证据工具调用预算 |
 | `CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET` | `2` | controlled 每 task Delta 证据调用预算 |
 | `CODEGUARD_CONTROLLED_MAX_PATH_DEPTH` | `3` | controlled 图谱路径最大深度（不超过 3） |

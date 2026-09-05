@@ -28,7 +28,7 @@ python -m evals.runner --runs 3
 # 3) 额外开 LLM-as-judge(语义复核 + 描述/建议质量打分,更准、更贵)
 python -m evals.runner --runs 3 --judge
 
-# 4) 工具开档(审查员走 ReAct,可调 Java 工具);需先起工具服务并配 URL
+# 4) 工具开档(默认走受控 Plan-and-Execute,可调 Java 工具);需先起工具服务并配 URL
 #    CODEGUARD_TOOL_SERVER_URL=http://localhost:9090 python -m evals.runner --tools
 ```
 

@@ -102,9 +102,9 @@ class Settings:
     trace_dir: str = "trace"
     # LLM 输出截断字符数,0=不截断。
     trace_max_llm_content: int = 0
-    # Discovery execution strategy: react (legacy/default), controlled (Plan + Execute),
+    # Discovery execution strategy: controlled (Plan + Execute/default), react (legacy),
     # or direct (disable tool-backed discovery for an explicit no-tool baseline).
-    discovery_mode: str = "react"
+    discovery_mode: str = "controlled"
     # Controlled mode budgets. These are task-scoped and include failed tool calls;
     # cache hits do not consume budget.
     controlled_initial_tool_budget: int = 6
@@ -169,12 +169,12 @@ class Settings:
         ).strip().lower() not in ("0", "false", "no", "off")
         trace_dir = os.environ.get("CODEGUARD_TRACE_DIR", "trace").strip()
         trace_max_llm_content = int(os.environ.get("CODEGUARD_TRACE_MAX_LLM_CONTENT", "0"))
-        discovery_mode = os.environ.get("CODEGUARD_DISCOVERY_MODE", "react").strip().lower()
+        discovery_mode = os.environ.get("CODEGUARD_DISCOVERY_MODE", "controlled").strip().lower()
         if discovery_mode not in {"controlled", "react", "direct"}:
             logger.warning(
-                "未知 CODEGUARD_DISCOVERY_MODE '%s',回退 'react'", discovery_mode
+                "未知 CODEGUARD_DISCOVERY_MODE '%s',回退 'controlled'", discovery_mode
             )
-            discovery_mode = "react"
+            discovery_mode = "controlled"
         controlled_initial_tool_budget = _nonnegative_int_env(
             "CODEGUARD_CONTROLLED_INITIAL_TOOL_BUDGET", 6
         )

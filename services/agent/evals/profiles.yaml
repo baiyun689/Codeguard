@@ -11,6 +11,7 @@ profiles:
     mode: pipeline
     execution: direct
     orchestration: direct-diff
+    discovery_mode: direct
     tools: []
 
   # 消融 2:三路 Council，只看 diff/预取上下文，不开放项目工具。
@@ -18,6 +19,7 @@ profiles:
     mode: pipeline
     execution: pipeline
     orchestration: adr-032
+    discovery_mode: react
     tools: []
 
   # 消融 3:发现者使用项目图谱，EvidenceAgent 不发起补证工具调用。
@@ -25,6 +27,7 @@ profiles:
     mode: pipeline
     execution: pipeline
     orchestration: adr-032
+    discovery_mode: react
     tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
     evidence_tools: []
     strict_tools: true
@@ -34,6 +37,7 @@ profiles:
     mode: pipeline
     execution: pipeline
     orchestration: adr-032
+    discovery_mode: react
     tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
     evidence_tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
     strict_tools: true
@@ -57,6 +61,7 @@ profiles:
     mode: pipeline
     execution: pipeline
     orchestration: adr-032
+    discovery_mode: react
     tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
     evidence_mode: "off"
     strict_tools: true
@@ -65,6 +70,7 @@ profiles:
   pipeline-notools:
     mode: pipeline
     orchestration: adr-032
+    discovery_mode: react
     tools: []
 
   # ADR-032 smoke:默认 ReviewCouncil 编排的零工具轻量冒烟档。
@@ -72,6 +78,7 @@ profiles:
   adr-032-smoke:
     mode: pipeline
     orchestration: adr-032
+    discovery_mode: react
     tools: []
 
   # 管线 + 误报复核:在 pipeline-notools 基础上打开误报过滤第二段的独立异源 LLM 复核。
@@ -80,6 +87,7 @@ profiles:
   pipeline-fpverify:
     mode: pipeline
     orchestration: adr-032
+    discovery_mode: react
     tools: []
     fp_verify: true
 
@@ -88,12 +96,14 @@ profiles:
   pipeline-file:
     mode: pipeline
     orchestration: adr-032
+    discovery_mode: react
     tools: [get_file_content]
 
   # 管线 + 项目语义图:三路角色工具共享完整 Java AST/符号图，只按 symbol_id 查询局部事实。
   pipeline-codegraph:
     mode: pipeline
     orchestration: adr-032
+    discovery_mode: react
     tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
 
   # —— 扩展占位(零成本预留,框架无需改动)——

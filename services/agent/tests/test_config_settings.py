@@ -55,6 +55,13 @@ def test_evidence_mode_invalid_falls_back_to_full(monkeypatch):
     assert Settings.from_env().evidence_mode == "full"
 
 
+def test_discovery_mode_defaults_to_controlled(monkeypatch):
+    monkeypatch.delenv("CODEGUARD_DISCOVERY_MODE", raising=False)
+    monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
+
+    assert Settings.from_env().discovery_mode == "controlled"
+
+
 def test_controlled_discovery_mode_and_budgets_are_configurable(monkeypatch):
     monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
     monkeypatch.setenv("CODEGUARD_DISCOVERY_MODE", "controlled")
@@ -84,10 +91,10 @@ def test_controlled_max_seed_and_topic_limits_can_disable_optional_work(monkeypa
     assert settings.controlled_max_knowledge_topics == 0
 
 
-def test_unknown_discovery_mode_falls_back_to_react(monkeypatch):
+def test_unknown_discovery_mode_falls_back_to_controlled(monkeypatch):
     monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
     monkeypatch.setenv("CODEGUARD_DISCOVERY_MODE", "anything")
-    assert Settings.from_env().discovery_mode == "react"
+    assert Settings.from_env().discovery_mode == "controlled"
 
 
 def test_phase2_budget_defaults(monkeypatch):
@@ -168,6 +175,7 @@ def test_orchestrator_passes_budget_through_existing_state_field(monkeypatch):
     orchestrator_module.PipelineOrchestrator(review_budget=budget).run(None, "some diff")
 
     assert captured["review_budget"] == budget
+    assert captured["discovery_mode"] == "controlled"
     assert "review_budget" in ReviewState.__annotations__
 
 

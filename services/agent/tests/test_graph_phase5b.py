@@ -36,6 +36,15 @@ def test_graph_wires_verifier_and_judge():
     assert "impact_assessor" not in drawable.nodes
 
 
+def test_graph_defaults_to_controlled_discovery():
+    graph = G.build_review_graph(enable_summary=False, llm=None)
+    nodes = set(graph.get_graph().nodes)
+
+    assert "controlled_review" in nodes
+    assert "review_plan" not in nodes
+    assert not any(node.startswith("discover_") for node in nodes)
+
+
 def test_main_llm_is_effective_fallback_for_verifier_and_judges(monkeypatch):
     main_llm = object()
     captured = {}

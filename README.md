@@ -183,7 +183,7 @@ Prometheus 数据均使用命名卷持久化。
 
 启动 `codeguard` 服务后，可访问 `http://localhost:8501` 打开本地审查界面。
 在界面中填写宿主机上的 Git 项目根目录，选择 Diff 基线后即可开始审查。界面默认使用完整审查管线，发现模式由
-`CODEGUARD_DISCOVERY_MODE` 选择（`react` / `controlled` / `direct`）；摘要、代码图谱、Evidence Ledger、Judge
+`CODEGUARD_DISCOVERY_MODE` 选择（默认 `controlled`；也可用 `react` / `direct`）；摘要、代码图谱、Evidence Ledger、Judge
 和因果合并不会被拆成相互独立的开关；报告和 Agent Trace
 作为展示选项提供。
 
@@ -374,7 +374,7 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 | `CODEGUARD_GRAPH_CACHE_MAX_SNAPSHOTS` | `4` | 跨会话保留的完整项目快照上限 |
 | `CODEGUARD_GRAPH_CACHE_TTL_MINUTES` | `30` | 项目快照访问后过期时间 |
 | `CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS` | `120` | 全项目 AST 与语义图构建超时 |
-| `CODEGUARD_DISCOVERY_MODE` | `react` | 发现模式：`react`、`controlled`（Plan-and-Execute）或 `direct` |
+| `CODEGUARD_DISCOVERY_MODE` | `controlled` | 发现模式：`controlled`（Plan-and-Execute，默认）、`react` 或 `direct` |
 | `CODEGUARD_CONTROLLED_INITIAL_TOOL_BUDGET` | `6` | controlled 每 task 初始工具调用预算 |
 | `CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET` | `2` | controlled 每 task Delta 工具调用预算 |
 | `CODEGUARD_CONTROLLED_MAX_PATH_DEPTH` | `3` | controlled 路径最大深度（最大 3） |

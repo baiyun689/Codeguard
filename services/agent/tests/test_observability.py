@@ -1823,6 +1823,7 @@ class TestPhaseMapping:
             "plan", "review_plan",
             "symbol_resolution",
             "discover_threat_model", "discover_behavior", "discover_maintainability",
+            "controlled_review",
             "discovery_collector", "council_coordinator",
             "evidence_verifier", "direct_judge", "council_judge", "causal_merge",
             "prepare", "review", "collect",

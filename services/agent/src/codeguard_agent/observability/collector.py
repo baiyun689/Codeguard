@@ -37,6 +37,7 @@ _NODE_PHASE_MAP: dict[str, str] = {
     "discover_threat_model": "reviewer_subgraph",
     "discover_behavior": "reviewer_subgraph",
     "discover_maintainability": "reviewer_subgraph",
+    "controlled_review": "reviewer_subgraph",
     "discovery_collector": "outer_graph",
     "council_coordinator": "outer_graph",
     "evidence_verifier": "evidence",
