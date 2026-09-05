@@ -8,6 +8,7 @@ import com.codeguard.agent.graph.GraphEdgeKind;
 import com.codeguard.agent.graph.GraphNode;
 import com.codeguard.agent.graph.GraphNodeKind;
 import com.codeguard.agent.graph.ProjectSnapshot;
+import com.codeguard.agent.graph.ProjectSnapshotProvider;
 import com.codeguard.agent.graph.SourceSet;
 
 import java.util.ArrayList;
@@ -20,9 +21,13 @@ import java.util.concurrent.CompletableFuture;
  *  按 symbol 类型查询对应影响面——方法/构造器：调用方+框架入口+继承覆盖；
  *  字段：读写它的方法；类型：继承/实现它的类型。 */
 public final class InspectChangeImpactTool implements AgentTool {
-    private final CompletableFuture<ProjectSnapshot> snapshot;
+    private final ProjectSnapshotProvider snapshot;
 
     public InspectChangeImpactTool(CompletableFuture<ProjectSnapshot> snapshot) {
+        this.snapshot = (toolName, input) -> GraphToolSupport.await(snapshot);
+    }
+
+    public InspectChangeImpactTool(ProjectSnapshotProvider snapshot) {
         this.snapshot = snapshot;
     }
 
@@ -44,7 +49,8 @@ public final class InspectChangeImpactTool implements AgentTool {
             return ToolResult.error("缺少 symbol_id");
         }
         try {
-            ProjectSnapshot value = GraphToolSupport.await(snapshot);
+            ProjectSnapshot value = snapshot.load(name(), input);
+            symbol = GraphToolSupport.canonicalSymbol(value, symbol);
             SourceSet sourceScope = GraphToolSupport.sourceScope(value, symbol);
             List<GraphEdge> relationships = new ArrayList<>();
             Set<String> frontier = new LinkedHashSet<>(Set.of(symbol));

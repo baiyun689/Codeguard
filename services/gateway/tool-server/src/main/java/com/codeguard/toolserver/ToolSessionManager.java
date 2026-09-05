@@ -5,6 +5,7 @@ import com.codeguard.agent.core.AgentTool;
 import com.codeguard.agent.graph.ProjectKey;
 import com.codeguard.agent.graph.ProjectSnapshot;
 import com.codeguard.agent.graph.ProjectSnapshotManager;
+import com.codeguard.agent.graph.ProjectSnapshotProvider;
 import com.codeguard.agent.tools.GetFileContentTool;
 import com.codeguard.agent.tools.InspectChangeImpactTool;
 import com.codeguard.agent.tools.InspectPathTool;
@@ -24,8 +25,9 @@ import java.util.concurrent.CompletableFuture;
  * 会话超过 TTL 自动过期回收。所有工具调用经 {@code X-Session-Id} 关联到会话,
  * 会话不存在/过期则被上层拒绝。
  * <p>
- * 项目级 AST 和语义图由 {@link ProjectSnapshotManager} 跨同版本会话共享；
- * Session 持有 future 的直接引用，缓存淘汰不会中断活动审查。
+ * 项目级轻量源码索引由 {@link ProjectSnapshotManager} 跨同版本会话共享；语义边由
+ * {@link ProjectSnapshotProvider} 按工具查询局部扩展。Session 不再在创建阶段触发
+ * 全项目符号求解。
  */
 public final class ToolSessionManager {
 
@@ -51,6 +53,7 @@ public final class ToolSessionManager {
         private final ToolRegistry registry;
         private final ProjectKey projectKey;
         private final CompletableFuture<ProjectSnapshot> snapshot;
+        private final ProjectSnapshotProvider snapshotProvider;
         private final long createdAt;
 
         Session(
@@ -63,15 +66,16 @@ public final class ToolSessionManager {
             this.context = new AgentContext(repoRoot);
             this.createdAt = System.currentTimeMillis();
             this.projectKey = ProjectKey.of(repoRoot, revision);
-            this.snapshot = snapshotManager.getOrBuild(projectKey);
+            this.snapshot = snapshotManager.getOrBuildIndex(projectKey);
+            this.snapshotProvider = snapshotManager.lazyProvider(projectKey);
 
             this.registry = new ToolRegistry();
             // 加工具 = 在这里 register 一个实现即可,无需改协议(扩展接缝 design.md D2)。
-            this.registry.register(new GetFileContentTool(snapshot));
-            this.registry.register(new ResolveChangeContextTool(snapshot));
-            this.registry.register(new InspectPathTool(snapshot));
-            this.registry.register(new InspectChangeImpactTool(snapshot));
-            this.registry.register(new InspectStructureTool(snapshot));
+            this.registry.register(new GetFileContentTool(snapshotProvider));
+            this.registry.register(new ResolveChangeContextTool(snapshotProvider));
+            this.registry.register(new InspectPathTool(snapshotProvider));
+            this.registry.register(new InspectChangeImpactTool(snapshotProvider));
+            this.registry.register(new InspectStructureTool(snapshotProvider));
         }
 
         public String getId() {

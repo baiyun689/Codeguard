@@ -6,6 +6,7 @@ import com.codeguard.agent.core.ToolResult;
 import com.codeguard.agent.graph.GraphNode;
 import com.codeguard.agent.graph.GraphNodeKind;
 import com.codeguard.agent.graph.ProjectSnapshot;
+import com.codeguard.agent.graph.ProjectSnapshotProvider;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.ConstructorDeclaration;
@@ -34,9 +35,13 @@ public final class GetFileContentTool implements AgentTool {
     private static final int MAX_SOURCE_BYTES = 16_384;
     private static final int MAX_SOURCE_LINES = 240;
 
-    private final CompletableFuture<ProjectSnapshot> snapshot;
+    private final ProjectSnapshotProvider snapshot;
 
     public GetFileContentTool(CompletableFuture<ProjectSnapshot> snapshot) {
+        this.snapshot = (toolName, input) -> GraphToolSupport.await(snapshot);
+    }
+
+    public GetFileContentTool(ProjectSnapshotProvider snapshot) {
         this.snapshot = snapshot;
     }
 
@@ -60,7 +65,8 @@ public final class GetFileContentTool implements AgentTool {
             return ToolResult.error("缺少 symbol_id");
         }
         try {
-            ProjectSnapshot value = GraphToolSupport.await(snapshot);
+            ProjectSnapshot value = snapshot.load(name(), input);
+            symbolId = GraphToolSupport.canonicalSymbol(value, symbolId);
             Optional<GraphNode> node = value.graph().node(symbolId);
             if (node.isEmpty()) {
                 return ToolResult.error("symbol_not_found: " + symbolId);

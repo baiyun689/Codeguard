@@ -7,6 +7,7 @@ import com.codeguard.agent.graph.GraphEdge;
 import com.codeguard.agent.graph.GraphEdgeKind;
 import com.codeguard.agent.graph.GraphNode;
 import com.codeguard.agent.graph.ProjectSnapshot;
+import com.codeguard.agent.graph.ProjectSnapshotProvider;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -14,9 +15,13 @@ import java.util.concurrent.CompletableFuture;
 
 /** MaintainabilityAgent 的结构工具：声明、依赖、继承和耦合事实。 */
 public final class InspectStructureTool implements AgentTool {
-    private final CompletableFuture<ProjectSnapshot> snapshot;
+    private final ProjectSnapshotProvider snapshot;
 
     public InspectStructureTool(CompletableFuture<ProjectSnapshot> snapshot) {
+        this.snapshot = (toolName, input) -> GraphToolSupport.await(snapshot);
+    }
+
+    public InspectStructureTool(ProjectSnapshotProvider snapshot) {
         this.snapshot = snapshot;
     }
 
@@ -37,7 +42,8 @@ public final class InspectStructureTool implements AgentTool {
             return ToolResult.error("缺少 symbol_id");
         }
         try {
-            ProjectSnapshot value = GraphToolSupport.await(snapshot);
+            ProjectSnapshot value = snapshot.load(name(), input);
+            symbol = GraphToolSupport.canonicalSymbol(value, symbol);
             List<GraphEdge> relationships = new ArrayList<>();
             for (GraphEdgeKind kind : List.of(
                     GraphEdgeKind.DECLARES, GraphEdgeKind.CALLS, GraphEdgeKind.EXTENDS,

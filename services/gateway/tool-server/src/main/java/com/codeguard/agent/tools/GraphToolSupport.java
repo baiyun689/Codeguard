@@ -66,6 +66,38 @@ final class GraphToolSupport {
                 .orElse(SourceSet.MAIN);
     }
 
+    /**
+     * Resolves the whitespace-only signature variants emitted by different JavaParser paths.
+     * The lazy index remains the source of the canonical id used by all tool responses.
+     */
+    static String canonicalSymbol(ProjectSnapshot snapshot, String requested) {
+        if (requested == null || requested.isBlank()
+                || snapshot.graph().node(requested).isPresent()) {
+            return requested == null ? "" : requested;
+        }
+        String compact = comparableSymbolId(requested);
+        return snapshot.graph().nodes().stream()
+                .filter(node -> comparableSymbolId(node.id()).equals(compact))
+                .map(GraphNode::id)
+                .findFirst()
+                .orElse(requested);
+    }
+
+    private static String comparableSymbolId(String value) {
+        if (!value.startsWith("java:")) {
+            return value;
+        }
+        int separator = value.lastIndexOf('#');
+        if (separator < 0) {
+            return value.replaceAll("\\s+", "");
+        }
+        String owner = value.substring(0, separator).replaceAll("\\s+", "");
+        String signature = value.substring(separator + 1)
+                .replaceAll("\\s+", "")
+                .replaceAll("[A-Za-z_$][\\w$]*\\.", "");
+        return owner + "#" + signature;
+    }
+
     static boolean inScope(GraphEdge edge, SourceSet sourceScope) {
         return edge.sourceSet() == sourceScope;
     }

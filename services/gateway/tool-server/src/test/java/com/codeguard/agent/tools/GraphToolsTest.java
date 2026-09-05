@@ -5,6 +5,7 @@ import com.codeguard.agent.core.ToolResult;
 import com.codeguard.agent.graph.ProjectKey;
 import com.codeguard.agent.graph.ProjectSnapshot;
 import com.codeguard.agent.graph.ProjectSnapshotManager;
+import com.codeguard.agent.graph.GraphEdgeKind;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -16,6 +17,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GraphToolsTest {
@@ -508,5 +510,168 @@ class GraphToolsTest {
         assertTrue(payload.path("relationships").isEmpty(), result.getResult());
         assertFalse(payload.path("unresolved_relationships").isEmpty(),
                 result.getResult());
+    }
+
+    @Test
+    void lazyProviderBuildsIndexWithoutSemanticEdgesAndExpandsRequestedPath(
+            @TempDir Path repo
+    ) throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("Service.java"), """
+                package demo;
+                class Service { void run() { helper(); } void helper() {} }
+                """);
+
+        ProjectSnapshotManager manager = new ProjectSnapshotManager();
+        ProjectSnapshot index = manager
+                .getOrBuildIndex(ProjectKey.of(repo, "lazy-path"))
+                .join();
+        assertTrue(index.graph().edges().stream()
+                .noneMatch(edge -> edge.kind() == GraphEdgeKind.CALLS));
+
+        ProjectSnapshot expanded = manager.lazyProvider(ProjectKey.of(repo, "lazy-path"))
+                .load("inspect_path", "{\"symbol_id\":\"java:demo.Service#run()\","
+                        + "\"path_kind\":\"behavior\"}");
+        assertTrue(expanded.graph().outgoing(
+                        "java:demo.Service#run()", GraphEdgeKind.CALLS).stream()
+                .anyMatch(edge -> edge.targetId().contains("helper()")));
+    }
+
+    @Test
+    void lazyProviderResolvesReverseImpactWithoutBuildingWholeGraph(@TempDir Path repo)
+            throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("Service.java"), """
+                package demo;
+                class Service { void run() {} }
+                """);
+        Files.writeString(root.resolve("Caller.java"), """
+                package demo;
+                class Caller { void call(Service service) { service.run(); } }
+                """);
+
+        ProjectSnapshotManager manager = new ProjectSnapshotManager();
+        ProjectSnapshot expanded = manager.lazyProvider(ProjectKey.of(repo, "lazy-impact"))
+                .load("inspect_change_impact", "java:demo.Service#run()");
+        assertTrue(expanded.graph().incoming(
+                        "java:demo.Service#run()", GraphEdgeKind.CALLS).stream()
+                .anyMatch(edge -> edge.file().endsWith("Caller.java")));
+    }
+
+    @Test
+    void lazyProviderPreservesFieldAndTypeQueries(@TempDir Path repo) throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("Base.java"), """
+                package demo;
+                class Base {
+                    int state;
+                    void update() { state++; }
+                    int read() { return state; }
+                }
+                """);
+        Files.writeString(root.resolve("Impl.java"), """
+                package demo;
+                class Impl extends Base { }
+                """);
+
+        ProjectSnapshotManager manager = new ProjectSnapshotManager();
+        ProjectSnapshot field = manager.lazyProvider(ProjectKey.of(repo, "lazy-field"))
+                .load("inspect_change_impact", "java:demo.Base#state");
+        assertTrue(field.graph().incoming(
+                        "java:demo.Base#state", GraphEdgeKind.READS_FIELD).stream()
+                .anyMatch(edge -> edge.file().endsWith("Base.java")), field.graph().edges().toString());
+
+        ProjectSnapshot type = manager.lazyProvider(ProjectKey.of(repo, "lazy-type"))
+                .load("inspect_change_impact", "java:demo.Base");
+        assertTrue(type.graph().incoming(
+                        "java:demo.Base", GraphEdgeKind.EXTENDS).stream()
+                .anyMatch(edge -> edge.file().endsWith("Impl.java")));
+    }
+
+    @Test
+    void lazyProviderKeepsUnresolvedCallerAsCoverageGap(@TempDir Path repo) throws Exception {
+        Files.writeString(repo.resolve("Service.java"), "class Service { void run() {} }\n");
+        Files.writeString(repo.resolve("ExternalCaller.java"), """
+                class ExternalCaller {
+                    void call(MissingService service) { service.run(); }
+                }
+                """);
+
+        ProjectSnapshot expanded = new ProjectSnapshotManager()
+                .lazyProvider(ProjectKey.of(repo, "lazy-potential-caller"))
+                .load("inspect_change_impact", "java:Service#run()");
+        assertTrue(expanded.graph().edges().stream()
+                .anyMatch(edge -> edge.resolution() == com.codeguard.agent.graph.ResolutionStatus.UNRESOLVED
+                        && edge.targetId().equals("unresolved:method:run/0")));
+    }
+
+    @Test
+    void lazyStructureQueryRemainsOneHop(@TempDir Path repo) throws Exception {
+        Files.writeString(repo.resolve("Chain.java"), """
+                class Chain {
+                    void run() { middle(); }
+                    void middle() { leaf(); }
+                    void leaf() { }
+                }
+                """);
+
+        ProjectSnapshot expanded = new ProjectSnapshotManager()
+                .lazyProvider(ProjectKey.of(repo, "lazy-structure"))
+                .load("inspect_structure", "java:Chain#run()");
+        assertTrue(expanded.graph().outgoing(
+                        "java:Chain#run()", GraphEdgeKind.CALLS).stream()
+                .anyMatch(edge -> edge.targetId().contains("middle()")));
+        assertTrue(expanded.graph().outgoing(
+                        "java:Chain#middle()", GraphEdgeKind.CALLS).isEmpty());
+    }
+
+    @Test
+    void lazyProviderSingleFlightsAndCachesSuccessfulQuery(@TempDir Path repo)
+            throws Exception {
+        Files.writeString(repo.resolve("Service.java"), """
+                class Service { void run() { helper(); } void helper() {} }
+                """);
+
+        ProjectSnapshotManager manager = new ProjectSnapshotManager();
+        var provider = manager.lazyProvider(ProjectKey.of(repo, "lazy-cache"));
+        String query = "{\"symbol_id\":\"java:Service#run()\","
+                + "\"path_kind\":\"behavior\"}";
+
+        ProjectSnapshot first = provider.load("inspect_path", query);
+        ProjectSnapshot second = provider.load("inspect_path", query);
+
+        assertSame(first, second);
+    }
+
+    @Test
+    void lazyProviderExpandsMultiArgumentMethodUsingResolvedSymbolId(@TempDir Path repo)
+            throws Exception {
+        Files.writeString(repo.resolve("Service.java"), """
+                class Service {
+                    void run(String value, int count) { helper(); }
+                    void helper() {}
+                }
+                """);
+
+        ProjectSnapshotManager manager = new ProjectSnapshotManager();
+        var provider = manager.lazyProvider(ProjectKey.of(repo, "lazy-multi-arg"));
+        String query = "{\"symbol_id\":\"java:Service#run(String, int)\","
+                + "\"path_kind\":\"behavior\"}";
+        ProjectSnapshot expanded = provider.load("inspect_path", query);
+
+        assertTrue(expanded.graph().outgoing(
+                        "java:Service#run(String, int)", GraphEdgeKind.CALLS).stream()
+                .anyMatch(edge -> edge.targetId().contains("helper()")),
+                expanded.graph().edges().toString());
+
+        ToolResult result = new InspectPathTool(provider).execute(
+                "{\"symbol_id\":\"java:Service#run(String,int)\","
+                        + "\"path_kind\":\"behavior\"}",
+                new AgentContext(repo));
+        assertTrue(result.isSuccess(), result.getError());
+        assertTrue(result.getResult().contains("helper()"), result.getResult());
     }
 }

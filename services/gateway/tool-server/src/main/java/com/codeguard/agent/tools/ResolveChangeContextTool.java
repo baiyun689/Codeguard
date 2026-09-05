@@ -5,6 +5,7 @@ import com.codeguard.agent.core.AgentTool;
 import com.codeguard.agent.core.ToolResult;
 import com.codeguard.agent.graph.GraphNode;
 import com.codeguard.agent.graph.ProjectSnapshot;
+import com.codeguard.agent.graph.ProjectSnapshotProvider;
 import com.codeguard.agent.graph.SourceSet;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -18,9 +19,13 @@ import java.util.concurrent.CompletableFuture;
 
 /** 将 diff 文件/行批量解析为真实、稳定的图谱符号。 */
 public final class ResolveChangeContextTool implements AgentTool {
-    private final CompletableFuture<ProjectSnapshot> snapshot;
+    private final ProjectSnapshotProvider snapshot;
 
     public ResolveChangeContextTool(CompletableFuture<ProjectSnapshot> snapshot) {
+        this.snapshot = (toolName, input) -> GraphToolSupport.await(snapshot);
+    }
+
+    public ResolveChangeContextTool(ProjectSnapshotProvider snapshot) {
         this.snapshot = snapshot;
     }
 
@@ -37,7 +42,7 @@ public final class ResolveChangeContextTool implements AgentTool {
     @Override
     public ToolResult execute(String input, AgentContext context) {
         try {
-            ProjectSnapshot value = GraphToolSupport.await(snapshot);
+            ProjectSnapshot value = snapshot.load(name(), input);
             JsonNode request = GraphToolSupport.JSON.readTree(input);
             ObjectNode result = GraphToolSupport.JSON.createObjectNode();
             EnumSet<SourceSet> requestedSourceSets = EnumSet.noneOf(SourceSet.class);

@@ -29,12 +29,15 @@ import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -44,6 +47,7 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 final class ProjectSnapshotBuilder {
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final Set<String> EXCLUDED_SEGMENTS =
             Set.of(".git", "target", "build", ".gradle", ".idea", "node_modules");
     private static final Set<String> ROUTE_ANNOTATIONS = Set.of(
@@ -115,6 +119,170 @@ final class ProjectSnapshotBuilder {
         }
         ProjectCodeGraph graph = extractGraph(units);
         return new ProjectSnapshot(key, sources, units, graph, diagnostics);
+    }
+
+    /**
+     * 构建懒查询使用的轻量索引。这里只做源码读取和无符号 AST parse，绝不调用
+     * {@code resolve()}；语义边由 {@link #expand(ProjectSnapshot, String, String)} 按查询
+     * 局部补齐。这样大型仓库的会话创建和变更定位不再依赖全项目符号求解。
+     */
+    static ProjectSnapshot buildIndex(ProjectKey key) {
+        Path root = key.repoRoot();
+        List<String> diagnostics = new ArrayList<>();
+        List<Path> javaFiles = scanJavaFiles(root, diagnostics);
+        Map<String, String> sources = new LinkedHashMap<>();
+        Map<String, CompilationUnit> units = new LinkedHashMap<>();
+        JavaParser parser = new JavaParser(new ParserConfiguration()
+                .setLanguageLevel(ParserConfiguration.LanguageLevel.BLEEDING_EDGE)
+                .setStoreTokens(true)
+                .setAttributeComments(true));
+        for (Path file : javaFiles) {
+            String relative = normalize(root.relativize(file));
+            try {
+                String source = Files.readString(file);
+                ParseResult<CompilationUnit> parsed = parser.parse(source);
+                sources.put(relative, source);
+                if (parsed.isSuccessful() && parsed.getResult().isPresent()) {
+                    units.put(relative, parsed.getResult().orElseThrow());
+                } else {
+                    diagnostics.add(relative + ": " + parsed.getProblems());
+                }
+            } catch (Exception exception) {
+                diagnostics.add(relative + ": " + exception.getMessage());
+            }
+        }
+        return new ProjectSnapshot(key, sources, units, extractIndexGraph(units), diagnostics);
+    }
+
+    /**
+     * 对一个工具查询按需解析关系。返回新的不可变快照，原始轻量索引不会被修改，因而
+     * 同一个 revision 的并发 reviewer 不会互相污染。get_file_content 和
+     * resolve_change_context 不需要语义边，直接复用索引。
+     */
+    static ProjectSnapshot expand(ProjectSnapshot index, String toolName, String input)
+            throws Exception {
+        if (toolName.equals("get_file_content") || toolName.equals("resolve_change_context")) {
+            return index;
+        }
+        String subject = canonicalNodeId(index, subjectId(input));
+        if (subject.isBlank()) {
+            return index;
+        }
+        int maxDepth = toolName.equals("inspect_structure") ? 1 : maxDepth(input);
+        Map<String, CompilationUnit> resolvedUnits = new LinkedHashMap<>();
+        JavaParser parser = semanticParser(index);
+        Set<String> frontier = new LinkedHashSet<>(Set.of(subject));
+        GraphNode subjectNode = index.graph().node(subject).orElse(null);
+        boolean securityPath = toolName.equals("inspect_path")
+                && pathKind(input).equals("security");
+        if (securityPath && subjectNode != null && subjectNode.kind() == GraphNodeKind.TYPE) {
+            index.graph().symbolsInFile(subjectNode.file()).stream()
+                    .filter(node -> subject.equals(node.ownerId()))
+                    .filter(node -> node.kind() == GraphNodeKind.METHOD
+                            || node.kind() == GraphNodeKind.CONSTRUCTOR)
+                    .map(GraphNode::id)
+                    .forEach(frontier::add);
+        }
+        Set<String> visited = new LinkedHashSet<>();
+        List<GraphEdge> discovered = new ArrayList<>();
+        int fileLimit = toolName.equals("inspect_change_impact") ? 64 : 24;
+        boolean reverse = toolName.equals("inspect_change_impact");
+        for (int depth = 0; depth < maxDepth && !frontier.isEmpty(); depth++) {
+            Set<String> next = new LinkedHashSet<>();
+            for (String current : frontier) {
+                if (!visited.add(current)) {
+                    continue;
+                }
+                List<GraphEdge> edges = reverse
+                        ? resolveIncoming(index, current, resolvedUnits, parser, fileLimit)
+                        : resolveOutgoing(index, current, resolvedUnits, parser, fileLimit);
+                discovered.addAll(edges);
+                edges.stream()
+                        .filter(edge -> edge.resolution() == ResolutionStatus.RESOLVED)
+                        .map(reverse ? GraphEdge::sourceId : GraphEdge::targetId)
+                        .map(id -> canonicalNodeId(index, id))
+                        .filter(id -> index.graph().node(id).isPresent())
+                        .forEach(next::add);
+            }
+            frontier = next;
+        }
+        if (toolName.equals("inspect_structure")
+                || (securityPath && subjectNode != null
+                && (subjectNode.kind() == GraphNodeKind.FIELD
+                || subjectNode.kind() == GraphNodeKind.TYPE))) {
+            discovered.addAll(resolveIncoming(
+                    index, subject, resolvedUnits, parser, fileLimit));
+        }
+        return withEdges(index, discovered);
+    }
+
+    private static ProjectSnapshot withEdges(
+            ProjectSnapshot index,
+            Collection<GraphEdge> additionalEdges
+    ) {
+        Map<String, GraphEdge> unique = new LinkedHashMap<>();
+        for (GraphEdge edge : index.graph().edges()) {
+            unique.put(edgeKey(edge), edge);
+        }
+        for (GraphEdge edge : additionalEdges) {
+            GraphEdge canonical = canonicalEdge(index, edge);
+            unique.putIfAbsent(edgeKey(canonical), canonical);
+        }
+        return new ProjectSnapshot(
+                index.key(), index.sources(), index.astUnits(),
+                new ProjectCodeGraph(index.graph().nodes(), unique.values()), index.diagnostics());
+    }
+
+    private static String edgeKey(GraphEdge edge) {
+        return edge.sourceId() + "|" + edge.targetId() + "|" + edge.kind()
+                + "|" + edge.file() + "|" + edge.line();
+    }
+
+    /**
+     * Index symbol ids are generated without symbol solving, while a lazily parsed file can
+     * produce the same declaration through the resolver. JavaParser may differ only in
+     * whitespace inside a method signature (for example {@code (String, int)} versus
+     * {@code (String,int)}). Treat those forms as the same project symbol and keep the index's
+     * spelling as the canonical endpoint in the expanded graph.
+     */
+    private static String canonicalNodeId(ProjectSnapshot index, String requested) {
+        if (requested == null || requested.isBlank()) {
+            return requested == null ? "" : requested;
+        }
+        if (index.graph().node(requested).isPresent()) {
+            return requested;
+        }
+        String compact = comparableSymbolId(requested);
+        return index.graph().nodes().stream()
+                .filter(node -> comparableSymbolId(node.id()).equals(compact))
+                .map(GraphNode::id)
+                .findFirst()
+                .orElse(requested);
+    }
+
+    private static GraphEdge canonicalEdge(ProjectSnapshot index, GraphEdge edge) {
+        String source = canonicalNodeId(index, edge.sourceId());
+        String target = canonicalNodeId(index, edge.targetId());
+        if (source.equals(edge.sourceId()) && target.equals(edge.targetId())) {
+            return edge;
+        }
+        return new GraphEdge(source, target, edge.kind(), edge.file(), edge.line(),
+                edge.sourceSet(), edge.resolution(), edge.extractor());
+    }
+
+    private static String comparableSymbolId(String value) {
+        if (!value.startsWith("java:")) {
+            return value;
+        }
+        int separator = value.lastIndexOf('#');
+        if (separator < 0) {
+            return value.replaceAll("\\s+", "");
+        }
+        String owner = value.substring(0, separator).replaceAll("\\s+", "");
+        String signature = value.substring(separator + 1)
+                .replaceAll("\\s+", "")
+                .replaceAll("[A-Za-z_$][\\w$]*\\.", "");
+        return owner + "#" + signature;
     }
 
     private static List<Path> scanJavaFiles(Path root, List<String> diagnostics) {
@@ -276,6 +444,294 @@ final class ProjectSnapshotBuilder {
         });
 
         return new ProjectCodeGraph(nodes, edges);
+    }
+
+    /** 只生成声明、注解和框架入口节点；调用/字段/继承关系留给查询时解析。 */
+    private static ProjectCodeGraph extractIndexGraph(Map<String, CompilationUnit> units) {
+        List<GraphNode> nodes = new ArrayList<>();
+        List<GraphEdge> edges = new ArrayList<>();
+        Map<Node, String> symbolIds = new LinkedHashMap<>();
+        units.forEach((file, unit) -> {
+            String fileId = "file:" + file;
+            nodes.add(new GraphNode(fileId, GraphNodeKind.FILE, file, 1,
+                    Math.max(1, unit.getEnd().map(position -> position.line).orElse(1)),
+                    file, "", SourceSet.fromPath(file), List.of()));
+            for (TypeDeclaration<?> type : unit.findAll(TypeDeclaration.class)) {
+                String typeId = "java:" + qualifiedTypeNameWithoutResolve(type, unit, file);
+                symbolIds.put(type, typeId);
+                nodes.add(node(typeId, GraphNodeKind.TYPE, file, type,
+                        type.getNameAsString(), fileId, annotations(type)));
+                edges.add(edge(fileId, typeId, GraphEdgeKind.DECLARES, file, type,
+                        ResolutionStatus.RESOLVED, "java-ast"));
+            }
+        });
+        units.forEach((file, unit) -> {
+            for (MethodDeclaration method : unit.findAll(MethodDeclaration.class)) {
+                String owner = ownerId(method, symbolIds, file);
+                String id = owner + "#" + method.getSignature().asString();
+                symbolIds.put(method, id);
+                nodes.add(node(id, GraphNodeKind.METHOD, file, method,
+                        method.getDeclarationAsString(false, false, true), owner,
+                        annotations(method)));
+                edges.add(edge(owner, id, GraphEdgeKind.DECLARES, file, method,
+                        ResolutionStatus.RESOLVED, "java-ast"));
+                addAnnotationEdges(edges, id, method, file);
+                addFrameworkNodes(nodes, edges, method, id, file);
+            }
+            for (ConstructorDeclaration constructor : unit.findAll(ConstructorDeclaration.class)) {
+                String owner = ownerId(constructor, symbolIds, file);
+                String id = owner + "#<init>" + constructor.getSignature().asString();
+                symbolIds.put(constructor, id);
+                nodes.add(node(id, GraphNodeKind.CONSTRUCTOR, file, constructor,
+                        constructor.getDeclarationAsString(false, false, true), owner,
+                        annotations(constructor)));
+                edges.add(edge(owner, id, GraphEdgeKind.DECLARES, file, constructor,
+                        ResolutionStatus.RESOLVED, "java-ast"));
+                addAnnotationEdges(edges, id, constructor, file);
+            }
+            for (FieldDeclaration field : unit.findAll(FieldDeclaration.class)) {
+                String owner = ownerId(field, symbolIds, file);
+                field.getVariables().forEach(variable -> {
+                    String id = owner + "#" + variable.getNameAsString();
+                    symbolIds.put(variable, id);
+                    nodes.add(node(id, GraphNodeKind.FIELD, file, variable,
+                            variable.getTypeAsString() + " " + variable.getNameAsString(),
+                            owner, annotations(field)));
+                    edges.add(edge(owner, id, GraphEdgeKind.DECLARES, file, variable,
+                            ResolutionStatus.RESOLVED, "java-ast"));
+                    addAnnotationEdges(edges, id, field, file);
+                });
+            }
+        });
+        return new ProjectCodeGraph(nodes, edges);
+    }
+
+    private static String qualifiedTypeNameWithoutResolve(
+            TypeDeclaration<?> type,
+            CompilationUnit unit,
+            String file
+    ) {
+        List<String> names = new ArrayList<>();
+        Node current = type;
+        while (current instanceof TypeDeclaration<?> declaration) {
+            names.add(0, declaration.getNameAsString());
+            current = declaration.getParentNode().orElse(null);
+        }
+        String prefix = unit.getPackageDeclaration()
+                .map(declaration -> declaration.getNameAsString() + ".")
+                .orElse("");
+        return prefix + (names.isEmpty() ? file : String.join(".", names));
+    }
+
+    private static String subjectId(String input) {
+        if (input == null || input.isBlank()) {
+            return "";
+        }
+        String value = input.trim();
+        if (!value.startsWith("{")) {
+            return value;
+        }
+        try {
+            JsonNode root = JSON.readTree(value);
+            return root.path("symbol_id").asText(root.path("subject").asText("")).trim();
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static int maxDepth(String input) {
+        try {
+            JsonNode root = JSON.readTree(input == null ? "" : input);
+            int depth = root.path("max_depth").asInt(3);
+            return Math.max(1, Math.min(3, depth));
+        } catch (Exception ignored) {
+            return 3;
+        }
+    }
+
+    private static JavaParser semanticParser(ProjectSnapshot index) {
+        CombinedTypeSolver delegate = new CombinedTypeSolver(new ReflectionTypeSolver(false));
+        List<Path> files = index.sources().keySet().stream()
+                .map(index.key().repoRoot()::resolve)
+                .toList();
+        discoverSourceRoots(index.key().repoRoot(), files)
+                .forEach(path -> delegate.add(new JavaParserTypeSolver(path)));
+        Set<String> projectTypes = new LinkedHashSet<>();
+        index.astUnits().values().forEach(unit -> collectTypeNames(unit, projectTypes));
+        return new JavaParser(new ParserConfiguration()
+                .setLanguageLevel(ParserConfiguration.LanguageLevel.BLEEDING_EDGE)
+                .setStoreTokens(true)
+                .setAttributeComments(true)
+                .setSymbolResolver(new JavaSymbolSolver(
+                        new ProjectAwareTypeSolver(projectTypes, delegate))));
+    }
+
+    private static List<GraphEdge> resolveOutgoing(
+            ProjectSnapshot index,
+            String symbol,
+            Map<String, CompilationUnit> resolvedUnits,
+            JavaParser parser,
+            int fileLimit
+    ) {
+        GraphNode node = index.graph().node(symbol).orElse(null);
+        if (node == null || node.file().isBlank() || resolvedUnits.size() >= fileLimit
+                && !resolvedUnits.containsKey(node.file())) {
+            return List.of();
+        }
+        CompilationUnit unit = resolvedUnits.computeIfAbsent(node.file(), file -> {
+            String source = index.sources().get(file);
+            if (source == null) {
+                return null;
+            }
+            try {
+                return parser.parse(source).getResult().orElse(null);
+            } catch (Exception ignored) {
+                return null;
+            }
+        });
+        if (unit == null) {
+            return List.of();
+        }
+        ProjectCodeGraph local = extractGraph(Map.of(node.file(), unit));
+        return local.edges().stream()
+                .filter(edge -> comparableSymbolId(edge.sourceId())
+                        .equals(comparableSymbolId(symbol)))
+                .toList();
+    }
+
+    private static List<GraphEdge> resolveIncoming(
+            ProjectSnapshot index,
+            String target,
+            Map<String, CompilationUnit> resolvedUnits,
+            JavaParser parser,
+            int fileLimit
+    ) {
+        GraphNode targetNode = index.graph().node(target).orElse(null);
+        if (targetNode == null) {
+            return List.of();
+        }
+        String methodName = methodName(target);
+        int arity = methodArity(target);
+        String fieldName = fieldName(target);
+        List<GraphEdge> result = new ArrayList<>();
+        // ProjectSnapshot 对外是只读 map，但其具体实现不承诺迭代顺序；按相对路径
+        // 排序后再应用 fileLimit，避免大仓库超限时因为 map 顺序变化而产生不同结果。
+        List<Map.Entry<String, CompilationUnit>> sourceUnits = index.astUnits().entrySet()
+                .stream()
+                .sorted(Map.Entry.comparingByKey())
+                .toList();
+        for (Map.Entry<String, CompilationUnit> entry : sourceUnits) {
+            if (resolvedUnits.size() >= fileLimit && !resolvedUnits.containsKey(entry.getKey())) {
+                break;
+            }
+            CompilationUnit plain = entry.getValue();
+            boolean candidate;
+            if (targetNode.kind() == GraphNodeKind.METHOD
+                    || targetNode.kind() == GraphNodeKind.CONSTRUCTOR) {
+                candidate = plain.findAll(MethodCallExpr.class).stream().anyMatch(call ->
+                        call.getNameAsString().equals(methodName)
+                                && call.getArguments().size() == arity);
+            } else if (targetNode.kind() == GraphNodeKind.FIELD) {
+                candidate = plain.findAll(NameExpr.class).stream().anyMatch(
+                        name -> name.getNameAsString().equals(fieldName))
+                        || plain.findAll(FieldAccessExpr.class).stream().anyMatch(
+                        field -> field.getNameAsString().equals(fieldName));
+            } else if (targetNode.kind() == GraphNodeKind.TYPE) {
+                candidate = plain.findAll(ClassOrInterfaceDeclaration.class).stream().anyMatch(
+                        declaration -> declaration.getExtendedTypes().stream()
+                                .anyMatch(type -> simpleTypeName(type).equals(typeName(target)))
+                                || declaration.getImplementedTypes().stream()
+                                .anyMatch(type -> simpleTypeName(type).equals(typeName(target))));
+            } else {
+                candidate = false;
+            }
+            if (!candidate) {
+                continue;
+            }
+            List<GraphEdge> edges = resolveFileEdges(index, entry.getKey(), resolvedUnits, parser);
+            edges.stream()
+                    .filter(edge -> comparableSymbolId(edge.targetId())
+                            .equals(comparableSymbolId(target))
+                            || (edge.resolution() != ResolutionStatus.RESOLVED
+                                    && unresolvedMethodTarget(target).equals(edge.targetId())))
+                    .forEach(result::add);
+        }
+        return result;
+    }
+
+    private static List<GraphEdge> resolveFileEdges(
+            ProjectSnapshot index,
+            String file,
+            Map<String, CompilationUnit> resolvedUnits,
+            JavaParser parser
+    ) {
+        CompilationUnit unit = resolvedUnits.computeIfAbsent(file, path -> {
+            String source = index.sources().get(path);
+            try {
+                return source == null ? null : parser.parse(source).getResult().orElse(null);
+            } catch (Exception ignored) {
+                return null;
+            }
+        });
+        return unit == null ? List.of() : extractGraph(Map.of(file, unit)).edges();
+    }
+
+    private static String methodName(String symbol) {
+        int hash = symbol.lastIndexOf('#');
+        int open = symbol.indexOf('(', hash + 1);
+        return hash >= 0 && open > hash ? symbol.substring(hash + 1, open) : "";
+    }
+
+    private static String unresolvedMethodTarget(String symbol) {
+        String name = methodName(symbol);
+        int arity = methodArity(symbol);
+        return name.isBlank() || arity < 0 ? "" : "unresolved:method:" + name + "/" + arity;
+    }
+
+    private static int methodArity(String symbol) {
+        int open = symbol.indexOf('(');
+        int close = symbol.lastIndexOf(')');
+        if (open < 0 || close < open) {
+            return -1;
+        }
+        String parameters = symbol.substring(open + 1, close).trim();
+        if (parameters.isEmpty()) {
+            return 0;
+        }
+        int depth = 0;
+        int count = 1;
+        for (int i = 0; i < parameters.length(); i++) {
+            char c = parameters.charAt(i);
+            if (c == '<') depth++;
+            else if (c == '>') depth = Math.max(0, depth - 1);
+            else if (c == ',' && depth == 0) count++;
+        }
+        return count;
+    }
+
+    private static String fieldName(String symbol) {
+        int hash = symbol.lastIndexOf('#');
+        return hash >= 0 ? symbol.substring(hash + 1) : symbol;
+    }
+
+    private static String pathKind(String input) {
+        try {
+            JsonNode root = JSON.readTree(input == null ? "" : input);
+            return root.path("path_kind").asText("").trim();
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static String simpleTypeName(ClassOrInterfaceType type) {
+        String value = type.getNameWithScope();
+        int separator = value.lastIndexOf('.');
+        return separator >= 0 ? value.substring(separator + 1) : value;
+    }
+
+    private static String typeName(String symbol) {
+        int separator = symbol.lastIndexOf('.');
+        return separator >= 0 ? symbol.substring(separator + 1) : symbol;
     }
 
     private static void addAnnotationEdges(

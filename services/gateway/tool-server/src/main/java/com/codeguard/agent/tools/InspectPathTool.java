@@ -8,6 +8,7 @@ import com.codeguard.agent.graph.GraphEdgeKind;
 import com.codeguard.agent.graph.GraphNode;
 import com.codeguard.agent.graph.GraphNodeKind;
 import com.codeguard.agent.graph.ProjectSnapshot;
+import com.codeguard.agent.graph.ProjectSnapshotProvider;
 import com.codeguard.agent.graph.ResolutionStatus;
 import com.codeguard.agent.graph.SourceSet;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -26,9 +27,13 @@ public final class InspectPathTool implements AgentTool {
             "execute", "exec", "query", "deserialize", "readobject", "getruntime",
             "processbuilder", "urlconnection", "xmlreader", "scriptengine", "cipher");
 
-    private final CompletableFuture<ProjectSnapshot> snapshot;
+    private final ProjectSnapshotProvider snapshot;
 
     public InspectPathTool(CompletableFuture<ProjectSnapshot> snapshot) {
+        this.snapshot = (toolName, input) -> GraphToolSupport.await(snapshot);
+    }
+
+    public InspectPathTool(ProjectSnapshotProvider snapshot) {
         this.snapshot = snapshot;
     }
 
@@ -68,7 +73,8 @@ public final class InspectPathTool implements AgentTool {
             return ToolResult.error("invalid_max_depth");
         }
         try {
-            ProjectSnapshot value = GraphToolSupport.await(snapshot);
+            ProjectSnapshot value = snapshot.load(name(), input);
+            symbol = GraphToolSupport.canonicalSymbol(value, symbol);
             ToolResult result = pathKind.equals("security")
                     ? securityPath(value, symbol, maxDepth)
                     : behaviorPath(value, symbol, maxDepth);
