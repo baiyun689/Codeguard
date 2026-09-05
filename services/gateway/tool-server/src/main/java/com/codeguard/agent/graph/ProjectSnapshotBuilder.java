@@ -44,6 +44,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 final class ProjectSnapshotBuilder {
@@ -161,6 +162,15 @@ final class ProjectSnapshotBuilder {
      */
     static ProjectSnapshot expand(ProjectSnapshot index, String toolName, String input)
             throws Exception {
+        return expand(index, toolName, input, new ProjectSemanticCache(256, java.time.Duration.ofMinutes(5)));
+    }
+
+    static ProjectSnapshot expand(
+            ProjectSnapshot index,
+            String toolName,
+            String input,
+            ProjectSemanticCache semanticCache
+    ) throws Exception {
         if (toolName.equals("get_file_content") || toolName.equals("resolve_change_context")) {
             return index;
         }
@@ -169,8 +179,8 @@ final class ProjectSnapshotBuilder {
             return index;
         }
         int maxDepth = toolName.equals("inspect_structure") ? 1 : maxDepth(input);
-        Map<String, CompilationUnit> resolvedUnits = new LinkedHashMap<>();
-        JavaParser parser = semanticParser(index);
+        Supplier<JavaParser> parserFactory = semanticCache.parserFactory(
+                semanticParserFactory(index));
         Set<String> frontier = new LinkedHashSet<>(Set.of(subject));
         GraphNode subjectNode = index.graph().node(subject).orElse(null);
         boolean securityPath = toolName.equals("inspect_path")
@@ -184,18 +194,22 @@ final class ProjectSnapshotBuilder {
                     .forEach(frontier::add);
         }
         Set<String> visited = new LinkedHashSet<>();
+        Set<String> resolvedFiles = new LinkedHashSet<>();
         List<GraphEdge> discovered = new ArrayList<>();
         int fileLimit = toolName.equals("inspect_change_impact") ? 64 : 24;
         boolean reverse = toolName.equals("inspect_change_impact");
         for (int depth = 0; depth < maxDepth && !frontier.isEmpty(); depth++) {
+            ensureNotInterrupted();
             Set<String> next = new LinkedHashSet<>();
             for (String current : frontier) {
+                ensureNotInterrupted();
                 if (!visited.add(current)) {
                     continue;
                 }
                 List<GraphEdge> edges = reverse
-                        ? resolveIncoming(index, current, resolvedUnits, parser, fileLimit)
-                        : resolveOutgoing(index, current, resolvedUnits, parser, fileLimit);
+                        ? resolveIncoming(index, current, semanticCache, parserFactory, fileLimit)
+                        : resolveOutgoing(
+                                index, current, semanticCache, parserFactory, fileLimit, resolvedFiles);
                 discovered.addAll(edges);
                 edges.stream()
                         .filter(edge -> edge.resolution() == ResolutionStatus.RESOLVED)
@@ -211,7 +225,7 @@ final class ProjectSnapshotBuilder {
                 && (subjectNode.kind() == GraphNodeKind.FIELD
                 || subjectNode.kind() == GraphNodeKind.TYPE))) {
             discovered.addAll(resolveIncoming(
-                    index, subject, resolvedUnits, parser, fileLimit));
+                    index, subject, semanticCache, parserFactory, fileLimit));
         }
         return withEdges(index, discovered);
     }
@@ -549,7 +563,7 @@ final class ProjectSnapshotBuilder {
         }
     }
 
-    private static JavaParser semanticParser(ProjectSnapshot index) {
+    private static Supplier<JavaParser> semanticParserFactory(ProjectSnapshot index) {
         CombinedTypeSolver delegate = new CombinedTypeSolver(new ReflectionTypeSolver(false));
         List<Path> files = index.sources().keySet().stream()
                 .map(index.key().repoRoot()::resolve)
@@ -558,7 +572,7 @@ final class ProjectSnapshotBuilder {
                 .forEach(path -> delegate.add(new JavaParserTypeSolver(path)));
         Set<String> projectTypes = new LinkedHashSet<>();
         index.astUnits().values().forEach(unit -> collectTypeNames(unit, projectTypes));
-        return new JavaParser(new ParserConfiguration()
+        return () -> new JavaParser(new ParserConfiguration()
                 .setLanguageLevel(ParserConfiguration.LanguageLevel.BLEEDING_EDGE)
                 .setStoreTokens(true)
                 .setAttributeComments(true)
@@ -569,63 +583,80 @@ final class ProjectSnapshotBuilder {
     private static List<GraphEdge> resolveOutgoing(
             ProjectSnapshot index,
             String symbol,
-            Map<String, CompilationUnit> resolvedUnits,
-            JavaParser parser,
-            int fileLimit
-    ) {
+            ProjectSemanticCache semanticCache,
+            Supplier<JavaParser> parserFactory,
+            int fileLimit,
+            Set<String> resolvedFiles
+    ) throws Exception {
         GraphNode node = index.graph().node(symbol).orElse(null);
-        if (node == null || node.file().isBlank() || resolvedUnits.size() >= fileLimit
-                && !resolvedUnits.containsKey(node.file())) {
+        if (node == null || node.file().isBlank()) {
             return List.of();
         }
-        CompilationUnit unit = resolvedUnits.computeIfAbsent(node.file(), file -> {
-            String source = index.sources().get(file);
-            if (source == null) {
-                return null;
-            }
-            try {
-                return parser.parse(source).getResult().orElse(null);
-            } catch (Exception ignored) {
-                return null;
-            }
-        });
-        if (unit == null) {
+        if (!resolvedFiles.contains(node.file()) && resolvedFiles.size() >= fileLimit) {
             return List.of();
         }
-        ProjectCodeGraph local = extractGraph(Map.of(node.file(), unit));
-        return local.edges().stream()
-                .filter(edge -> comparableSymbolId(edge.sourceId())
-                        .equals(comparableSymbolId(symbol)))
-                .toList();
+        ensureNotInterrupted();
+        try {
+            List<GraphEdge> edges = semanticCache.fileEdges(
+                            node.file(),
+                            () -> resolveFileEdges(index, node.file(), parserFactory))
+                    .stream()
+                    .filter(edge -> comparableSymbolId(edge.sourceId())
+                            .equals(comparableSymbolId(symbol)))
+                    .toList();
+            resolvedFiles.add(node.file());
+            return edges;
+        } catch (InterruptedException interrupted) {
+            throw interrupted;
+        } catch (Exception ignored) {
+            return List.of();
+        }
     }
 
     private static List<GraphEdge> resolveIncoming(
             ProjectSnapshot index,
             String target,
-            Map<String, CompilationUnit> resolvedUnits,
-            JavaParser parser,
+            ProjectSemanticCache semanticCache,
+            Supplier<JavaParser> parserFactory,
             int fileLimit
-    ) {
+    ) throws Exception {
         GraphNode targetNode = index.graph().node(target).orElse(null);
         if (targetNode == null) {
             return List.of();
         }
+        String incomingKey = target + "|" + fileLimit;
+        return semanticCache.incomingEdges(incomingKey, () -> resolveIncomingUncached(
+                index, target, targetNode, semanticCache, parserFactory, fileLimit));
+    }
+
+    private static List<GraphEdge> resolveIncomingUncached(
+            ProjectSnapshot index,
+            String target,
+            GraphNode targetNode,
+            ProjectSemanticCache semanticCache,
+            Supplier<JavaParser> parserFactory,
+            int fileLimit
+    ) throws Exception {
         String methodName = methodName(target);
         int arity = methodArity(target);
         String fieldName = fieldName(target);
         List<GraphEdge> result = new ArrayList<>();
-        // ProjectSnapshot 对外是只读 map，但其具体实现不承诺迭代顺序；按相对路径
-        // 排序后再应用 fileLimit，避免大仓库超限时因为 map 顺序变化而产生不同结果。
-        List<Map.Entry<String, CompilationUnit>> sourceUnits = index.astUnits().entrySet()
-                .stream()
-                .sorted(Map.Entry.comparingByKey())
-                .toList();
-        for (Map.Entry<String, CompilationUnit> entry : sourceUnits) {
-            if (resolvedUnits.size() >= fileLimit && !resolvedUnits.containsKey(entry.getKey())) {
+        String candidateKey = targetNode.kind() + "|" + methodName + "|" + arity
+                + "|" + fieldName + "|" + typeName(target);
+        List<String> candidateFiles = semanticCache.candidateFiles(
+                candidateKey,
+                () -> findCandidateFiles(index, target, targetNode, methodName, arity, fieldName));
+        int resolvedFiles = 0;
+        for (String file : candidateFiles) {
+            if (resolvedFiles >= fileLimit) {
                 break;
             }
-            CompilationUnit plain = entry.getValue();
+            ensureNotInterrupted();
             boolean candidate;
+            CompilationUnit plain = index.astUnits().get(file);
+            if (plain == null) {
+                continue;
+            }
             if (targetNode.kind() == GraphNodeKind.METHOD
                     || targetNode.kind() == GraphNodeKind.CONSTRUCTOR) {
                 candidate = plain.findAll(MethodCallExpr.class).stream().anyMatch(call ->
@@ -648,7 +679,20 @@ final class ProjectSnapshotBuilder {
             if (!candidate) {
                 continue;
             }
-            List<GraphEdge> edges = resolveFileEdges(index, entry.getKey(), resolvedUnits, parser);
+            List<GraphEdge> edges;
+            try {
+                edges = semanticCache.fileEdges(
+                        file,
+                        () -> resolveFileEdges(index, file, parserFactory));
+                resolvedFiles++;
+            } catch (InterruptedException interrupted) {
+                throw interrupted;
+            } catch (Exception ignored) {
+                // A file that cannot be semantically parsed must not consume
+                // the reverse-query file budget; continue to the next lexical
+                // candidate just as the old resolvedUnits path did.
+                continue;
+            }
             edges.stream()
                     .filter(edge -> comparableSymbolId(edge.targetId())
                             .equals(comparableSymbolId(target))
@@ -659,21 +703,71 @@ final class ProjectSnapshotBuilder {
         return result;
     }
 
+    private static List<String> findCandidateFiles(
+            ProjectSnapshot index,
+            String target,
+            GraphNode targetNode,
+            String methodName,
+            int arity,
+            String fieldName
+    ) throws Exception {
+        List<String> candidates = new ArrayList<>();
+        // ProjectSnapshot 对外是只读 map，但其具体实现不承诺迭代顺序；按相对路径
+        // 排序后再应用 fileLimit，避免大仓库超限时因为 map 顺序变化而产生不同结果。
+        List<Map.Entry<String, CompilationUnit>> sourceUnits = index.astUnits().entrySet()
+                .stream()
+                .sorted(Map.Entry.comparingByKey())
+                .toList();
+        for (Map.Entry<String, CompilationUnit> entry : sourceUnits) {
+            ensureNotInterrupted();
+            CompilationUnit plain = entry.getValue();
+            boolean candidate;
+            if (targetNode.kind() == GraphNodeKind.METHOD
+                    || targetNode.kind() == GraphNodeKind.CONSTRUCTOR) {
+                candidate = plain.findAll(MethodCallExpr.class).stream().anyMatch(call ->
+                        call.getNameAsString().equals(methodName)
+                                && call.getArguments().size() == arity);
+            } else if (targetNode.kind() == GraphNodeKind.FIELD) {
+                candidate = plain.findAll(NameExpr.class).stream().anyMatch(
+                        name -> name.getNameAsString().equals(fieldName))
+                        || plain.findAll(FieldAccessExpr.class).stream().anyMatch(
+                        field -> field.getNameAsString().equals(fieldName));
+            } else if (targetNode.kind() == GraphNodeKind.TYPE) {
+                candidate = plain.findAll(ClassOrInterfaceDeclaration.class).stream().anyMatch(
+                        declaration -> declaration.getExtendedTypes().stream()
+                                .anyMatch(type -> simpleTypeName(type).equals(typeName(target)))
+                                || declaration.getImplementedTypes().stream()
+                                .anyMatch(type -> simpleTypeName(type).equals(typeName(target))));
+            } else {
+                candidate = false;
+            }
+            if (candidate) {
+                candidates.add(entry.getKey());
+            }
+        }
+        return List.copyOf(candidates);
+    }
+
     private static List<GraphEdge> resolveFileEdges(
             ProjectSnapshot index,
             String file,
-            Map<String, CompilationUnit> resolvedUnits,
-            JavaParser parser
+            Supplier<JavaParser> parserFactory
     ) {
-        CompilationUnit unit = resolvedUnits.computeIfAbsent(file, path -> {
-            String source = index.sources().get(path);
-            try {
-                return source == null ? null : parser.parse(source).getResult().orElse(null);
-            } catch (Exception ignored) {
-                return null;
-            }
-        });
-        return unit == null ? List.of() : extractGraph(Map.of(file, unit)).edges();
+        String source = index.sources().get(file);
+        if (source == null) {
+            return List.of();
+        }
+        CompilationUnit unit = parserFactory.get().parse(source).getResult().orElse(null);
+        if (unit == null) {
+            throw new IllegalStateException("semantic parse failed: " + file);
+        }
+        return extractGraph(Map.of(file, unit)).edges();
+    }
+
+    private static void ensureNotInterrupted() throws InterruptedException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("lazy graph expansion interrupted");
+        }
     }
 
     private static String methodName(String symbol) {

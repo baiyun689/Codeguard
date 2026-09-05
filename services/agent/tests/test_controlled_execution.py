@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from types import SimpleNamespace
 
 from codeguard_agent.models.tasks import (
@@ -416,6 +418,61 @@ def test_executor_fairly_schedules_primary_step_for_each_work_item():
         "budget_exhausted",
         "budget_exhausted",
     ]
+
+
+def test_executor_runs_independent_evidence_steps_with_bounded_concurrency():
+    class DelayedGraphClient(_GraphClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.active = 0
+            self.max_active = 0
+            self._lock = threading.Lock()
+
+        def inspect_path(self, symbol_id: str, path_kind: str, max_depth: int = 3):
+            with self._lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            try:
+                time.sleep(0.05)
+                return super().inspect_path(symbol_id, path_kind, max_depth)
+            finally:
+                with self._lock:
+                    self.active -= 1
+
+    def item(index: int) -> WorkItem:
+        return WorkItem(
+            seed_id=f"seed-{index}",
+            reviewer=ReviewerKind.BEHAVIOR,
+            hypothesis="独立下游路径",
+            expected_mechanism="调用链需要确认",
+            evidence_steps=(
+                EvidenceStep(
+                    tool="inspect_path",
+                    subject_ref=f"s{index}",
+                    path_kind="behavior",
+                    max_depth=3,
+                ),
+            ),
+        )
+
+    plan = ReviewerGraphPlan(
+        reviewer=ReviewerKind.BEHAVIOR,
+        task_id="A.java#h0",
+        work_items=tuple(item(index) for index in range(3)),
+    )
+    client = DelayedGraphClient()
+    batch = ControlledEvidenceExecutor(
+        tool_client=client,
+        task=ReviewTask(id="A.java#h0", file="A.java", patch="+call", changed_lines=[2]),
+        symbol_context=_context(),
+        revision="r1",
+        initial_budget=3,
+        execute_concurrency=3,
+    ).execute((plan,))
+
+    assert len(batch.trace_refs) == 3
+    assert batch.catalog.tool_aliases() == ["T01", "T02", "T03"]
+    assert client.max_active >= 2
 
 
 def test_executor_prioritizes_distinct_graph_subjects_before_source_round():

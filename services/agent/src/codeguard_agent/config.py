@@ -114,6 +114,8 @@ class Settings:
     controlled_max_seeds_per_reviewer: int = 4
     controlled_max_seeds_per_task: int = 12
     controlled_max_knowledge_topics: int = 4
+    # 同一 task 内 Execute 对无依赖证据步骤的最大并发数。
+    controlled_execute_concurrency: int = 3
 
     @property
     def needs_api_key(self) -> bool:
@@ -198,6 +200,9 @@ class Settings:
         controlled_max_knowledge_topics = _nonnegative_int_env(
             "CODEGUARD_CONTROLLED_MAX_KNOWLEDGE_TOPICS", 4
         )
+        controlled_execute_concurrency = _positive_int_env(
+            "CODEGUARD_CONTROLLED_EXECUTE_CONCURRENCY", 3
+        )
         return cls(
             provider=provider,
             model=model,
@@ -228,6 +233,7 @@ class Settings:
             controlled_max_seeds_per_reviewer=controlled_max_seeds_per_reviewer,
             controlled_max_seeds_per_task=controlled_max_seeds_per_task,
             controlled_max_knowledge_topics=controlled_max_knowledge_topics,
+            controlled_execute_concurrency=controlled_execute_concurrency,
         )
 
     @classmethod

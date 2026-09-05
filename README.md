@@ -386,6 +386,7 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 | `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_REVIEWER` | `4` | 每个 reviewer/task 保留的初筛候选上限 |
 | `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_TASK` | `12` | 每个 task 的初筛候选硬上限 |
 | `CODEGUARD_CONTROLLED_MAX_KNOWLEDGE_TOPICS` | `4` | 每 task 知识主题上限 |
+| `CODEGUARD_CONTROLLED_EXECUTE_CONCURRENCY` | `3` | controlled 同一 task 内独立证据步骤的最大并发数；`1` 为串行 |
 | `CODEGUARD_TOOL_SERVER_PROJECT_ROOT` | 空 | 宿主 Agent 连接 Docker Gateway 时的容器项目根路径（Compose 通常为 `/workspace/projects`） |
 
 Compose 会设置打包部署所需的容器内部路径和端口，并在未显式设置时将

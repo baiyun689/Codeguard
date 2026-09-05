@@ -121,6 +121,13 @@ def test_phase2_budget_env_override(monkeypatch):
     assert settings.graph_build_timeout_seconds == 240
 
 
+def test_controlled_execute_concurrency_is_configurable(monkeypatch):
+    monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
+    monkeypatch.setenv("CODEGUARD_CONTROLLED_EXECUTE_CONCURRENCY", "5")
+
+    assert Settings.from_env().controlled_execute_concurrency == 5
+
+
 def test_local_html_trace_defaults_to_disabled(monkeypatch):
     monkeypatch.delenv("CODEGUARD_TRACE_ENABLED", raising=False)
     monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)

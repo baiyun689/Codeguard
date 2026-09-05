@@ -225,6 +225,7 @@ class CoordinatedDiscoveryToolClient:
         self._in_flight: dict[ToolKey, Future[ToolResponse]] = {}
         self._records: list[DiscoveryToolRecord] = []
         self._first_call_ids: dict[ToolKey, str] = {}
+        self._alias_counter = 0
         # 源码工具现在只接受 symbol_id。完整新增文件的 shortcut 仍由调用方
         # 显式传入对应的 resolved symbol IDs，避免根据 LLM 提供的路径猜测。
         self._complete_patch_keys = {
@@ -452,13 +453,8 @@ class CoordinatedDiscoveryToolClient:
         Artifact),与目录追加顺序一致,保证回显编号可被合成期引用。
         """
         with self._lock:
-            count = sum(
-                1
-                for record in self._records
-                if record.output
-                not in {COMPLETE_PATCH_RESULT, REPEATED_TOOL_RESULT}
-            )
-        return f"T{count:02d}"
+            self._alias_counter += 1
+            return f"T{self._alias_counter:02d}"
 
     def get_file_content(self, symbol_id: str) -> ToolResponse:
         symbol_id = unescape(symbol_id)

@@ -101,6 +101,7 @@ class PipelineOrchestrator:
         controlled_max_seeds_per_reviewer: int = 4,
         controlled_max_seeds_per_task: int = 12,
         controlled_max_knowledge_topics: int = 4,
+        controlled_execute_concurrency: int = 3,
     ) -> None:
         self._enable_summary = enable_summary
         self._review_budget = review_budget if review_budget is not None else ReviewBudget()
@@ -115,6 +116,7 @@ class PipelineOrchestrator:
         self._controlled_max_seeds_per_reviewer = controlled_max_seeds_per_reviewer
         self._controlled_max_seeds_per_task = controlled_max_seeds_per_task
         self._controlled_max_knowledge_topics = controlled_max_knowledge_topics
+        self._controlled_execute_concurrency = controlled_execute_concurrency
 
     def run(
         self,
@@ -176,6 +178,7 @@ class PipelineOrchestrator:
             controlled_max_seeds_per_reviewer=self._controlled_max_seeds_per_reviewer,
             controlled_max_seeds_per_task=self._controlled_max_seeds_per_task,
             controlled_max_knowledge_topics=self._controlled_max_knowledge_topics,
+            controlled_execute_concurrency=self._controlled_execute_concurrency,
         )
         initial: ReviewState = {
             "diff_text": diff_text,
@@ -196,6 +199,7 @@ class PipelineOrchestrator:
             "controlled_max_seeds_per_reviewer": self._controlled_max_seeds_per_reviewer,
             "controlled_max_seeds_per_task": self._controlled_max_seeds_per_task,
             "controlled_max_knowledge_topics": self._controlled_max_knowledge_topics,
+            "controlled_execute_concurrency": self._controlled_execute_concurrency,
         }
         if enabled_evidence_tools is not None:
             initial["enabled_evidence_tools"] = enabled_evidence_tools

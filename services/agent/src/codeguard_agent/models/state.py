@@ -105,6 +105,7 @@ class ReviewState(TypedDict, total=False):
     controlled_max_seeds_per_reviewer: int
     controlled_max_seeds_per_task: int
     controlled_max_knowledge_topics: int
+    controlled_execute_concurrency: int
     knowledge_route_plan: dict[str, KnowledgeRoutePlan]
     controlled_triage: dict[str, DirectTriageResult]
     controlled_graph_plans: dict[str, ReviewerGraphPlan]

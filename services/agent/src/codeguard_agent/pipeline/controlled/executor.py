@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from codeguard_agent.models.evidence import (
@@ -74,6 +75,7 @@ class ControlledEvidenceExecutor:
         enabled_tools: list[str] | None = None,
         initial_budget: int = 6,
         max_path_depth: int = 3,
+        execute_concurrency: int = 3,
         extra_symbol_ids: set[str] | frozenset[str] = frozenset(),
         seed_by_id: dict[str, CandidateSeed] | None = None,
     ) -> None:
@@ -84,6 +86,7 @@ class ControlledEvidenceExecutor:
         self._enabled_tools = set(enabled_tools) if enabled_tools is not None else None
         self._initial_budget = max(0, initial_budget)
         self._max_path_depth = max(1, min(3, max_path_depth))
+        self._execute_concurrency = max(1, min(8, execute_concurrency))
         self._extra_symbol_ids = set(extra_symbol_ids)
         # Internal scheduling metadata; it never changes the Gateway request.
         self._seed_by_id = dict(seed_by_id or {})
@@ -176,106 +179,158 @@ class ControlledEvidenceExecutor:
         # round-robin schedule preserves the declared order within each item,
         # while maximizing proof coverage when the bounded budget is smaller
         # than the total number of planned steps.
-        for item, step in _fair_plan_steps(
+        scheduled = _fair_plan_steps(
             plans,
             task=self._task,
             seed_by_id=self._seed_by_id,
-        ):
-            contract = get_tool_proof_contract(step.tool)
-            if contract is None:
-                executions.append(
-                    StepExecution(
+        )
+        step_ranks = {
+            (item.work_item_id, step.step_id): rank
+            for plan in plans
+            for item in plan.work_items
+            for rank, step in enumerate(_topological_steps(item.evidence_steps))
+        }
+        by_rank: dict[int, list[tuple[int, Any, EvidenceStep]]] = {}
+        for position, (item, step) in enumerate(scheduled):
+            by_rank.setdefault(
+                step_ranks.get((item.work_item_id, step.step_id), 0), []
+            ).append((position, item, step))
+
+        # Dependency layers remain sequential, while independent work items in
+        # a layer execute concurrently. This preserves declared evidence order
+        # and budget determinism without serializing every HTTP call.
+        result_by_position: dict[int, StepExecution] = {}
+        for rank in sorted(by_rank):
+            group = by_rank[rank]
+            actions: dict[tuple[str, str], tuple[int, Any, EvidenceStep, dict[str, Any]]] = {}
+            duplicate_positions: dict[
+                tuple[str, str], list[tuple[int, Any, EvidenceStep]]
+            ] = {}
+            for position, item, step in group:
+                contract = get_tool_proof_contract(step.tool)
+                if contract is None:
+                    result_by_position[position] = StepExecution(
                         item.work_item_id, step, "rejected", error="unknown_tool"
                     )
-                )
-                diagnostics.append(f"unknown_tool:{step.tool}")
-                continue
-            if self._enabled_tools is not None and step.tool not in self._enabled_tools:
-                executions.append(
-                    StepExecution(
+                    diagnostics.append(f"unknown_tool:{step.tool}")
+                    continue
+                if self._enabled_tools is not None and step.tool not in self._enabled_tools:
+                    result_by_position[position] = StepExecution(
                         item.work_item_id, step, "rejected", error="tool_disabled"
                     )
-                )
-                diagnostics.append(f"tool_disabled:{step.tool}")
-                continue
-            arguments: dict[str, Any] = {"symbol_id": step.subject_ref}
-            if step.tool == "inspect_path":
-                arguments.update(
-                    {
-                        "path_kind": step.path_kind,
-                        "max_depth": step.max_depth or self._max_path_depth,
-                    }
-                )
-            key = canonical_tool_key(step.tool, arguments)
-            if key in seen_keys:
-                # The shared cache has already captured this exact fact. Do not
-                # create another Gateway call or consume budget. Preserve the
-                # original payload on the step so ProofMatcher and the
-                # EvidencePack can reuse the fact, not just its alias.
-                payload, projected, _alias = cached_payloads.get(key, ("", "", ""))
-                executions.append(
-                    StepExecution(
+                    diagnostics.append(f"tool_disabled:{step.tool}")
+                    continue
+                arguments: dict[str, Any] = {"symbol_id": step.subject_ref}
+                if step.tool == "inspect_path":
+                    arguments.update(
+                        {
+                            "path_kind": step.path_kind,
+                            "max_depth": step.max_depth or self._max_path_depth,
+                        }
+                    )
+                key = canonical_tool_key(step.tool, arguments)
+                if key in seen_keys:
+                    if key in actions:
+                        duplicate_positions.setdefault(key, []).append((position, item, step))
+                        continue
+                    payload, projected, alias = cached_payloads.get(key, ("", "", ""))
+                    result_by_position[position] = StepExecution(
                         item.work_item_id,
                         step,
                         "reused",
                         raw_payload=payload,
                         projected_payload=projected,
-                        alias=_alias,
+                        alias=alias,
                     )
-                )
-                continue
-            if budget_used >= self._initial_budget:
-                executions.append(
-                    StepExecution(
+                    continue
+                if budget_used >= self._initial_budget:
+                    result_by_position[position] = StepExecution(
                         item.work_item_id,
                         step,
                         "budget_exhausted",
                         error="initial_budget_exhausted",
                     )
-                )
-                diagnostics.append("initial_budget_exhausted")
-                continue
-            seen_keys.add(key)
-            budget_used += 1
-            response = self._call(client, step, arguments)
-            raw = ""
-            if response.success:
-                # CoordinatedDiscoveryToolClient returns the projected
-                # reviewer message (including the Txx echo). The ledger
-                # record is the authoritative raw Gateway payload; do
-                # not feed the echo back into Projection/ProofMatcher.
-                latest_record = (
-                    client.trace_records[-1] if client.trace_records else None
-                )
-                raw = (
-                    latest_record.resolved_output
-                    if latest_record is not None and latest_record.resolved_output
-                    else response.result or ""
-                )
-            projected = ""
-            if raw:
-                projected = project_tool_payload(
-                    step.tool,
-                    raw,
-                    ProjectionAudience.REVIEWER,
-                    arguments=arguments,
-                    focus=focus,
-                ).content
-            status = "complete" if response.success else "failed"
-            executions.append(
-                StepExecution(
-                    work_item_id=item.work_item_id,
-                    step=step,
-                    status=status,
-                    raw_payload=raw,
-                    projected_payload=projected,
-                    error=response.error or "",
-                )
-            )
-            if raw:
-                cached_payloads[key] = (raw, projected, "")
+                    diagnostics.append("initial_budget_exhausted")
+                    continue
+                seen_keys.add(key)
+                budget_used += 1
+                actions[key] = (position, item, step, arguments)
 
-        capture = capture_tool_records(catalog, client.trace_records)
+            if actions:
+                with ThreadPoolExecutor(
+                    max_workers=min(self._execute_concurrency, len(actions)),
+                    thread_name_prefix="controlled-evidence",
+                ) as pool:
+                    futures = {
+                        key: pool.submit(
+                            self._run_call,
+                            client,
+                            coordinator,
+                            key,
+                            step,
+                            arguments,
+                            focus,
+                        )
+                        for key, (_position, _item, step, arguments) in actions.items()
+                    }
+                    for key, (position, item, step, arguments) in actions.items():
+                        response, raw, projected = futures[key].result()
+                        status = "complete" if response.success else "failed"
+                        result_by_position[position] = StepExecution(
+                            work_item_id=item.work_item_id,
+                            step=step,
+                            status=status,
+                            raw_payload=raw,
+                            projected_payload=projected,
+                            error=response.error or "",
+                        )
+                        if raw:
+                            cached_payloads[key] = (raw, projected, "")
+                        for duplicate_position, duplicate_item, duplicate_step in duplicate_positions.get(key, []):
+                            result_by_position[duplicate_position] = StepExecution(
+                                work_item_id=duplicate_item.work_item_id,
+                                step=duplicate_step,
+                                status="reused",
+                                raw_payload=raw,
+                                projected_payload=projected,
+                            )
+
+            executions.extend(result_by_position[position] for position, _item, _step in group)
+
+        # Tool calls finish in nondeterministic order once Execute is parallel.
+        # Re-sort records by the declared schedule before assigning Txx aliases
+        # so evidence references remain stable across equivalent runs.
+        schedule_order: dict[tuple[str, str], int] = {}
+        for position, (_item, step) in enumerate(scheduled):
+            key = canonical_tool_key(
+                step.tool,
+                {
+                    "symbol_id": step.subject_ref,
+                    **(
+                        {
+                            "path_kind": step.path_kind,
+                            "max_depth": step.max_depth or self._max_path_depth,
+                        }
+                        if step.tool == "inspect_path"
+                        else {}
+                    ),
+                },
+            )
+            schedule_order.setdefault(key, position)
+        ordered_records = tuple(
+            record
+            for _index, record in sorted(
+                enumerate(client.trace_records),
+                key=lambda pair: (
+                    schedule_order.get(
+                        canonical_tool_key(pair[1].tool, pair[1].arguments),
+                        len(schedule_order),
+                    ),
+                    pair[0],
+                ),
+            )
+        )
+        capture = capture_tool_records(catalog, ordered_records)
         alias_by_key: dict[tuple[str, str], str] = {}
         for alias, artifact_id in capture.catalog.alias_to_artifact_id.items():
             artifact = capture.catalog.artifacts.get(artifact_id)
@@ -318,6 +373,33 @@ class ControlledEvidenceExecutor:
             steps=with_aliases,
             diagnostics=tuple(diagnostics),
         )
+
+    @staticmethod
+    def _run_call(
+        client: CoordinatedDiscoveryToolClient,
+        coordinator: DiscoveryToolCoordinator,
+        key: tuple[str, str],
+        step: EvidenceStep,
+        arguments: dict[str, Any],
+        focus,
+    ) -> tuple[ToolResponse, str, str]:
+        try:
+            response = ControlledEvidenceExecutor._call(client, step, arguments)
+        except Exception as exc:  # noqa: BLE001
+            response = ToolResponse(success=False, error=str(exc))
+        raw = coordinator.first_payload_for(key) if response.success else ""
+        if response.success and not raw:
+            raw = response.result or ""
+        projected = ""
+        if raw:
+            projected = project_tool_payload(
+                step.tool,
+                raw,
+                ProjectionAudience.REVIEWER,
+                arguments=arguments,
+                focus=focus,
+            ).content
+        return response, raw, projected
 
     @staticmethod
     def _call(

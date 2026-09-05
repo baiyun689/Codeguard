@@ -183,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
             controlled_max_seeds_per_reviewer=settings.controlled_max_seeds_per_reviewer,
             controlled_max_seeds_per_task=settings.controlled_max_seeds_per_task,
             controlled_max_knowledge_topics=settings.controlled_max_knowledge_topics,
+            controlled_execute_concurrency=settings.controlled_execute_concurrency,
         )
 
         effective_thread_id = args.thread_id or str(uuid.uuid4())

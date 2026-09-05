@@ -1601,7 +1601,7 @@ def _select_delta_work_items(
     return {entry[0] for entry in selected[:budget]}
 
 
-def _controlled_review_node(llm, tool_client=None):
+def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int = 3):
     """执行受控 DirectTriage → GraphPlan → EvidenceExecutor 链。"""
 
     def _node(state: ReviewState) -> dict:
@@ -1758,6 +1758,9 @@ def _controlled_review_node(llm, tool_client=None):
                     enabled_tools=state.get("enabled_tools"),
                     initial_budget=state.get("controlled_initial_tool_budget", 6),
                     max_path_depth=state.get("controlled_max_path_depth", 3),
+                    execute_concurrency=state.get(
+                        "controlled_execute_concurrency", execute_concurrency
+                    ),
                     seed_by_id=graph_seeds_by_id,
                 ).execute(tuple(graph_plans_for_task))
                 all_trace_refs.extend(execution.trace_refs)
@@ -1913,6 +1916,9 @@ def _controlled_review_node(llm, tool_client=None):
                             enabled_tools=state.get("enabled_tools"),
                             initial_budget=state.get("controlled_delta_tool_budget", 2),
                             max_path_depth=state.get("controlled_max_path_depth", 3),
+                            execute_concurrency=state.get(
+                                "controlled_execute_concurrency", execute_concurrency
+                            ),
                             extra_symbol_ids=allowed_delta_symbols,
                         ).execute((
                             ReviewerGraphPlan(
@@ -2358,6 +2364,7 @@ def build_review_graph(
     controlled_max_seeds_per_reviewer: int = 4,
     controlled_max_seeds_per_task: int = 12,
     controlled_max_knowledge_topics: int = 4,
+    controlled_execute_concurrency: int = 3,
 ):
     """编译审查状态图。
 
@@ -2426,7 +2433,14 @@ def build_review_graph(
     # ── 模式特定节点 ──
     g.add_node("file_task_builder", _file_task_builder_node())
     if discovery_mode == "controlled":
-        g.add_node("controlled_review", _controlled_review_node(llm, tool_client=tool_client))
+        g.add_node(
+            "controlled_review",
+            _controlled_review_node(
+                llm,
+                tool_client=tool_client,
+                execute_concurrency=controlled_execute_concurrency,
+            ),
+        )
 
     if discovery_only:
         g.add_node("discovery_collector", _discovery_collector_node())
