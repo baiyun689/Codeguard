@@ -21,13 +21,27 @@ import java.util.concurrent.TimeUnit;
 
 final class GraphToolSupport {
     static final ObjectMapper JSON = new ObjectMapper();
-    private static final long BUILD_TIMEOUT_SECONDS = 120;
+    private static final long DEFAULT_BUILD_TIMEOUT_SECONDS = 120;
+    private static final long BUILD_TIMEOUT_SECONDS = configuredBuildTimeoutSeconds();
     private static final int MAX_SYMBOLS = 100;
     private static final int MAX_RELATIONSHIPS = 200;
     private static final int MAX_UNRESOLVED_RELATIONSHIPS = 20;
     private static final int SCHEMA_VERSION = 2;
 
     private GraphToolSupport() {}
+
+    private static long configuredBuildTimeoutSeconds() {
+        String raw = System.getenv("CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS");
+        if (raw == null || raw.isBlank()) {
+            return DEFAULT_BUILD_TIMEOUT_SECONDS;
+        }
+        try {
+            long value = Long.parseLong(raw.trim());
+            return value > 0 ? value : DEFAULT_BUILD_TIMEOUT_SECONDS;
+        } catch (NumberFormatException ignored) {
+            return DEFAULT_BUILD_TIMEOUT_SECONDS;
+        }
+    }
 
     static ProjectSnapshot await(CompletableFuture<ProjectSnapshot> future) throws Exception {
         return future.get(BUILD_TIMEOUT_SECONDS, TimeUnit.SECONDS);
