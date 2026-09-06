@@ -207,7 +207,7 @@ final class ProjectSnapshotBuilder {
                     continue;
                 }
                 List<GraphEdge> edges = reverse
-                        ? resolveIncoming(index, current, semanticCache, parserFactory, fileLimit)
+                        ? resolveIncoming(index, current, semanticCache, parserFactory, fileLimit, false)
                         : resolveOutgoing(
                                 index, current, semanticCache, parserFactory, fileLimit, resolvedFiles);
                 discovered.addAll(edges);
@@ -225,7 +225,8 @@ final class ProjectSnapshotBuilder {
                 && (subjectNode.kind() == GraphNodeKind.FIELD
                 || subjectNode.kind() == GraphNodeKind.TYPE))) {
             discovered.addAll(resolveIncoming(
-                    index, subject, semanticCache, parserFactory, fileLimit));
+                    index, subject, semanticCache, parserFactory, fileLimit,
+                    toolName.equals("inspect_structure")));
         }
         return withEdges(index, discovered);
     }
@@ -461,7 +462,7 @@ final class ProjectSnapshotBuilder {
     }
 
     /** 只生成声明、注解和框架入口节点；调用/字段/继承关系留给查询时解析。 */
-    private static ProjectCodeGraph extractIndexGraph(Map<String, CompilationUnit> units) {
+    static ProjectCodeGraph extractIndexGraph(Map<String, CompilationUnit> units) {
         List<GraphNode> nodes = new ArrayList<>();
         List<GraphEdge> edges = new ArrayList<>();
         Map<Node, String> symbolIds = new LinkedHashMap<>();
@@ -618,15 +619,17 @@ final class ProjectSnapshotBuilder {
             String target,
             ProjectSemanticCache semanticCache,
             Supplier<JavaParser> parserFactory,
-            int fileLimit
+            int fileLimit,
+            boolean structureOnly
     ) throws Exception {
         GraphNode targetNode = index.graph().node(target).orElse(null);
         if (targetNode == null) {
             return List.of();
         }
-        String incomingKey = target + "|" + fileLimit;
+        String incomingKey = target + "|" + fileLimit + "|" + structureOnly;
         return semanticCache.incomingEdges(incomingKey, () -> resolveIncomingUncached(
-                index, target, targetNode, semanticCache, parserFactory, fileLimit));
+                index, target, targetNode, semanticCache, parserFactory, fileLimit,
+                structureOnly));
     }
 
     private static List<GraphEdge> resolveIncomingUncached(
@@ -635,17 +638,15 @@ final class ProjectSnapshotBuilder {
             GraphNode targetNode,
             ProjectSemanticCache semanticCache,
             Supplier<JavaParser> parserFactory,
-            int fileLimit
+            int fileLimit,
+            boolean structureOnly
     ) throws Exception {
         String methodName = methodName(target);
         int arity = methodArity(target);
         String fieldName = fieldName(target);
         List<GraphEdge> result = new ArrayList<>();
-        String candidateKey = targetNode.kind() + "|" + methodName + "|" + arity
-                + "|" + fieldName + "|" + typeName(target);
-        List<String> candidateFiles = semanticCache.candidateFiles(
-                candidateKey,
-                () -> findCandidateFiles(index, target, targetNode, methodName, arity, fieldName));
+        String candidateKey = candidateKey(targetNode, methodName, arity, fieldName, target);
+        List<String> candidateFiles = semanticCache.indexedCandidateFiles(index, candidateKey);
         int resolvedFiles = 0;
         for (String file : candidateFiles) {
             if (resolvedFiles >= fileLimit) {
@@ -681,9 +682,16 @@ final class ProjectSnapshotBuilder {
             }
             List<GraphEdge> edges;
             try {
+                boolean targetMethod = targetNode.kind() == GraphNodeKind.METHOD
+                        || targetNode.kind() == GraphNodeKind.CONSTRUCTOR;
+                String edgeCacheKey = structureOnly && targetMethod
+                        ? "target:" + comparableSymbolId(target) + "|" + file
+                        : file;
                 edges = semanticCache.fileEdges(
-                        file,
-                        () -> resolveFileEdges(index, file, parserFactory));
+                        edgeCacheKey,
+                        () -> structureOnly && targetMethod
+                                ? resolveTargetMethodEdges(index, file, target, parserFactory)
+                                : resolveFileEdges(index, file, parserFactory));
                 resolvedFiles++;
             } catch (InterruptedException interrupted) {
                 throw interrupted;
@@ -703,49 +711,90 @@ final class ProjectSnapshotBuilder {
         return result;
     }
 
-    private static List<String> findCandidateFiles(
+    /**
+     * inspect_structure 只需要确认候选调用点是否指向目标方法。
+     * 不重新解析候选文件中的所有方法调用、字段访问和类型引用，避免一次一跳查询
+     * 退化成完整文件语义图构建。输出边仍由 JavaParser Symbol Solver 确认，词法索引
+     * 只负责筛选候选文件，不会制造 RESOLVED 关系。
+     */
+    private static List<GraphEdge> resolveTargetMethodEdges(
             ProjectSnapshot index,
+            String file,
             String target,
+            Supplier<JavaParser> parserFactory
+    ) {
+        String source = index.sources().get(file);
+        if (source == null) {
+            return List.of();
+        }
+        CompilationUnit unit;
+        try {
+            unit = parserFactory.get().parse(source).getResult().orElse(null);
+        } catch (Exception exception) {
+            return List.of();
+        }
+        if (unit == null) {
+            return List.of();
+        }
+        String methodName = methodName(target);
+        int arity = methodArity(target);
+        List<GraphEdge> result = new ArrayList<>();
+        for (MethodCallExpr call : unit.findAll(MethodCallExpr.class)) {
+            if (!call.getNameAsString().equals(methodName)
+                    || call.getArguments().size() != arity) {
+                continue;
+            }
+            String caller = enclosingCallableId(index.graph(), call, file);
+            if (caller == null) {
+                continue;
+            }
+            String targetId;
+            ResolutionStatus status;
+            try {
+                targetId = resolvedMethodId(call.resolve());
+                status = ResolutionStatus.RESOLVED;
+            } catch (Exception exception) {
+                targetId = "unresolved:method:" + methodName + "/" + arity;
+                status = ResolutionStatus.UNRESOLVED;
+            }
+            result.add(new GraphEdge(
+                    caller,
+                    targetId,
+                    GraphEdgeKind.CALLS,
+                    file,
+                    call.getBegin().map(position -> position.line).orElse(1),
+                    SourceSet.fromPath(file),
+                    status,
+                    "java-symbol-solver"));
+        }
+        return result;
+    }
+
+    private static String enclosingCallableId(ProjectCodeGraph graph, Node node, String file) {
+        int line = node.getBegin().map(position -> position.line).orElse(-1);
+        return graph.symbolsInFile(file).stream()
+                .filter(candidate -> candidate.kind() == GraphNodeKind.METHOD
+                        || candidate.kind() == GraphNodeKind.CONSTRUCTOR)
+                .filter(candidate -> candidate.startLine() <= line && candidate.endLine() >= line)
+                .min(Comparator.comparingInt(candidate ->
+                        candidate.endLine() - candidate.startLine()))
+                .map(GraphNode::id)
+                .orElse(null);
+    }
+
+    private static String candidateKey(
             GraphNode targetNode,
             String methodName,
             int arity,
-            String fieldName
-    ) throws Exception {
-        List<String> candidates = new ArrayList<>();
-        // ProjectSnapshot 对外是只读 map，但其具体实现不承诺迭代顺序；按相对路径
-        // 排序后再应用 fileLimit，避免大仓库超限时因为 map 顺序变化而产生不同结果。
-        List<Map.Entry<String, CompilationUnit>> sourceUnits = index.astUnits().entrySet()
-                .stream()
-                .sorted(Map.Entry.comparingByKey())
-                .toList();
-        for (Map.Entry<String, CompilationUnit> entry : sourceUnits) {
-            ensureNotInterrupted();
-            CompilationUnit plain = entry.getValue();
-            boolean candidate;
-            if (targetNode.kind() == GraphNodeKind.METHOD
-                    || targetNode.kind() == GraphNodeKind.CONSTRUCTOR) {
-                candidate = plain.findAll(MethodCallExpr.class).stream().anyMatch(call ->
-                        call.getNameAsString().equals(methodName)
-                                && call.getArguments().size() == arity);
-            } else if (targetNode.kind() == GraphNodeKind.FIELD) {
-                candidate = plain.findAll(NameExpr.class).stream().anyMatch(
-                        name -> name.getNameAsString().equals(fieldName))
-                        || plain.findAll(FieldAccessExpr.class).stream().anyMatch(
-                        field -> field.getNameAsString().equals(fieldName));
-            } else if (targetNode.kind() == GraphNodeKind.TYPE) {
-                candidate = plain.findAll(ClassOrInterfaceDeclaration.class).stream().anyMatch(
-                        declaration -> declaration.getExtendedTypes().stream()
-                                .anyMatch(type -> simpleTypeName(type).equals(typeName(target)))
-                                || declaration.getImplementedTypes().stream()
-                                .anyMatch(type -> simpleTypeName(type).equals(typeName(target))));
-            } else {
-                candidate = false;
-            }
-            if (candidate) {
-                candidates.add(entry.getKey());
-            }
-        }
-        return List.copyOf(candidates);
+            String fieldName,
+            String target
+    ) {
+        return switch (targetNode.kind()) {
+            case METHOD, CONSTRUCTOR -> "METHOD|" + methodName + "|" + arity;
+            case FIELD -> "FIELD|" + fieldName;
+            case TYPE -> "TYPE|" + typeName(target);
+            default -> targetNode.kind() + "|" + target;
+        };
     }
 
     private static List<GraphEdge> resolveFileEdges(

@@ -629,6 +629,27 @@ class GraphToolsTest {
     }
 
     @Test
+    void lazyStructureQueryKeepsResolvedIncomingCaller(@TempDir Path repo) throws Exception {
+        Files.writeString(repo.resolve("Service.java"), """
+                class Service { void run() { helper(); } void helper() {} }
+                """);
+        Files.writeString(repo.resolve("Caller.java"), """
+                class Caller { void call(Service service) { service.run(); } }
+                """);
+
+        ProjectSnapshot expanded = new ProjectSnapshotManager()
+                .lazyProvider(ProjectKey.of(repo, "lazy-structure-incoming"))
+                .load("inspect_structure", "java:Service#run()");
+
+        assertTrue(expanded.graph().incoming("java:Service#run()", GraphEdgeKind.CALLS)
+                        .stream()
+                        .anyMatch(edge -> edge.file().endsWith("Caller.java")),
+                expanded.graph().edges().toString());
+        assertTrue(expanded.graph().outgoing("java:Service#helper()", GraphEdgeKind.CALLS)
+                        .isEmpty());
+    }
+
+    @Test
     void lazyProviderSingleFlightsAndCachesSuccessfulQuery(@TempDir Path repo)
             throws Exception {
         Files.writeString(repo.resolve("Service.java"), """

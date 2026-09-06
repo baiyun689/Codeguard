@@ -13,12 +13,14 @@ import java.util.concurrent.TimeoutException;
  * <p>同一个 revision 只共享轻量 SourceIndex；每个规范化查询最多执行一次局部语义
  * 扩展。提供器不把局部快照写回共享索引，避免不同 reviewer 的查询顺序改变彼此结果。</p>
  */
-final class LazyProjectSnapshotProvider implements ProjectSnapshotProvider {
+final class LazyProjectSnapshotProvider implements ProjectSnapshotProvider, SourceSnapshotProvider {
     private final ProjectSnapshotManager manager;
     private final ProjectKey key;
     private final ProjectSemanticCache semanticCache;
     private final Duration queryTimeout;
     private final Map<String, CompletableFuture<ProjectSnapshot>> queries =
+            new ConcurrentHashMap<>();
+    private final Map<String, CompletableFuture<ProjectSnapshot>> sourceQueries =
             new ConcurrentHashMap<>();
 
     LazyProjectSnapshotProvider(ProjectSnapshotManager manager, ProjectKey key) {
@@ -73,6 +75,53 @@ final class LazyProjectSnapshotProvider implements ProjectSnapshotProvider {
             Thread.currentThread().interrupt();
             query.cancel(true);
             queries.remove(queryKey, query);
+            throw exception;
+        } catch (java.util.concurrent.ExecutionException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof Exception checked) {
+                throw checked;
+            }
+            throw exception;
+        }
+    }
+
+    /**
+     * 源码读取的快速路径：只定位并解析 symbol 所在文件，不等待全项目轻量索引。
+     * 失败时返回带诊断的空快照，由 GetFileContentTool 按原有 symbol_not_found 合同处理。
+     */
+    @Override
+    public ProjectSnapshot loadSource(String input) throws Exception {
+        String queryKey = input == null ? "" : input.trim();
+        CompletableFuture<ProjectSnapshot> query = sourceQueries.computeIfAbsent(queryKey, ignored -> {
+            ProjectSnapshotManager.CancellableFuture<ProjectSnapshot> result =
+                    new ProjectSnapshotManager.CancellableFuture<>();
+            manager.submitCancellable(result, () -> SourceSnapshotBuilder.build(key, input));
+            return result;
+        });
+        query.whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                sourceQueries.remove(queryKey, query);
+            }
+        });
+        try {
+            ProjectSnapshot source = query.get(queryTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            // Framework entrypoint ids are not Java declaration ids and cannot be mapped
+            // from a type name suffix. Preserve the old complete-index behavior for them;
+            // ordinary java:* symbols stay on the source-only fast path.
+            if (source.sources().isEmpty()
+                    && !SourceSnapshotBuilder.symbolId(input).startsWith("java:")) {
+                return load("get_file_content", input);
+            }
+            return source;
+        } catch (TimeoutException exception) {
+            query.cancel(true);
+            sourceQueries.remove(queryKey, query);
+            throw new TimeoutException(
+                    "source query timed out after " + queryTimeout.toSeconds() + "s");
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            query.cancel(true);
+            sourceQueries.remove(queryKey, query);
             throw exception;
         } catch (java.util.concurrent.ExecutionException exception) {
             Throwable cause = exception.getCause();

@@ -7,6 +7,8 @@ import com.codeguard.agent.graph.GraphNodeKind;
 import com.codeguard.agent.graph.ProjectKey;
 import com.codeguard.agent.graph.ProjectSnapshot;
 import com.codeguard.agent.graph.ProjectSnapshotManager;
+import com.codeguard.agent.graph.ProjectSnapshotProvider;
+import com.codeguard.agent.graph.SourceSnapshotProvider;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -204,5 +206,59 @@ class GetFileContentToolTest {
         assertEquals("缺少 symbol_id", path.getError());
         assertFalse(unknown.isSuccess());
         assertEquals("symbol_not_found: java:demo.Missing", unknown.getError());
+    }
+
+    @Test
+    void lazyProductionProviderUsesSourceOnlyPath(@TempDir Path repo) throws Exception {
+        Path file = repo.resolve("src/main/java/demo/Service.java");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, """
+                package demo;
+                class Service { void run() { helper(); } void helper() {} }
+                """);
+
+        ProjectSnapshotProvider provider = new ProjectSnapshotManager()
+                .lazyProvider(com.codeguard.agent.graph.ProjectKey.of(repo, "source-fast"));
+        GetFileContentTool tool = new GetFileContentTool((SourceSnapshotProvider) provider);
+
+        ToolResult result = tool.execute(
+                query("java:demo.Service#run()"), new AgentContext(repo));
+
+        assertTrue(result.isSuccess(), result.getError());
+        assertTrue(result.getResult().contains("helper();"), result.getResult());
+
+        ToolResult typeResult = tool.execute(
+                query("java:demo.Service"), new AgentContext(repo));
+        assertTrue(typeResult.isSuccess(), typeResult.getError());
+        assertTrue(typeResult.getResult().contains("class Service"), typeResult.getResult());
+    }
+
+    @Test
+    void lazyProductionProviderPreservesFrameworkEntrypointFallback(@TempDir Path repo)
+            throws Exception {
+        Path file = repo.resolve("src/main/java/demo/Service.java");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, """
+                package demo;
+                class Service {
+                    @RequestMapping("/run")
+                    void run() {}
+                }
+                """);
+
+        ProjectSnapshotProvider provider = new ProjectSnapshotManager()
+                .lazyProvider(ProjectKey.of(repo, "framework-fallback"));
+        ProjectSnapshot index = provider.load(
+                "get_file_content", query("framework:placeholder"));
+        GraphNode entrypoint = index.graph().nodes().stream()
+                .filter(node -> node.kind() == GraphNodeKind.FRAMEWORK_ENTRYPOINT)
+                .findFirst()
+                .orElseThrow();
+        GetFileContentTool tool = new GetFileContentTool((SourceSnapshotProvider) provider);
+
+        ToolResult result = tool.execute(query(entrypoint.id()), new AgentContext(repo));
+
+        assertTrue(result.isSuccess(), result.getError());
+        assertTrue(result.getResult().contains("@RequestMapping"), result.getResult());
     }
 }
