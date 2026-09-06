@@ -44,7 +44,6 @@ _PROFILES = {
 _RETRY_CASES = {
     "gitbug-cloudsimplus-argument-order",
     "gitbug-quality-cbor-type",
-    "gitbug-s3-root-directories",
     "gitbug-dos-nbvcxz",
     "gitbug-epub-referenced-items",
     "gitbug-robots-unicode",
@@ -101,8 +100,13 @@ def match(issue: dict, bug: dict) -> bool:
 
 
 def load_runs(profile: str, retry_db: Path | None) -> dict[str, list[tuple[int, list[dict]]]]:
-    """{case_id: [(round_idx, issues), ...]};retry checkpoint 覆盖同 case 的旧轮次。"""
+    """{case_id: [(round_idx, issues), ...]};只加载当前启用 case。
+
+    checkpoint 文件可能是缩减评测集之前生成的历史结果。按当前 gold
+    集合过滤，避免被移出的 case 继续进入报告并污染报告数/Precision。
+    """
     files = list(_PROFILES[profile])
+    active_case_ids = set(load_case_gold())
     if retry_db is not None and profile == "direct":
         # 补跑仅针对 direct 空输出轮;full 保持原 checkpoint
         files.insert(0, retry_db.name)
@@ -115,6 +119,8 @@ def load_runs(profile: str, retry_db: Path | None) -> dict[str, list[tuple[int, 
         for case_runs in d.get("runs", []):
             for cr in case_runs:
                 cid = cr["case_id"]
+                if cid not in active_case_ids:
+                    continue
                 if profile == "direct" and retry_db is not None and cid in _RETRY_CASES and db != retry_db:
                     continue  # 该 case 已由 retry 轮次覆盖,忽略旧轮
                 out.setdefault(cid, []).append((len(out.get(cid, [])), cr.get("reported_issues") or []))

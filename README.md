@@ -450,7 +450,7 @@ mvn --batch-mode verify     # 构建全部四个子模块：shared、tool-server
 docker build -t codeguard:local .
 ```
 
-真实质量评测使用 `selected-20-v2` 的 20 个真实 Java 仓库；正式标答以各 case 的 `expected` 为准，另有
+真实质量评测使用 `selected-20-v2` 当前启用的 15 个精选真实 Java 仓库；正式标答以各 case 的 `expected` 为准，另有
 `planted-bugs.diff` 生成的 hunk 诊断记录用于辅助分析。评测 profile 覆盖 direct、ReviewCouncil、代码图谱和
 Plan-and-Execute 受控发现，具体 Recall、Precision、F1 与稳定性结果以评测报告为准。评测框架、profile 定义与报告见
 [`services/agent/evals/README.md`](services/agent/evals/README.md)。

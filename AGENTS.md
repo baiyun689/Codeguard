@@ -247,7 +247,7 @@ cd services/agent && conda run -n codeguard python -m pytest tests/ -q
 
 ### 评测框架(审查质量,量化"效果")★
 
-`evals/` 用"带标注的真实仓库数据集 + 统计指标"量化审查质量。`selected-20-v2` 评测集包含 20 个真实 Java 仓库、100 条 `case.yaml.expected` 已确认问题；`_bugs_gt.json` 中的 115 条是按 hunk 统计的变更区域诊断记录，不作为正式 Recall 分母(其中含未单独确认的附带改动)。它可按 profile 做编排/图谱/举证对照，但单独跑 Full 时应按上述正式标答统计。报告与 profile 定义见 `evals/README.md` 与 `evals/profiles.yaml`。
+`evals/` 用"带标注的真实仓库数据集 + 统计指标"量化审查质量。`selected-20-v2` 当前启用 15 个精选真实 Java 仓库、76 条 `case.yaml.expected` 已确认问题；`_bugs_gt.json` 中的 87 条是按 hunk 统计的变更区域诊断记录，不作为正式 Recall 分母(其中含未单独确认的附带改动)。它可按 profile 做编排/图谱/举证对照，但单独跑 Full 时应按上述正式标答统计。报告与 profile 定义见 `evals/README.md` 与 `evals/profiles.yaml`。其余 5 个原始 case 保存在 `evals/dataset/selected-20-v2/excluded-cases/`，不参与评测加载。
 
 ```bash
 cd services/agent && pip install -e . pyyaml

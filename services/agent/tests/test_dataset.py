@@ -135,6 +135,23 @@ def test_repo_yaml_inside_snapshot_not_picked_as_case(tmp_path):
     assert sorted(c.id for c in cases) == ["rb1", "v1"]
 
 
+def test_manifest_case_list_limits_benchmark_to_active_cases(tmp_path):
+    """manifest 白名单允许保留历史目录而不把它们纳入当前评测。"""
+    _write(tmp_path / "manifest.yaml", """
+        id: selected-fixture
+        cases:
+          - id: active
+    """)
+    for case_id in ("active", "excluded"):
+        case_dir = tmp_path / "cases" / case_id
+        _write(case_dir / "case.yaml", f"id: {case_id}\ncategory: logic\nexpected: []\n")
+        _write(case_dir / "changes.diff", "diff\n")
+        _write(case_dir / "repo" / "A.java", "class A {}\n")
+
+    cases = load_cases(tmp_path)
+    assert [case.id for case in cases] == ["active"]
+
+
 # --------- 复杂用例:Distractor 与向后兼容(eval-complex-behavior) ---------
 
 def test_distractors_缺省为空向后兼容():

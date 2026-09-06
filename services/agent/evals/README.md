@@ -3,8 +3,8 @@
 > 用「带标注的数据集 + 统计指标」量化审查质量,而不是用 `assert` 死磕不确定的 LLM 输出。
 > 跑出的指标用于在统一数据集上对照各 profile 的审查质量。
 
-正式的 60 例真实仓库素材库与 selected-20-v2 真实评测(每 case 植入 5-6 个 L3 深层 bug,2 轮 × 多 profile
-对照,人工按 planted bugs 计指标)见 `reports/selected-20-v2-real/`。`runner` 是统一跑批入口,
+正式的 60 例真实仓库素材库与 selected-20-v2 快速回归评测(当前启用 15 个精选 case，2 轮 × 多 profile
+对照,人工按正式标答计指标)见 `reports/selected-20-v2-real/`。`runner` 是统一跑批入口,
 `profiles.yaml` 声明被测编排(直接 diff / ReviewCouncil 全编排 / Plan-and-Execute 受控发现等)。
 
 ## 为什么需要它
@@ -82,14 +82,15 @@ Phase 2 最小样本包括：删除 `@PreAuthorize`、新增 repository update�
 (见 `dataset.py:_LOCAL_ONLY_DIRS`),选材/造 diff 时参考。`dataset/selected-20-v2/` 是已跑评测集
 (`manifest.yaml + cases/<case_id>/`,含 planted-bugs.diff 与 checkpoint 数据)。
 
-`selected-20-v2` 的正式评测口径是每个 `case.yaml` 中的 `expected`，当前共 100 条已确认问题。
-`cases/_bugs_gt.json` 是从 `planted-bugs.diff` 按 hunk 生成的 115 条变更区域诊断记录，包含未单独确认的
+`selected-20-v2` 的正式评测口径是当前启用 case 的 `case.yaml` 中的 `expected`，共 76 条已确认问题。
+`cases/_bugs_gt.json` 是从启用 case 的 `planted-bugs.diff` 按 hunk 生成的 87 条变更区域诊断记录，包含未单独确认的
 附带改动，只用于旧的 hunk/跨文件分析，不作为正式 Recall 分母。`recall_analyzer` 默认使用正式标答；
 只有显式传 `--gold hunks` 时才读取 hunk 诊断数据。
 
-该评测集的 20 个 case 全部是 `known-issue-only` 的漏洞/回归样本，没有 clean case 或 distractor，
+该评测集当前启用的 15 个 case 全部是 `known-issue-only` 的漏洞/回归样本，没有 clean case 或 distractor，
 因此报告中的 Precision 只能表示“未匹配已知标答的报告比例”，不能替代真实误报率。使用严格工具 profile
 时，运行器还会在建工具会话前校验 repo-backed 快照的内容是否干净且与 provenance 源码树一致。
+从正式集合暂时移出的 case 保存在 `dataset/selected-20-v2/excluded-cases/`，不参与加载，便于后续恢复或扩展。
 
 ## 指标含义
 
