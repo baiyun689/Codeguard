@@ -1709,6 +1709,7 @@ def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int =
             )
             graph_plans_for_task: list[Any] = []
             graph_seeds_by_id: dict[str, CandidateSeed] = {}
+            graph_plan_jobs: list[tuple[Any, ReviewerKind, tuple[CandidateSeed, ...]]] = []
             for reviewer_config in DEFAULT_REVIEWERS:
                 reviewer_kind = ReviewerKind(reviewer_config.source_agent)
                 reviewer_seeds = tuple(seeds_by_reviewer.get(reviewer_config.source_agent, ()))
@@ -1727,6 +1728,16 @@ def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int =
                 if not graph_seeds:
                     continue
                 graph_seeds_by_id.update({seed.seed_id: seed for seed in graph_seeds})
+
+                # GraphPlan calls are independent: they only consume the
+                # immutable triage output and do not mutate the evidence
+                # catalog or the shared execution budget.  Run the three
+                # reviewer plans concurrently, but collect them in the
+                # stable DEFAULT_REVIEWERS order below.
+                graph_plan_jobs.append((reviewer_config, reviewer_kind, graph_seeds))
+
+            def graph_plan_one(job):
+                reviewer_config, reviewer_kind, graph_seeds = job
                 graph_plan, diagnostics = run_graph_plan(
                     reviewer=reviewer_kind,
                     task_id=task.id,
@@ -1738,6 +1749,44 @@ def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int =
                     max_path_depth=state.get("controlled_max_path_depth", 3),
                     enabled_tools=state.get("enabled_tools"),
                 )
+                return reviewer_config, graph_plan, diagnostics
+
+            graph_plan_results = run_bounded_parallel(
+                graph_plan_jobs,
+                graph_plan_one,
+                max_workers=min(3, len(graph_plan_jobs)),
+            )
+            for job, result in zip(graph_plan_jobs, graph_plan_results):
+                reviewer_config, reviewer_kind, _graph_seeds = job
+                if result is None:
+                    # Preserve the pre-parallel failure semantics: an
+                    # unexpected worker exception gets one ordered retry
+                    # instead of silently dropping this reviewer's graph
+                    # candidates and reducing recall.
+                    try:
+                        result = graph_plan_one(job)
+                        traces.append(
+                            CouncilTrace(
+                                node="graph_plan",
+                                event="retry_after_parallel_failure",
+                                detail=(
+                                    f"task={task.id} reviewer={reviewer_config.source_agent}"
+                                ),
+                            )
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        traces.append(
+                            CouncilTrace(
+                                node="graph_plan",
+                                event="failed",
+                                detail=(
+                                    f"task={task.id} reviewer={reviewer_config.source_agent} "
+                                    f"reason=parallel_worker_failed:{type(exc).__name__}"
+                                ),
+                            )
+                        )
+                        continue
+                _reviewer_config, graph_plan, diagnostics = result
                 graph_plan_state[f"{task.id}:{reviewer_config.source_agent}"] = graph_plan
                 traces.extend(
                     CouncilTrace(
@@ -1768,6 +1817,13 @@ def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int =
                 delta_budget = max(0, int(state.get("controlled_delta_tool_budget", 2)))
                 delta_used_count = 0
                 replanned_work_items: set[str] = set()
+
+                # Initial assessment calls are also independent.  Compute all
+                # deterministic proof matches first, then run the LLM
+                # assessments concurrently.  Replan/delta execution remains
+                # in the stable reviewer order because it consumes the shared
+                # per-task delta budget and extends the evidence catalog.
+                assessment_jobs: list[tuple[Any, ReviewerKind, dict[str, CandidateSeed], dict[str, Any]]] = []
                 for graph_plan in graph_plans_for_task:
                     reviewer_kind = ReviewerKind(graph_plan.reviewer)
                     plan_seeds = {
@@ -1796,6 +1852,12 @@ def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int =
                         )
                         plan_proofs[work_item.work_item_id] = proof
                         proof_state[work_item.work_item_id] = proof
+                    assessment_jobs.append(
+                        (graph_plan, reviewer_kind, plan_seeds, plan_proofs)
+                    )
+
+                def assessment_one(job):
+                    graph_plan, reviewer_kind, plan_seeds, plan_proofs = job
                     assessments, assessment_diagnostics = run_evidence_assessment(
                         reviewer=reviewer_kind,
                         task_id=task.id,
@@ -1807,6 +1869,39 @@ def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int =
                         max_retries=state.get("max_retries", 3),
                         structured_method=state.get("structured_method", "function_calling"),
                     )
+                    return assessments, assessment_diagnostics
+
+                assessment_results = run_bounded_parallel(
+                    assessment_jobs,
+                    assessment_one,
+                    max_workers=min(3, len(assessment_jobs)),
+                )
+                for job, result in zip(assessment_jobs, assessment_results):
+                    graph_plan, reviewer_kind, plan_seeds, plan_proofs = job
+                    if result is None:
+                        # The normal assessment function already contains
+                        # provider/protocol fallbacks.  This extra ordered
+                        # retry only covers an exception escaping the worker
+                        # wrapper, keeping parallelism from changing the
+                        # candidate recall contract.
+                        try:
+                            result = assessment_one(job)
+                            traces.append(
+                                CouncilTrace(
+                                    node="evidence_assessment",
+                                    event="retry_after_parallel_failure",
+                                    detail=f"task={task.id} reviewer={reviewer_kind.value}",
+                                )
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            assessments = {}
+                            assessment_diagnostics = (
+                                f"assessment_parallel_worker_failed:{type(exc).__name__}",
+                            )
+                        else:
+                            assessments, assessment_diagnostics = result
+                    else:
+                        assessments, assessment_diagnostics = result
                     # A bounded Delta step is permitted per task. It may
                     # reference only a symbol returned by the initial graph facts;
                     # no recursive discovery or fuzzy symbol resolution is allowed.
