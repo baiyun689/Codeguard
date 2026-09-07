@@ -137,7 +137,7 @@ class EvalCase(BaseModel):
     difficulty: str = Field(default="standard", description="难度或能力场景标签")
     evidence_required: bool = Field(
         default=False,
-        description="历史兼容字段；当前只控制证据诊断统计，不影响 TP/FN/FP",
+        description="历史兼容字段；当前评测忽略",
     )
     provenance: CaseProvenance = Field(default_factory=CaseProvenance)
     diff: str = Field(description="unified diff 文本,喂给审查管线的输入")
