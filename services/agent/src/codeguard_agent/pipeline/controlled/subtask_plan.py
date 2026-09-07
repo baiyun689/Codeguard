@@ -282,7 +282,8 @@ def _validate_plan(
         seen_seed.add(item.seed_id)
     missing = [seed for seed in seeds.values() if seed.seed_id not in seen_seed]
     if missing and len(valid) < max_subtasks:
-        diagnostics.append(f"subtask_plan_missing_seeds:{len(missing)}")
+        missing_count = len(missing)
+        repaired_count = 0
         for seed in missing:
             fallback = _fallback_instruction(
                 reviewer,
@@ -296,9 +297,23 @@ def _validate_plan(
             if fallback is None:
                 continue
             valid.append(fallback)
+            repaired_count += 1
             seen_seed.add(seed.seed_id)
             if len(valid) >= max_subtasks:
                 break
+        if repaired_count:
+            diagnostics.append(
+                f"subtask_plan_missing_seeds_repaired:{repaired_count}"
+            )
+        if repaired_count < missing_count:
+            diagnostics.append(
+                f"subtask_plan_missing_seeds:{missing_count - repaired_count}"
+            )
+    elif missing:
+        # The provider returned more seeds than the configured executable
+        # capacity.  Keep this as an unresolved diagnostic; unlike the branch
+        # above no deterministic fallback instruction was installed.
+        diagnostics.append(f"subtask_plan_missing_seeds:{len(missing)}")
     return SubtaskPlan(reviewer=reviewer, task_id=task_id, subtasks=tuple(valid))
 
 

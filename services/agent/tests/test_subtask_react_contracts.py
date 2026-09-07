@@ -558,6 +558,65 @@ def test_subtask_plan_merges_duplicate_instructions_and_keeps_graph_reader_bundl
     assert any(item.startswith("subtask_duplicate_seed_merged:") for item in diagnostics)
 
 
+def test_subtask_plan_missing_seed_is_not_failure_when_fallback_repairs_it():
+    first = _seed().model_copy(update={"seed_id": "investigation-first"})
+    second = _seed().model_copy(update={
+        "seed_id": "investigation-second",
+        "location_line": 20,
+        "initial_symbol_ids": ("java:B#run()",),
+    })
+
+    class _Structured:
+        def invoke(self, _messages):
+            return SubtaskPlan(
+                reviewer=ReviewerKind.BEHAVIOR,
+                task_id="task-1",
+                subtasks=(SubtaskInstruction(
+                    subtask_id="provider-1",
+                    seed_id=first.seed_id,
+                    reviewer=ReviewerKind.BEHAVIOR,
+                    change_unit_id=first.change_unit_id,
+                    objective=first.investigation_question,
+                    observed_change=first.observed_change,
+                    initial_symbol_ids=("S01",),
+                    allowed_tools=("inspect_change_impact", "get_file_content"),
+                    primary_tool="inspect_change_impact",
+                ),),
+            )
+
+    class _LLM:
+        def with_structured_output(self, _schema, method=None):  # noqa: ARG002
+            return _Structured()
+
+    context = SimpleNamespace(symbols=(
+        ResolvedSymbol(
+            file="A.java", symbol_id="java:A#run()", kind="METHOD",
+            start_line=1, end_line=15, source_set="MAIN",
+        ),
+        ResolvedSymbol(
+            file="A.java", symbol_id="java:B#run()", kind="METHOD",
+            start_line=16, end_line=30, source_set="MAIN",
+        ),
+    ))
+    plan, diagnostics = run_subtask_plan(
+        reviewer=ReviewerKind.BEHAVIOR,
+        task=SimpleNamespace(id="task-1", file="src/A.java", patch="+return run();"),
+        seeds=(first, second),
+        symbol_context=context,
+        llm=_LLM(),
+        max_retries=1,
+        structured_method="function_calling",
+        max_tool_calls=4,
+        max_rounds=3,
+        max_subtasks=2,
+        max_path_depth=3,
+    )
+
+    assert len(plan.subtasks) == 2
+    assert "subtask_plan_missing_seeds_repaired:1" in diagnostics
+    assert not any(item.startswith("subtask_plan_missing_seeds:") for item in diagnostics)
+
+
 def test_subtask_budget_split_uses_remainder_without_zero_budget_tasks():
     assert _allocate_subtask_budgets(
         5,

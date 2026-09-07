@@ -2048,7 +2048,12 @@ def _controlled_review_node(
                         for diagnostic in diagnostics
                     )
                     if any(
-                        diagnostic.startswith("subtask_plan_missing_seeds")
+                        # A provider may omit one seed while the deterministic
+                        # validator installs its bounded fallback instruction.
+                        # That is a repaired protocol variation, not a task
+                        # failure.  Only the colon form means seeds remain
+                        # unplanned after fallback/capacity checks.
+                        diagnostic.startswith("subtask_plan_missing_seeds:")
                         or diagnostic.startswith("subtask_unknown_symbol")
                         or diagnostic.startswith("subtask_no_allowed_tool")
                         for diagnostic in diagnostics
