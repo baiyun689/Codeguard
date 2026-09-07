@@ -12,6 +12,7 @@ from codeguard_agent.models.tasks import (
     GraphQuestion,
     ProofMatchStatus,
     ProofScope,
+    ReviewTask,
     ReviewerKind,
     TaskSymbolContext,
 )
@@ -26,6 +27,7 @@ from codeguard_agent.pipeline.controlled import (
 from codeguard_agent.models.tasks.symbols import ResolvedSymbol, SymbolResolutionStatus
 from codeguard_agent.pipeline.controlled.graph_plan import run_graph_plan
 from codeguard_agent.pipeline.controlled.llm_contracts import LlmDirectTriageResult
+from codeguard_agent.pipeline.controlled.triage import _promote_ambiguous_local_seed
 
 
 def _seed(**updates) -> CandidateSeed:
@@ -60,6 +62,44 @@ def test_cross_file_seed_requires_graph_question():
         "evidence_need": EvidenceNeed.INSPECT_PATH,
     })
     assert route_seed(seed) == "graph_required"
+
+
+def test_ambiguous_local_external_claim_is_promoted_to_bounded_investigation():
+    seed = _seed(
+        claim="删除 super.parseFromLocalFileData 后，父类可能仍负责本类依赖的初始化",
+        mechanism="若父类方法执行了必要的数据保存逻辑，该逻辑会被跳过",
+        impact="可能导致本地数据状态不完整",
+        location_line=10,
+    )
+    context = TaskSymbolContext(
+        task_id="A.java#file",
+        status="resolved",
+        symbols=(
+            ResolvedSymbol(
+                file="A.java",
+                symbol_id="java:A#parse()",
+                kind="METHOD",
+                start_line=1,
+                end_line=20,
+                source_set="MAIN",
+            ),
+        ),
+    )
+    promoted, diagnostic = _promote_ambiguous_local_seed(
+        seed,
+        context,
+        task=ReviewTask(
+            id="A.java#file",
+            file="A.java",
+            patch="@@ -10 +10 @@\n-super.parseFromLocalFileData(data, offset, length);",
+            changed_lines=[10],
+        ),
+    )
+    assert promoted.proof_scope is ProofScope.STRUCTURAL
+    assert promoted.evidence_need is EvidenceNeed.INSPECT_STRUCTURE
+    assert promoted.graph_question is not None
+    assert promoted.graph_question.subject_ref == "java:A#parse()"
+    assert diagnostic == "local_scope_promoted_for_external_parent"
 
 
 def test_seed_ids_are_stable_and_llm_id_is_replaced():

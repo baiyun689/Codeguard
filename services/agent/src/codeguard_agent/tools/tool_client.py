@@ -31,6 +31,13 @@ class ToolResponse:
         """转成给 LLM Agent 看的字符串:成功给 result,失败显式标注 Error 让 Agent 能感知并调整。"""
         if self.success:
             return self.result or ""
+        # A bounded subtask must be able to close its investigation after the
+        # last permitted call.  CoordinatedDiscoveryToolClient attaches a
+        # short terminal instruction in ``result`` for that case while
+        # retaining the machine-readable ``error`` value for tracing/tests.
+        # Other failures keep the historical one-line representation.
+        if self.result:
+            return f"Error: {self.error or 'unknown error'}\n{self.result}"
         return f"Error: {self.error or 'unknown error'}"
 
 

@@ -32,6 +32,11 @@ GRAPH_DISCOVERY_TOOLS = frozenset({
 REPEATED_TOOL_RESULT = (
     "该工具和参数已经在当前对话中成功返回；请复用前述结果，不要重复读取。"
 )
+SUBTASK_BUDGET_TERMINAL_RESULT = (
+    "这是该子任务允许的最后一个工具窗口。立即停止调用任何工具并输出"
+    " InvestigationResult：只有已返回的 observation 能直接支持时才输出 findings；"
+    "否则输出 inconclusive。不要把工具预算不足当作 no_finding。"
+)
 COMPLETE_PATCH_RESULT = (
     "当前 task patch 已包含该新增文件的完整内容；请直接复用 patch，不要重复读取。"
 )
@@ -411,6 +416,11 @@ class CoordinatedDiscoveryToolClient:
             response = ToolResponse(
                 success=False,
                 error=close_error or "subtask_tool_budget_exceeded",
+                result=(
+                    SUBTASK_BUDGET_TERMINAL_RESULT
+                    if close_error == "subtask_tool_budget_exceeded"
+                    else None
+                ),
             )
             self._record(
                 tool_name,

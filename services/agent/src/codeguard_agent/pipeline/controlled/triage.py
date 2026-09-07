@@ -16,6 +16,7 @@ from codeguard_agent.models.tasks import (
     CoverageDecision,
     DirectTriageResult,
     EvidenceNeed,
+    GraphQuestion,
     InvestigationSeed,
     ProofScope,
     ReviewTask,
@@ -1094,6 +1095,13 @@ def run_direct_triage(
                     f"{seed.seed_id}:change_unit_alias_repaired:{seed.change_unit_id}"
                 )
                 seed = seed.model_copy(update={"change_unit_id": expected_ids[0]})
+        seed, external_promotion = _promote_ambiguous_local_seed(
+            seed,
+            symbol_context,
+            task=task,
+        )
+        if external_promotion:
+            diagnostics.append(f"{seed.seed_id}:{external_promotion}")
         seed = _normalize_graph_question(
             seed,
             symbol_context,
@@ -2192,6 +2200,139 @@ def _normalize_graph_question(
             "evidence_need": canonical_need,
         }
     )
+
+
+_EXTERNAL_DEPENDENCY_MARKERS = (
+    "super.",
+    "super(",
+    "父类",
+    "基类",
+    "父类方法",
+    "调用方",
+    "上游",
+    "下游",
+    "消费者",
+    "继承",
+    "接口实现",
+    "覆盖关系",
+    "listener",
+    "callback",
+    "跨文件",
+    "跨 symbol",
+    "调用链",
+)
+_EXTERNAL_UNCERTAINTY_MARKERS = (
+    "若",
+    "如果",
+    "可能",
+    "依赖",
+    "确认",
+    "是否",
+    "需要核验",
+    "could",
+    "might",
+    "if ",
+)
+
+
+def _promote_ambiguous_local_seed(
+    seed: CandidateSeed,
+    symbol_context: TaskSymbolContext | None,
+    *,
+    task: ReviewTask,
+) -> tuple[CandidateSeed, str]:
+    """Turn an under-specified local claim into a bounded graph investigation.
+
+    DirectTriage is allowed to describe a locally visible mechanism, but a
+    local proof is not sufficient when the same description says that a
+    superclass, caller, listener, or downstream consumer must be inspected.
+    Compatible providers occasionally omit the GraphQuestion in that shape.
+    This repair does not decide that a bug exists: it only preserves the
+    provider's claim, resolves the changed enclosing symbol from the already
+    built context, and creates the smallest executable question for GraphPlan.
+    """
+
+    if (
+        seed.proof_scope is not ProofScope.LOCAL
+        or seed.evidence_need is not EvidenceNeed.NONE
+        or seed.graph_question is not None
+    ):
+        return seed, ""
+    text = " ".join(
+        value for value in (seed.claim, seed.mechanism, seed.impact, seed.suggestion)
+        if value
+    ).lower()
+    if not any(marker.lower() in text for marker in _EXTERNAL_DEPENDENCY_MARKERS):
+        return seed, ""
+    if not any(marker.lower() in text for marker in _EXTERNAL_UNCERTAINTY_MARKERS):
+        return seed, ""
+    subject = _unique_changed_enclosing_symbol(
+        symbol_context,
+        task=task,
+        location_line=seed.location_line,
+    )
+    if not subject:
+        return seed, ""
+
+    parent_like = any(
+        marker in text
+        for marker in ("super.", "super(", "父类", "基类", "父类方法", "继承")
+    )
+    upstream_like = any(
+        marker in text
+        for marker in ("调用方", "上游", "caller", "upstream", "入口")
+    )
+    if parent_like:
+        question = GraphQuestion(
+            subject_ref=subject,
+            direction="upstream",
+            required_relationships=("EXTENDS", "OVERRIDES", "CALLS"),
+            max_depth=3,
+            question=(
+                "核验变更位置涉及的父类或基类实现是否包含被跳过的解析、"
+                "初始化或数据保存逻辑，以及该逻辑是否由当前方法覆盖。"
+            ),
+            evidence=seed.claim,
+        )
+        return seed.model_copy(update={
+            "proof_scope": ProofScope.STRUCTURAL,
+            "evidence_need": EvidenceNeed.INSPECT_STRUCTURE,
+            "graph_question": question,
+        }), "local_scope_promoted_for_external_parent"
+    if upstream_like:
+        question = GraphQuestion(
+            subject_ref=subject,
+            direction="upstream",
+            required_relationships=("CALLS",),
+            max_depth=3,
+            question=(
+                "核验变更后的异常、返回或状态行为是否被上游调用方依赖，"
+                "以及调用方如何处理该行为。"
+            ),
+            evidence=seed.claim,
+        )
+        return seed.model_copy(update={
+            "proof_scope": ProofScope.IMPACT,
+            "evidence_need": EvidenceNeed.INSPECT_CHANGE_IMPACT,
+            "graph_question": question,
+        }), "local_scope_promoted_for_external_caller"
+    question = GraphQuestion(
+        subject_ref=subject,
+        direction="downstream",
+        path_kind="behavior",
+        required_relationships=("CALLS",),
+        max_depth=3,
+        question=(
+            "核验变更后的状态、结果或调用顺序是否到达下游消费者、"
+            "listener 或 callback，并确认该关系是否形成可观察影响。"
+        ),
+        evidence=seed.claim,
+    )
+    return seed.model_copy(update={
+        "proof_scope": ProofScope.CROSS_FILE,
+        "evidence_need": EvidenceNeed.INSPECT_PATH,
+        "graph_question": question,
+    }), "local_scope_promoted_for_external_consumer"
 
 
 def _normalize_state_timing_question(

@@ -140,6 +140,7 @@ def test_subtask_tool_budget_is_enforced_before_delegate_call():
     assert client.budget_exhausted
     assert calls == [("java:A#run()", "behavior", 2)]
     assert client.tool_calls == 1
+    assert "立即停止调用任何工具" in second.as_tool_output()
 
     wrong_domain = client.inspect_path("java:A#run()", "security", 1)
     assert not wrong_domain.success
@@ -674,3 +675,55 @@ def test_rejected_budget_call_cannot_be_reported_as_no_finding():
     assert outcome.status == "inconclusive"
     assert outcome.reason == "tool_budget_exceeded"
     assert outcome.events == ["subtask_tool_budget_exceeded"]
+
+
+def test_findings_after_budget_rejection_keep_successful_observations():
+    class Client:
+        trace_records = ()
+        tool_calls = 1
+        budget_exhausted = True
+
+    instruction = SubtaskInstruction(
+        subtask_id="subtask-budget-findings",
+        seed_id="seed-budget-findings",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-task-1",
+        objective="检查返回行为",
+        observed_change="返回表达式发生变化",
+        initial_symbol_ids=("java:A#run()",),
+        allowed_tools=("get_file_content",),
+    )
+    engine = SubtaskReactEngine(Client(), max_tool_calls=2, max_rounds=2)
+    engine._run_agent = lambda *args: {
+        "structured_response": InvestigationResult(
+            subtask_id="subtask-budget-findings",
+            outcome="findings",
+            findings=(
+                InvestigationFinding(
+                    claim="返回行为改变并影响调用方",
+                    mechanism="工具返回的源码显示返回表达式已变化",
+                    location_file="src/A.java",
+                    location_line=12,
+                    observations=(
+                        InvestigationObservation(
+                            observation_id="T01", role="mechanism"
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    }
+
+    outcome = engine.run(
+        object(),
+        task=SimpleNamespace(file="src/A.java", patch="+return run();"),
+        symbol_context=SimpleNamespace(symbols=()),
+        instruction=instruction,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+
+    assert outcome.status == "complete"
+    assert outcome.reason == "tool_budget_exceeded_after_findings"
+    assert outcome.result is not None
+    assert outcome.result.outcome == "findings"

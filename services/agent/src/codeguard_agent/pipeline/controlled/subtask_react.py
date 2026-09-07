@@ -133,10 +133,27 @@ class SubtaskReactEngine:
                 records,
                 ["subtask_tool_budget_exceeded"],
             )
+        parsed = self._extract(raw)
+        # A provider may emit the terminal structured result immediately after
+        # the first rejected call.  Preserve a finding backed by the successful
+        # observations already captured; only ``no_finding`` remains unsafe
+        # after a budget rejection because the model may not have completed its
+        # negative search.
+        budget_hit = bool(getattr(self._tool_client, "budget_exhausted", False))
+        if budget_hit and parsed is not None and parsed.outcome == "findings":
+            if parsed.subtask_id != instruction.subtask_id:
+                parsed = parsed.model_copy(update={"subtask_id": instruction.subtask_id})
+            return SubtaskReactOutcome(
+                parsed,
+                "complete",
+                "tool_budget_exceeded_after_findings",
+                records,
+                ["subtask_react_findings_after_budget"],
+            )
         # The coordinator records rejected calls without incrementing its
-        # successful-call counter.  Inspect the explicit flag as well, or a
-        # model could turn a rejected final query into a false ``no_finding``.
-        if bool(getattr(self._tool_client, "budget_exhausted", False)):
+        # successful-call counter.  Do not let a rejected final query become a
+        # false ``no_finding`` or a normal completed result.
+        if budget_hit:
             return SubtaskReactOutcome(
                 None,
                 "inconclusive",
@@ -144,7 +161,6 @@ class SubtaskReactEngine:
                 records,
                 ["subtask_tool_budget_exceeded"],
             )
-        parsed = self._extract(raw)
         if parsed is None:
             return SubtaskReactOutcome(
                 None,
