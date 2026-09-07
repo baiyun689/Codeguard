@@ -8,7 +8,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from threading import Lock
 from time import perf_counter
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from codeguard_agent.pipeline.evidence.projection import (
@@ -222,6 +222,7 @@ class CoordinatedDiscoveryToolClient:
         lossless_payload: bool = False,
         max_tool_calls: int | None = None,
         max_path_depth: int = 3,
+        allowed_path_kind: Literal["behavior", "security"] | None = None,
         initial_symbol_ids: set[str] | frozenset[str] = frozenset(),
         symbol_catalog_ids: tuple[str, ...] = (),
     ) -> None:
@@ -251,6 +252,11 @@ class CoordinatedDiscoveryToolClient:
         self._budget_exhausted = False
         self._closed = False
         self._max_path_depth = max(1, min(3, max_path_depth))
+        if allowed_path_kind not in {None, "behavior", "security"}:
+            raise ValueError(
+                "allowed_path_kind must be 'behavior', 'security', or None"
+            )
+        self._allowed_path_kind = allowed_path_kind
         initial_ids = {
             unescape(symbol_id).strip()
             for symbol_id in initial_symbol_ids
@@ -708,6 +714,11 @@ class CoordinatedDiscoveryToolClient:
         symbol_id = raw_symbol_id
         if path_kind not in {"behavior", "security"}:
             return ToolResponse(success=False, error="invalid_path_kind")
+        if (
+            self._allowed_path_kind is not None
+            and path_kind != self._allowed_path_kind
+        ):
+            return ToolResponse(success=False, error="path_kind_not_allowed")
         if (
             not isinstance(max_depth, int)
             or isinstance(max_depth, bool)

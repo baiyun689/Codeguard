@@ -28,6 +28,10 @@ from codeguard_agent.pipeline.controlled.routing import (
     validate_coverage,
     validate_seed,
 )
+from codeguard_agent.pipeline.controlled.subtask_capabilities import (
+    coherent_tool_bundle,
+    normalize_investigation_seed,
+)
 from codeguard_agent.pipeline.controlled.llm_contracts import (
     LlmCandidateSeed,
     LlmCoverageDeclaration,
@@ -1022,53 +1026,47 @@ def run_direct_triage(
         "inspect_change_impact",
         "inspect_path",
     }
-    for seed in result.investigation_seeds:
-        if seed.reviewer is not reviewer:
-            diagnostics.append(f"{seed.seed_id}:investigation_reviewer_mismatch")
+    for investigation_seed in result.investigation_seeds:
+        investigation_seed = normalize_investigation_seed(investigation_seed)
+        if investigation_seed.reviewer is not reviewer:
+            diagnostics.append(
+                f"{investigation_seed.seed_id}:investigation_reviewer_mismatch"
+            )
             continue
-        if seed.change_unit_id not in set(expected_ids):
+        if investigation_seed.change_unit_id not in set(expected_ids):
             if len(expected_ids) == 1:
-                seed = seed.model_copy(update={"change_unit_id": expected_ids[0]})
-                diagnostics.append(f"{seed.seed_id}:investigation_change_unit_repaired")
+                investigation_seed = investigation_seed.model_copy(
+                    update={"change_unit_id": expected_ids[0]}
+                )
+                diagnostics.append(
+                    f"{investigation_seed.seed_id}:investigation_change_unit_repaired"
+                )
             else:
-                diagnostics.append(f"{seed.seed_id}:investigation_unknown_change_unit")
+                diagnostics.append(
+                    f"{investigation_seed.seed_id}:investigation_unknown_change_unit"
+                )
                 continue
-        if not set(seed.initial_symbol_ids).issubset(visible_symbol_ids):
-            diagnostics.append(f"{seed.seed_id}:investigation_unknown_symbol")
+        if not set(investigation_seed.initial_symbol_ids).issubset(visible_symbol_ids):
+            diagnostics.append(
+                f"{investigation_seed.seed_id}:investigation_unknown_symbol"
+            )
             continue
-        tools = tuple(tool for tool in seed.allowed_tools if tool in allowed_investigation_tools)
-        directional_tools = {
-            EvidenceNeed.INSPECT_PATH: {"inspect_path", "get_file_content"},
-            EvidenceNeed.INSPECT_CHANGE_IMPACT: {
-                "inspect_change_impact", "get_file_content"
-            },
-            EvidenceNeed.INSPECT_STRUCTURE: {
-                "inspect_structure", "get_file_content"
-            },
-        }.get(seed.evidence_need)
-        if directional_tools is not None:
-            tools = tuple(tool for tool in tools if tool in directional_tools)
-        # Structure is only a locator: it can identify a parent/field/type but
-        # does not include the method body needed to establish initialization,
-        # guards, ordering, or exception behavior.  Always make the source
-        # reader available for a structure investigation when the tool exists;
-        # GraphPlan/React may still stop after the one-hop fact if that is
-        # sufficient.  This is a capability correction, not a forced extra
-        # call.
-        if (
-            seed.evidence_need is EvidenceNeed.INSPECT_STRUCTURE
-            and "inspect_structure" in tools
-            and "get_file_content" not in tools
-            and len(tools) < 3
-        ):
-            tools = (*tools, "get_file_content")
-        tools = tuple(dict.fromkeys(tools))[:3]
-        if tools != seed.allowed_tools:
-            seed = seed.model_copy(update={"allowed_tools": tools})
+        tools = coherent_tool_bundle(
+            investigation_seed,
+            investigation_seed.allowed_tools,
+            domain_tools=allowed_investigation_tools,
+            max_tools=3,
+        )
+        if tools != investigation_seed.allowed_tools:
+            investigation_seed = investigation_seed.model_copy(
+                update={"allowed_tools": tools}
+            )
         if not tools:
-            diagnostics.append(f"{seed.seed_id}:investigation_no_allowed_tool")
+            diagnostics.append(
+                f"{investigation_seed.seed_id}:investigation_no_allowed_tool"
+            )
             continue
-        normalized_investigations.append(seed)
+        normalized_investigations.append(investigation_seed)
         if len(normalized_investigations) >= max_seeds_per_reviewer:
             diagnostics.append("investigation_seed_reviewer_limit")
             break

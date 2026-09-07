@@ -9,7 +9,6 @@ import json
 
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.tasks import (
-    EvidenceNeed,
     InvestigationSeed,
     ReviewerKind,
     SubtaskInstruction,
@@ -18,6 +17,11 @@ from codeguard_agent.models.tasks import (
 )
 from codeguard_agent.pipeline.controlled.graph_plan import DOMAIN_TOOL_ALLOWLIST
 from codeguard_agent.pipeline.controlled.llm_contracts import LlmSubtaskPlan
+from codeguard_agent.pipeline.controlled.subtask_capabilities import (
+    coherent_tool_bundle,
+    normalize_investigation_seed,
+    required_graph_tool,
+)
 
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts" / "controlled"
 _DOMAIN_PROMPTS = {
@@ -85,7 +89,7 @@ def build_subtask_plan_user_prompt(
         f"<symbol_context>\n{symbols}\n</symbol_context>\n"
         f"<investigation_seeds>\n{seed_text}\n</investigation_seeds>\n"
         f"允许工具：{allowed}\n"
-        "不要输出候选；每个 seed 至少给出一个 bounded SubtaskInstruction。"
+        "不要输出候选；每个 seed 恰好给出一个 bounded SubtaskInstruction。"
     )
 
 
@@ -105,15 +109,16 @@ def run_subtask_plan(
     enabled_tools: frozenset[str] | set[str] | None = None,
 ) -> tuple[SubtaskPlan, tuple[str, ...]]:
     diagnostics: list[str] = [f"subtask_plan_prompt_hash:{prompt_hash(reviewer)}"]
-    seed_by_id = {seed.seed_id: seed for seed in seeds if seed.seed_id}
-    if not seeds:
+    normalized_seeds = tuple(normalize_investigation_seed(seed) for seed in seeds)
+    seed_by_id = {seed.seed_id: seed for seed in normalized_seeds if seed.seed_id}
+    if not normalized_seeds:
         return SubtaskPlan(reviewer=reviewer, task_id=task.id, subtasks=()), tuple(diagnostics)
     if llm is None:
-        return _fallback_plan(reviewer, task.id, seeds, max_tool_calls, max_rounds, max_subtasks, max_path_depth, enabled_tools, diagnostics + ["subtask_plan_llm_unavailable"])
+        return _fallback_plan(reviewer, task.id, normalized_seeds, max_tool_calls, max_rounds, max_subtasks, max_path_depth, enabled_tools, diagnostics + ["subtask_plan_llm_unavailable"])
     prompt = build_subtask_plan_user_prompt(
         reviewer=reviewer,
         task=task,
-        seeds=seeds,
+        seeds=normalized_seeds,
         symbol_context=symbol_context,
         max_tool_calls=max_tool_calls,
         max_rounds=max_rounds,
@@ -131,7 +136,7 @@ def run_subtask_plan(
         plan = SubtaskPlan.model_validate(parsed.model_dump())
     except Exception as exc:  # noqa: BLE001
         diagnostics.append(f"subtask_plan_schema_failed:{type(exc).__name__}")
-        return _fallback_plan(reviewer, task.id, seeds, max_tool_calls, max_rounds, max_subtasks, max_path_depth, enabled_tools, diagnostics)
+        return _fallback_plan(reviewer, task.id, normalized_seeds, max_tool_calls, max_rounds, max_subtasks, max_path_depth, enabled_tools, diagnostics)
     normalized = _validate_plan(
         plan,
         reviewer=reviewer,
@@ -147,7 +152,7 @@ def run_subtask_plan(
     )
     if not normalized.subtasks:
         diagnostics.append("subtask_plan_empty_fallback")
-        return _fallback_plan(reviewer, task.id, seeds, max_tool_calls, max_rounds, max_subtasks, max_path_depth, enabled_tools, diagnostics)
+        return _fallback_plan(reviewer, task.id, normalized_seeds, max_tool_calls, max_rounds, max_subtasks, max_path_depth, enabled_tools, diagnostics)
     return normalized, tuple(diagnostics)
 
 
@@ -183,9 +188,6 @@ def _validate_plan(
         if seed is None or item.reviewer is not reviewer:
             diagnostics.append(f"subtask_rejected_seed_or_reviewer:{item.seed_id}")
             continue
-        if item.seed_id in seen_seed:
-            diagnostics.append(f"subtask_duplicate_seed:{item.seed_id}")
-            continue
         decoded_symbol_ids = tuple(
             alias_to_raw.get(symbol_ref, "")
             for symbol_ref in item.initial_symbol_ids
@@ -197,39 +199,14 @@ def _validate_plan(
         ):
             diagnostics.append(f"subtask_unknown_symbol:{item.seed_id}")
             continue
-        tools = tuple(dict.fromkeys(item.allowed_tools))
         domain = DOMAIN_TOOL_ALLOWLIST[reviewer]
-        seed_tools = set(seed.allowed_tools)
-        if enabled is not None:
-            tools = tuple(tool for tool in tools if tool in enabled)
-        tools = tuple(tool for tool in tools if tool in domain)
-        if seed_tools:
-            tools = tuple(tool for tool in tools if tool in seed_tools)
-        directional_tools = {
-            EvidenceNeed.INSPECT_PATH: {"inspect_path", "get_file_content"},
-            EvidenceNeed.INSPECT_CHANGE_IMPACT: {
-                "inspect_change_impact", "get_file_content",
-            },
-            EvidenceNeed.INSPECT_STRUCTURE: {
-                "inspect_structure", "get_file_content",
-            },
-        }.get(seed.evidence_need)
-        if directional_tools is not None:
-            tools = tuple(tool for tool in tools if tool in directional_tools)
-        # ``inspect_structure`` returns one-hop relationships and declarations,
-        # not the implementation body.  Keep the source reader available for
-        # parent-method/field-initialization questions instead of allowing a
-        # structure-only subtask to claim behavior it cannot observe.
-        if (
-            seed.evidence_need is EvidenceNeed.INSPECT_STRUCTURE
-            and "inspect_structure" in tools
-            and "get_file_content" not in tools
-            and "get_file_content" in domain
-            and (enabled is None or "get_file_content" in enabled)
-            and len(tools) < 3
-        ):
-            tools = (*tools, "get_file_content")
-        tools = tuple(dict.fromkeys(tools))[:3]
+        tools = coherent_tool_bundle(
+            seed,
+            item.allowed_tools,
+            domain_tools=domain,
+            enabled_tools=enabled,
+            max_tools=4,
+        )
         if not tools:
             diagnostics.append(f"subtask_no_allowed_tool:{item.seed_id}")
             continue
@@ -238,36 +215,151 @@ def _validate_plan(
         rounds = min(item.max_rounds, max_rounds)
         if depth < 0 or rounds < 1:
             continue
-        valid.append(
-            item.model_copy(
-                update={
-                    "subtask_id": f"subtask-{reviewer.value}-{task_id}-{len(valid)+1}",
-                    "reviewer": reviewer,
-                    "allowed_tools": tools,
-                    "initial_symbol_ids": decoded_symbol_ids,
-                    "primary_tool": primary,
-                    "max_tool_calls": depth,
-                    "max_rounds": rounds,
-                }
-            )
+        normalized_item = item.model_copy(
+            update={
+                "subtask_id": f"subtask-{reviewer.value}-{task_id}-{len(valid)+1}",
+                "reviewer": reviewer,
+                "allowed_tools": tools,
+                "initial_symbol_ids": decoded_symbol_ids,
+                "primary_tool": primary,
+                "path_kind": seed.path_kind,
+                "direction": seed.direction,
+                "max_tool_calls": depth,
+                "max_rounds": rounds,
+            }
         )
+        # Providers occasionally emit a second instruction for the same seed
+        # just to request a different tool.  Keep one continuous React and
+        # merge the capabilities/facts instead of creating disconnected
+        # graph-only and source-only subtasks.
+        duplicate_index = next(
+            (
+                index
+                for index, existing in enumerate(valid)
+                if existing.seed_id == normalized_item.seed_id
+            ),
+            None,
+        )
+        if duplicate_index is not None:
+            existing = valid[duplicate_index]
+            merged_tools = tuple(dict.fromkeys(
+                (*existing.allowed_tools, *normalized_item.allowed_tools)
+            ))[:4]
+            merged = existing.model_copy(update={
+                "allowed_tools": merged_tools,
+                "initial_symbol_ids": tuple(dict.fromkeys(
+                    (*existing.initial_symbol_ids, *normalized_item.initial_symbol_ids)
+                ))[:4],
+                "objective": _merge_instruction_text(
+                    existing.objective, normalized_item.objective
+                ),
+                "required_facts": tuple(dict.fromkeys(
+                    (*existing.required_facts, *normalized_item.required_facts)
+                ))[:6],
+                "stop_conditions": tuple(dict.fromkeys(
+                    (*existing.stop_conditions, *normalized_item.stop_conditions)
+                ))[:6],
+                "max_tool_calls": max(
+                    existing.max_tool_calls, normalized_item.max_tool_calls
+                ),
+                "max_rounds": max(existing.max_rounds, normalized_item.max_rounds),
+                "path_kind": existing.path_kind or normalized_item.path_kind,
+                "direction": existing.direction or normalized_item.direction,
+                "primary_tool": (
+                    existing.primary_tool
+                    if existing.primary_tool in merged_tools
+                    else _default_tool(seed, merged_tools)
+                ),
+            })
+            valid[duplicate_index] = merged
+            diagnostics.append(f"subtask_duplicate_seed_merged:{item.seed_id}")
+        else:
+            if len(valid) >= max_subtasks:
+                diagnostics.append("subtask_plan_task_limit")
+                seen_seed.add(item.seed_id)
+                continue
+            valid.append(normalized_item)
         seen_seed.add(item.seed_id)
-        if len(valid) >= max_subtasks:
-            diagnostics.append("subtask_plan_task_limit")
-            break
     missing = [seed for seed in seeds.values() if seed.seed_id not in seen_seed]
     if missing and len(valid) < max_subtasks:
         diagnostics.append(f"subtask_plan_missing_seeds:{len(missing)}")
+        for seed in missing:
+            fallback = _fallback_instruction(
+                reviewer,
+                task_id,
+                seed,
+                max_tool_calls=max_tool_calls,
+                max_rounds=max_rounds,
+                enabled_tools=enabled_tools,
+                subtask_index=len(valid) + 1,
+            )
+            if fallback is None:
+                continue
+            valid.append(fallback)
+            seen_seed.add(seed.seed_id)
+            if len(valid) >= max_subtasks:
+                break
     return SubtaskPlan(reviewer=reviewer, task_id=task_id, subtasks=tuple(valid))
 
 
+def _merge_instruction_text(left: str, right: str, *, limit: int = 420) -> str:
+    """Combine duplicate provider instructions without changing the objective."""
+
+    values: list[str] = []
+    for value in (left, right):
+        text = " ".join(str(value).split()).strip()
+        if text and text not in values:
+            values.append(text)
+    return "；".join(values)[:limit]
+
+
 def _default_tool(seed: InvestigationSeed, tools: tuple[str, ...]) -> str:
-    requested = {
-        EvidenceNeed.INSPECT_PATH: "inspect_path",
-        EvidenceNeed.INSPECT_CHANGE_IMPACT: "inspect_change_impact",
-        EvidenceNeed.INSPECT_STRUCTURE: "inspect_structure",
-    }.get(seed.evidence_need)
+    requested = required_graph_tool(seed)
     return requested if requested in tools else tools[0]
+
+
+def _fallback_instruction(
+    reviewer: ReviewerKind,
+    task_id: str,
+    seed: InvestigationSeed,
+    *,
+    max_tool_calls: int,
+    max_rounds: int,
+    enabled_tools: frozenset[str] | set[str] | None,
+    subtask_index: int,
+) -> SubtaskInstruction | None:
+    enabled = set(enabled_tools) if enabled_tools is not None else set(
+        DOMAIN_TOOL_ALLOWLIST[reviewer]
+    )
+    tools = coherent_tool_bundle(
+        seed,
+        seed.allowed_tools or tuple(DOMAIN_TOOL_ALLOWLIST[reviewer]),
+        domain_tools=DOMAIN_TOOL_ALLOWLIST[reviewer],
+        enabled_tools=enabled,
+        max_tools=4,
+    )
+    if not tools:
+        return None
+    return SubtaskInstruction(
+        subtask_id=f"subtask-{reviewer.value}-{task_id}-{subtask_index}",
+        seed_id=seed.seed_id,
+        reviewer=reviewer,
+        change_unit_id=seed.change_unit_id,
+        objective=seed.investigation_question,
+        observed_change=seed.observed_change,
+        initial_symbol_ids=seed.initial_symbol_ids,
+        allowed_tools=tools,
+        primary_tool=_default_tool(seed, tools),
+        path_kind=seed.path_kind,
+        direction=seed.direction,
+        required_facts=(seed.investigation_question,),
+        stop_conditions=(
+            "事实已直接支持或反驳调查问题",
+            "工具结果 partial 且预算耗尽时 inconclusive",
+        ),
+        max_tool_calls=min(max_tool_calls, 20),
+        max_rounds=min(max_rounds, 12),
+    )
 
 
 def _fallback_plan(
@@ -281,54 +373,20 @@ def _fallback_plan(
     enabled_tools: frozenset[str] | set[str] | None,
     diagnostics: list[str],
 ) -> tuple[SubtaskPlan, tuple[str, ...]]:
-    enabled = set(enabled_tools) if enabled_tools is not None else set(DOMAIN_TOOL_ALLOWLIST[reviewer])
     items: list[SubtaskInstruction] = []
     for seed in seeds[:max_subtasks]:
-        tools = tuple(
-            tool
-            for tool in (
-                seed.allowed_tools
-                or tuple(DOMAIN_TOOL_ALLOWLIST[reviewer])
-            )
-            if tool in enabled
+        item = _fallback_instruction(
+            reviewer,
+            task_id,
+            normalize_investigation_seed(seed),
+            max_tool_calls=max_tool_calls,
+            max_rounds=max_rounds,
+            enabled_tools=enabled_tools,
+            subtask_index=len(items) + 1,
         )
-        directional_tools = {
-            EvidenceNeed.INSPECT_PATH: {"inspect_path", "get_file_content"},
-            EvidenceNeed.INSPECT_CHANGE_IMPACT: {
-                "inspect_change_impact", "get_file_content",
-            },
-            EvidenceNeed.INSPECT_STRUCTURE: {
-                "inspect_structure", "get_file_content",
-            },
-        }.get(seed.evidence_need)
-        if directional_tools is not None:
-            tools = tuple(tool for tool in tools if tool in directional_tools)
-        if (
-            seed.evidence_need is EvidenceNeed.INSPECT_STRUCTURE
-            and "inspect_structure" in tools
-            and "get_file_content" not in tools
-            and "get_file_content" in enabled
-            and len(tools) < 3
-        ):
-            tools = (*tools, "get_file_content")
-        tools = tuple(dict.fromkeys(tools))[:3]
-        if not tools:
+        if item is None:
             continue
-        items.append(SubtaskInstruction(
-            subtask_id=f"subtask-{reviewer.value}-{task_id}-{len(items)+1}",
-            seed_id=seed.seed_id,
-            reviewer=reviewer,
-            change_unit_id=seed.change_unit_id,
-            objective=seed.investigation_question,
-            observed_change=seed.observed_change,
-            initial_symbol_ids=seed.initial_symbol_ids,
-            allowed_tools=tools,
-            primary_tool=_default_tool(seed, tools),
-            required_facts=(seed.investigation_question,),
-            stop_conditions=("事实已直接支持或反驳调查问题", "工具结果 partial 且预算耗尽时 inconclusive"),
-            max_tool_calls=min(max_tool_calls, 4),
-            max_rounds=min(max_rounds, 4),
-        ))
+        items.append(item)
     return SubtaskPlan(reviewer=reviewer, task_id=task_id, subtasks=tuple(items)), tuple(diagnostics + ["subtask_plan_deterministic_fallback"])
 
 

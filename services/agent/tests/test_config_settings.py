@@ -100,6 +100,9 @@ def test_unknown_discovery_mode_falls_back_to_controlled(monkeypatch):
 def test_phase2_budget_defaults(monkeypatch):
     monkeypatch.delenv("CODEGUARD_MAX_REVIEW_TASKS", raising=False)
     monkeypatch.delenv("CODEGUARD_MAX_TASKS_PER_FILE", raising=False)
+    monkeypatch.delenv("CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS", raising=False)
+    monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
 
     settings = Settings.from_env()
 
@@ -107,6 +110,7 @@ def test_phase2_budget_defaults(monkeypatch):
     assert settings.max_tasks_per_file == 10
     assert settings.graph_build_timeout_seconds == 120
     assert settings.controlled_max_seeds_per_change_unit == 4
+    assert settings.controlled_subtask_max_tool_calls == 6
 
 
 def test_phase2_budget_env_override(monkeypatch):

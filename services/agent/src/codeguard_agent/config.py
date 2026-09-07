@@ -119,7 +119,10 @@ class Settings:
     # 子任务 React 是新受控执行器；planned_steps 保持旧 GraphPlan→Execute
     # 兼容路径，subtask_react 启用“一子任务一局部 React”。
     controlled_execution_mode: str = "planned_steps"
-    controlled_subtask_max_tool_calls: int = 4
+    # A coherent graph+source investigation needs enough calls to locate a
+    # related symbol and then read its implementation.  The task budget still
+    # bounds the aggregate cost, and this remains configurable via env.
+    controlled_subtask_max_tool_calls: int = 6
     controlled_subtask_max_rounds: int = 4
     controlled_subtask_timeout_seconds: int = 120
     controlled_task_max_tool_calls: int = 24
@@ -222,7 +225,7 @@ class Settings:
             )
             controlled_execution_mode = "planned_steps"
         controlled_subtask_max_tool_calls = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS", 4
+            "CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS", 6
         )
         controlled_subtask_max_rounds = _positive_int_env(
             "CODEGUARD_CONTROLLED_SUBTASK_MAX_ROUNDS", 4

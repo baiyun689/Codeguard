@@ -305,11 +305,19 @@ class SubtaskInstruction(ControlledModel):
     objective: str = Field(min_length=1)
     observed_change: str = Field(min_length=1)
     initial_symbol_ids: tuple[str, ...] = Field(default=(), max_length=4)
-    allowed_tools: tuple[str, ...] = Field(default=(), max_length=3)
+    # A coherent investigation may need one directional graph tool plus the
+    # source reader.  ``primary_tool`` is only an ordering hint; runtime
+    # validation still enforces the domain/direction allowlist.
+    allowed_tools: tuple[str, ...] = Field(default=(), max_length=4)
     primary_tool: str = ""
+    # Runtime copies these routing constraints from the neutral seed.  They
+    # are not model-selected capabilities; they make the subtask contract
+    # visible in traces and let the tool client reject a wrong path domain.
+    path_kind: Literal["behavior", "security"] | None = None
+    direction: Literal["downstream", "upstream"] | None = None
     required_facts: tuple[str, ...] = Field(default=(), max_length=6)
     stop_conditions: tuple[str, ...] = Field(default=(), max_length=6)
-    max_tool_calls: StrictInt = Field(default=4, ge=0, le=20)
+    max_tool_calls: StrictInt = Field(default=6, ge=0, le=20)
     max_rounds: StrictInt = Field(default=4, ge=1, le=12)
 
 

@@ -390,7 +390,7 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 | `CODEGUARD_CONTROLLED_MAX_KNOWLEDGE_TOPICS` | `4` | 每 task 知识主题上限 |
 | `CODEGUARD_CONTROLLED_EXECUTE_CONCURRENCY` | `3` | controlled 同一 task 内独立证据步骤的最大并发数；`1` 为串行 |
 | `CODEGUARD_CONTROLLED_EXECUTION_MODE` | `planned_steps` | `planned_steps` 保持旧固定步骤兼容；`subtask_react` 启用按子任务运行的有界 React |
-| `CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS` | `4` | 单个调查子任务的工具调用上限 |
+| `CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS` | `6` | 单个调查子任务的工具调用上限 |
 | `CODEGUARD_CONTROLLED_SUBTASK_MAX_ROUNDS` | `4` | 单个调查子任务的 React 轮数上限 |
 | `CODEGUARD_CONTROLLED_SUBTASK_TIMEOUT_SECONDS` | `120` | 单个调查子任务的执行超时预算 |
 | `CODEGUARD_CONTROLLED_TASK_MAX_TOOL_CALLS` | `24` | 单 task 所有调查子任务共享的工具调用上限 |

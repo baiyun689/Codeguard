@@ -103,7 +103,7 @@ class PipelineOrchestrator:
         controlled_max_knowledge_topics: int = 4,
         controlled_execute_concurrency: int = 3,
         controlled_execution_mode: str = "planned_steps",
-        controlled_subtask_max_tool_calls: int = 4,
+        controlled_subtask_max_tool_calls: int = 6,
         controlled_subtask_max_rounds: int = 4,
         controlled_subtask_timeout_seconds: int = 120,
         controlled_task_max_tool_calls: int = 24,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from codeguard_agent.models.tasks import (
     EvidenceNeed,
     InvestigationFinding,
@@ -10,9 +12,16 @@ from codeguard_agent.models.tasks import (
     InvestigationSeed,
     ReviewerKind,
     SubtaskInstruction,
+    SubtaskPlan,
 )
+from codeguard_agent.models.tasks.symbols import ResolvedSymbol
 from codeguard_agent.pipeline.controlled.subtask_plan import run_subtask_plan
 from codeguard_agent.pipeline.controlled.subtask_grouping import group_investigation_seeds
+from codeguard_agent.pipeline.controlled.subtask_capabilities import (
+    coherent_tool_bundle,
+    normalize_investigation_seed,
+    requested_graph_tools,
+)
 from codeguard_agent.pipeline.orchestration.graph import _allocate_subtask_budgets
 from codeguard_agent.pipeline.controlled.subtask_react import SubtaskReactEngine
 from codeguard_agent.pipeline.execution.discovery import (
@@ -117,6 +126,7 @@ def test_subtask_tool_budget_is_enforced_before_delegate_call():
         DiscoveryToolCoordinator(),
         max_tool_calls=1,
         max_path_depth=2,
+        allowed_path_kind="behavior",
     )
     first = client.inspect_path("java:A#run()", "behavior", 2)
     second = client.inspect_path("java:A#run()", "behavior", 2)
@@ -130,6 +140,10 @@ def test_subtask_tool_budget_is_enforced_before_delegate_call():
     assert client.budget_exhausted
     assert calls == [("java:A#run()", "behavior", 2)]
     assert client.tool_calls == 1
+
+    wrong_domain = client.inspect_path("java:A#run()", "security", 1)
+    assert not wrong_domain.success
+    assert wrong_domain.error == "path_kind_not_allowed"
 
     depth_limited = CoordinatedDiscoveryToolClient(
         Delegate(),
@@ -162,6 +176,10 @@ def test_subtask_tools_accept_only_symbol_aliases_and_alias_graph_results():
                 ),
             )
 
+        def get_file_content(self, symbol_id, start_line=None, end_line=None):
+            calls.append(f"source:{symbol_id}")
+            return ToolResponse(success=True, result=f"source for {symbol_id}")
+
     client = CoordinatedDiscoveryToolClient(
         Delegate(),
         DiscoveryToolCoordinator(),
@@ -175,6 +193,9 @@ def test_subtask_tools_accept_only_symbol_aliases_and_alias_graph_results():
     assert calls == ["java:A#run()"]
     assert '"id":"R01"' in response.result
     assert '"targetId":"R01"' in response.result
+    source = client.get_file_content("R01")
+    assert source.success
+    assert calls == ["java:A#run()", "source:java:B#run()"]
     assert not unknown.success
     assert unknown.error == "symbol_ref_not_in_review_context"
     assert client.symbol_aliases["S01"] == "java:A#run()"
@@ -242,6 +263,250 @@ def test_behavior_and_security_path_seeds_are_not_merged():
     })
     assert len(groups) == 2
     assert {group.seed.path_kind for group in groups} == {"behavior", "security"}
+
+
+def test_same_anchor_structure_and_path_seeds_merge_into_one_coherent_investigation():
+    path_seed = _seed().model_copy(
+        update={
+            "seed_id": "investigation-behavior-path",
+            "location_line": 373,
+            "initial_symbol_ids": ("java:A#parse()",),
+            "evidence_need": EvidenceNeed.INSPECT_PATH,
+            "allowed_tools": ("inspect_path",),
+            "path_kind": "behavior",
+            "direction": "downstream",
+            "observed_change": "删除 super.parse() 调用",
+            "investigation_question": "检查 override 的调用关系",
+        }
+    )
+    structure_seed = path_seed.model_copy(
+        update={
+            "seed_id": "investigation-behavior-structure",
+            "evidence_need": EvidenceNeed.INSPECT_STRUCTURE,
+            "allowed_tools": ("get_file_content",),
+            "path_kind": None,
+            "direction": "upstream",
+            "investigation_question": "检查父类 parse() 是否写入状态",
+        }
+    )
+
+    groups = group_investigation_seeds({
+        ReviewerKind.BEHAVIOR: (path_seed, structure_seed),
+    })
+
+    assert len(groups) == 1
+    merged = groups[0].seed
+    assert set(merged.allowed_tools) == {"inspect_path", "get_file_content"}
+    assert merged.evidence_need is EvidenceNeed.INSPECT_PATH
+    assert merged.direction == "downstream"
+
+
+def test_subtask_capability_bundle_rejects_zero_budget_and_opposite_direction():
+    seed = _seed().model_copy(
+        update={
+            "evidence_need": EvidenceNeed.INSPECT_CHANGE_IMPACT,
+            "direction": "upstream",
+            "allowed_tools": (
+                "inspect_change_impact",
+                "inspect_path",
+                "get_file_content",
+            ),
+        }
+    )
+    assert coherent_tool_bundle(
+        seed,
+        seed.allowed_tools,
+        domain_tools=(
+            "inspect_change_impact",
+            "inspect_path",
+            "get_file_content",
+        ),
+        max_tools=0,
+    ) == ()
+    assert coherent_tool_bundle(
+        seed,
+        seed.allowed_tools,
+        domain_tools=(
+            "inspect_change_impact",
+            "inspect_path",
+            "get_file_content",
+        ),
+    ) == ("inspect_change_impact", "get_file_content")
+
+    contradictory = seed.model_copy(update={"direction": "downstream"})
+    assert coherent_tool_bundle(
+        contradictory,
+        contradictory.allowed_tools,
+        domain_tools=(
+            "inspect_change_impact",
+            "inspect_path",
+            "get_file_content",
+        ),
+    ) == ("get_file_content",)
+
+
+def test_requested_graph_tools_never_returns_both_traversal_directions():
+    seed = _seed().model_copy(update={
+        "evidence_need": EvidenceNeed.INSPECT_PATH,
+        "direction": "downstream",
+        "path_kind": "behavior",
+    })
+    assert requested_graph_tools(
+        seed,
+        ("inspect_path", "inspect_change_impact", "inspect_structure"),
+    ) == ("inspect_path", "inspect_structure")
+
+
+def test_discovery_client_rejects_invalid_allowed_path_kind():
+    with pytest.raises(ValueError, match="allowed_path_kind"):
+        CoordinatedDiscoveryToolClient(
+            object(),
+            DiscoveryToolCoordinator(),
+            allowed_path_kind="not-a-path-kind",
+        )
+
+
+def test_investigation_seed_path_contract_uses_reviewer_domain_and_direction():
+    omitted = _seed().model_copy(
+        update={
+            "evidence_need": EvidenceNeed.INSPECT_PATH,
+            "allowed_tools": ("inspect_path",),
+            "path_kind": None,
+            "direction": None,
+            "reviewer": ReviewerKind.THREAT_MODEL,
+        }
+    )
+    normalized = normalize_investigation_seed(omitted)
+    assert normalized.path_kind == "security"
+    assert normalized.direction == "downstream"
+
+    contradictory = omitted.model_copy(update={"direction": "upstream"})
+    normalized = normalize_investigation_seed(contradictory)
+    assert normalized.evidence_need is EvidenceNeed.INSPECT_CHANGE_IMPACT
+    assert normalized.path_kind is None
+    assert normalized.direction == "upstream"
+
+
+def test_opposite_direction_seeds_at_same_anchor_stay_separate():
+    downstream = _seed().model_copy(
+        update={
+            "seed_id": "investigation-downstream",
+            "evidence_need": EvidenceNeed.INSPECT_PATH,
+            "allowed_tools": ("inspect_path", "get_file_content"),
+            "path_kind": "behavior",
+            "direction": "downstream",
+        }
+    )
+    upstream = downstream.model_copy(
+        update={
+            "seed_id": "investigation-upstream",
+            "evidence_need": EvidenceNeed.INSPECT_CHANGE_IMPACT,
+            "allowed_tools": ("inspect_change_impact", "get_file_content"),
+            "path_kind": None,
+            "direction": "upstream",
+        }
+    )
+    groups = group_investigation_seeds({ReviewerKind.BEHAVIOR: (downstream, upstream)})
+    assert len(groups) == 2
+
+
+def test_security_path_does_not_merge_with_neutral_structure_companion():
+    security = _seed().model_copy(
+        update={
+            "seed_id": "investigation-security",
+            "evidence_need": EvidenceNeed.INSPECT_PATH,
+            "allowed_tools": ("inspect_path", "get_file_content"),
+            "path_kind": "security",
+            "direction": "downstream",
+        }
+    )
+    structure = security.model_copy(
+        update={
+            "seed_id": "investigation-structure",
+            "evidence_need": EvidenceNeed.INSPECT_STRUCTURE,
+            "allowed_tools": ("inspect_structure", "get_file_content"),
+            "path_kind": None,
+            "direction": None,
+        }
+    )
+    groups = group_investigation_seeds({ReviewerKind.THREAT_MODEL: (security, structure)})
+    assert len(groups) == 2
+
+
+def test_subtask_plan_merges_duplicate_instructions_and_keeps_graph_reader_bundle():
+    seed = _seed().model_copy(
+        update={
+            "seed_id": "investigation-behavior-parent",
+            "location_line": 373,
+            "initial_symbol_ids": ("java:A#parse()",),
+            "evidence_need": EvidenceNeed.INSPECT_STRUCTURE,
+            "allowed_tools": ("inspect_structure", "get_file_content"),
+        }
+    )
+
+    class _Structured:
+        def invoke(self, _messages):
+            return SubtaskPlan(
+                reviewer=ReviewerKind.BEHAVIOR,
+                task_id="task-1",
+                subtasks=(
+                    SubtaskInstruction(
+                        subtask_id="provider-1",
+                        seed_id=seed.seed_id,
+                        reviewer=ReviewerKind.BEHAVIOR,
+                        change_unit_id=seed.change_unit_id,
+                        objective=seed.investigation_question,
+                        observed_change=seed.observed_change,
+                        initial_symbol_ids=("S01",),
+                        allowed_tools=("inspect_structure",),
+                        primary_tool="inspect_structure",
+                        max_tool_calls=2,
+                        max_rounds=2,
+                    ),
+                    SubtaskInstruction(
+                        subtask_id="provider-2",
+                        seed_id=seed.seed_id,
+                        reviewer=ReviewerKind.BEHAVIOR,
+                        change_unit_id=seed.change_unit_id,
+                        objective="读取父类实现",
+                        observed_change=seed.observed_change,
+                        initial_symbol_ids=("S01",),
+                        allowed_tools=("get_file_content",),
+                        primary_tool="get_file_content",
+                        max_tool_calls=4,
+                        max_rounds=3,
+                    ),
+                ),
+            )
+
+    class _LLM:
+        def with_structured_output(self, _schema, method=None):  # noqa: ARG002
+            return _Structured()
+
+    context = SimpleNamespace(symbols=(ResolvedSymbol(
+        file="A.java", symbol_id="java:A#parse()", kind="METHOD",
+        start_line=1, end_line=5, source_set="MAIN",
+    ),))
+    plan, diagnostics = run_subtask_plan(
+        reviewer=ReviewerKind.BEHAVIOR,
+        task=SimpleNamespace(id="task-1", file="src/A.java", patch="+super.parse();"),
+        seeds=(seed,),
+        symbol_context=context,
+        llm=_LLM(),
+        max_retries=1,
+        structured_method="function_calling",
+        max_tool_calls=6,
+        max_rounds=4,
+        max_subtasks=4,
+        max_path_depth=3,
+    )
+
+    assert len(plan.subtasks) == 1
+    assert set(plan.subtasks[0].allowed_tools) == {
+        "inspect_structure", "get_file_content",
+    }
+    assert plan.subtasks[0].max_tool_calls == 4
+    assert any(item.startswith("subtask_duplicate_seed_merged:") for item in diagnostics)
 
 
 def test_subtask_budget_split_uses_remainder_without_zero_budget_tasks():

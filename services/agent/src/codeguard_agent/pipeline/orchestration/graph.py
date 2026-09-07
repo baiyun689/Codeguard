@@ -1792,7 +1792,7 @@ def _controlled_review_node(
     *,
     execute_concurrency: int = 3,
     controlled_execution_mode: str = "planned_steps",
-    subtask_max_tool_calls: int = 4,
+    subtask_max_tool_calls: int = 6,
     subtask_max_rounds: int = 4,
     subtask_timeout_seconds: int = 120,
     task_max_tool_calls: int = 24,
@@ -2127,6 +2127,7 @@ def _controlled_review_node(
                         lossless_payload=True,
                         max_tool_calls=per_subtask_budget,
                         max_path_depth=state.get("controlled_max_path_depth", 3),
+                        allowed_path_kind=instruction.path_kind,
                         initial_symbol_ids=set(instruction.initial_symbol_ids),
                         symbol_catalog_ids=tuple(
                             symbol.symbol_id
@@ -3022,7 +3023,7 @@ def build_review_graph(
     controlled_max_knowledge_topics: int = 4,
     controlled_execute_concurrency: int = 3,
     controlled_execution_mode: str = "planned_steps",
-    controlled_subtask_max_tool_calls: int = 4,
+    controlled_subtask_max_tool_calls: int = 6,
     controlled_subtask_max_rounds: int = 4,
     controlled_subtask_timeout_seconds: int = 120,
     controlled_task_max_tool_calls: int = 24,
