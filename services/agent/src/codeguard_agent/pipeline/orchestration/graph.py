@@ -71,6 +71,7 @@ from codeguard_agent.pipeline.controlled.assessment import (
 )
 from codeguard_agent.pipeline.controlled.executor import ControlledEvidenceExecutor
 from codeguard_agent.pipeline.controlled.graph_plan import (
+    graph_replan_reason,
     run_graph_replan,
     run_graph_plan,
 )
@@ -1601,6 +1602,45 @@ def _select_delta_work_items(
     return {entry[0] for entry in selected[:budget]}
 
 
+def _approved_replan_symbols(
+    *,
+    work_item: Any,
+    seed: CandidateSeed,
+    symbol_context: Any,
+) -> tuple[set[str], set[str]]:
+    """Return only task-resolved IDs that Delta may use after projection loss.
+
+    GraphPlan has already validated every initial step against this context.
+    Reusing those IDs is therefore a bounded continuation of the original
+    plan, not a way to expose omitted/raw Gateway symbols to the model.
+    """
+
+    context_symbols = {
+        symbol.symbol_id: symbol
+        for symbol in (symbol_context.symbols if symbol_context is not None else ())
+        if symbol.symbol_id
+    }
+    question = seed.graph_question
+    candidate_ids = tuple(
+        (
+            (question.subject_ref,)
+            if question is not None and question.subject_ref
+            else ()
+        )
+        + tuple(step.subject_ref for step in work_item.evidence_steps)
+    )
+    approved = {
+        symbol_id for symbol_id in candidate_ids if symbol_id in context_symbols
+    }
+    source_approved = {
+        symbol_id
+        for symbol_id in approved
+        if str(context_symbols[symbol_id].kind).upper()
+        in {"METHOD", "CONSTRUCTOR", "FIELD", "FRAMEWORK_ENTRYPOINT"}
+    }
+    return approved, source_approved
+
+
 def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int = 3):
     """执行受控 DirectTriage → GraphPlan → EvidenceExecutor 链。"""
 
@@ -1912,11 +1952,13 @@ def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int =
                             or initial_assessment is None
                         ):
                             continue
-                        if initial_assessment.status is not AssessmentStatus.NEEDS_EVIDENCE:
-                            # Other uncertain statuses are terminal for this
-                            # WorkItem in the controlled Execute stage.  They
-                            # are never turned into an implicit exploratory
-                            # Delta query.
+                        initial_proof = plan_proofs.get(work_item.work_item_id)
+                        if graph_replan_reason(initial_assessment, initial_proof) is None:
+                            # Definitive negative/accepted states stay
+                            # terminal. Evidence gaps (including
+                            # indeterminate/unresolved proof) are eligible
+                            # for exactly one bounded Delta query; the helper
+                            # keeps this policy identical to run_graph_replan.
                             continue
                         # The first Delta decision belongs to GraphPlan, not
                         # to the assessment model.  Assessment only describes
@@ -1932,6 +1974,32 @@ def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int =
                         )
                         visible_for_item = visible_symbol_ids(work_item_execution)
                         source_for_item = visible_source_symbol_ids(work_item_execution)
+                        # A projection may legitimately omit every endpoint
+                        # (for example after path truncation), but the
+                        # WorkItem's subject was already validated against the
+                        # task's resolved symbol context by GraphPlan.  Keep
+                        # those originally approved IDs available for one
+                        # bounded Delta query; never unlock raw Gateway IDs.
+                        approved_replan_symbols, approved_source_symbols = (
+                            _approved_replan_symbols(
+                                work_item=work_item,
+                                seed=plan_seeds[work_item.seed_id],
+                                symbol_context=context,
+                            )
+                        )
+                        if approved_replan_symbols - visible_for_item:
+                            visible_for_item.update(approved_replan_symbols)
+                            traces.append(
+                                CouncilTrace(
+                                    node="graph_replan",
+                                    event="diagnostic",
+                                    detail=(
+                                        f"task={task.id} work_item={work_item.work_item_id} "
+                                        "graph_replan_subject_seeded"
+                                    ),
+                                )
+                            )
+                        source_for_item.update(approved_source_symbols)
                         executed_for_item = {
                             (
                                 step_execution.step.tool,
@@ -1947,6 +2015,7 @@ def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int =
                             seed=plan_seeds[work_item.seed_id],
                             work_item=work_item,
                             assessment=initial_assessment,
+                            proof=initial_proof,
                             visible_symbols=visible_for_item,
                             visible_source_symbols=source_for_item,
                             executed_queries=executed_for_item,

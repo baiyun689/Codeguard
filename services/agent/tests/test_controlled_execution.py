@@ -4,6 +4,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from codeguard_agent.models.tasks import (
     CandidateSeed,
     AssessmentStatus,
@@ -34,6 +36,7 @@ from codeguard_agent.pipeline.controlled.executor import (
 )
 from codeguard_agent.pipeline.controlled.graph_plan import (
     _baseline_graph_plan,
+    graph_replan_reason,
     run_graph_replan,
     run_graph_plan,
     validate_graph_plan,
@@ -46,7 +49,10 @@ from codeguard_agent.pipeline.controlled.assessment import (
     match_execution_proof,
     run_evidence_assessment,
 )
-from codeguard_agent.pipeline.controlled.assessment import visible_symbol_ids
+from codeguard_agent.pipeline.controlled.assessment import (
+    visible_source_symbol_ids,
+    visible_symbol_ids,
+)
 from codeguard_agent.pipeline.controlled.routing import stable_seed_id
 from codeguard_agent.pipeline.controlled.triage import run_direct_triage
 from codeguard_agent.pipeline.controlled.triage import (
@@ -64,6 +70,7 @@ from codeguard_agent.pipeline.controlled.llm_contracts import (
 )
 from codeguard_agent.pipeline.orchestration.graph import (
     _assemble_state_dossiers,
+    _approved_replan_symbols,
     _controlled_review_node,
     _select_delta_work_items,
 )
@@ -90,6 +97,84 @@ def test_finalize_evidence_assessment_requires_complete_proof():
         AssessmentStatus.CANDIDATE,
         "evidence_satisfied",
     )
+
+
+def test_graph_replan_reason_distinguishes_recoverable_gaps_from_terminal_states():
+    def assessment(status, *, question="", additional_steps=()):
+        return EvidenceAssessment(
+            work_item_id="wi-gate",
+            status=status,
+            claim="claim",
+            proof_scope=ProofScope.CROSS_FILE,
+            additional_evidence_question=question,
+            additional_steps=additional_steps,
+        )
+
+    assert graph_replan_reason(assessment(AssessmentStatus.NEEDS_EVIDENCE)) == "needs_evidence"
+    assert graph_replan_reason(assessment(AssessmentStatus.INDETERMINATE)) == "indeterminate"
+    assert graph_replan_reason(assessment(AssessmentStatus.UNRESOLVED)) == "unresolved"
+    assert graph_replan_reason(
+        assessment(AssessmentStatus.PARTIAL, question="读取相邻端点")
+    ) == "partial_with_open_gap"
+    assert graph_replan_reason(
+        assessment(AssessmentStatus.PARTIAL),
+        ProofMatch(work_item_id="wi-gate", status=ProofMatchStatus.PARTIAL),
+    ) == "partial_with_open_gap"
+    assert graph_replan_reason(assessment(AssessmentStatus.PARTIAL)) is None
+    assert graph_replan_reason(assessment(AssessmentStatus.NOT_FOUND)) is None
+    assert graph_replan_reason(assessment(AssessmentStatus.REJECTED)) is None
+
+
+def test_visible_source_symbols_excludes_type_level_file_symbols():
+    execution = SimpleNamespace(
+        steps=(
+            SimpleNamespace(
+                step=SimpleNamespace(tool="inspect_path"),
+                projected_payload=(
+                    '{"symbols":['
+                    '{"id":"java:pkg.RetryTemplate","kind":"TYPE",'
+                    '"file":"src/RetryTemplate.java"},'
+                    '{"id":"java:pkg.RetryTemplate#doExecute()",'
+                    '"kind":"METHOD","file":"src/RetryTemplate.java"}'
+                    '],"relationships":[]}'
+                ),
+            ),
+        ),
+    )
+
+    assert visible_source_symbol_ids(execution) == {
+        "java:pkg.RetryTemplate#doExecute()",
+    }
+
+
+def test_approved_replan_symbols_survive_projection_loss_without_unlocking_raw_ids():
+    seed = CandidateSeed(
+        seed_id="seed-approved-symbols",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-A.java#h0",
+        claim="claim",
+        mechanism="mechanism",
+        location_file="A.java",
+        proof_scope=ProofScope.CROSS_FILE,
+        evidence_basis=("changed_lines",),
+        graph_question=GraphQuestion(subject_ref="s1", direction="downstream"),
+    )
+    work_item = WorkItem(
+        work_item_id="wi-approved-symbols",
+        seed_id=seed.seed_id,
+        reviewer=ReviewerKind.BEHAVIOR,
+        hypothesis=seed.claim,
+        expected_mechanism=seed.mechanism,
+        evidence_steps=(EvidenceStep(tool="inspect_path", subject_ref="s1"),),
+    )
+    approved, source_approved = _approved_replan_symbols(
+        work_item=work_item,
+        seed=seed,
+        symbol_context=_context(),
+    )
+
+    assert approved == {"s1"}
+    assert source_approved == {"s1"}
 
 
 class _GraphClient:
@@ -321,6 +406,159 @@ def test_graph_replan_rejects_unknown_or_duplicate_step():
     )
     assert step is None
     assert "unknown_subject_ref:not-visible" in diagnostics
+
+
+def test_graph_replan_repairs_wrong_direction_and_uses_visible_fallback_for_duplicate():
+    seed = CandidateSeed(
+        seed_id="seed-replan-repair",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-A.java#h0",
+        claim="下游调用可能丢失状态",
+        mechanism="需要确认下游关系和端点源码",
+        location_file="A.java",
+        proof_scope=ProofScope.CROSS_FILE,
+        evidence_basis=("changed_lines",),
+        evidence_need=EvidenceNeed.INSPECT_PATH,
+        graph_question=GraphQuestion(
+            subject_ref="s1",
+            direction="downstream",
+            path_kind="behavior",
+            expected_targets=("s2",),
+            required_relationships=("CALLS",),
+            question="确认 s1 到 s2 的下游关系",
+        ),
+    )
+    work_item = WorkItem(
+        work_item_id="wi-repair",
+        seed_id=seed.seed_id,
+        reviewer=ReviewerKind.BEHAVIOR,
+        hypothesis=seed.claim,
+        expected_mechanism=seed.mechanism,
+        evidence_steps=(EvidenceStep(
+            tool="inspect_path",
+            subject_ref="s1",
+            path_kind="behavior",
+            max_depth=3,
+            purpose="原始关系查询",
+            expected_fact="确认关系",
+        ),),
+    )
+    assessment = EvidenceAssessment(
+        work_item_id=work_item.work_item_id,
+        status=AssessmentStatus.INDETERMINATE,
+        claim=seed.claim,
+        mechanism=seed.mechanism,
+        proof_scope=seed.proof_scope,
+        additional_evidence_question="读取 s2 源码",
+    )
+    wrong_direction = ReviewerGraphPlan(
+        reviewer=ReviewerKind.BEHAVIOR,
+        task_id="A.java#h0",
+        work_items=(WorkItem(
+            work_item_id=work_item.work_item_id,
+            seed_id=seed.seed_id,
+            reviewer=ReviewerKind.BEHAVIOR,
+            hypothesis=seed.claim,
+            expected_mechanism=seed.mechanism,
+            evidence_steps=(EvidenceStep(
+                tool="inspect_change_impact",
+                subject_ref="s1",
+                purpose="补查关系",
+                expected_fact="确认关系",
+            ),),
+        ),),
+    )
+    step, diagnostics = run_graph_replan(
+        reviewer=ReviewerKind.BEHAVIOR,
+        task_id="A.java#h0",
+        seed=seed,
+        work_item=work_item,
+        assessment=assessment,
+        visible_symbols={"s1", "s2"},
+        visible_source_symbols={"s2"},
+        executed_queries={("inspect_path", "s1", "behavior", 3)},
+        llm=_TriageLLM(LlmReviewerGraphPlan.model_validate(wrong_direction.model_dump())),
+        max_retries=1,
+        structured_method="function_calling",
+        enabled_tools={"get_file_content", "inspect_path", "inspect_change_impact"},
+    )
+
+    assert step is not None
+    assert step.tool == "get_file_content"
+    assert step.subject_ref == "s2"
+    assert "graph_replan_tool_repaired:inspect_change_impact->inspect_path" in diagnostics
+    assert "graph_replan_duplicate_query" in diagnostics
+    assert "graph_replan_fallback_step:get_file_content:s2" in diagnostics
+
+
+def test_graph_replan_direction_repair_can_execute_when_query_is_new():
+    seed = CandidateSeed(
+        seed_id="seed-direction-repair",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-A.java#h0",
+        claim="下游调用可能丢失状态",
+        mechanism="需要确认下游关系",
+        location_file="A.java",
+        proof_scope=ProofScope.CROSS_FILE,
+        evidence_basis=("changed_lines",),
+        evidence_need=EvidenceNeed.INSPECT_PATH,
+        graph_question=GraphQuestion(
+            subject_ref="s1",
+            direction="downstream",
+            path_kind="behavior",
+            expected_targets=("s2",),
+            question="确认 s1 到 s2 的下游关系",
+        ),
+    )
+    work_item = WorkItem(
+        work_item_id="wi-direction-repair",
+        seed_id=seed.seed_id,
+        reviewer=ReviewerKind.BEHAVIOR,
+        hypothesis=seed.claim,
+        expected_mechanism=seed.mechanism,
+        evidence_steps=(EvidenceStep(tool="inspect_path", subject_ref="s1", path_kind="behavior"),),
+    )
+    plan = ReviewerGraphPlan(
+        reviewer=ReviewerKind.BEHAVIOR,
+        task_id="A.java#h0",
+        work_items=(WorkItem(
+            work_item_id=work_item.work_item_id,
+            seed_id=seed.seed_id,
+            reviewer=ReviewerKind.BEHAVIOR,
+            hypothesis=seed.claim,
+            expected_mechanism=seed.mechanism,
+            evidence_steps=(EvidenceStep(
+                tool="inspect_change_impact",
+                subject_ref="s1",
+                purpose="补查下游关系",
+                expected_fact="确认关系",
+            ),),
+        ),),
+    )
+    step, diagnostics = run_graph_replan(
+        reviewer=ReviewerKind.BEHAVIOR,
+        task_id="A.java#h0",
+        seed=seed,
+        work_item=work_item,
+        assessment=EvidenceAssessment(
+            work_item_id=work_item.work_item_id,
+            status=AssessmentStatus.INDETERMINATE,
+            claim=seed.claim,
+            proof_scope=seed.proof_scope,
+        ),
+        visible_symbols={"s1", "s2"},
+        visible_source_symbols={"s2"},
+        executed_queries=set(),
+        llm=_TriageLLM(LlmReviewerGraphPlan.model_validate(plan.model_dump())),
+        max_retries=1,
+        structured_method="function_calling",
+        enabled_tools={"inspect_path", "inspect_change_impact"},
+    )
+
+    assert step is not None
+    assert step.tool == "inspect_path"
+    assert step.path_kind == "behavior"
+    assert "graph_replan_tool_repaired:inspect_change_impact->inspect_path" in diagnostics
 
 
 def test_graph_plan_binds_step_ids_and_executor_deduplicates_calls():
@@ -1864,8 +2102,17 @@ def test_controlled_review_binds_provider_assessment_into_candidate():
     )
 
 
-def test_controlled_review_replans_needs_evidence_once_before_candidate_gate():
-    """A missing fact triggers one Graph Replan and then re-enters assessment."""
+@pytest.mark.parametrize(
+    "initial_status",
+    [
+        AssessmentStatus.NEEDS_EVIDENCE,
+        AssessmentStatus.INDETERMINATE,
+        AssessmentStatus.UNRESOLVED,
+        AssessmentStatus.PARTIAL,
+    ],
+)
+def test_controlled_review_replans_recoverable_gap_once_before_candidate_gate(initial_status):
+    """Recoverable evidence gaps trigger one Graph Replan before the gate."""
 
     from codeguard_agent.models.tasks import PlanUnit, TaskRoute
     from codeguard_agent.pipeline.controlled.llm_contracts import (
@@ -1931,7 +2178,7 @@ def test_controlled_review_replans_needs_evidence_once_before_candidate_gate():
     assessments = [
         EvidenceAssessment(
             work_item_id="wi-behavior-A.java#h0-1",
-            status=AssessmentStatus.NEEDS_EVIDENCE,
+            status=initial_status,
             claim=seed.claim,
             mechanism=seed.mechanism,
             proof_scope=seed.proof_scope,

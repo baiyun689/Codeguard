@@ -14,6 +14,8 @@ from codeguard_agent.models.tasks import (
     EvidenceAssessment,
     EvidenceNeed,
     EvidenceStep,
+    ProofMatch,
+    ProofMatchStatus,
     ReviewerGraphPlan,
     ReviewerKind,
     TaskSymbolContext,
@@ -46,6 +48,49 @@ DOMAIN_TOOL_ALLOWLIST: dict[ReviewerKind, frozenset[str]] = {
         "get_file_content", "inspect_structure", "inspect_change_impact", "inspect_path"
     }),
 }
+
+
+def graph_replan_reason(
+    assessment: EvidenceAssessment | None,
+    proof: ProofMatch | None = None,
+) -> str | None:
+    """Return the bounded-replan reason for an evidence assessment.
+
+    ``NEEDS_EVIDENCE`` is the explicit LLM request, but it is not the only
+    way an evidence gap can be represented.  Deterministic proof matching and
+    provider-compatible models may instead produce ``indeterminate`` or
+    ``unresolved`` after a graph response is incomplete.  Those states still
+    have a chance of being closed by one additional query and must not be
+    dropped before Graph Replan.  ``partial`` is eligible when the model
+    leaves a concrete open question or bounded additional step.  It is also
+    eligible when the deterministic matcher marks the proof itself
+    partial/indeterminate, because the model can still choose a source lookup
+    from the already-visible graph facts.
+
+    Definitive negative/rejection states intentionally return ``None``.  The
+    final candidate gate remains fail-closed after this one bounded attempt.
+    """
+
+    if assessment is None:
+        return None
+    status = assessment.status
+    if status is AssessmentStatus.NEEDS_EVIDENCE:
+        return "needs_evidence"
+    if status is AssessmentStatus.INDETERMINATE:
+        return "indeterminate"
+    if status is AssessmentStatus.UNRESOLVED:
+        return "unresolved"
+    if status is AssessmentStatus.PARTIAL and (
+        bool(assessment.additional_evidence_question.strip())
+        or bool(assessment.additional_steps)
+        or (
+            proof is not None
+            and proof.status
+            in {ProofMatchStatus.PARTIAL, ProofMatchStatus.INDETERMINATE}
+        )
+    ):
+        return "partial_with_open_gap"
+    return None
 
 
 def _system_prompt(reviewer: ReviewerKind) -> str:
@@ -562,6 +607,171 @@ def validate_delta_step(
     )
 
 
+def _repair_delta_tool_for_direction(
+    step: EvidenceStep,
+    *,
+    seed: CandidateSeed,
+    max_path_depth: int,
+    enabled_tools: frozenset[str] | set[str] | None,
+) -> tuple[EvidenceStep, tuple[str, ...]]:
+    """Repair a provider's graph-tool alias to the GraphQuestion contract.
+
+    The replan model is allowed to describe the missing fact in prose, but
+    direction is already fixed by ``GraphQuestion``.  A downstream question
+    cannot be executed with ``inspect_change_impact`` and vice versa.  When a
+    provider selects the opposite graph tool, translate it to the canonical
+    tool instead of discarding the one bounded Delta opportunity.  This never
+    introduces a symbol or changes the question's direction.
+    """
+
+    question = seed.graph_question
+    if question is None:
+        return step, ()
+    enabled = set(enabled_tools) if enabled_tools is not None else None
+    if (
+        step.tool == "inspect_change_impact"
+        and question.direction == "downstream"
+        and (enabled is None or "inspect_path" in enabled)
+    ):
+        return (
+            step.model_copy(
+                update={
+                    "tool": "inspect_path",
+                    "path_kind": question.path_kind or "behavior",
+                    "max_depth": min(step.max_depth or question.max_depth, max_path_depth),
+                }
+            ),
+            ("graph_replan_tool_repaired:inspect_change_impact->inspect_path",),
+        )
+    if (
+        step.tool == "inspect_path"
+        and question.direction == "upstream"
+        and (enabled is None or "inspect_change_impact" in enabled)
+    ):
+        return (
+            step.model_copy(
+                update={
+                    "tool": "inspect_change_impact",
+                    "path_kind": None,
+                    "max_depth": None,
+                }
+            ),
+            ("graph_replan_tool_repaired:inspect_path->inspect_change_impact",),
+        )
+    return step, ()
+
+
+def _fallback_delta_step(
+    *,
+    seed: CandidateSeed,
+    visible_symbols: set[str],
+    visible_source_symbols: set[str],
+    executed_queries: set[tuple[str, str, str, int | None]],
+    max_path_depth: int,
+    enabled_tools: frozenset[str] | set[str] | None,
+    assessment: EvidenceAssessment,
+) -> tuple[EvidenceStep | None, tuple[str, ...]]:
+    """Choose one deterministic, already-visible alternative after bad LLM output.
+
+    Replan remains LLM-directed in the normal case.  This fallback is only
+    used when the provider repeats a query or violates the direction contract;
+    it chooses among the original subject and symbols already visible in the
+    projection, and never performs name-based discovery.
+    """
+
+    question = seed.graph_question
+    if question is None:
+        return None, ("graph_replan_no_graph_question",)
+    enabled = set(enabled_tools) if enabled_tools is not None else {
+        "get_file_content",
+        "inspect_structure",
+        "inspect_change_impact",
+        "inspect_path",
+    }
+    purpose = assessment.additional_evidence_question.strip() or seed.mechanism or seed.claim
+
+    def unused(tool: str, subject: str, path_kind: str = "", depth: int | None = None) -> bool:
+        return (tool, subject, path_kind, depth) not in executed_queries
+
+    candidates: list[EvidenceStep] = []
+    canonical_graph_tool = (
+        "inspect_change_impact"
+        if question.direction == "upstream"
+        else "inspect_path"
+    )
+    if question.subject_ref in visible_symbols and canonical_graph_tool in enabled:
+        path_kind = question.path_kind or "behavior"
+        depth = (
+            min(question.max_depth, max_path_depth)
+            if canonical_graph_tool == "inspect_path"
+            else None
+        )
+        if unused(canonical_graph_tool, question.subject_ref, path_kind if depth else "", depth):
+            candidates.append(
+                EvidenceStep(
+                    tool=canonical_graph_tool,
+                    subject_ref=question.subject_ref,
+                    path_kind=path_kind if depth else None,
+                    max_depth=depth,
+                    purpose="补足 GraphQuestion 要求的有界关系事实",
+                    expected_fact=purpose,
+                    required=True,
+                )
+            )
+
+    # Prefer a source excerpt for an endpoint named by the question, then any
+    # other visible source endpoint.  Source IDs are accepted only from the
+    # projection's explicit source set.
+    source_candidates = [
+        symbol_id
+        for symbol_id in sorted(visible_source_symbols)
+        if symbol_id in visible_symbols and symbol_id not in {question.subject_ref}
+    ]
+    source_candidates = [
+        *[symbol_id for symbol_id in question.expected_targets if symbol_id in source_candidates],
+        *[symbol_id for symbol_id in source_candidates if symbol_id not in question.expected_targets],
+    ]
+    if "get_file_content" in enabled:
+        for symbol_id in source_candidates:
+            if unused("get_file_content", symbol_id):
+                candidates.append(
+                    EvidenceStep(
+                        tool="get_file_content",
+                        subject_ref=symbol_id,
+                        purpose="读取已见端点的局部源码以补足证据",
+                        expected_fact=purpose,
+                        required=True,
+                    )
+                )
+                break
+
+    if "inspect_structure" in enabled:
+        structure_symbols = [
+            symbol_id
+            for symbol_id in (
+                question.subject_ref,
+                *question.expected_targets,
+                *sorted(visible_symbols),
+            )
+            if symbol_id in visible_symbols
+        ]
+        for symbol_id in dict.fromkeys(structure_symbols):
+            if unused("inspect_structure", symbol_id):
+                candidates.append(
+                    EvidenceStep(
+                        tool="inspect_structure",
+                        subject_ref=symbol_id,
+                        purpose="读取已见 symbol 的一跳结构事实",
+                        expected_fact=purpose,
+                        required=True,
+                    )
+                )
+                break
+    if not candidates:
+        return None, ("graph_replan_no_alternative_step",)
+    return candidates[0], (f"graph_replan_fallback_step:{candidates[0].tool}:{candidates[0].subject_ref}",)
+
+
 def build_graph_replan_user_prompt(
     *,
     reviewer: ReviewerKind,
@@ -597,6 +807,8 @@ def build_graph_replan_user_prompt(
         "work_item_id 按现有 schema 约定可以留空，运行时会绑定回原 WorkItem，"
         "且恰好包含一个 evidence_step。该步骤只能补足 assessment 指出的一个明确事实缺口；"
         "不能重复已执行查询，不能创建新 WorkItem，不能改变 GraphQuestion，不能猜测未出现的 symbol。"
+        "get_file_content 只能使用 visible_source_symbols 中的 METHOD/CONSTRUCTOR/FIELD/"
+        "FRAMEWORK_ENTRYPOINT；TYPE/INTERFACE/ENUM 等类型级 symbol 即使带有 file 也不能读取。"
     )
 
 
@@ -607,6 +819,7 @@ def run_graph_replan(
     seed: CandidateSeed,
     work_item: WorkItem,
     assessment: EvidenceAssessment,
+    proof: ProofMatch | None = None,
     visible_symbols: set[str],
     visible_source_symbols: set[str],
     executed_queries: set[tuple[str, str, str, int | None]],
@@ -616,16 +829,20 @@ def run_graph_replan(
     max_path_depth: int = 3,
     enabled_tools: frozenset[str] | set[str] | None = None,
 ) -> tuple[EvidenceStep | None, tuple[str, ...]]:
-    """为单个 ``needs_evidence`` WorkItem 生成并校验一次 Delta Plan。
+    """为证据不足的单个 WorkItem 生成并校验一次 Delta Plan。
 
     该函数故意返回一个 ``EvidenceStep`` 而不是完整计划：调用方已经持有
     原始 WorkItem，追加步骤不会删除、改写或扩展首轮计划。任何协议错误、
     未知 symbol、重复查询或多步骤输出都 fail-closed，交由上层按预算丢弃。
     """
 
-    diagnostics: list[str] = ["graph_replan_requested"]
-    if assessment.status is not AssessmentStatus.NEEDS_EVIDENCE:
+    replan_reason = graph_replan_reason(assessment, proof)
+    if replan_reason is None:
         return None, ("graph_replan_not_needed",)
+    diagnostics: list[str] = [
+        "graph_replan_requested",
+        f"graph_replan_trigger:{replan_reason}",
+    ]
     if llm is None:
         return None, ("graph_replan_llm_unavailable",)
     if not visible_symbols:
@@ -678,6 +895,13 @@ def run_graph_replan(
     if len(item.evidence_steps) != 1:
         return None, ("graph_replan_requires_one_step",)
     step = item.evidence_steps[0].model_copy(update={"depends_on": ()})
+    step, repair_diagnostics = _repair_delta_tool_for_direction(
+        step,
+        seed=seed,
+        max_path_depth=max_path_depth,
+        enabled_tools=enabled_tool_set,
+    )
+    diagnostics.extend(repair_diagnostics)
     allowed = visible_source_symbols if step.tool == "get_file_content" else visible_symbols
     normalized, validation = validate_delta_step(
         step,
@@ -689,7 +913,43 @@ def run_graph_replan(
     )
     diagnostics.extend(validation)
     if normalized is None:
-        return None, tuple((*diagnostics, "graph_replan_rejected"))
+        # Do not repair a symbol/permission violation into a different
+        # request.  The fallback is only for a provider's executable-step
+        # mistake, never for an unknown or unauthorized subject.
+        if any(
+            diagnostic.startswith(
+                ("unknown_subject_ref:", "unknown_tool:", "tool_not_allowed:", "tool_disabled:")
+            )
+            for diagnostic in validation
+        ):
+            return None, tuple((*diagnostics, "graph_replan_rejected"))
+        fallback, fallback_diagnostics = _fallback_delta_step(
+            seed=seed,
+            visible_symbols=visible_symbols,
+            visible_source_symbols=visible_source_symbols,
+            executed_queries=executed_queries,
+            max_path_depth=max_path_depth,
+            enabled_tools=enabled_tool_set,
+            assessment=assessment,
+        )
+        diagnostics.extend(fallback_diagnostics)
+        if fallback is None:
+            return None, tuple((*diagnostics, "graph_replan_rejected"))
+        normalized, fallback_validation = validate_delta_step(
+            fallback,
+            seed=seed,
+            reviewer=reviewer,
+            allowed_symbols=(
+                visible_source_symbols
+                if fallback.tool == "get_file_content"
+                else visible_symbols
+            ),
+            max_path_depth=max_path_depth,
+            enabled_tools=enabled_tool_set,
+        )
+        diagnostics.extend(fallback_validation)
+        if normalized is None:
+            return None, tuple((*diagnostics, "graph_replan_rejected"))
     query_key = (
         normalized.tool,
         normalized.subject_ref,
@@ -697,7 +957,41 @@ def run_graph_replan(
         normalized.max_depth,
     )
     if query_key in executed_queries:
-        return None, ("graph_replan_duplicate_query",)
+        fallback, fallback_diagnostics = _fallback_delta_step(
+            seed=seed,
+            visible_symbols=visible_symbols,
+            visible_source_symbols=visible_source_symbols,
+            executed_queries=executed_queries,
+            max_path_depth=max_path_depth,
+            enabled_tools=enabled_tool_set,
+            assessment=assessment,
+        )
+        diagnostics.extend(("graph_replan_duplicate_query", *fallback_diagnostics))
+        if fallback is None:
+            return None, tuple(diagnostics)
+        normalized, fallback_validation = validate_delta_step(
+            fallback,
+            seed=seed,
+            reviewer=reviewer,
+            allowed_symbols=(
+                visible_source_symbols
+                if fallback.tool == "get_file_content"
+                else visible_symbols
+            ),
+            max_path_depth=max_path_depth,
+            enabled_tools=enabled_tool_set,
+        )
+        diagnostics.extend(fallback_validation)
+        if normalized is None:
+            return None, tuple((*diagnostics, "graph_replan_rejected"))
+        query_key = (
+            normalized.tool,
+            normalized.subject_ref,
+            normalized.path_kind or "",
+            normalized.max_depth,
+        )
+        if query_key in executed_queries:
+            return None, tuple((*diagnostics, "graph_replan_duplicate_query"))
     diagnostics.append(f"graph_replan_step:{normalized.tool}:{normalized.subject_ref}")
     return normalized, tuple(diagnostics)
 
@@ -945,6 +1239,7 @@ __all__ = [
     "_baseline_graph_plan",
     "build_graph_plan_user_prompt",
     "build_graph_replan_user_prompt",
+    "graph_replan_reason",
     "run_graph_replan",
     "run_graph_plan",
     "prompt_hash",

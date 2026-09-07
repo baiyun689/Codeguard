@@ -263,6 +263,13 @@ def visible_source_symbol_ids(execution: ExecutionBatch) -> set[str]:
     ``get_file_content`` subjects for a project snapshot.
     """
 
+    # ``get_file_content`` is a member-level endpoint.  A type declaration can
+    # have a ``file`` field in a graph response, but asking for the type would
+    # request the entire source file and the Gateway deliberately rejects that
+    # with ``symbol_too_large``.  Keep this filter at the visibility boundary
+    # so a model cannot turn a projected TYPE symbol into a failing Delta step.
+    source_kinds = {"METHOD", "CONSTRUCTOR", "FIELD", "FRAMEWORK_ENTRYPOINT"}
+
     ids: set[str] = set()
     for step in execution.steps:
         if step.step.tool not in {
@@ -285,6 +292,7 @@ def visible_source_symbol_ids(execution: ExecutionBatch) -> set[str]:
                 isinstance(symbol, dict)
                 and str(symbol.get("id", "")).strip()
                 and str(symbol.get("file", "")).strip()
+                and str(symbol.get("kind", "")).upper() in source_kinds
             ):
                 ids.add(str(symbol["id"]))
     return ids

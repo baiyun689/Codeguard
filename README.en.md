@@ -2,24 +2,19 @@
 
 [简体中文](README.md) | English
 
-AI-powered pull request review with multi-agent analysis.
+AI pull request review for security, behavioral, and maintainability risks, with GitHub Checks and pull request feedback.
 
-Codeguard receives GitHub pull request events, analyzes the exact code change with a Python review council, and reports structured findings through GitHub Check Runs and pull request comments. The Java Gateway splits into three independent services: an LLM proxy (multi-provider routing with circuit breaker / rate limiting / retry), an Agent tool server (file sandbox + AST analysis), and a CI webhook pipeline (signature verification + idempotent scheduling + Check Runs feedback).
+Codeguard combines a Python Agent with a Java Gateway for controlled review orchestration, code facts, evidence verification, and GitHub integration.
 
 ## Features
 
-- Reviews pull requests for security, behavioral, and maintainability risks.
-- Built-in OpenAI-compatible LLM proxy gateway automatically routes model names to DeepSeek/Claude/Qwen with fallback chains and Resilience4j circuit breaker / rate limiter / retry.
-- Python Agent holds no provider API keys—all credentials are centralized in the LLM Proxy.
-- Builds tasks from diff size, applies a deterministic DirectGate, and lets Plan select specialist reviewers and knowledge topics for Full tasks.
-- Gives reviewers explicit task-scoped summaries, Plan objectives, AST, sensitive APIs, callers, and metrics, including source, scope, truncation, and unavailable reasons.
-- Coalesces concurrent and repeated tool calls within one reviewer to avoid duplicate file reads and context injection while keeping reviewers isolated.
-- Captures patch, prefetched context, and tool results in an Evidence Ledger; reviewers reference immutable artifacts and a deterministic verifier plus batched EvidenceJudge produce the verdict.
-- Publishes Check Runs, diff annotations, and high-confidence critical comments to GitHub.
-- Verifies webhook signatures and deduplicates jobs by repository, pull request, and commit SHA.
-- Persists jobs in MySQL and restores unfinished work after a restart (tests use H2 in MySQL-compatibility mode).
-- Exposes liveness, readiness, and Prometheus metrics endpoints.
-- Runs the Python Agent and Java Gateway in one container with Docker Compose.
+- Security, behavioral, and maintainability review.
+- Task-scoped Plan-and-Execute controlled workflow.
+- Java AST, symbol, and call-graph fact tools.
+- Evidence Ledger, deterministic verification, and batched adjudication.
+- Multi-provider routing, rate limiting, circuit breaking, retries, and fallback.
+- GitHub Webhook, Check Run, annotations, and pull request comments.
+- Job persistence, Prometheus metrics, and Docker Compose deployment.
 
 ## How It Works
 
@@ -41,9 +36,10 @@ GitHub pull_request webhook
         v
 Python Agent
   PR size routing (small/medium/large) -> diff tasks -> task DirectGate
-  -> Full-task PlanUnits -> specialist discovery
-  -> deterministic candidate location / bounded batch relocation
-  -> coordination -> evidence verification -> batched council verdict
+  -> Full-task PlanUnits -> knowledge routing -> SymbolResolution
+  -> controlled review: DirectTriage -> GraphPlan -> bounded Execute
+  -> EvidenceAssessment -> optional one Delta step
+  -> deterministic candidate location -> evidence verification -> batched verdict
   LLM calls routed through LLM Proxy or direct to provider
         |
         v
@@ -52,11 +48,11 @@ GitHub Check Run, annotations, and pull request comments
 
 The Python Agent owns review reasoning and orchestration. The Java Gateway is three independent services: LLM Proxy handles multi-provider routing and resilience (protocol forwarding, no semantic judgment), Tool Server collects deterministic code facts with file-access guardrails, and CI Webhook manages GitHub event ingestion and review job scheduling.
 
-For Full tasks, OCR-style PlanUnits select ThreatModelAgent, BehaviorAgent, MaintainabilityAgent, concrete objectives, and reviewer-owned knowledge topics; Plan does not choose tools or make verdicts. During discovery, each task's patch, Plan objectives, prefetched facts, availability status, and knowledge bundle are injected dynamically. A reviewer must skip tools when those facts are sufficient. Concurrent tasks within one reviewer may share review-scoped tool results, but no cache is shared with another reviewer or another review.
+For Full tasks, OCR-style PlanUnits route knowledge topics and concrete objectives. The default controlled workflow always runs the three fixed review dimensions—threat modeling, behavior, and maintainability. DirectTriage proposes candidates; GraphPlan selects exact tools and symbols from the resolved task context; Execute uses bounded budgets; EvidenceAssessment may request at most one Delta step. Plan does not select tools or make verdicts, and the bounded review stages keep task-scoped tool results isolated.
 
 Before stable candidate IDs are created, Full and Direct findings pass through the same location guardrail. The system accepts only a unique, verbatim one-to-five-line snippet from added task lines. Invalid locations are relocated in bounded LLM batches and deterministically verified again; unresolved findings remain file-level with `line=0`, so a location failure does not erase a valid concern or create a misplaced GitHub inline comment.
 
-The three discoverers collect raw candidates by ID only. After fan-in, CouncilCoordinator builds connected candidate blocks from full Git paths and local positions, and runs conservative structured-LLM deduplication with at most eight parallel calls. A group removes duplicates only when it has high confidence and satisfies the same-root-cause, same-impact, and single-fix criteria; invalid, low-confidence, or failed results preserve every candidate.
+The three review dimensions collect raw candidates by ID only. After fan-in, the coordinator builds connected candidate blocks from full Git paths and local positions, and runs conservative structured-LLM deduplication with at most eight parallel calls. A group removes duplicates only when it has high confidence and satisfies the same-root-cause, same-impact, and single-fix criteria; invalid, low-confidence, or failed results preserve every candidate.
 
 ## Quick Start with Docker Compose
 
@@ -226,9 +222,9 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 
 Set `CODEGUARD_PROVIDER=mock` for a zero-cost pipeline smoke test. Configure `CODEGUARD_TOOL_SERVER_URL=http://localhost:9090` when the local Agent should use a separately running Gateway for repository context tools.
 
-With the Tool Server enabled, each review asynchronously builds an immutable Java `ProjectSnapshot` for the exact revision. It retains all source text, complete JavaParser ASTs, a symbol index, and a Spring-aware semantic graph. SymbolResolution deterministically maps changed lines in Full tasks to typed, grounded `symbol_id` values; the three reviewers query bounded facts through shared `inspect_structure`, `inspect_change_impact`, and `inspect_path(path_kind=behavior|security)` tools, while evidence verification reuses the same snapshot. Graph results use schema v2 `found`, `not_found`, and `indeterminate` outcomes with query-level coverage.
+With the Tool Server enabled, each review asynchronously builds an immutable Java `ProjectSnapshot` for the exact revision. It retains all source text, complete JavaParser ASTs, a symbol index, and a Spring-aware semantic graph. SymbolResolution deterministically maps changed lines in Full tasks to typed, grounded `symbol_id` values; the three fixed review dimensions query bounded facts through `inspect_structure`, `inspect_change_impact`, and `inspect_path(path_kind=behavior|security)` according to GraphPlan, while evidence verification reuses the same snapshot. Graph results use schema v2 `found`, `not_found`, and `indeterminate` outcomes with query-level coverage.
 
-EvidenceAgent analyzes the local facts for one `EvidenceRequest` in a single structured model call instead of invoking the model once per patch or symbol fact, and aligns every result by stable `evidence_id`. When the local HTML Trace is enabled, each reviewer and EvidenceAgent tool input, output, duration, reuse, and failure appears as an independent tool step; the Evidence node also reports request, fact, model-call, tool, and analysis timing metrics.
+EvidenceAssessment analyzes the local facts for each planned WorkItem and may request one bounded Delta step when a deterministic proof gap remains. When the local HTML Trace is enabled, each review dimension's DirectTriage, GraphPlan, Execute, assessment, tool input, output, duration, reuse, and failure appears as an independent step.
 
 ## Configuration
 
@@ -316,7 +312,7 @@ Container build:
 docker build -t codeguard:local .
 ```
 
-Real quality evaluation uses 20 real Java repositories with 115 planted defects (including Vul4J real CVE vulnerabilities), comparing profiles — single-model direct diff (direct) vs the full ReviewCouncil + code graph pipeline (full): Recall improves from 86.1% to 93.0%, and cross-file defects that require context beyond the diff improve from 0/8 to 7/8. See [`services/agent/evals/README.md`](services/agent/evals/README.md).
+Real quality evaluation currently uses 15 selected real Java repositories in `selected-20-v2`; each case's `expected` file is the formal ground truth, while hunk-level diagnostics are auxiliary. Profiles cover direct review, graph-backed evidence, and the controlled Plan-and-Execute workflow. Recall, Precision, F1, and stability must be read from the corresponding evaluation reports rather than treated as fixed product claims. See [`services/agent/evals/README.md`](services/agent/evals/README.md).
 
 ## Contributing
 
