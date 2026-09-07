@@ -92,6 +92,8 @@ flowchart LR
 - **语义合并**：合并语义相同的重复问题，不跨独立机制合并。
 
 本地审查输出 Markdown 报告和 HTML Trace；GitHub App 审查则进一步将结果回写到 Check Run、行内标注和 PR 评论。
+最终问题包含用户可读的“根因”和“来源位置”（文件、symbol、行号及已验证关系）；内部证据编号只保留在 Trace/Evidence Ledger，
+不会要求用户理解 Txx/Cxx。
 
 ## 使用 Docker Compose 快速开始
 
@@ -343,7 +345,7 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 
 设置 `CODEGUARD_PROVIDER=mock` 可进行零成本管线冒烟测试。如果本地 Agent 需要通过独立运行的 Gateway 获取仓库上下文工具，请设置 `CODEGUARD_TOOL_SERVER_URL=http://localhost:9090`。
 
-加 `--report` 参数可在审查结束后于 `<repo>/reports/` 生成带时间戳的 Markdown 报告（severity 统计 + 按严重级分组的问题列表 + diff 代码片段）。GitHub App 的 CI 模式结果走 Check Runs，不生成本地报告。
+加 `--report` 参数可在审查结束后于 `<repo>/reports/` 生成带时间戳的 Markdown 报告（severity 统计 + 按严重级分组的问题列表 + 根因、来源位置和 diff 代码片段）。GitHub App 的 CI 模式结果走 Check Runs，不生成本地报告。
 
 ## 配置项
 

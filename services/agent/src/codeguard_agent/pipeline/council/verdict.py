@@ -35,6 +35,7 @@ from codeguard_agent.pipeline.evidence.projection import (
     project_tool_payload,
 )
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier, DossierAssembly
+from codeguard_agent.pipeline.evidence.presentation import enrich_candidate_for_issue
 from codeguard_agent.pipeline.prompting import render_prompt_template
 
 logger = logging.getLogger("codeguard")
@@ -688,6 +689,8 @@ def _finalize_assessment(
     batch: VerdictBatch,
     *,
     event: str,
+    verification: CandidateVerification | None = None,
+    artifacts: dict[str, EvidenceArtifact] | None = None,
 ) -> tuple[Verdict, Issue | None]:
     candidate = dossier.candidate
     if assessment is None:
@@ -716,7 +719,13 @@ def _finalize_assessment(
         supported=bool(assessment.evidence_ids),
     )
     assert assessment.severity is not None  # keep 合同已在 _validate_assessment 中校验
-    issue = candidate.to_issue(assessment.severity)
+    public_candidate = enrich_candidate_for_issue(
+        candidate,
+        symbol_context=dossier.symbol_context,
+        verification=verification,
+        artifacts=artifacts or {},
+    )
+    issue = public_candidate.to_issue(assessment.severity)
     _trace(batch, event, {
         "candidate_id": candidate.id, "action": "keep",
         "reason_code": verdict_reason,
@@ -788,7 +797,13 @@ def judge_with_evidence(
             continue
         for dossier, assessment, verdict_reason in chunk_outcomes:
             verdict, issue = _finalize_assessment(
-                dossier, assessment, verdict_reason, batch, event="judge_verdict"
+                dossier,
+                assessment,
+                verdict_reason,
+                batch,
+                event="judge_verdict",
+                verification=verifications.get(dossier.candidate.id),
+                artifacts=artifacts,
             )
             batch.verdicts.append(verdict)
             if issue is not None:
@@ -902,7 +917,13 @@ def judge_direct(
                 })
                 continue
             verdict, final_issue = _finalize_assessment(
-                dossier, assessment, "direct_judge_keep", batch, event="direct_judge_verdict"
+                dossier,
+                assessment,
+                "direct_judge_keep",
+                batch,
+                event="direct_judge_verdict",
+                verification=None,
+                artifacts={},
             )
             batch.verdicts.append(verdict)
             if final_issue is not None:

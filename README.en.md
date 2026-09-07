@@ -312,7 +312,7 @@ Container build:
 docker build -t codeguard:local .
 ```
 
-Real quality evaluation currently uses 15 selected real Java repositories in `selected-20-v2`; each case's `expected` file is the formal ground truth, while hunk-level diagnostics are auxiliary. Profiles cover direct review, graph-backed evidence, and the controlled Plan-and-Execute workflow. Recall, Precision, F1, and stability must be read from the corresponding evaluation reports rather than treated as fixed product claims. See [`services/agent/evals/README.md`](services/agent/evals/README.md).
+Real quality evaluation currently uses 15 selected real Java repositories in `selected-20-v2`; each case's `expected` file is the formal ground truth, while hunk-level diagnostics are auxiliary. The suite requires user-readable evidence anchors (cross-file cases require a verified source outside the changed file), so a semantic guess without a source location is not counted as a hit. Profiles cover direct review, graph-backed evidence, and the controlled Plan-and-Execute workflow. Recall, Precision, F1, and stability must be read from the corresponding evaluation reports rather than treated as fixed product claims. See [`services/agent/evals/README.md`](services/agent/evals/README.md).
 
 ## Contributing
 

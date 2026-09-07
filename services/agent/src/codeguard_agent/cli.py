@@ -22,6 +22,7 @@ import uuid
 import os
 
 from codeguard_agent.config import Settings
+from codeguard_agent.pipeline.evidence.presentation import format_evidence_location
 from codeguard_agent.git.diff_collector import (
     collect_diff,
     collect_head_revision,
@@ -66,6 +67,12 @@ def _print_result(result: ReviewResult, *, review_incomplete: bool = False) -> N
         location = f"{issue.file}:{issue.line}" if issue.line > 0 else issue.file
         print(f"    位置:{location}")
         print(f"    问题:{issue.message}")
+        if issue.root_cause:
+            print(f"    根因:{issue.root_cause}")
+        if issue.evidence_locations:
+            print("    来源:")
+            for source in issue.evidence_locations:
+                print(f"      - {format_evidence_location(source)}")
         if issue.suggestion:
             print(f"    建议:{issue.suggestion}")
         print(f"    置信度:{issue.confidence:.2f}\n")

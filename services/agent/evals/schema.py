@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -61,6 +62,9 @@ class ExpectedIssue(BaseModel):
       1. 文件名对得上(按 basename 或后缀);
       2. 行号落在 [line - tolerance, line + tolerance] 内(line=0 时跳过行号判定);
       3. 报告的 type/message 命中 type_keywords 里任一关键词(忽略大小写)。
+    当所属 EvalCase.evidence_required=true 时，还必须在报告的用户可读
+    evidence_locations 中命中 evidence_anchors；只有有明确来源位置的
+    报告才计入 TP。
     """
 
     id: str = Field(default="", description="标答在用例内的稳定 ID")
@@ -79,7 +83,11 @@ class ExpectedIssue(BaseModel):
     risk_tag: str = Field(default="", description="可选缺陷分类标签")
     evidence_anchors: list[str] = Field(
         default_factory=list,
-        description="可接受的符号、source/sink 或源码位置锚点",
+        description="可接受的符号、source/sink 或源码位置锚点；严格评测时至少一项",
+    )
+    evidence_scope: Literal["local", "cross_file"] = Field(
+        default="local",
+        description="证据范围；cross_file 要求除变更位置外还给出跨文件来源/路径",
     )
     mechanism: str = Field(default="", description="受控评测中问题的机制主张")
     reachability: str = Field(default="", description="受控评测中 source 到 sink 的可达性主张")
@@ -129,6 +137,10 @@ class EvalCase(BaseModel):
         description="exhaustive 可直接判断未匹配项；known-issue-only 需人工裁决额外发现",
     )
     difficulty: str = Field(default="standard", description="难度或能力场景标签")
+    evidence_required: bool = Field(
+        default=False,
+        description="是否要求最终报告提供命中的用户可读证据位置；selected-20-v2 开启",
+    )
     provenance: CaseProvenance = Field(default_factory=CaseProvenance)
     diff: str = Field(description="unified diff 文本,喂给审查管线的输入")
     expected: list[ExpectedIssue] = Field(
@@ -342,6 +354,18 @@ class MatchOutcome(BaseModel):
     true_positives: int = Field(default=0, description="命中的标准答案数")
     false_negatives: int = Field(default=0, description="漏掉的标准答案数")
     false_positives: int = Field(default=0, description="报了但对不上任何标准答案的数量")
+    evidence_checked: int = Field(
+        default=0,
+        description="参与证据位置校验的标准答案命中候选数",
+    )
+    evidence_backed_hits: int = Field(
+        default=0,
+        description="同时满足问题匹配与证据锚点匹配的数量",
+    )
+    evidence_missing_hits: int = Field(
+        default=0,
+        description="问题语义命中但缺少明确证据位置的数量",
+    )
     expected_total: int = Field(default=0, description="该用例标准答案总数")
     reported_total: int = Field(default=0, description="该用例报告问题总数")
     total_duration_ms: float = Field(default=0.0, description="单例端到端审查耗时")
@@ -445,6 +469,18 @@ class AggregateMetrics(BaseModel):
         description="参与定位准确率计算的命中项数量；0 表示该指标不适用",
     )
     severity_accuracy: float = Field(description="命中项里级别也对上的比例")
+    evidence_coverage: float = Field(
+        default=0.0,
+        description="需要证据的标答中，报告提供可接受来源位置的比例",
+    )
+    evidence_checked: int = Field(
+        default=0,
+        description="参与证据位置校验的标答命中候选总数",
+    )
+    evidence_missing_hits: int = Field(
+        default=0,
+        description="语义/位置命中但未提供可接受证据位置的数量",
+    )
 
     recall_std: float = Field(default=0.0, description="recall 在多次跑测间的标准差")
     precision_std: float = Field(default=0.0, description="precision 在多次跑测间的标准差")

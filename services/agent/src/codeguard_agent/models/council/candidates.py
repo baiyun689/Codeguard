@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from codeguard_agent.models.evidence import EvidenceRef, EvidenceRefError
-from codeguard_agent.models.schemas import Issue, Severity
+from codeguard_agent.models.schemas import EvidenceLocation, Issue, Severity
 
 
 class CandidateIssue(BaseModel):
@@ -32,6 +32,16 @@ class CandidateIssue(BaseModel):
     # short, evidence-backed observation used to make the final message
     # concrete when triage left the consequence abstract.
     evidence_observation: str = Field(default="", description="已验证的证据观察", exclude=True)
+    # These are generated from verified Artifact metadata immediately before
+    # converting a survivor to a public Issue.  They are deliberately excluded
+    # from the internal candidate wire format and never come from the LLM.
+    root_cause: str = Field(default="", description="用户可读的已验证根因说明", exclude=True)
+    evidence_locations: list[EvidenceLocation] = Field(
+        default_factory=list,
+        max_length=4,
+        description="用户可读的证据位置摘要",
+        exclude=True,
+    )
     suggestion: str = Field(default="", description="修复建议，可选")
     confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="发现者对候选问题成立的置信度")
     evidence_refs: list[EvidenceRef] = Field(default_factory=list, description="候选引用的证据账本条目")
@@ -50,6 +60,8 @@ class CandidateIssue(BaseModel):
                 if not self.evidence_observation.strip()
                 else f"{self.claim.rstrip('。；; ')}；{self.evidence_observation.strip()}"
             ),
+            root_cause=self.root_cause,
+            evidence_locations=list(self.evidence_locations),
             suggestion=self.suggestion,
             confidence=self.confidence,
         )

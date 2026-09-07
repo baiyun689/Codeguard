@@ -274,11 +274,23 @@ def _merge_issue_group(
     unique_types = list(dict.fromkeys(member.type for member in members if member.type))
     unique_messages = list(dict.fromkeys(member.message for member in members if member.message))
     unique_suggestions = list(dict.fromkeys(member.suggestion for member in members if member.suggestion))
+    unique_root_causes = list(dict.fromkeys(member.root_cause for member in members if member.root_cause))
+    locations = []
+    seen_locations = set()
+    for member in members:
+        for location in member.evidence_locations:
+            key = location.model_dump_json()
+            if key in seen_locations:
+                continue
+            seen_locations.add(key)
+            locations.append(location)
     severity = max(members, key=lambda issue: _SEVERITY_ORDER[issue.severity]).severity
     return primary.model_copy(update={
         "severity": severity,
         "type": " / ".join(unique_types),
         "message": "；".join(unique_messages),
+        "root_cause": "；".join(unique_root_causes),
+        "evidence_locations": locations[:4],
         "suggestion": "；".join(unique_suggestions),
         "confidence": min(member.confidence for member in members),
     })

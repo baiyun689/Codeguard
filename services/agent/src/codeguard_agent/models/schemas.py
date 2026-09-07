@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -43,18 +44,38 @@ class EvidenceRefSelection(BaseModel):
     role: EvidenceRole = Field(description="该事实对本结论的用途声明")
 
 
+class EvidenceLocation(BaseModel):
+    """面向用户的证据位置摘要。
+
+    这是已验证 Artifact 的人类可读投影，不包含 Evidence Ledger 的内部编号。
+    文件、symbol、行号和关系均由运行时从真实工具结果提取；LLM 不能直接填写或
+    修改该结构。
+    """
+
+    file: str = Field(min_length=1, description="证据所在源码文件")
+    symbol: str = Field(default="", description="证据所在的类/方法/字段")
+    start_line: int = Field(default=0, ge=0, description="证据起始行，0 表示未知")
+    end_line: int = Field(default=0, ge=0, description="证据结束行，0 表示未知")
+    kind: Literal["changed_code", "root_cause", "related_path"] = Field(
+        default="root_cause",
+        description="证据用途：变更代码、根因源码或相关调用路径",
+    )
+    relation: str = Field(default="", description="已验证的直接关系摘要")
+
+
 class Issue(BaseModel):
     """单条审查问题。
 
     这是 Codeguard 最核心的输出单元。字段设计原则:
     - 必须有的:定位信息(file/line)+ 是什么问题(severity/type/message)
+    - 用户可读证据:root_cause(为什么发生)、evidence_locations(来源文件/symbol/行号/关系)
     - 锦上添花:suggestion(怎么改)、confidence(LLM 对自己判断的置信度)
 
     confidence 的用途:后续阶段(误报过滤、排序)可以用它做阈值过滤,
     把低置信度的问题降级或丢弃,从而控制误报率。
 
-    产品 Issue 不含任何证据字段:证据全链路只在 Trace 展示
-    (Evidence Ledger 设计,取代 ADR-046 的 evidence_chain)。
+    evidence_locations 是 Evidence Ledger 的用户可读投影，不暴露内部 Txx/Cxx
+    编号；完整原文和账本仍只在 Trace 中保留。
     """
 
     severity: Severity = Field(description="严重级别")
@@ -62,6 +83,15 @@ class Issue(BaseModel):
     line: int = Field(default=0, description="问题所在行号,0 表示无法定位到具体行")
     type: str = Field(description="问题类型,如 'SQL注入'、'空指针'、'资源泄漏'")
     message: str = Field(description="问题描述,说清楚是什么、为什么是问题")
+    root_cause: str = Field(
+        default="",
+        description="已验证的根因及作用机制；没有足够事实时为空",
+    )
+    evidence_locations: list[EvidenceLocation] = Field(
+        default_factory=list,
+        max_length=4,
+        description="用户可读的证据来源位置，不含内部证据编号",
+    )
     suggestion: str = Field(default="", description="修复建议,可选")
     confidence: float = Field(
         default=1.0,

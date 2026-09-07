@@ -1,0 +1,96 @@
+# selected-20-v2 的人工复核证据位置。
+# anchors 是结构化 EvidenceLocation 的文件/行号或 symbol 锚点；scope=cross_file
+# 要求命中的同一来源位置位于变更文件之外。case.yaml 的显式标注优先于本文件。
+suite: selected-20-v2
+cases:
+  gitbug-assertj-comparator:
+    E1: {anchors: ["AbstractMapAssert.java:74"], scope: local}
+    E2: {anchors: ["AbstractSeqAssert.java:107"], scope: local}
+    E3: {anchors: ["AbstractSeqAssert.java:228"], scope: local}
+    E4: {anchors: ["AbstractTraversableAssert.java:62"], scope: local}
+    E5: {anchors: ["Maps.java:144"], scope: local}
+  gitbug-cloudsimplus-argument-order:
+    E1: {anchors: ["HostAbstract.java:423"], scope: local}
+    E2: {anchors: ["HostAbstract.java:442"], scope: local}
+    E3: {anchors: ["HostAbstract.java:1007"], scope: local}
+    E4: {anchors: ["HostAbstract.java:1013"], scope: local}
+    E5: {anchors: ["HostSimple.java:189"], scope: local}
+  gitbug-dos-nbvcxz:
+    E1: {anchors: ["Nbvcxz.java:322"], scope: local}
+    E2: {anchors: ["Nbvcxz.java:377"], scope: local}
+    E3: {anchors: ["Nbvcxz.java:526"], scope: local}
+    E4: {anchors: ["DictionaryMatcher.java:75"], scope: local}
+    E5: {anchors: ["DictionaryMatch.java:110"], scope: local}
+    E6: {anchors: ["ConfigurationBuilder.java:220"], scope: local}
+  gitbug-epub-referenced-items:
+    E1: {anchors: ["CheckingReport.java:104"], scope: local}
+    E2: {anchors: ["ItemMetadata.java:180"], scope: local}
+    E3: {anchors: ["ReferenceRegistry.java:44"], scope: local}
+    E4: {anchors: ["ReferenceRegistry.java:86"], scope: local}
+    E5: {anchors: ["ResourceRegistry.java:78"], scope: local}
+  gitbug-quality-cbor-type:
+    E1: {anchors: ["CborDecoder.java:228"], scope: local}
+    E2: {anchors: ["CborDecoder.java:61"], scope: local}
+    E3: {anchors: ["CborEncoder.java:83"], scope: local}
+    E4: {anchors: ["AbstractDecoder.java:38"], scope: local}
+    E5: {anchors: ["ByteStringDecoder.java:51"], scope: local}
+    E6: {anchors: ["Map.java:24"], scope: local}
+  gitbug-robots-unicode:
+    E1: {anchors: ["SimpleRobotRules.java:193"], scope: local}
+    E2: {anchors: ["SimpleRobotRules.java:268"], scope: local}
+    E3: {anchors: ["SimpleRobotRulesParser.java:712"], scope: local}
+    E4: {anchors: ["SimpleRobotRulesParser.java:776"], scope: local}
+    E5: {anchors: ["SimpleRobotRulesParser.java:797"], scope: local}
+    E6: {anchors: ["SimpleRobotRulesParser.java:798"], scope: local}
+  gitbug-spring-guice-injection:
+    E1: {anchors: ["GuiceModuleMetadata.java:148"], scope: local}
+    E2: {anchors: ["SpringModule.java:216"], scope: local}
+    E3: {anchors: ["SpringModule.java:306"], scope: local}
+    E4: {anchors: ["SpringModule.java:369"], scope: local}
+    E5: {anchors: ["SpringModule.java:473"], scope: local}
+  gitbug-spring-retry-interrupt:
+    E1: {anchors: ["CompositeRetryPolicy.java:69"], scope: local}
+    E2: {anchors: ["RetryTemplate.java:89"], scope: local}
+    E3: {anchors: ["RetryTemplate.java:302"], scope: local}
+    E4: {anchors: ["RetryTemplate.java:469"], scope: local}
+  vul4j-06-infinite-loop:
+    E1: {anchors: ["X0017_StrongEncryptionHeader.java:307"], scope: local}
+    E2: {anchors: ["X0017_StrongEncryptionHeader.java:348"], scope: local}
+    E3: {anchors: ["PKWareExtraHeader.java:172"], scope: cross_file}
+    E4: {anchors: ["ZipArchiveOutputStream.java:300"], scope: local}
+    E5: {anchors: ["ZipArchiveOutputStream.java:468"], scope: local}
+  vul4j-18-path-traversal:
+    E1: {anchors: ["DefaultURLConstructor.java:107"], scope: local}
+    E2: {anchors: ["DefaultURLConstructor.java:157"], scope: local}
+    E3: {anchors: ["DefaultURLConstructor.java:282"], scope: local}
+    E4: {anchors: ["DefaultURLConstructor.java:55"], scope: cross_file}
+    E5: {anchors: ["ShortURLConstructor.java:99"], scope: local}
+  vul4j-21-security-feature:
+    E1: {anchors: ["AbstractBufferingOutputProcessor.java:57"], scope: local}
+    E2: {anchors: ["InputProcessorChainImpl.java:176"], scope: local}
+    E3: {anchors: ["InputProcessorChainImpl.java:189"], scope: local}
+  vul4j-22-access-control:
+    E1: {anchors: ["WebUtils.java:140"], scope: local}
+    E2: {anchors: ["WebUtils.java:203"], scope: local}
+    E3: {anchors: ["WebUtils.java:242"], scope: local}
+    E4: {anchors: ["WebUtils.java:574"], scope: local}
+  vul4j-38-injection:
+    E1: {anchors: ["CommonUtils.java:342"], scope: local}
+    E2: {anchors: ["CommonUtils.java:396"], scope: local}
+    E3: {anchors: ["AbstractUrlBasedTicketValidator.java:113"], scope: local}
+    E4: {anchors: ["Cas20ServiceTicketValidator.java:136"], scope: local}
+  vul4j-42-command-injection:
+    E1: {anchors: ["Commandline.java:518"], scope: local}
+    E2: {anchors: ["Commandline.java:469"], scope: local}
+    E3: {anchors: ["CommandLineUtils.java:216"], scope: local}
+    E4: {anchors: ["CommandLineUtils.java:380"], scope: local}
+    E5: {anchors: ["Shell.java:329"], scope: cross_file}
+    E6: {anchors: ["Shell.java:127"], scope: local}
+    E7: {anchors: ["Shell.java:175"], scope: local}
+  vul4j-59-xss:
+    E1: {anchors: ["HtmlTreeBuilderState.java:1486"], scope: local}
+    E2: {anchors: ["Token.java:81"], scope: local}
+    E3: {anchors: ["Tokeniser.java:26"], scope: local}
+    E4: {anchors: ["Tokeniser.java:231"], scope: local}
+    E5: {anchors: ["Tokeniser.java:286"], scope: local}
+    E6: {anchors: ["TokeniserState.java:1701"], scope: local}

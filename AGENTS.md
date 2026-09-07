@@ -189,7 +189,7 @@ Codeguard/
    - `CouncilRunStats` 从稳定 survivor candidate 映射与结构化 request/finding/verdict/trace 派生，进入 eval/report/archive，不进入产品输出。
 7. **`cli.py:_print_result`** 打印;**退出码**:发现任一 `CRITICAL` 返回 1,审查任务/协议未完成返回 2,否则 0(方便接 CI 门禁,且不把执行失败伪装成“未发现问题”)。
 
-核心数据单元是 `models/schemas.py` 里的 **`Issue`**:`severity / file / line / type / message / suggestion / confidence`。前五个必需(定位 + 是什么),后两个可选。整个项目所有阶段都围绕它流转——**改它的字段要极其谨慎**(见 ADR-001)。
+核心数据单元是 `models/schemas.py` 里的 **`Issue`**:`severity / file / line / type / message / suggestion / confidence`。前五个必需(定位 + 是什么),后两个可选。整个项目所有阶段都围绕它流转——**改它的字段要极其谨慎**(见 ADR-001)。最终报告还包含运行时从已验证 Artifact 投影的 `root_cause` 与 `evidence_locations`，内部 `evidence_refs` 不对用户展示。
 
 ---
 

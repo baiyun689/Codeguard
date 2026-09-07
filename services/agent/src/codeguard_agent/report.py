@@ -1,7 +1,7 @@
 """审查报告渲染(Markdown)与 diff 代码片段提取。
 
-轻量报告:只美化 ReviewResult(severity 统计 + 按严重级分组的问题列表 +
-代码片段),不含证据链;供 CLI `--report` 使用。GitHub App 模式的 CI 链路
+轻量报告:美化 ReviewResult(severity 统计 + 按严重级分组的问题列表 +
+代码片段 + 根因与来源位置),不含内部证据链;供 CLI `--report` 使用。GitHub App 模式的 CI 链路
 (Gateway 调 `--format json`)不调用本模块,天然不生成报告。
 
 均为确定性纯函数,无 IO/网络,可独立单测。
@@ -15,6 +15,7 @@ from pathlib import PurePosixPath
 
 from codeguard_agent.git.diff_collector import split_diff_by_file
 from codeguard_agent.models.schemas import Issue, ReviewResult, Severity
+from codeguard_agent.pipeline.evidence.presentation import format_evidence_location
 
 _SEVERITY_ICON = {
     Severity.CRITICAL: "🔴",
@@ -45,7 +46,7 @@ def render_review_report(
 
     结构:标题 + 简要元信息 → 统计表 → 按严重级分组的问题列表
     (CRITICAL→WARNING→INFO,组内保持原顺序,全局编号连续)。每条问题含
-    问题/建议(可空省略)/代码片段(diff 可提取时)/置信度。
+    问题/根因/来源位置/建议(可空省略)/代码片段(diff 可提取时)/置信度。
     """
     lines: list[str] = [
         "# 🔍 Codeguard 审查报告",
@@ -98,6 +99,14 @@ def render_review_report(
             lines.append("")
             lines.append(f"**问题**:{issue.message}")
             lines.append("")
+            if issue.root_cause:
+                lines.append(f"**根因**:{issue.root_cause}")
+                lines.append("")
+            if issue.evidence_locations:
+                lines.append("**来源位置**:")
+                for source in issue.evidence_locations:
+                    lines.append(f"- {format_evidence_location(source)}")
+                lines.append("")
             if issue.suggestion:
                 lines.append(f"**建议**:{issue.suggestion}")
                 lines.append("")

@@ -2,7 +2,8 @@
 
 从 checkpoint 提取 reported_issues,与 `_bugs_gt.json`(由 planted-bugs.diff 按 hunk 聚合)
 按 file + 行号 ±10 硬命中 / 描述 token 重叠(≥2)软命中匹配,聚合出 bug 级
-Recall(任一 2 轮命中)与 Precision(严格/宽松)。
+Recall(任一 2 轮命中)与 Precision(严格/宽松)。对 selected-20-v2 的正式标答，
+额外要求 `evidence_locations/root_cause` 命中锚点；没有来源的语义猜测不算命中。
 
 用法:
     python -m evals.recall_analyzer [--retry-db checkpoint-direct-retry.db]
@@ -23,6 +24,9 @@ import sys
 from pathlib import Path
 
 import yaml
+
+from evals.dataset import _apply_evidence_policy
+from evals.evidence import evidence_matches, file_matches, normalize
 
 _CASES_DIR = Path(__file__).resolve().parent / "dataset" / "selected-20-v2"
 _GT_FILE = _CASES_DIR / "cases" / "_bugs_gt.json"
@@ -50,8 +54,7 @@ _RETRY_CASES = {
 }
 
 
-def _norm(s: object) -> str:
-    return re.sub(r"\s+", "", str(s or "")).lower()
+_norm = normalize
 
 
 def load_case_gold() -> dict[str, list[dict]]:
@@ -69,6 +72,7 @@ def load_case_gold() -> dict[str, list[dict]]:
         if not case_file.is_file():
             continue
         raw = yaml.safe_load(case_file.read_text(encoding="utf-8")) or {}
+        raw = _apply_evidence_policy(raw, suite_name=_CASES_DIR.name)
         expected: list[dict] = []
         for issue in raw.get("expected") or []:
             keywords = issue.get("type_keywords") or []
@@ -78,25 +82,43 @@ def load_case_gold() -> dict[str, list[dict]]:
                 {
                     "file": issue.get("file", ""),
                     "line": int(issue.get("line", 0) or 0),
+                    "tolerance": int(issue.get("tolerance", 3) or 3),
                     "desc": " | ".join(
                         str(part) for part in (keywords, note, root_cause) if part
                     ),
+                    "evidence_anchors": [str(anchor) for anchor in issue.get("evidence_anchors", [])],
+                    "evidence_scope": issue.get("evidence_scope", "local"),
                 }
             )
         out[str(raw.get("id") or case_dir.name)] = expected
     return out
 
 
+def _evidence_match(issue: dict, bug: dict) -> bool:
+    """按标准答案锚点校验最终报告中的用户可读来源位置。"""
+
+    anchors = bug.get("evidence_anchors", [])
+    if not anchors:
+        return True  # 旧 hunk 诊断没有证据元数据,保持仅供辅助分析的旧口径
+    return evidence_matches(
+        locations=issue.get("evidence_locations") or [],
+        anchors=anchors,
+        evidence_scope=str(bug.get("evidence_scope", "local")),
+        expected_file=bug.get("file", ""),
+        tolerance=int(bug.get("tolerance", 3) or 3),
+    )
+
+
 def match(issue: dict, bug: dict) -> bool:
-    """file 相同 + 行号 ±10 硬命中;偏移大时用描述 token 重叠(≥2)软命中。"""
-    if _norm(issue.get("file")) != _norm(bug["file"]):
+    """file + 行号/描述匹配后,还需通过标准答案要求的来源位置校验。"""
+    if not file_matches(issue.get("file", ""), bug["file"]):
         return False
     il, bl = issue.get("line") or 0, bug["line"]
     if abs(il - bl) <= 10:
-        return True
+        return _evidence_match(issue, bug)
     it = set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}", _norm(issue.get("message", "")) + _norm(issue.get("summary", ""))))
     bt = set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}", _norm(bug["desc"])))
-    return len(it & bt) >= 2
+    return len(it & bt) >= 2 and _evidence_match(issue, bug)
 
 
 def load_runs(profile: str, retry_db: Path | None) -> dict[str, list[tuple[int, list[dict]]]]:

@@ -9,7 +9,9 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
-from evals.dataset import load_cases
+import pytest
+
+from evals.dataset import _load_evidence_manifest, load_cases
 from evals.schema import EvalCase
 
 
@@ -247,3 +249,40 @@ def test_graph_necessity_fixture_loads_with_graph_oracle():
     assert len(case.expected) == 2
     assert all(issue.required_graph_facts for issue in case.expected)
     assert case.is_repo_backed
+
+
+def test_selected_suite_applies_evidence_policy_when_present():
+    selected_root = Path(__file__).parents[1] / "evals" / "dataset" / "selected-20-v2"
+    if not selected_root.is_dir():
+        pytest.skip("selected-20-v2 是本地评测素材,当前 checkout 未提供")
+    cases = load_cases(selected_root)
+    assert len(cases) == 15
+    assert all(case.evidence_required for case in cases)
+    assert all(issue.evidence_anchors for case in cases for issue in case.expected)
+    cross = {
+        (case.id, issue.id)
+        for case in cases
+        for issue in case.expected
+        if issue.evidence_scope == "cross_file"
+    }
+    assert cross == {
+        ("vul4j-06-infinite-loop", "E3"),
+        ("vul4j-18-path-traversal", "E4"),
+        ("vul4j-42-command-injection", "E5"),
+    }
+
+
+def test_selected_suite_evidence_manifest_is_versioned_and_complete():
+    manifest = Path(__file__).parents[1] / "evals" / "selected-20-v2-evidence.yaml"
+    assert manifest.is_file()
+    metadata = _load_evidence_manifest()
+    assert len(metadata) == 15
+    assert sum(len(items) for items in metadata.values()) == 76
+    cases = load_cases(Path(__file__).parents[1] / "evals" / "dataset" / "selected-20-v2")
+    assert sum(len(case.expected) for case in cases) == 76
+    assert all(
+        issue.evidence_anchors
+        for case in cases
+        for issue in case.expected
+    )
+    assert all(issue.id in metadata[case.id] for case in cases for issue in case.expected)

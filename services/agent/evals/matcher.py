@@ -16,6 +16,11 @@ evaluate_case 的策略(见 ADR-005):
 
 一条标准答案最多由一条报告命中,一条报告最多命中一条标准答案;没被任何标准答案认领的
 报告计为 FP。
+
+当用例开启 ``evidence_required`` 或标准答案声明 ``evidence_anchors`` 时，语义配对
+还必须通过证据位置校验。报告中的 ``Issue.file/line`` 只是问题定位，不作为证据；
+校验只读取 ``Issue.evidence_locations``；``root_cause`` 只是由这些位置生成的展示文本。因此仅凭 diff 猜中
+类型和行号的报告会同时记为一次 FN 和一次无证据 FP，不会被计入 Recall。
 """
 
 from __future__ import annotations
@@ -26,9 +31,15 @@ from typing import Any
 
 from codeguard_agent.models.schemas import Issue, Severity
 
+from evals.evidence import evidence_matches, file_matches, normalize
 from evals.schema import CaseJudgement, EvalCase, ExpectedIssue, MatchOutcome
+from codeguard_agent.pipeline.evidence.presentation import format_evidence_location
 
 logger = logging.getLogger("codeguard.evals")
+
+
+_norm = normalize
+_file_matches = file_matches
 
 
 def _severity_tier(severity: Severity | None) -> str | None:
@@ -36,19 +47,6 @@ def _severity_tier(severity: Severity | None) -> str | None:
     if severity is None:
         return None
     return "primary" if severity == Severity.CRITICAL else "secondary"
-
-
-def _file_matches(reported_file: str, expected_file: str) -> bool:
-    """文件名匹配:按 basename 相等,或一方是另一方的后缀。
-
-    LLM 报的路径可能只有文件名、也可能带不同前缀,故做宽松匹配。
-    """
-    r = reported_file.replace("\\", "/").strip().lower()
-    e = expected_file.replace("\\", "/").strip().lower()
-    if not r:
-        return False
-    r_base, e_base = r.rsplit("/", 1)[-1], e.rsplit("/", 1)[-1]
-    return r_base == e_base or r.endswith(e) or e.endswith(r)
 
 
 def _line_matches(reported_line: int, expected: ExpectedIssue) -> bool:
@@ -62,6 +60,24 @@ def _keyword_matches(issue: Issue, expected: ExpectedIssue) -> bool:
     """类型关键词匹配:report 的 type/message 命中任一关键词(忽略大小写)。"""
     haystack = f"{issue.type} {issue.message}".lower()
     return any(kw.lower() in haystack for kw in expected.type_keywords)
+
+
+def _evidence_required(case: EvalCase, expected: ExpectedIssue) -> bool:
+    """判断该标答是否要求用户可读的确定性证据位置。"""
+
+    return bool(case.evidence_required or expected.evidence_anchors)
+
+
+def evidence_match(issue: Issue, expected: ExpectedIssue) -> bool:
+    """检查报告是否给出了标准答案认可的源码/symbol 位置。"""
+
+    return evidence_matches(
+        locations=issue.evidence_locations,
+        anchors=expected.evidence_anchors,
+        evidence_scope=expected.evidence_scope,
+        expected_file=expected.file,
+        tolerance=expected.tolerance,
+    )
 
 
 def rule_match(issue: Issue, expected: ExpectedIssue) -> bool:
@@ -143,7 +159,14 @@ def _fmt_reported(reported: list[Issue]) -> str:
     rows = []
     for j, x in enumerate(reported):
         loc = f"{x.file}:{x.line}" if x.line else x.file
-        rows.append(f"[R{j}] 类型:{x.type} | 位置:{loc} | 描述:{x.message}")
+        sources = "; ".join(
+            format_evidence_location(item)
+            for item in x.evidence_locations
+        )
+        rows.append(
+            f"[R{j}] 类型:{x.type} | 位置:{loc} | 描述:{x.message} | "
+            f"根因:{x.root_cause or '(无)'} | 来源:{sources or '(无)'}"
+        )
     return "\n".join(rows)
 
 
@@ -233,6 +256,19 @@ def _build_outcome(
             elif tier == "secondary":
                 outcome.fn_secondary += 1
             continue
+        issue = reported[rep_idx]
+        if _evidence_required(case, expected):
+            outcome.evidence_checked += 1
+            if not evidence_match(issue, expected):
+                outcome.evidence_missing_hits += 1
+                outcome.false_negatives += 1
+                if tier == "primary":
+                    outcome.fn_primary += 1
+                elif tier == "secondary":
+                    outcome.fn_secondary += 1
+                continue
+            outcome.evidence_backed_hits += 1
+
         matched_reports.add(rep_idx)
         expected_id = expected.id or f"E{exp_idx}"
         outcome.matched_expected_by_report[rep_idx] = expected_id
@@ -242,7 +278,6 @@ def _build_outcome(
             outcome.tp_primary += 1
         elif tier == "secondary":
             outcome.tp_secondary += 1
-        issue = reported[rep_idx]
         # 定位准确率:命中项里行号也对得上的(expected.line>0 才计)
         if expected.line > 0:
             outcome.localization_checked += 1

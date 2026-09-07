@@ -123,6 +123,22 @@ def test_既有指标口径不变():
     assert m.severity_accuracy == 0.5                     # 1 / 2
 
 
+def test_证据覆盖率单独统计且不改变_tp口径():
+    run = [
+        _vuln(
+            true_positives=1,
+            false_positives=1,
+            evidence_checked=2,
+            evidence_backed_hits=1,
+            evidence_missing_hits=1,
+        )
+    ]
+    m = aggregate([run])
+    assert m.evidence_coverage == 0.5
+    assert m.evidence_checked == 2
+    assert m.evidence_missing_hits == 1
+
+
 # ---- 行为诊断指标族 ----
 
 def test_诱饵命中率():

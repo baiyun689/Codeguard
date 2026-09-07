@@ -159,6 +159,12 @@ def aggregate(runs: list[list[MatchOutcome]]) -> AggregateMetrics:
     localization_acc = _safe_div(loc_hits, loc_checked)
     severity_acc = _safe_div(sev_hits, sev_checked)
 
+    # 证据覆盖率:只统计开启证据门槛的标答配对,不把“猜中了但没有来源”算 TP。
+    evidence_checked = sum(o.evidence_checked for run in runs for o in run)
+    evidence_backed = sum(o.evidence_backed_hits for run in runs for o in run)
+    evidence_missing_hits = sum(o.evidence_missing_hits for run in runs for o in run)
+    evidence_coverage = _safe_div(evidence_backed, evidence_checked)
+
     # LLM-as-judge 质量分(若有)
     all_scores = [s for run in runs for o in run for s in o.judge_scores]
     avg_msg = mean(s.message_quality for s in all_scores) if all_scores else None
@@ -214,6 +220,9 @@ def aggregate(runs: list[list[MatchOutcome]]) -> AggregateMetrics:
         localization_accuracy=localization_acc,
         localization_checked=loc_checked,
         severity_accuracy=severity_acc,
+        evidence_coverage=evidence_coverage,
+        evidence_checked=evidence_checked,
+        evidence_missing_hits=evidence_missing_hits,
         recall_std=pstdev(recalls) if len(recalls) > 1 else 0.0,
         precision_std=pstdev(precisions) if len(precisions) > 1 else 0.0,
         avg_judge_message_quality=avg_msg,

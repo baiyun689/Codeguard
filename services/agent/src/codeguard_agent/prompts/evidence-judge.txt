@@ -164,6 +164,10 @@
 
 只输出符合 EvidenceJudgeBatch schema 的结构化结果。
 
+最终面向用户的报告会由运行时从本批已验证 Artifact 生成根因和来源位置。你的输出只
+负责 keep/drop 与内部 `evidence_ids`；不要在 reason 或候选文本中伪造 Txx/Cxx/P01，
+也不要把猜测的文件、symbol、行号当作已验证来源。用户不会看到内部证据编号。
+
 返回 assessments 数组，每个输入候选必须且只能对应一个 assessment：
 
 ```json

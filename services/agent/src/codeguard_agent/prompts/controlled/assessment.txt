@@ -6,6 +6,11 @@ EvidenceAssessment 中的 claim 和 mechanism 是用于解释评估的回显字�
 
 supporting_refs 和 counter_refs 只能填写 EvidencePack 中真实存在的 Txx/Cxx 别名，最多各 3 个；不能填写 P01（patch 由 Python 自动绑定），不能制造编号或证据文本。supporting 与 counter 不得重叠。只输出 EvidenceAssessment 结构化对象。
 
+最终用户报告中的 `root_cause` 与 `evidence_locations` 由运行时根据通过验证的 Artifact
+自动生成，不属于本结构化输出。不要在 claim、mechanism、impact 或任何解释字段中写入
+Txx/Cxx/P01，也不要自行编造文件名、symbol 或行号；无法从当前事实定位的来源必须留空，
+不能用猜测补齐。
+
 如果当前 WorkItem 的图谱事实已经返回了与 GraphQuestion 方向一致的正向关系，但仍缺少判断候选机制所需的局部实现细节，不要因为缺少该细节就猜测结论；应返回 `needs_evidence`，并在 `additional_evidence_question` 中写清唯一缺口。若工具响应不完整、图谱投影不可判定或当前事实不足以作出正负结论，使用 `indeterminate` 或 `unresolved`，并尽量写清唯一缺口；若已经命中正向事实但响应带有 partial/truncated 限制，使用 `partial` 并填写补充问题。`subject_ref` 只能填写 EvidencePack 中已经出现的精确 symbol_id，优先选择与 GraphQuestion 直接相邻、且尚未读取的端点。若图谱事实本身已足够，直接返回 `proved` 或 `candidate`；不得要求自由探索、猜测 symbol 或补写工具结果。Graph Replan 对 `needs_evidence`、`indeterminate`、`unresolved`，以及带明确补充问题或确定性 partial/indeterminate proof 的 `partial`，最多追加一个步骤；第二次评估仍不能证明候选时，运行时将该 WorkItem 标记为 unresolved 并丢弃，不交给最终 Judge。
 
 如果 EvidencePack 已经包含候选 subject 的完整 `get_file_content` 步骤，不能因为没有

@@ -39,6 +39,45 @@ _LOCAL_ONLY_DIRS = frozenset({
     "graph-necessity-v1",
 })
 
+# 评测素材本身因体积较大保持本地，但证据元数据是代码的一部分，放在受版本控制的
+# manifest 中，避免仅依赖加载器里的不可审计硬编码。
+_EVIDENCE_MANIFEST = Path(__file__).resolve().parent / "selected-20-v2-evidence.yaml"
+
+
+def _load_evidence_manifest() -> dict[str, dict[str, dict[str, object]]]:
+    if not _EVIDENCE_MANIFEST.is_file():
+        return {}
+    value = yaml.safe_load(_EVIDENCE_MANIFEST.read_text(encoding="utf-8")) or {}
+    cases = value.get("cases", {}) if isinstance(value, dict) else {}
+    return cases if isinstance(cases, dict) else {}
+
+
+def _apply_evidence_policy(raw: dict, *, suite_name: str) -> dict:
+    """为严格评测 suite 注入可复核来源元数据,不改产品审查输入。"""
+
+    if suite_name != "selected-20-v2":
+        return raw
+    raw["evidence_required"] = True
+    manifest = _load_evidence_manifest().get(str(raw.get("id", "")), {})
+    for expected in raw.get("expected") or ():
+        if not isinstance(expected, dict):
+            continue
+        expected_id = str(expected.get("id", ""))
+        metadata = manifest.get(expected_id, {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        # case.yaml 可以携带更具体的人工标注；manifest 只补齐遗漏，绝不覆盖显式值。
+        if not expected.get("evidence_anchors") and metadata.get("anchors"):
+            expected["evidence_anchors"] = list(metadata["anchors"])
+        if "evidence_scope" not in expected and metadata.get("scope"):
+            expected["evidence_scope"] = metadata["scope"]
+        if not expected.get("evidence_anchors"):
+            raise ValueError(
+                f"selected-20-v2 标答缺少人工 evidence_anchors:"
+                f"{raw.get('id', '')}:{expected_id}"
+            )
+    return raw
+
 
 def _is_local_only(path: Path, root: Path) -> bool:
     """路径是否落在本地数据集目录内(不入库、不参与 load_cases)。"""
@@ -144,6 +183,7 @@ def _load_repo_benchmark_suite(root: Path) -> list[EvalCase] | None:
             raise ValueError(f"benchmark 用例结构不完整:{case_dir}")
         raw = yaml.safe_load(case_file.read_text(encoding="utf-8")) or {}
         raw["diff"] = diff_file.read_text(encoding="utf-8")
+        raw = _apply_evidence_policy(raw, suite_name=root.name)
         raw["repo_path"] = str(snapshot.resolve())
         raw.setdefault("capability", ["file", "call-graph", "ast"])
         cases.append(EvalCase.model_validate(raw))
