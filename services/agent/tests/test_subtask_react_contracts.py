@@ -26,6 +26,7 @@ from codeguard_agent.pipeline.orchestration.graph import _allocate_subtask_budge
 from codeguard_agent.pipeline.controlled.subtask_react import SubtaskReactEngine
 from codeguard_agent.pipeline.execution.discovery import (
     CoordinatedDiscoveryToolClient,
+    DiscoveryToolRecord,
     DiscoveryToolCoordinator,
 )
 from codeguard_agent.tools.tool_client import ToolResponse
@@ -727,3 +728,89 @@ def test_findings_after_budget_rejection_keep_successful_observations():
     assert outcome.reason == "tool_budget_exceeded_after_findings"
     assert outcome.result is not None
     assert outcome.result.outcome == "findings"
+
+
+def test_budget_recursion_finalizer_uses_real_call_id_for_evidence_binding(monkeypatch):
+    class GraphRecursionError(Exception):
+        pass
+
+    record = DiscoveryToolRecord(
+        call_id="discovery-tool-real-1",
+        tool="get_file_content",
+        arguments={"symbol_id": "java:A#run()"},
+        output="父类实现写入状态",
+        resolved_output="父类实现写入状态",
+        duration_ms=1.0,
+        status="complete",
+        reuse_key="get_file_content:{...}",
+    )
+
+    class Client:
+        tool_calls = 1
+        budget_exhausted = True
+
+        def __init__(self):
+            self._records = ()
+
+        @property
+        def trace_records(self):
+            return self._records
+
+    class Structured:
+        def invoke(self, messages):
+            assert "discovery-tool-real-1" in messages[1][1]
+            return InvestigationResult(
+                subtask_id="wrong-provider-id",
+                outcome="findings",
+                findings=(InvestigationFinding(
+                    claim="父类实现写入状态但当前调用被删除",
+                    mechanism="源码直接显示父类实现写入状态",
+                    location_file="src/A.java",
+                    location_line=12,
+                    observations=(InvestigationObservation(
+                        observation_id="discovery-tool-real-1",
+                        role="mechanism",
+                    ),),
+                ),),
+            )
+
+    class LLM:
+        def with_structured_output(self, _schema, method=None):  # noqa: ARG002
+            return Structured()
+
+    monkeypatch.setattr(
+        "codeguard_agent.pipeline.controlled.subtask_react.invoke_with_retry",
+        lambda llm, messages, max_retries: llm.invoke(messages),
+    )
+    instruction = SubtaskInstruction(
+        subtask_id="subtask-budget-finalizer",
+        seed_id="seed-budget-finalizer",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-task-1",
+        objective="检查父类状态",
+        observed_change="删除父类调用",
+        initial_symbol_ids=("java:A#run()",),
+        allowed_tools=("get_file_content",),
+    )
+    client = Client()
+    engine = SubtaskReactEngine(client, max_tool_calls=1, max_rounds=2)
+
+    def fail_after_capture(*_args):
+        client._records = (record,)
+        raise GraphRecursionError()
+
+    engine._run_agent = fail_after_capture
+
+    outcome = engine.run(
+        LLM(),
+        task=SimpleNamespace(file="src/A.java", patch="-super.run();"),
+        symbol_context=SimpleNamespace(symbols=()),
+        instruction=instruction,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+
+    assert outcome.status == "complete"
+    assert outcome.reason == "tool_budget_exceeded_finalized"
+    assert outcome.result is not None
+    assert outcome.result.findings[0].observations[0].observation_id == "discovery-tool-real-1"

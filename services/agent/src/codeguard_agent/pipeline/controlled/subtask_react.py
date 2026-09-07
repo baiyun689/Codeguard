@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import Any
 from codeguard_agent.models.tasks import InvestigationResult, SubtaskInstruction
 from codeguard_agent.pipeline.controlled.llm_contracts import LlmInvestigationResult
 from codeguard_agent.pipeline.execution.discovery import DiscoveryToolRecord
+from codeguard_agent.llm.client import invoke_with_retry
 
 logger = logging.getLogger("codeguard")
 _PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "controlled" / "execute-subtask-react.txt"
@@ -100,6 +102,24 @@ class SubtaskReactEngine:
                 "GraphRecursionLimitError",
             }
             budget_hit = bool(getattr(self._tool_client, "budget_exhausted", False))
+            if inconclusive and budget_hit:
+                finalized = self._finalize_after_budget(
+                    llm,
+                    task=task,
+                    symbol_context=symbol_context,
+                    instruction=instruction,
+                    records=records,
+                    structured_method=structured_method,
+                    max_retries=max_retries,
+                )
+                if finalized is not None and finalized.outcome == "findings":
+                    return SubtaskReactOutcome(
+                        finalized,
+                        "complete",
+                        "tool_budget_exceeded_finalized",
+                        records,
+                        ["subtask_react_findings_after_budget"],
+                    )
             return SubtaskReactOutcome(
                 None,
                 "inconclusive" if inconclusive else "failed",
@@ -177,6 +197,95 @@ class SubtaskReactEngine:
             records=records,
             events=[f"subtask_react_{parsed.outcome}"],
         )
+
+    def _finalize_after_budget(
+        self,
+        llm: Any,
+        *,
+        task: Any,
+        symbol_context: Any,
+        instruction: SubtaskInstruction,
+        records: list[DiscoveryToolRecord],
+        structured_method: str,
+        max_retries: int,
+    ) -> InvestigationResult | None:
+        """Close a budget-exhausted React using captured facts only.
+
+        Some providers keep emitting tool calls after the gate has rejected a
+        call, which makes LangGraph raise before its structured terminal turn.
+        A single no-tool structured call is a protocol finalizer, not another
+        investigation: it receives only the bounded tool outputs already
+        captured by this subtask and may emit findings only with their local
+        observation IDs.  Negative results are deliberately not accepted here.
+        """
+
+        observations: list[str] = []
+        for record in records:
+            status = str(getattr(record, "status", ""))
+            if status not in {"complete", "reused", "available"}:
+                continue
+            # ``output`` for a reused call is intentionally only a short
+            # marker.  The coordinator keeps the first real payload in
+            # ``resolved_output``; use that payload so a finalizer never
+            # reasons from a cache marker.  The call id is the stable bridge
+            # that the executor later maps to the ledger's Txx alias.
+            output = str(
+                getattr(record, "resolved_output", "")
+                or getattr(record, "output", "")
+                or ""
+            )
+            if not output:
+                continue
+            observations.append(
+                json.dumps(
+                    {
+                        "tool": getattr(record, "tool", ""),
+                        "observation_id": str(
+                            getattr(record, "reused_from_call_id", "")
+                            or getattr(record, "call_id", "")
+                        ),
+                        "output": output[:3500],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        if not observations:
+            return None
+        user = (
+            self._build_user_prompt(task, symbol_context, instruction)
+            + "\n<captured_observations>\n"
+            + "\n".join(observations[:8])
+            + "\n</captured_observations>\n"
+            "ReAct 未能正常收口。你现在只能依据上面已捕获的工具输出做一次最终结构化收口；"
+            "不要调用工具，不要输出 no_finding。若这些 observation 不能直接支持完整机制，"
+            "返回 inconclusive；只有能绑定实际 observation_id（原样填写上面 observation_id）"
+            "时才返回 findings。"
+        )
+        system = (
+            _PROMPT.read_text(encoding="utf-8")
+            + "\n\n这是预算终止后的无工具协议收口，不得补充任何未出现在 captured_observations 的事实。"
+        )
+        try:
+            raw = invoke_with_retry(
+                llm.with_structured_output(
+                    LlmInvestigationResult,
+                    method=structured_method,
+                ),
+                [("system", system), ("human", user)],
+                max_retries=max(1, max_retries),
+            )
+        except Exception:  # noqa: BLE001 - finalizer is best effort
+            return None
+        parsed = self._extract(
+            {"structured_response": raw}
+            if raw is not None and not isinstance(raw, dict)
+            else raw
+        )
+        if parsed is None:
+            return None
+        if parsed.subtask_id != instruction.subtask_id:
+            parsed = parsed.model_copy(update={"subtask_id": instruction.subtask_id})
+        return parsed
 
     def _run_agent(self, llm: Any, user_prompt: str, instruction: SubtaskInstruction, method: str) -> Any:
         from langchain.agents import create_agent
