@@ -265,6 +265,29 @@ def test_behavior_and_security_path_seeds_are_not_merged():
     assert {group.seed.path_kind for group in groups} == {"behavior", "security"}
 
 
+def test_security_hint_on_neutral_structure_seed_does_not_split_investigation():
+    behavior = _seed().model_copy(update={
+        "seed_id": "investigation-neutral-behavior",
+        "evidence_need": EvidenceNeed.INSPECT_STRUCTURE,
+        "allowed_tools": ("inspect_structure", "get_file_content"),
+        "path_kind": None,
+        "direction": None,
+        "observed_change": "删除 super.parseFromLocalFileData 调用",
+        "investigation_question": "检查父类初始化状态是否丢失",
+    })
+    threat = behavior.model_copy(update={
+        "seed_id": "investigation-neutral-threat",
+        "reviewer": ReviewerKind.THREAT_MODEL,
+        "path_kind": "security",
+    })
+    groups = group_investigation_seeds({
+        ReviewerKind.BEHAVIOR: (behavior,),
+        ReviewerKind.THREAT_MODEL: (threat,),
+    })
+    assert len(groups) == 1
+    assert groups[0].seed.path_kind is None
+
+
 def test_same_anchor_structure_and_path_seeds_merge_into_one_coherent_investigation():
     path_seed = _seed().model_copy(
         update={

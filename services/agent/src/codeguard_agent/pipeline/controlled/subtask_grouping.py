@@ -54,7 +54,15 @@ def _tool_family(seed: InvestigationSeed) -> str:
     capabilities during the merge.
     """
 
-    if seed.path_kind == "security":
+    # ``path_kind`` is meaningful only for the security/behavior variants of
+    # ``inspect_path``.  Threat-model triage can still emit a neutral
+    # structure/source or upstream-impact seed with a copied security hint;
+    # treating that hint as a separate family would split one investigation
+    # into needless reviewer-specific subtasks.
+    if (
+        required_graph_tool(seed) == "inspect_path"
+        and seed.path_kind == "security"
+    ):
         return "security"
     return "behavior"
 
@@ -288,9 +296,11 @@ def group_investigation_seeds(
                     "direction": _merged_direction(tuple(ordered), merged_need),
                     "path_kind": (
                         "security"
-                        if any(seed.path_kind == "security" for seed in ordered)
+                        if merged_need is EvidenceNeed.INSPECT_PATH
+                        and any(seed.path_kind == "security" for seed in ordered)
                         else "behavior"
-                        if any(seed.path_kind == "behavior" for seed in ordered)
+                        if merged_need is EvidenceNeed.INSPECT_PATH
+                        and any(seed.path_kind == "behavior" for seed in ordered)
                         else None
                     ),
                     "observed_change": _short_merge_text(
