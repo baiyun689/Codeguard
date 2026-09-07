@@ -3,7 +3,7 @@
 从 checkpoint 提取 reported_issues,与 `_bugs_gt.json`(由 planted-bugs.diff 按 hunk 聚合)
 按 file + 行号 ±10 硬命中 / 描述 token 重叠(≥2)软命中匹配,聚合出 bug 级
 Recall(任一 2 轮命中)与 Precision(严格/宽松)。证据位置继续保留在报告中供人工复核，
-但不再作为 Recall 命中门槛。
+但不参与命中或指标计算。
 
 用法:
     python -m evals.recall_analyzer [--retry-db checkpoint-direct-retry.db]
@@ -25,8 +25,7 @@ from pathlib import Path
 
 import yaml
 
-from evals.dataset import _apply_evidence_policy
-from evals.evidence import evidence_matches, file_matches, normalize
+from evals.evidence import file_matches, normalize
 
 _CASES_DIR = Path(__file__).resolve().parent / "dataset" / "selected-20-v2"
 _GT_FILE = _CASES_DIR / "cases" / "_bugs_gt.json"
@@ -72,7 +71,6 @@ def load_case_gold() -> dict[str, list[dict]]:
         if not case_file.is_file():
             continue
         raw = yaml.safe_load(case_file.read_text(encoding="utf-8")) or {}
-        raw = _apply_evidence_policy(raw, suite_name=_CASES_DIR.name)
         expected: list[dict] = []
         for issue in raw.get("expected") or []:
             keywords = issue.get("type_keywords") or []
@@ -86,8 +84,6 @@ def load_case_gold() -> dict[str, list[dict]]:
                     "desc": " | ".join(
                         str(part) for part in (keywords, note, root_cause) if part
                     ),
-                    "evidence_anchors": [str(anchor) for anchor in issue.get("evidence_anchors", [])],
-                    "evidence_scope": issue.get("evidence_scope", "local"),
                 }
             )
         out[str(raw.get("id") or case_dir.name)] = expected
@@ -104,21 +100,6 @@ def match(issue: dict, bug: dict) -> bool:
     it = set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}", _norm(issue.get("message", "")) + _norm(issue.get("summary", ""))))
     bt = set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}", _norm(bug["desc"])))
     return len(it & bt) >= 2
-
-
-def evidence_match(issue: dict, bug: dict) -> bool:
-    """诊断报告是否命中标答来源锚点；结果不参与 ``match``。"""
-
-    anchors = bug.get("evidence_anchors", [])
-    if not anchors:
-        return True
-    return evidence_matches(
-        locations=issue.get("evidence_locations") or [],
-        anchors=anchors,
-        evidence_scope=str(bug.get("evidence_scope", "local")),
-        expected_file=bug.get("file", ""),
-        tolerance=int(bug.get("tolerance", 3) or 3),
-    )
 
 
 def load_runs(profile: str, retry_db: Path | None) -> dict[str, list[tuple[int, list[dict]]]]:
@@ -152,9 +133,6 @@ def load_runs(profile: str, retry_db: Path | None) -> dict[str, list[tuple[int, 
 def analyze(profile: str, bugs: dict, retry_db: Path | None) -> dict:
     runs = load_runs(profile, retry_db)
     per_case, empty = [], []
-    evidence_checked = 0
-    evidence_backed = 0
-    evidence_missing = 0
     for cid in sorted(runs):
         cb = bugs.get(cid, [])
         issues_all: list[dict] = []
@@ -165,15 +143,8 @@ def analyze(profile: str, bugs: dict, retry_db: Path | None) -> dict:
             if not issues:
                 n_empty += 1
         for b_idx, b in enumerate(cb):
-            matching = [iss for iss in issues_all if match(iss, b)]
-            if matching:
+            if any(match(iss, b) for iss in issues_all):
                 hit_bugs.add(b_idx)
-                if b.get("evidence_anchors"):
-                    evidence_checked += 1
-                    if any(evidence_match(iss, b) for iss in matching):
-                        evidence_backed += 1
-                    else:
-                        evidence_missing += 1
         per_case.append({"case": cid, "total": len(cb), "hit": len(hit_bugs), "reported": len(issues_all), "empty_rounds": n_empty})
         if n_empty:
             empty.append(cid)
@@ -203,9 +174,6 @@ def analyze(profile: str, bugs: dict, retry_db: Path | None) -> dict:
         "tp_strict": len(first_hit),
         "precision_strict": len(first_hit) / reported if reported else 0.0,
         "precision_loose": tp_loose / reported if reported else 0.0,
-        "evidence_checked": evidence_checked,
-        "evidence_backed": evidence_backed,
-        "evidence_missing": evidence_missing,
         "per_case": per_case,
         "empty_cases": empty,
     }
@@ -231,15 +199,11 @@ def main() -> int:
         bugs = json.loads(_GT_FILE.read_text(encoding="utf-8"))
         print("gold=_bugs_gt.json(hunk 诊断,不作为正式标答)")
     results = [analyze(p, bugs, retry_db) for p in ("direct", "full")]
-    print(
-        f"{'profile':8s} {'Recall':>8s} {'命中':>7s} {'报告':>6s} "
-        f"{'P严格':>7s} {'P宽松':>7s} {'证据':>9s} {'空轮case':>10s}"
-    )
+    print(f"{'profile':8s} {'Recall':>8s} {'命中':>7s} {'报告':>6s} {'P严格':>7s} {'P宽松':>7s} {'空轮case':>10s}")
     for r in results:
         print(
             f"{r['profile']:8s} {r['recall']:8.3f} {r['hit_bugs']:4d}/{r['total_bugs']:<3d} "
             f"{r['reported_issues']:6d} {r['precision_strict']:7.3f} {r['precision_loose']:7.3f} "
-            f"{r['evidence_backed']:3d}/{r['evidence_checked']:<3d} "
             f"{len(r['empty_cases']):3d} {','.join(r['empty_cases'])[:40]}"
         )
     print("\n每 case 命中:")

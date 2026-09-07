@@ -150,8 +150,6 @@ def render_report(
         f"| 误报率(每条干净 diff) | {metrics.false_positives_on_clean:.3f} | 干净代码上平均误报几个(越低越好) |",
         f"| 定位准确率 | {metrics.localization_accuracy:.3f} | 命中项里行号也对上的比例 |",
         f"| 级别准确率 | {metrics.severity_accuracy:.3f} | 命中项里 severity 也对上的比例 |",
-        f"| 证据覆盖率 | {metrics.evidence_coverage:.3f} | 已配对问题中，报告提供可接受来源位置的比例（诊断指标） |",
-        f"| 无证据命中 | {metrics.evidence_missing_hits} / {metrics.evidence_checked} | 已配对但缺少可核验来源；不影响 TP/FN/FP |",
         f"| 诱饵命中率 | {_fmt(metrics.distractor_hit_rate)} | 过度上报里「被诱饵骗」的比例(越低=越克制) |",
         f"| vuln 噪音/条 | {_fmt(metrics.vuln_noise_per_case)} | 脏代码上平均每条 diff 误报几个(区别于 clean 误报率) |",
         f"| 报告膨胀比 | {_fmt(metrics.report_inflation)} | vuln 用例上 报告数/标答数 的均值(>1 偏过度上报) |",
@@ -163,15 +161,14 @@ def render_report(
         "",
         "## 逐用例明细(最后一次跑测)",
         "",
-        "| 用例 | 类别 | 标答 | 报告 | TP | FP | FN | 证据覆盖 | 无证据命中 |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| 用例 | 类别 | 标答 | 报告 | TP | FP | FN |",
+        "|---|---|---|---|---|---|---|",
     ]
     for o in runs[-1]:
         lines.append(
             f"| {o.case_id} | {'clean' if o.is_clean else 'vuln'} | "
             f"{o.expected_total} | {o.reported_total} | "
-            f"{o.true_positives} | {o.false_positives} | {o.false_negatives} | "
-            f"{o.evidence_backed_hits}/{o.evidence_checked} | {o.evidence_missing_hits} |"
+            f"{o.true_positives} | {o.false_positives} | {o.false_negatives} |"
         )
 
     # 工具使用画像:回答"工具到底有没有被用上"(ADR-022 未答的问题)。仅工具档的用例有 tool_usage。

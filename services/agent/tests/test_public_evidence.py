@@ -201,7 +201,7 @@ def test_评测不再用证据位置阻断语义命中():
     )
     outcome = _build_outcome(case, [guessed], {0: 0}, "rule")
     assert (outcome.true_positives, outcome.false_negatives, outcome.false_positives) == (1, 0, 0)
-    assert outcome.evidence_missing_hits == 1
+    assert (outcome.evidence_checked, outcome.evidence_backed_hits, outcome.evidence_missing_hits) == (0, 0, 0)
 
 
 def test_评测保留用户可读来源位置诊断():
@@ -226,7 +226,7 @@ def test_评测保留用户可读来源位置诊断():
     )
     outcome = _build_outcome(case, [grounded], {0: 0}, "rule")
     assert (outcome.true_positives, outcome.false_negatives) == (1, 0)
-    assert (outcome.evidence_checked, outcome.evidence_backed_hits) == (1, 1)
+    assert (outcome.evidence_checked, outcome.evidence_backed_hits, outcome.evidence_missing_hits) == (0, 0, 0)
 
 
 def test_根因文本和结构化来源不匹配也不阻断语义命中():
@@ -250,7 +250,7 @@ def test_根因文本和结构化来源不匹配也不阻断语义命中():
     )
     outcome = _build_outcome(case, [guessed], {0: 0}, "rule")
     assert outcome.true_positives == 1
-    assert outcome.evidence_missing_hits == 1
+    assert outcome.evidence_missing_hits == 0
 
 
 def test_跨文件来源不再作为命中门槛():
@@ -275,7 +275,7 @@ def test_跨文件来源不再作为命中门槛():
     )
     outcome = _build_outcome(case, [changed_only], {0: 0}, "rule")
     assert outcome.true_positives == 1
-    assert outcome.evidence_missing_hits == 1
+    assert outcome.evidence_missing_hits == 0
 
 
 def test_跨文件无关来源也不阻断语义命中():
@@ -300,7 +300,7 @@ def test_跨文件无关来源也不阻断语义命中():
     )
     outcome = _build_outcome(case, [guessed], {0: 0}, "rule")
     assert outcome.true_positives == 1
-    assert outcome.evidence_missing_hits == 1
+    assert outcome.evidence_missing_hits == 0
 
 
 def test_跨文件证据接受另一个文件的已验证来源():

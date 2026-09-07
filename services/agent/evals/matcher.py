@@ -17,10 +17,9 @@ evaluate_case 的策略(见 ADR-005):
 一条标准答案最多由一条报告命中,一条报告最多命中一条标准答案;没被任何标准答案认领的
 报告计为 FP。
 
-``Issue.evidence_locations`` 和 ``root_cause`` 仍会被保留并单独统计，但不再参与
-TP/FN/FP 的命中门控。评测命中只依据文件、位置和类型关键词（或启用 ``--judge``
-时的案例级语义配对）；这样 Recall 反映“问题是否被审查器发现”，证据覆盖率则作为
-独立诊断指标，不再把发现到的问题改判为 FN+FP。
+``Issue.evidence_locations`` 和 ``root_cause`` 仍会传给案例级 ``--judge`` 做语义判断，
+但不参与评测的 TP/FN/FP 配对。评测命中只依据文件、位置和类型关键词（或启用
+``--judge`` 时的案例级语义配对），不再单独评估证据覆盖率。
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ from typing import Any
 
 from codeguard_agent.models.schemas import Issue, Severity
 
-from evals.evidence import evidence_matches, file_matches, normalize
+from evals.evidence import file_matches, normalize
 from evals.schema import CaseJudgement, EvalCase, ExpectedIssue, MatchOutcome
 from codeguard_agent.pipeline.evidence.presentation import format_evidence_location
 
@@ -60,27 +59,6 @@ def _keyword_matches(issue: Issue, expected: ExpectedIssue) -> bool:
     """类型关键词匹配:report 的 type/message 命中任一关键词(忽略大小写)。"""
     haystack = f"{issue.type} {issue.message}".lower()
     return any(kw.lower() in haystack for kw in expected.type_keywords)
-
-
-def _evidence_required(case: EvalCase, expected: ExpectedIssue) -> bool:
-    """兼容旧调用方：返回标答是否声明过证据元数据。"""
-
-    return bool(case.evidence_required or expected.evidence_anchors)
-
-
-def evidence_match(issue: Issue, expected: ExpectedIssue) -> bool:
-    """诊断性检查报告是否给出了标准答案认可的源码/symbol 位置。
-
-    该函数不再参与 TP/FN/FP 判定；调用方可用它生成证据覆盖率等辅助指标。
-    """
-
-    return evidence_matches(
-        locations=issue.evidence_locations,
-        anchors=expected.evidence_anchors,
-        evidence_scope=expected.evidence_scope,
-        expected_file=expected.file,
-        tolerance=expected.tolerance,
-    )
 
 
 def rule_match(issue: Issue, expected: ExpectedIssue) -> bool:
@@ -260,15 +238,6 @@ def _build_outcome(
                 outcome.fn_secondary += 1
             continue
         issue = reported[rep_idx]
-        # 证据覆盖率只作诊断，不再阻断语义命中。这样“发现了问题但
-        # 用户可读证据位置不完整”的候选仍计入 Recall，同时保留缺口统计。
-        if _evidence_required(case, expected):
-            outcome.evidence_checked += 1
-            if evidence_match(issue, expected):
-                outcome.evidence_backed_hits += 1
-            else:
-                outcome.evidence_missing_hits += 1
-
         matched_reports.add(rep_idx)
         expected_id = expected.id or f"E{exp_idx}"
         outcome.matched_expected_by_report[rep_idx] = expected_id

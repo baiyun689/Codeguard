@@ -62,9 +62,7 @@ class ExpectedIssue(BaseModel):
       1. 文件名对得上(按 basename 或后缀);
       2. 行号落在 [line - tolerance, line + tolerance] 内(line=0 时跳过行号判定);
       3. 报告的 type/message 命中 type_keywords 里任一关键词(忽略大小写)。
-    evidence_anchors / evidence_scope 仍保留为证据覆盖率的诊断元数据；
-    当前评测不再用它们阻断 TP/FN/FP 命中。是否给出了可复核来源，
-    由 evidence_coverage 和 evidence_missing_hits 单独反映。
+    evidence_anchors / evidence_scope 作为历史标注字段保留，当前评测不读取它们。
     """
 
     id: str = Field(default="", description="标答在用例内的稳定 ID")
@@ -83,11 +81,11 @@ class ExpectedIssue(BaseModel):
     risk_tag: str = Field(default="", description="可选缺陷分类标签")
     evidence_anchors: list[str] = Field(
         default_factory=list,
-        description="可接受的符号、source/sink 或源码位置锚点；严格评测时至少一项",
+        description="历史证据标注；当前评测不参与命中判定",
     )
     evidence_scope: Literal["local", "cross_file"] = Field(
         default="local",
-        description="证据范围；cross_file 要求除变更位置外还给出跨文件来源/路径",
+        description="历史证据范围标注；当前评测不参与命中判定",
     )
     mechanism: str = Field(default="", description="受控评测中问题的机制主张")
     reachability: str = Field(default="", description="受控评测中 source 到 sink 的可达性主张")
@@ -356,15 +354,15 @@ class MatchOutcome(BaseModel):
     false_positives: int = Field(default=0, description="报了但对不上任何标准答案的数量")
     evidence_checked: int = Field(
         default=0,
-        description="参与证据位置诊断的标准答案命中候选数",
+        description="历史兼容字段；当前评测不填充",
     )
     evidence_backed_hits: int = Field(
         default=0,
-        description="已配对且证据位置命中锚点的数量（不影响 TP/FN/FP）",
+        description="历史兼容字段；当前评测不填充",
     )
     evidence_missing_hits: int = Field(
         default=0,
-        description="已配对但未命中证据锚点的数量（不影响 TP/FN/FP）",
+        description="历史兼容字段；当前评测不填充",
     )
     expected_total: int = Field(default=0, description="该用例标准答案总数")
     reported_total: int = Field(default=0, description="该用例报告问题总数")
@@ -471,15 +469,15 @@ class AggregateMetrics(BaseModel):
     severity_accuracy: float = Field(description="命中项里级别也对上的比例")
     evidence_coverage: float = Field(
         default=0.0,
-        description="需要证据的标答中，报告提供可接受来源位置的比例",
+        description="历史兼容字段；当前评测不计算",
     )
     evidence_checked: int = Field(
         default=0,
-        description="参与证据位置校验的标答命中候选总数",
+        description="历史兼容字段；当前评测不计算",
     )
     evidence_missing_hits: int = Field(
         default=0,
-        description="语义/位置命中但未提供可接受证据位置的数量",
+        description="历史兼容字段；当前评测不计算",
     )
 
     recall_std: float = Field(default=0.0, description="recall 在多次跑测间的标准差")
