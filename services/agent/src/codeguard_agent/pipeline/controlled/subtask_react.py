@@ -57,6 +57,7 @@ class SubtaskReactEngine:
         max_retries: int,
     ) -> SubtaskReactOutcome:
         before = len(getattr(self._tool_client, "trace_records", ()))
+        before_tool_calls = int(getattr(self._tool_client, "tool_calls", 0) or 0)
         if llm is None:
             return SubtaskReactOutcome(None, "failed", "llm_unavailable")
         try:
@@ -88,15 +89,54 @@ class SubtaskReactEngine:
                 executor.shutdown(wait=False, cancel_futures=True)
         except Exception as exc:  # noqa: BLE001 - one subtask cannot abort its task
             records = list(getattr(self._tool_client, "trace_records", ()))[before:]
+            # LangGraph raises GraphRecursionError when the provider keeps
+            # issuing tool turns after the bounded investigation has already
+            # reached its useful frontier.  That is an inconclusive evidence
+            # result, not a broken task; the caller must keep the gap visible
+            # without counting it as a hard execution failure.
+            error_name = type(exc).__name__
+            inconclusive = error_name in {
+                "GraphRecursionError",
+                "GraphRecursionLimitError",
+            }
+            budget_hit = bool(getattr(self._tool_client, "budget_exhausted", False))
             return SubtaskReactOutcome(
                 None,
-                "failed",
-                type(exc).__name__,
+                "inconclusive" if inconclusive else "failed",
+                (
+                    "tool_budget_exceeded"
+                    if inconclusive and budget_hit
+                    else "subtask_recursion_limit"
+                    if inconclusive
+                    else error_name
+                ),
                 records,
-                ["subtask_react_failed"],
+                [
+                    "subtask_tool_budget_exceeded"
+                    if inconclusive and budget_hit
+                    else "subtask_inconclusive"
+                    if inconclusive
+                    else "subtask_react_failed"
+                ],
             )
         records = list(getattr(self._tool_client, "trace_records", ()))[before:]
-        if len(records) > self._max_tool_calls:
+        actual_tool_calls = int(getattr(
+            self._tool_client,
+            "tool_calls",
+            len(records),
+        ) or 0) - before_tool_calls
+        if actual_tool_calls > self._max_tool_calls:
+            return SubtaskReactOutcome(
+                None,
+                "inconclusive",
+                "tool_budget_exceeded",
+                records,
+                ["subtask_tool_budget_exceeded"],
+            )
+        # The coordinator records rejected calls without incrementing its
+        # successful-call counter.  Inspect the explicit flag as well, or a
+        # model could turn a rejected final query into a false ``no_finding``.
+        if bool(getattr(self._tool_client, "budget_exhausted", False)):
             return SubtaskReactOutcome(
                 None,
                 "inconclusive",

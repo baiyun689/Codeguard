@@ -205,6 +205,31 @@ def _validate_plan(
         tools = tuple(tool for tool in tools if tool in domain)
         if seed_tools:
             tools = tuple(tool for tool in tools if tool in seed_tools)
+        directional_tools = {
+            EvidenceNeed.INSPECT_PATH: {"inspect_path", "get_file_content"},
+            EvidenceNeed.INSPECT_CHANGE_IMPACT: {
+                "inspect_change_impact", "get_file_content",
+            },
+            EvidenceNeed.INSPECT_STRUCTURE: {
+                "inspect_structure", "get_file_content",
+            },
+        }.get(seed.evidence_need)
+        if directional_tools is not None:
+            tools = tuple(tool for tool in tools if tool in directional_tools)
+        # ``inspect_structure`` returns one-hop relationships and declarations,
+        # not the implementation body.  Keep the source reader available for
+        # parent-method/field-initialization questions instead of allowing a
+        # structure-only subtask to claim behavior it cannot observe.
+        if (
+            seed.evidence_need is EvidenceNeed.INSPECT_STRUCTURE
+            and "inspect_structure" in tools
+            and "get_file_content" not in tools
+            and "get_file_content" in domain
+            and (enabled is None or "get_file_content" in enabled)
+            and len(tools) < 3
+        ):
+            tools = (*tools, "get_file_content")
+        tools = tuple(dict.fromkeys(tools))[:3]
         if not tools:
             diagnostics.append(f"subtask_no_allowed_tool:{item.seed_id}")
             continue
@@ -259,7 +284,34 @@ def _fallback_plan(
     enabled = set(enabled_tools) if enabled_tools is not None else set(DOMAIN_TOOL_ALLOWLIST[reviewer])
     items: list[SubtaskInstruction] = []
     for seed in seeds[:max_subtasks]:
-        tools = tuple(tool for tool in (seed.allowed_tools or tuple(DOMAIN_TOOL_ALLOWLIST[reviewer])) if tool in enabled)
+        tools = tuple(
+            tool
+            for tool in (
+                seed.allowed_tools
+                or tuple(DOMAIN_TOOL_ALLOWLIST[reviewer])
+            )
+            if tool in enabled
+        )
+        directional_tools = {
+            EvidenceNeed.INSPECT_PATH: {"inspect_path", "get_file_content"},
+            EvidenceNeed.INSPECT_CHANGE_IMPACT: {
+                "inspect_change_impact", "get_file_content",
+            },
+            EvidenceNeed.INSPECT_STRUCTURE: {
+                "inspect_structure", "get_file_content",
+            },
+        }.get(seed.evidence_need)
+        if directional_tools is not None:
+            tools = tuple(tool for tool in tools if tool in directional_tools)
+        if (
+            seed.evidence_need is EvidenceNeed.INSPECT_STRUCTURE
+            and "inspect_structure" in tools
+            and "get_file_content" not in tools
+            and "get_file_content" in enabled
+            and len(tools) < 3
+        ):
+            tools = (*tools, "get_file_content")
+        tools = tuple(dict.fromkeys(tools))[:3]
         if not tools:
             continue
         items.append(SubtaskInstruction(

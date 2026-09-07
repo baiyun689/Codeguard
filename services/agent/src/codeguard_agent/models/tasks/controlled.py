@@ -244,6 +244,12 @@ class InvestigationSeed(ControlledModel):
     initial_symbol_ids: tuple[str, ...] = Field(default=(), max_length=4)
     evidence_need: EvidenceNeed = EvidenceNeed.INSPECT_PATH
     allowed_tools: tuple[str, ...] = Field(default=(), max_length=3)
+    # These fields preserve the semantic contract that selected the graph
+    # query.  They are optional for provider-created seeds for compatibility,
+    # but an explicit behavior/security path must never be merged with an
+    # unspecified or differently directed investigation.
+    path_kind: Literal["behavior", "security"] | None = None
+    direction: Literal["downstream", "upstream"] | None = None
     risk_dimension: str = ""
     confidence: StrictFloat = Field(default=0.5, ge=0.0, le=1.0)
 

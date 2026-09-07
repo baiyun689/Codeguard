@@ -1048,6 +1048,21 @@ def run_direct_triage(
         }.get(seed.evidence_need)
         if directional_tools is not None:
             tools = tuple(tool for tool in tools if tool in directional_tools)
+        # Structure is only a locator: it can identify a parent/field/type but
+        # does not include the method body needed to establish initialization,
+        # guards, ordering, or exception behavior.  Always make the source
+        # reader available for a structure investigation when the tool exists;
+        # GraphPlan/React may still stop after the one-hop fact if that is
+        # sufficient.  This is a capability correction, not a forced extra
+        # call.
+        if (
+            seed.evidence_need is EvidenceNeed.INSPECT_STRUCTURE
+            and "inspect_structure" in tools
+            and "get_file_content" not in tools
+            and len(tools) < 3
+        ):
+            tools = (*tools, "get_file_content")
+        tools = tuple(dict.fromkeys(tools))[:3]
         if tools != seed.allowed_tools:
             seed = seed.model_copy(update={"allowed_tools": tools})
         if not tools:

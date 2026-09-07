@@ -248,6 +248,7 @@ class CoordinatedDiscoveryToolClient:
             max(0, max_tool_calls) if max_tool_calls is not None else None
         )
         self._tool_calls = 0
+        self._budget_exhausted = False
         self._closed = False
         self._max_path_depth = max(1, min(3, max_path_depth))
         initial_ids = {
@@ -385,6 +386,7 @@ class CoordinatedDiscoveryToolClient:
             elif self._max_tool_calls is not None and self._tool_calls >= self._max_tool_calls:
                 budget_exceeded = True
                 close_error = "subtask_tool_budget_exceeded"
+                self._budget_exhausted = True
             else:
                 self._tool_calls += 1
                 close_error = ""
@@ -604,6 +606,13 @@ class CoordinatedDiscoveryToolClient:
     def tool_calls(self) -> int:
         with self._lock:
             return self._tool_calls
+
+    @property
+    def budget_exhausted(self) -> bool:
+        """Whether a tool call was rejected by this subtask's hard budget."""
+
+        with self._lock:
+            return self._budget_exhausted
 
     @property
     def observation_aliases(self) -> dict[str, str]:

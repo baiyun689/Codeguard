@@ -88,6 +88,9 @@ from codeguard_agent.pipeline.controlled.graph_plan import (
 from codeguard_agent.pipeline.controlled.planning import run_knowledge_route
 from codeguard_agent.pipeline.controlled.subtask_plan import run_subtask_plan
 from codeguard_agent.pipeline.controlled.subtask_react import SubtaskReactEngine
+from codeguard_agent.pipeline.controlled.subtask_grouping import (
+    group_investigation_seeds,
+)
 from codeguard_agent.pipeline.controlled.routing import route_seed
 from codeguard_agent.pipeline.controlled.triage import run_direct_triage
 from codeguard_agent.pipeline.execution.engines import (
@@ -1690,6 +1693,8 @@ def _neutral_seed_from_candidate(seed: CandidateSeed) -> InvestigationSeed:
         ),
         evidence_need=seed.evidence_need,
         allowed_tools=allowed,
+        path_kind=question.path_kind if question is not None else None,
+        direction=question.direction if question is not None else None,
         risk_dimension=seed.claim_type,
         confidence=seed.confidence,
     )
@@ -1753,6 +1758,32 @@ def _investigation_candidate(
             "claim_type": finding.type_hint,
         }
     )
+
+
+def _allocate_subtask_budgets(
+    count: int,
+    *,
+    total_budget: int,
+    per_subtask_limit: int,
+) -> tuple[int, ...]:
+    """Split a task budget fairly.
+
+    The caller caps the number of runnable subtasks to the available budget;
+    direct callers that request more slots than calls receive trailing zeroes
+    and must apply the same cap before starting a React.
+    """
+
+    if count <= 0 or total_budget <= 0 or per_subtask_limit <= 0:
+        return tuple(0 for _ in range(max(0, count)))
+    base = min(per_subtask_limit, total_budget // count)
+    remainder = max(0, total_budget - base * count)
+    budgets = [base] * count
+    for index in range(count):
+        if remainder <= 0 or budgets[index] >= per_subtask_limit:
+            continue
+        budgets[index] += 1
+        remainder -= 1
+    return tuple(budgets)
 
 
 def _controlled_review_node(
@@ -1911,7 +1942,14 @@ def _controlled_review_node(
                 # subtask runs one local React.  The legacy fixed-step executor
                 # below remains available under planned_steps until replay
                 # validation authorizes its removal.
-                subtask_plan_jobs: list[tuple[Any, ReviewerKind, tuple[InvestigationSeed, ...]]] = []
+                # The three fixed reviewers triage independently, so equivalent
+                # concerns can arrive with different wording and seed IDs.  Do
+                # the semantic-independent grouping before GraphPlan.  A group
+                # keeps one representative seed for execution and records all
+                # reviewer/seed provenance in the trace; it therefore cannot
+                # multiply the React/tool budget while still preserving which
+                # reviewers observed the concern.
+                neutral_by_reviewer: dict[ReviewerKind, list[InvestigationSeed]] = {}
                 for reviewer_config in DEFAULT_REVIEWERS:
                     reviewer_name = reviewer_config.source_agent
                     reviewer_kind = ReviewerKind(reviewer_name)
@@ -1924,18 +1962,43 @@ def _controlled_review_node(
                         if converted.seed_id not in existing_ids:
                             neutral.append(converted)
                             existing_ids.add(converted.seed_id)
-                    reviewer_limit = max(0, max_subtasks_per_reviewer)
-                    if len(neutral) > reviewer_limit:
-                        omitted = neutral[reviewer_limit:]
+                    neutral_by_reviewer[reviewer_kind] = neutral
+
+                grouped_seeds = group_investigation_seeds(neutral_by_reviewer)
+                for group in grouped_seeds:
+                    if len(group.seed_ids) > 1:
                         traces.append(CouncilTrace(
                             node="graph_plan",
-                            event="task_review_failed",
+                            event="subtask_seed_merged",
                             detail=(
-                                f"task={task.id} reviewer={reviewer_name} "
-                                f"reason=subtask_seed_limit omitted={len(omitted)}"
+                                f"task={task.id} representative={group.seed.seed_id} "
+                                f"merged={','.join(group.seed_ids)} "
+                                f"reviewers={','.join(item.value for item in group.reviewers)}"
                             ),
                         ))
-                        neutral = neutral[:reviewer_limit]
+
+                grouped_by_reviewer: dict[ReviewerKind, list[InvestigationSeed]] = {}
+                for group in grouped_seeds:
+                    grouped_by_reviewer.setdefault(group.seed.reviewer, []).append(group.seed)
+
+                subtask_plan_jobs: list[tuple[Any, ReviewerKind, tuple[InvestigationSeed, ...]]] = []
+                reviewer_by_kind = {
+                    ReviewerKind(config.source_agent): config
+                    for config in DEFAULT_REVIEWERS
+                }
+                for reviewer_kind, neutral_values in grouped_by_reviewer.items():
+                    reviewer_config = reviewer_by_kind[reviewer_kind]
+                    reviewer_limit = max(0, max_subtasks_per_reviewer)
+                    neutral = neutral_values[:reviewer_limit]
+                    if len(neutral_values) > reviewer_limit:
+                        traces.append(CouncilTrace(
+                            node="graph_plan",
+                            event="subtask_seed_limit",
+                            detail=(
+                                f"task={task.id} reviewer={reviewer_config.source_agent} "
+                                f"omitted={len(neutral_values) - len(neutral)}"
+                            ),
+                        ))
                     if neutral:
                         subtask_plan_jobs.append((reviewer_config, reviewer_kind, tuple(neutral)))
 
@@ -2003,7 +2066,30 @@ def _controlled_review_node(
                         for item in plan.subtasks
                     )
 
-                planned_subtasks = planned_subtasks[: max(0, max_subtasks_per_task)]
+                task_budget = max(0, task_max_tool_calls)
+                # Never start a React that cannot make even one evidence call.
+                # The task-level budget is a hard upper bound, so excess plans
+                # are recorded as bounded omissions instead of failing one by
+                # one with a zero-call budget.
+                max_runnable_subtasks = (
+                    min(
+                        max(0, max_subtasks_per_task),
+                        task_budget,
+                    )
+                    if subtask_max_tool_calls > 0
+                    else 0
+                )
+                if len(planned_subtasks) > max_runnable_subtasks:
+                    traces.append(CouncilTrace(
+                        node="graph_plan",
+                        event="subtask_task_limit",
+                        detail=(
+                            f"task={task.id} omitted="
+                            f"{len(planned_subtasks) - max_runnable_subtasks} "
+                            f"limit={max_runnable_subtasks}"
+                        ),
+                    ))
+                planned_subtasks = planned_subtasks[:max_runnable_subtasks]
                 if tool_client is None:
                     traces.append(CouncilTrace(
                         node="controlled_review",
@@ -2017,15 +2103,19 @@ def _controlled_review_node(
                 focus = graph_projection_focus(task, context)
                 # Divide the task budget before parallel execution so the
                 # aggregate upper bound is deterministic rather than relying
-                # on a post-hoc truncation of evidence.
-                per_subtask_budget = (
-                    min(subtask_max_tool_calls, task_max_tool_calls // max(1, len(planned_subtasks)))
-                    if planned_subtasks
-                    else 0
+                # on a post-hoc truncation of evidence.  Distribute a
+                # remainder to the first stable subtasks instead of silently
+                # leaving usable calls unused.
+                subtask_budgets = _allocate_subtask_budgets(
+                    len(planned_subtasks),
+                    total_budget=task_budget,
+                    per_subtask_limit=subtask_max_tool_calls,
                 )
 
-                def run_subtask(item):
+                def run_subtask(indexed_item):
+                    subtask_index, item = indexed_item
                     reviewer_config, instruction = item
+                    per_subtask_budget = subtask_budgets[subtask_index]
                     # Each React owns its local trace/allowed-symbol set while
                     # the coordinator still shares successful HTTP results.
                     # This prevents parallel subtasks from attributing one
@@ -2059,10 +2149,10 @@ def _controlled_review_node(
                         structured_method=state.get("structured_method", "function_calling"),
                         max_retries=state.get("max_retries", 3),
                     )
-                    return reviewer_config, instruction, outcome, coordinated_client
+                    return subtask_index, reviewer_config, instruction, outcome, coordinated_client
 
                 subtask_results = run_bounded_parallel(
-                    planned_subtasks,
+                    list(enumerate(planned_subtasks)),
                     run_subtask,
                     max_workers=min(
                         max(1, execute_concurrency), len(planned_subtasks)
@@ -2073,7 +2163,8 @@ def _controlled_review_node(
                 ]
                 ordered_records = tuple(
                     record
-                    for _reviewer_config, _instruction, _outcome, client in valid_subtask_results
+                    for _subtask_index, _reviewer_config, _instruction, _outcome, client
+                    in valid_subtask_results
                     for record in client.trace_records
                 )
                 capture = capture_tool_records(task_catalog, ordered_records)
@@ -2085,7 +2176,7 @@ def _controlled_review_node(
                     if (artifact := capture.catalog.artifacts.get(artifact_id)) is not None
                     and artifact.call_id
                 }
-                for reviewer_config, instruction, outcome, _client in valid_subtask_results:
+                for _subtask_index, reviewer_config, instruction, outcome, _client in valid_subtask_results:
                     traces.extend(
                         CouncilTrace(
                             node="execute",
@@ -2098,10 +2189,25 @@ def _controlled_review_node(
                         for event in outcome.events
                     )
                     if outcome.result is None or outcome.result.outcome != "findings":
-                        if outcome.status in {"failed", "inconclusive"}:
+                        if outcome.status == "failed":
                             traces.append(CouncilTrace(
                                 node="execute",
                                 event="task_review_failed",
+                                detail=(
+                                    f"task={task.id} subtask={instruction.subtask_id} "
+                                    f"reason={outcome.reason or outcome.status}"
+                                ),
+                            ))
+                        elif outcome.status == "inconclusive":
+                            # A bounded investigation can legitimately end
+                            # without enough facts (for example a partial
+                            # page or an exhausted local budget).  This is an
+                            # evidence gap, not a failed task; keep it out of
+                            # the task-failure metric so one inconclusive
+                            # subtask cannot make the whole review look broken.
+                            traces.append(CouncilTrace(
+                                node="execute",
+                                event="subtask_inconclusive",
                                 detail=(
                                     f"task={task.id} subtask={instruction.subtask_id} "
                                     f"reason={outcome.reason or outcome.status}"
