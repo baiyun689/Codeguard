@@ -27,7 +27,10 @@ from codeguard_agent.pipeline.controlled import (
 from codeguard_agent.models.tasks.symbols import ResolvedSymbol, SymbolResolutionStatus
 from codeguard_agent.pipeline.controlled.graph_plan import run_graph_plan
 from codeguard_agent.pipeline.controlled.llm_contracts import LlmDirectTriageResult
-from codeguard_agent.pipeline.controlled.triage import _promote_ambiguous_local_seed
+from codeguard_agent.pipeline.controlled.triage import (
+    _normalize_graph_question,
+    _promote_ambiguous_local_seed,
+)
 
 
 def _seed(**updates) -> CandidateSeed:
@@ -100,6 +103,52 @@ def test_ambiguous_local_external_claim_is_promoted_to_bounded_investigation():
     assert promoted.graph_question is not None
     assert promoted.graph_question.subject_ref == "java:A#parse()"
     assert diagnostic == "local_scope_promoted_for_external_parent"
+
+
+def test_graph_question_valid_but_unrelated_symbol_is_repaired_to_changed_constructor():
+    constructor = ResolvedSymbol(
+        file="A.java",
+        symbol_id="java:A#<init>File(File)",
+        kind="CONSTRUCTOR",
+        start_line=1,
+        end_line=20,
+        source_set="MAIN",
+    )
+    nearby_method = ResolvedSymbol(
+        file="A.java",
+        symbol_id="java:A#finish()",
+        kind="METHOD",
+        start_line=30,
+        end_line=50,
+        source_set="MAIN",
+    )
+    seed = _seed(
+        location_line=10,
+        proof_scope=ProofScope.IMPACT,
+        evidence_need=EvidenceNeed.INSPECT_CHANGE_IMPACT,
+        graph_question=GraphQuestion(
+            subject_ref=nearby_method.symbol_id,
+            direction="upstream",
+            question="查看构造器调用方的异常处理",
+        ),
+    )
+    normalized = _normalize_graph_question(
+        seed,
+        TaskSymbolContext(
+            task_id="A.java#file",
+            status="resolved",
+            symbols=(constructor, nearby_method),
+        ),
+        task=ReviewTask(
+            id="A.java#file",
+            file="A.java",
+            patch="@@ -10 +10 @@\n+new A(file);",
+            changed_lines=[10],
+        ),
+        reviewer=ReviewerKind.BEHAVIOR,
+    )
+    assert normalized.graph_question is not None
+    assert normalized.graph_question.subject_ref == constructor.symbol_id
 
 
 def test_seed_ids_are_stable_and_llm_id_is_replaced():

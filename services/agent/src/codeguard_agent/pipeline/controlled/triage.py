@@ -1803,7 +1803,12 @@ def _enclosing_method(
         symbol
         for symbol in symbol_context.symbols
         if symbol.file.replace("\\", "/").lower() == file.replace("\\", "/").lower()
-        and symbol.kind.upper() in {"METHOD", "FUNCTION"}
+        # Java constructor changes are executable call boundaries too.  If a
+        # provider supplies a valid-but-unrelated method (for example
+        # ``finish()`` for a constructor line), treating that id as trusted
+        # sends GraphPlan to the wrong part of the graph.  Constructors must
+        # participate in the same enclosing-line repair as methods.
+        and symbol.kind.upper() in {"METHOD", "FUNCTION", "CONSTRUCTOR"}
         and symbol.start_line <= line <= symbol.end_line
     ]
     if not matching:
@@ -2076,6 +2081,37 @@ def _normalize_graph_question(
             )
             if resolved:
                 subject_ref = resolved
+    # A provider can return a syntactically valid symbol that is nevertheless
+    # unrelated to the changed line (the common failure is a nearby method in
+    # the same type).  Validity of the id alone is not enough: the graph query
+    # must start at the changed executable boundary.  Repair only when the
+    # changed line has one unambiguous enclosing method/constructor and the
+    # supplied symbol does not enclose that line; otherwise retain the model's
+    # value and let the normal graph contract decide.
+    if subject_ref in allowed_symbols and seed.location_line > 0:
+        enclosing = _enclosing_method(
+            symbol_context,
+            task.file,
+            seed.location_line,
+        )
+        supplied = next(
+            (
+                symbol
+                for symbol in (symbol_context.symbols if symbol_context else ())
+                if symbol.symbol_id == subject_ref
+            ),
+            None,
+        )
+        if (
+            enclosing
+            and supplied is not None
+            and not (
+                supplied.file.replace("\\", "/").lower()
+                == task.file.replace("\\", "/").lower()
+                and supplied.start_line <= seed.location_line <= supplied.end_line
+            )
+        ):
+            subject_ref = enclosing
     expected_targets_list: list[str] = []
     for target in question.expected_targets:
         target_text = str(target).strip()
@@ -2551,7 +2587,7 @@ def _unique_changed_enclosing_symbol(
         symbol.symbol_id
         for symbol in symbol_context.symbols
         if (
-            symbol.kind.upper() in {"METHOD", "FUNCTION"}
+            symbol.kind.upper() in {"METHOD", "FUNCTION", "CONSTRUCTOR"}
             and symbol.file.replace("\\", "/").lower() == task.file.replace("\\", "/").lower()
             and any(symbol.start_line <= line <= symbol.end_line for line in lines)
         )
@@ -2564,7 +2600,7 @@ def _unique_changed_enclosing_symbol(
             symbol.symbol_id
             for symbol in symbol_context.symbols
             if (
-                symbol.kind.upper() in {"METHOD", "FUNCTION"}
+                symbol.kind.upper() in {"METHOD", "FUNCTION", "CONSTRUCTOR"}
                 and symbol.file.replace("\\", "/").lower()
                 == task.file.replace("\\", "/").lower()
                 and any(
