@@ -151,7 +151,13 @@ class SubtaskReactEngine:
             # result.  Keep the graph recursion limit close to the declared
             # round budget; the client-side tool gate remains the hard cost
             # limit for repeated or parallel tool requests.
-            config={"recursion_limit": max(4, self._max_rounds * 2 + 2)},
+            # A LangGraph round includes the model decision, the tool node,
+            # and the model's structured-result turn.  The old ``2*n+2``
+            # allowance could exhaust before the terminal InvestigationResult
+            # was emitted even when the declared tool/round budget was not
+            # exceeded.  Keep the runtime tool gate as the hard cost bound,
+            # but leave enough graph steps for every bounded round to close.
+            config={"recursion_limit": max(12, self._max_rounds * 6 + 6)},
         )
 
     @staticmethod

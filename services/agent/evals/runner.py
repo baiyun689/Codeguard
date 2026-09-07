@@ -578,6 +578,14 @@ def main(argv: list[str] | None = None) -> int:
         controlled_max_seeds_per_reviewer=getattr(settings, "controlled_max_seeds_per_reviewer", 4),
         controlled_max_seeds_per_task=getattr(settings, "controlled_max_seeds_per_task", 12),
         controlled_max_knowledge_topics=getattr(settings, "controlled_max_knowledge_topics", 4),
+        controlled_execute_concurrency=getattr(settings, "controlled_execute_concurrency", 3),
+        controlled_execution_mode=getattr(settings, "controlled_execution_mode", "planned_steps"),
+        controlled_subtask_max_tool_calls=getattr(settings, "controlled_subtask_max_tool_calls", 4),
+        controlled_subtask_max_rounds=getattr(settings, "controlled_subtask_max_rounds", 4),
+        controlled_subtask_timeout_seconds=getattr(settings, "controlled_subtask_timeout_seconds", 120),
+        controlled_task_max_tool_calls=getattr(settings, "controlled_task_max_tool_calls", 24),
+        controlled_max_subtasks_per_reviewer=getattr(settings, "controlled_max_subtasks_per_reviewer", 4),
+        controlled_max_subtasks_per_task=getattr(settings, "controlled_max_subtasks_per_task", 12),
     )
     direct_prompt_path = (
         Path(__file__).resolve().parents[1]
