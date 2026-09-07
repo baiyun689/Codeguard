@@ -86,16 +86,27 @@ class ToolClient:
             logger.warning("工具调用 %s 失败: %s", name, exc)
             return ToolResponse(success=False, error=str(exc))
 
-    def get_file_content(self, symbol_id: str) -> ToolResponse:
+    def get_file_content(
+        self,
+        symbol_id: str,
+        *,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        cursor: str | None = None,
+    ) -> ToolResponse:
         """读取一个已由图谱解析出的 symbol 源码片段。
 
         源码工具不再接受任意文件路径；Gateway 会根据 snapshot 中的稳定
         ``symbol_id`` 解析方法、类型或字段的声明范围，并施加大小护栏。
         """
-        return self._post_tool(
-            "get_file_content",
-            {"query": json.dumps({"symbol_id": unescape(symbol_id)}, ensure_ascii=False)},
-        )
+        query: dict[str, object] = {"symbol_id": unescape(symbol_id)}
+        if start_line is not None:
+            query["start_line"] = start_line
+        if end_line is not None:
+            query["end_line"] = end_line
+        if cursor is not None:
+            query["cursor"] = cursor
+        return self._post_tool("get_file_content", {"query": json.dumps(query, ensure_ascii=False)})
 
     def resolve_change_context(self, changes: list[dict]) -> ToolResponse:
         """批量把变更文件/行解析为稳定图谱符号。"""
@@ -104,19 +115,51 @@ class ToolClient:
             {"query": json.dumps({"changes": changes}, ensure_ascii=False)},
         )
 
-    def inspect_change_impact(self, symbol_id: str) -> ToolResponse:
-        return self._post_tool(
-            "inspect_change_impact", {"query": unescape(symbol_id)}
-        )
+    def inspect_change_impact(
+        self,
+        symbol_id: str,
+        *,
+        max_depth: int | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> ToolResponse:
+        query: dict[str, object] = {"symbol_id": unescape(symbol_id)}
+        if max_depth is not None:
+            query["max_depth"] = max_depth
+        if limit is not None:
+            query["limit"] = limit
+        if cursor is not None:
+            query["cursor"] = cursor
+        payload = unescape(symbol_id) if not any(
+            value is not None for value in (max_depth, limit, cursor)
+        ) else json.dumps(query, ensure_ascii=False)
+        return self._post_tool("inspect_change_impact", {"query": payload})
 
-    def inspect_structure(self, symbol_id: str) -> ToolResponse:
-        return self._post_tool("inspect_structure", {"query": unescape(symbol_id)})
+    def inspect_structure(
+        self,
+        symbol_id: str,
+        *,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> ToolResponse:
+        query: dict[str, object] = {"symbol_id": unescape(symbol_id)}
+        if limit is not None:
+            query["limit"] = limit
+        if cursor is not None:
+            query["cursor"] = cursor
+        payload = unescape(symbol_id) if not any(
+            value is not None for value in (limit, cursor)
+        ) else json.dumps(query, ensure_ascii=False)
+        return self._post_tool("inspect_structure", {"query": payload})
 
     def inspect_path(
         self,
         symbol_id: str,
         path_kind: str,
         max_depth: int = 3,
+        *,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> ToolResponse:
         """查询有界下游行为或安全路径。"""
         symbol_id = unescape(symbol_id)
@@ -131,7 +174,9 @@ class ToolClient:
                     {
                         "symbol_id": symbol_id,
                         "path_kind": path_kind,
-                        "max_depth": max_depth,
+                    "max_depth": max_depth,
+                    **({"limit": limit} if limit is not None else {}),
+                    **({"cursor": cursor} if cursor is not None else {}),
                     },
                     ensure_ascii=False,
                 )

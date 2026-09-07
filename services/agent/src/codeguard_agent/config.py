@@ -116,6 +116,15 @@ class Settings:
     controlled_max_knowledge_topics: int = 4
     # 同一 task 内 Execute 对无依赖证据步骤的最大并发数。
     controlled_execute_concurrency: int = 3
+    # 子任务 React 是新受控执行器；planned_steps 保持旧 GraphPlan→Execute
+    # 兼容路径，subtask_react 启用“一子任务一局部 React”。
+    controlled_execution_mode: str = "planned_steps"
+    controlled_subtask_max_tool_calls: int = 4
+    controlled_subtask_max_rounds: int = 4
+    controlled_subtask_timeout_seconds: int = 120
+    controlled_task_max_tool_calls: int = 24
+    controlled_max_subtasks_per_reviewer: int = 4
+    controlled_max_subtasks_per_task: int = 12
 
     @property
     def needs_api_key(self) -> bool:
@@ -203,6 +212,33 @@ class Settings:
         controlled_execute_concurrency = _positive_int_env(
             "CODEGUARD_CONTROLLED_EXECUTE_CONCURRENCY", 3
         )
+        controlled_execution_mode = os.environ.get(
+            "CODEGUARD_CONTROLLED_EXECUTION_MODE", "planned_steps"
+        ).strip().lower()
+        if controlled_execution_mode not in {"planned_steps", "subtask_react"}:
+            logger.warning(
+                "未知 CODEGUARD_CONTROLLED_EXECUTION_MODE '%s',回退 'planned_steps'",
+                controlled_execution_mode,
+            )
+            controlled_execution_mode = "planned_steps"
+        controlled_subtask_max_tool_calls = _nonnegative_int_env(
+            "CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS", 4
+        )
+        controlled_subtask_max_rounds = _positive_int_env(
+            "CODEGUARD_CONTROLLED_SUBTASK_MAX_ROUNDS", 4
+        )
+        controlled_subtask_timeout_seconds = _positive_int_env(
+            "CODEGUARD_CONTROLLED_SUBTASK_TIMEOUT_SECONDS", 120
+        )
+        controlled_task_max_tool_calls = _nonnegative_int_env(
+            "CODEGUARD_CONTROLLED_TASK_MAX_TOOL_CALLS", 24
+        )
+        controlled_max_subtasks_per_reviewer = _nonnegative_int_env(
+            "CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_REVIEWER", 4
+        )
+        controlled_max_subtasks_per_task = _nonnegative_int_env(
+            "CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_TASK", 12
+        )
         return cls(
             provider=provider,
             model=model,
@@ -234,6 +270,13 @@ class Settings:
             controlled_max_seeds_per_task=controlled_max_seeds_per_task,
             controlled_max_knowledge_topics=controlled_max_knowledge_topics,
             controlled_execute_concurrency=controlled_execute_concurrency,
+            controlled_execution_mode=controlled_execution_mode,
+            controlled_subtask_max_tool_calls=controlled_subtask_max_tool_calls,
+            controlled_subtask_max_rounds=controlled_subtask_max_rounds,
+            controlled_subtask_timeout_seconds=controlled_subtask_timeout_seconds,
+            controlled_task_max_tool_calls=controlled_task_max_tool_calls,
+            controlled_max_subtasks_per_reviewer=controlled_max_subtasks_per_reviewer,
+            controlled_max_subtasks_per_task=controlled_max_subtasks_per_task,
         )
 
     @classmethod

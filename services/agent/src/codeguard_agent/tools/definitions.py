@@ -20,14 +20,28 @@ def make_file_content_tool(client: ToolClient):
     """
     from langchain_core.tools import StructuredTool
 
-    def _get_file_content(symbol_id: str) -> str:
+    def _get_file_content(
+        symbol_id: str,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        cursor: str | None = None,
+    ) -> str:
         """仅在图谱事实不足以回答问题时读取一个已解析 symbol 的源码片段。
 
-        参数 symbol_id:必须来自 symbol_context 或先前图谱结果，不能自行猜测。
+        参数 symbol_id:必须是 GraphPlan 提供的 Sxx 或工具结果返回的 Rxx alias，不能自行猜测。
         METHOD/CONSTRUCTOR 返回完整声明与方法体；TYPE 返回类型定义；FIELD 返回完整字段声明。
         过大或不存在会返回以 'Error:' 开头的说明。
         """
-        return client.get_file_content(symbol_id).as_tool_output()
+        if start_line is None and end_line is None and cursor is None:
+            response = client.get_file_content(symbol_id)
+        else:
+            response = client.get_file_content(
+                symbol_id,
+                start_line=start_line,
+                end_line=end_line,
+                cursor=cursor,
+            )
+        return response.as_tool_output()
 
     return StructuredTool.from_function(
         func=_get_file_content,
@@ -38,7 +52,8 @@ def make_file_content_tool(client: ToolClient):
             "METHOD/CONSTRUCTOR 返回声明和方法体，TYPE 返回类型定义，FIELD 返回完整字段声明，"
             "FRAMEWORK_ENTRYPOINT 返回对应注解。涉及 caller/callee、listener/callback、字段访问或影响范围时，"
             "先用 inspect_* 定位相关 symbol；需要确认条件、顺序、状态赋值或参数使用时再读取源码。"
-            "输入只能是稳定 symbol_id，不得传文件路径、文件名或自行编造 ID。"
+            "可选 start_line/end_line/cursor 只能在同一 symbol 的声明范围内续取，不能传任意文件路径。"
+            "输入只能是稳定 Sxx/Rxx symbol alias，不得传完整 Gateway symbol_id、文件路径、文件名或自行编造 ID。"
         ),
     )
 
@@ -50,20 +65,24 @@ def make_path_tool(client: ToolClient):
         symbol_id: str,
         path_kind: Literal["behavior", "security"],
         max_depth: int = 3,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> str:
         """查询当前变更符号的有界下游行为或安全路径。"""
-        return client.inspect_path(symbol_id, path_kind, max_depth).as_tool_output()
+        return client.inspect_path(
+            symbol_id, path_kind, max_depth, limit=limit, cursor=cursor
+        ).as_tool_output()
 
     return StructuredTool.from_function(
         func=_inspect_path,
         name="inspect_path",
         description=(
-            "按 symbol_context 给出的稳定 symbol_id 查询有界下游路径。"
+            "按 GraphPlan 给出的 Sxx/Rxx symbol alias 查询有界下游路径。"
             "path_kind=behavior 查询有界下游调用，并保留完整的已解析 CALLS 路径及附属关系事实；"
             "path_kind=security 只返回有界遍历中发现的敏感调用命中和入口线索，"
             "不表示从起点到敏感调用的完整连通路径，也不证明参数污染或数据流传播。"
             "path_kind 只能是 behavior 或 security，max_depth 默认 3、最大 3。"
-            "不得自行编造 symbol_id 或文件名。"
+            "结果超限时才使用 cursor 继续同一查询；不要把 cursor 当作新 subject。不得自行编造 Sxx/Rxx alias 或文件名。"
         ),
     )
 
@@ -71,17 +90,28 @@ def make_path_tool(client: ToolClient):
 def make_change_impact_tool(client: ToolClient):
     from langchain_core.tools import StructuredTool
 
-    def _inspect_change_impact(symbol_id: str) -> str:
+    def _inspect_change_impact(
+        symbol_id: str,
+        max_depth: int | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> str:
         """查询变更符号的影响面：方法/构造器查调用方与框架入口，字段查读写引用，类查继承实现。"""
-        return client.inspect_change_impact(symbol_id).as_tool_output()
+        if max_depth is None and limit is None and cursor is None:
+            response = client.inspect_change_impact(symbol_id)
+        else:
+            response = client.inspect_change_impact(
+                symbol_id, max_depth=max_depth, limit=limit, cursor=cursor
+            )
+        return response.as_tool_output()
 
     return StructuredTool.from_function(
         func=_inspect_change_impact,
         name="inspect_change_impact",
         description=(
-            "按 symbol_context 给出的稳定 symbol_id 查询影响面：方法/构造器返回最多三层"
-            "调用方和框架入口，并附继承覆盖；字段返回一跳读写者；类型返回一跳继承/实现者；"
-            "结果只证明已返回关系存在。不得用惯用类名猜测路径。"
+            "按 GraphPlan 给出的 Sxx/Rxx alias 查询向上的调用方/入口影响面。默认从一层开始，"
+            "只有调查问题需要时才增加 max_depth；limit/cursor 只用于超限后的同一查询续取。"
+            "结果只证明已返回关系存在，不证明未返回关系不存在，也不得用惯用类名猜测路径。"
         ),
     )
 
@@ -89,15 +119,23 @@ def make_change_impact_tool(client: ToolClient):
 def make_structure_tool(client: ToolClient):
     from langchain_core.tools import StructuredTool
 
-    def _inspect_structure(symbol_id: str) -> str:
+    def _inspect_structure(
+        symbol_id: str,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> str:
         """查询当前变更符号的声明、依赖、继承和耦合事实。"""
-        return client.inspect_structure(symbol_id).as_tool_output()
+        if limit is None and cursor is None:
+            response = client.inspect_structure(symbol_id)
+        else:
+            response = client.inspect_structure(symbol_id, limit=limit, cursor=cursor)
+        return response.as_tool_output()
 
     return StructuredTool.from_function(
         func=_inspect_structure,
         name="inspect_structure",
         description=(
-            "按 symbol_context 给出的稳定 symbol_id 查询声明、调用耦合、"
-            "继承和字段关系。度量与关系必须结合当前 diff 解读。"
+            "按 GraphPlan 给出的 Sxx/Rxx alias 查询一跳声明、调用、继承和字段关系。"
+            "只在当前结构性问题需要时使用；关系数量本身不构成复杂度缺陷。超限时才用 cursor 续取。"
         ),
     )

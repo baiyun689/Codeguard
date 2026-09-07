@@ -23,7 +23,13 @@ from codeguard_agent.models.tasks import (
     EvidenceAssessmentBatch,
     EvidenceStep,
     GraphQuestion,
+    InvestigationFinding,
+    InvestigationObservation,
+    InvestigationResult,
+    InvestigationSeed,
     ReviewerGraphPlan,
+    SubtaskInstruction,
+    SubtaskPlan,
     WorkItem,
 )
 from codeguard_agent.models.tasks.controlled import ProofScope, ReviewerKind
@@ -135,6 +141,30 @@ class LlmDirectTriageResult(_ProviderEnvelope, DirectTriageResult):
     model_config = ConfigDict(extra="ignore")
     coverage: tuple[LlmCoverageDeclaration, ...] = ()
     issues: tuple[LlmCandidateSeed, ...] = ()
+    investigation_seeds: tuple[InvestigationSeed, ...] = ()
+
+
+class LlmInvestigationObservation(_ProviderEnvelope, InvestigationObservation):
+    model_config = ConfigDict(extra="ignore")
+
+
+class LlmInvestigationFinding(_ProviderEnvelope, InvestigationFinding):
+    model_config = ConfigDict(extra="ignore")
+    observations: tuple[LlmInvestigationObservation, ...] = ()
+
+
+class LlmInvestigationResult(_ProviderEnvelope, InvestigationResult):
+    model_config = ConfigDict(extra="ignore")
+    findings: tuple[LlmInvestigationFinding, ...] = ()
+
+
+class LlmSubtaskInstruction(_ProviderEnvelope, SubtaskInstruction):
+    model_config = ConfigDict(extra="ignore")
+
+
+class LlmSubtaskPlan(_ProviderEnvelope, SubtaskPlan):
+    model_config = ConfigDict(extra="ignore")
+    subtasks: tuple[LlmSubtaskInstruction, ...] = ()
 
 
 class LlmEvidenceStep(_ProviderEnvelope, EvidenceStep):
@@ -164,5 +194,7 @@ class LlmEvidenceAssessmentBatch(_ProviderEnvelope, EvidenceAssessmentBatch):
 __all__ = [
     "LlmDirectTriageResult",
     "LlmEvidenceAssessmentBatch",
+    "LlmInvestigationResult",
     "LlmReviewerGraphPlan",
+    "LlmSubtaskPlan",
 ]

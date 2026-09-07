@@ -14,6 +14,7 @@ from codeguard_agent.models.tasks import (
     EvidenceNeed,
     GraphQuestion,
     ProofScope,
+    InvestigationSeed,
 )
 
 CandidateRoute = Literal["direct_proven", "graph_required", "unresolved"]
@@ -49,7 +50,34 @@ def bind_seed_ids(result: DirectTriageResult) -> DirectTriageResult:
                 update={"seed_id": stable_seed_id(seed, ordinal=counters[key])}
             )
         )
-    return result.model_copy(update={"issues": tuple(bound)})
+    investigation_bound: list[InvestigationSeed] = []
+    seed_counters: dict[tuple[str, str], int] = {}
+    for seed in result.investigation_seeds:
+        key = (seed.reviewer.value, seed.change_unit_id)
+        seed_counters[key] = seed_counters.get(key, 0) + 1
+        normalized = " ".join(
+            (seed.observed_change + " " + seed.investigation_question).split()
+        )
+        digest = hashlib.sha256(
+            "\x00".join(
+                (
+                    seed.reviewer.value,
+                    seed.change_unit_id,
+                    seed.location_file.replace("\\", "/"),
+                    str(seed.location_line),
+                    normalized,
+                    str(seed_counters[key]),
+                )
+            ).encode("utf-8")
+        ).hexdigest()[:12]
+        investigation_bound.append(
+            seed.model_copy(
+                update={"seed_id": f"investigation-{seed.reviewer.value}-{digest}"}
+            )
+        )
+    return result.model_copy(
+        update={"issues": tuple(bound), "investigation_seeds": tuple(investigation_bound)}
+    )
 
 
 def route_seed(seed: CandidateSeed) -> CandidateRoute:

@@ -6,6 +6,9 @@ AI Pull Request 代码审查系统，支持安全、行为正确性和可维护�
 
 Codeguard 由 Python Agent 和 Java Gateway 组成，提供受控审查编排、代码事实分析、证据验证和 GitHub 集成能力。
 
+当前默认受控路径仍使用 `planned_steps` 兼容执行；设置
+`CODEGUARD_CONTROLLED_EXECUTION_MODE=subtask_react` 后启用按调查子任务运行的 bounded React 路径。
+
 ## 功能特性
 
 - 安全、行为正确性和可维护性三维度审查。
@@ -49,6 +52,8 @@ flowchart LR
 
 ### Agent 审查工作流
 
+下图是 `subtask_react` 子任务调查路径；未切换该配置时，受控审查使用兼容的固定步骤执行路径。
+
 ```mermaid
 flowchart LR
     Diff[代码变更] --> Tasks[任务构建]
@@ -59,13 +64,13 @@ flowchart LR
     Plan --> Summary[变更摘要]
     Summary --> Symbols[符号解析]
     Symbols --> Triage[直接初筛]
-    Triage --> GraphPlan[图谱计划]
-    GraphPlan --> Execute[受控执行]
-    Execute --> Assess[证据评估]
-    Assess -->|证据不足| Replan[补充计划]
-    Replan --> Delta[补充执行]
-    Delta --> Assess
-    Assess -->|证据充分| Locate[候选定位]
+    Triage -->|局部证据充分| DirectFinding[直接候选]
+    Triage -->|需要外部事实| GraphPlan[图谱计划]
+    GraphPlan --> Subtasks[调查子任务]
+    Subtasks --> React[子任务 React]
+    React --> Findings[调查结果]
+    DirectFinding --> Locate[候选定位]
+    Findings --> Locate
     Locate --> Collect[候选汇总]
     Collect --> Verify[证据验证]
     Verify --> Judge[结果裁决]
@@ -80,11 +85,12 @@ flowchart LR
 - **任务构建**：按照变更规模生成审查任务。
 - **任务路由**：确定任务进入 Direct 或 Full 流程。
 - **审查计划**：为完整任务路由知识主题，不负责选择审查维度；三类固定审查维度均执行。
-- **直接初筛**：从安全、运行行为和可维护性三个角度提出候选问题。
-- **图谱计划**：为需要查证的候选生成工具、符号和查询顺序。
-- **受控执行**：按候选逐步执行有界工具计划，使用初始预算、Delta 预算、路径深度和调用缓存，工具结果进入证据账本。
-- **证据评估**：结合 patch、源码和图谱事实判断当前 WorkItem 是否满足证明条件；只对明确缺口请求一次补充计划，第二次仍不足则丢弃该图谱候选。
-- **补充计划 / 补充执行**：GraphPlan 只从本候选首轮投影已暴露的 symbol 中选择一个新步骤，不能新增候选、跨任务或恢复自由探索；补充调用共享 Delta 预算。
+- **直接初筛**：从安全、运行行为和可维护性三个角度，把局部证据充分的发现与中性调查种子分流；不把跨文件猜测当作候选事实。
+- **图谱计划**：按 reviewer 将每个调查种子拆成有限子任务，明确调查目标、起始 symbol、主工具、所需事实、停止条件和预算，不输出候选答案。
+- **调查子任务**：一个变更锚点对应一个因果问题；每个子任务只开放最小工具集合和合法起始 symbol。
+- **子任务 React**：在子任务范围内根据工具返回动态决定下一次有限查询，可沿工具返回的已解析 symbol 继续调查；只输出有证据绑定的 InvestigationResult，不直接决定最终保留。
+- **候选构建**：将 InvestigationResult 中的直接观察绑定到 Evidence Ledger 的真实 Artifact；没有有效证据的 finding 不进入候选。
+- **证据验证 / 结果裁决**：验证 Artifact、引用和覆盖范围，再由 Judge 统一决定保留、合并、类型和严重程度。
 - **候选定位**：校验问题是否准确对应本次新增代码。
 - **候选汇总**：汇集并规范化各审查维度的发现。
 - **证据验证**：检查候选引用的代码和工具事实是否真实可用。
@@ -231,7 +237,7 @@ Webhook 直接指向映射端口。
 
 ### Agent Trace
 
-Trace 展示 LangGraph 主执行流、Task 路由、Plan、SymbolResolution、三类审查维度、受控 DirectTriage/GraphPlan/Execute、
+Trace 展示 LangGraph 主执行流、Task 路由、Plan、SymbolResolution、三类审查维度、受控 DirectTriage/GraphPlan，以及兼容 Execute 或子任务 React、
 证据验证、Judge 和语义合并，并可展开查看工具调用、预算、证据引用与节点输入输出。
 
 ![Agent Trace 执行流](docs/showcase/agent-trace.png)
@@ -376,13 +382,20 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 | `CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS` | `120` | 全项目 AST 与语义图构建超时 |
 | `CODEGUARD_DISCOVERY_MODE` | `controlled` | 受控审查模式：`controlled`（Plan-and-Execute） |
 | `CODEGUARD_CONTROLLED_INITIAL_TOOL_BUDGET` | `6` | controlled 每 task 初始工具调用预算 |
-| `CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET` | `2` | controlled 每 task Delta 工具调用预算 |
+| `CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET` | `2` | `planned_steps` 兼容路径每 task Delta 工具调用预算 |
 | `CODEGUARD_CONTROLLED_MAX_PATH_DEPTH` | `3` | controlled 路径最大深度（最大 3） |
 | `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_CHANGE_UNIT` | `4` | 每个变更单元保留的初筛候选上限 |
 | `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_REVIEWER` | `4` | 每个 reviewer/task 保留的初筛候选上限 |
 | `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_TASK` | `12` | 每个 task 的初筛候选硬上限 |
 | `CODEGUARD_CONTROLLED_MAX_KNOWLEDGE_TOPICS` | `4` | 每 task 知识主题上限 |
 | `CODEGUARD_CONTROLLED_EXECUTE_CONCURRENCY` | `3` | controlled 同一 task 内独立证据步骤的最大并发数；`1` 为串行 |
+| `CODEGUARD_CONTROLLED_EXECUTION_MODE` | `planned_steps` | `planned_steps` 保持旧固定步骤兼容；`subtask_react` 启用按子任务运行的有界 React |
+| `CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS` | `4` | 单个调查子任务的工具调用上限 |
+| `CODEGUARD_CONTROLLED_SUBTASK_MAX_ROUNDS` | `4` | 单个调查子任务的 React 轮数上限 |
+| `CODEGUARD_CONTROLLED_SUBTASK_TIMEOUT_SECONDS` | `120` | 单个调查子任务的执行超时预算 |
+| `CODEGUARD_CONTROLLED_TASK_MAX_TOOL_CALLS` | `24` | 单 task 所有调查子任务共享的工具调用上限 |
+| `CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_REVIEWER` | `4` | 单 reviewer 的 GraphPlan 子任务上限 |
+| `CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_TASK` | `12` | 单 task 的 GraphPlan 子任务上限 |
 | `CODEGUARD_TOOL_SERVER_PROJECT_ROOT` | 空 | 宿主 Agent 连接 Docker Gateway 时的容器项目根路径（Compose 通常为 `/workspace/projects`） |
 
 Compose 会设置打包部署所需的容器内部路径和端口，并在未显式设置时将

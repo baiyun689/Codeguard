@@ -128,6 +128,31 @@ def test_controlled_execute_concurrency_is_configurable(monkeypatch):
     assert Settings.from_env().controlled_execute_concurrency == 5
 
 
+def test_subtask_react_budgets_are_configurable(monkeypatch):
+    monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
+    monkeypatch.setenv("CODEGUARD_CONTROLLED_EXECUTION_MODE", "subtask_react")
+    monkeypatch.setenv("CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS", "7")
+    monkeypatch.setenv("CODEGUARD_CONTROLLED_SUBTASK_MAX_ROUNDS", "5")
+    monkeypatch.setenv("CODEGUARD_CONTROLLED_SUBTASK_TIMEOUT_SECONDS", "90")
+    monkeypatch.setenv("CODEGUARD_CONTROLLED_TASK_MAX_TOOL_CALLS", "30")
+    monkeypatch.setenv("CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_REVIEWER", "3")
+    monkeypatch.setenv("CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_TASK", "8")
+    settings = Settings.from_env()
+    assert settings.controlled_execution_mode == "subtask_react"
+    assert settings.controlled_subtask_max_tool_calls == 7
+    assert settings.controlled_subtask_max_rounds == 5
+    assert settings.controlled_subtask_timeout_seconds == 90
+    assert settings.controlled_task_max_tool_calls == 30
+    assert settings.controlled_max_subtasks_per_reviewer == 3
+    assert settings.controlled_max_subtasks_per_task == 8
+
+
+def test_unknown_controlled_execution_mode_falls_back_to_legacy(monkeypatch):
+    monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
+    monkeypatch.setenv("CODEGUARD_CONTROLLED_EXECUTION_MODE", "free-form")
+    assert Settings.from_env().controlled_execution_mode == "planned_steps"
+
+
 def test_local_html_trace_defaults_to_disabled(monkeypatch):
     monkeypatch.delenv("CODEGUARD_TRACE_ENABLED", raising=False)
     monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)

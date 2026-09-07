@@ -49,6 +49,7 @@ public final class InspectChangeImpactTool implements AgentTool {
             return ToolResult.error("缺少 symbol_id");
         }
         try {
+            GraphToolSupport.QueryOptions options = GraphToolSupport.queryOptions(input);
             ProjectSnapshot value = snapshot.load(name(), input);
             symbol = GraphToolSupport.canonicalSymbol(value, symbol);
             SourceSet sourceScope = GraphToolSupport.sourceScope(value, symbol);
@@ -70,7 +71,8 @@ public final class InspectChangeImpactTool implements AgentTool {
                 relationships.addAll(value.graph().incoming(
                         symbol, GraphEdgeKind.IMPLEMENTS));
             } else {
-                for (int depth = 0; depth < 3 && !frontier.isEmpty(); depth++) {
+                int maxDepth = options.maxDepth() > 0 ? options.maxDepth() : 3;
+                for (int depth = 0; depth < maxDepth && !frontier.isEmpty(); depth++) {
                     Set<String> next = new LinkedHashSet<>();
                     for (String current : frontier) {
                         if (!visited.add(current)) {
@@ -102,7 +104,9 @@ public final class InspectChangeImpactTool implements AgentTool {
                     .map(value.graph()::node)
                     .flatMap(java.util.Optional::stream)
                     .forEach(nodes::add);
-            return GraphToolSupport.facts(value, symbol, nodes, relationships, List.of());
+            return GraphToolSupport.facts(
+                    value, symbol, nodes, relationships, List.of(), false,
+                    sourceScope, 0, options);
         } catch (Exception exception) {
             return ToolResult.error("graph_unavailable: " + exception.getMessage());
         }

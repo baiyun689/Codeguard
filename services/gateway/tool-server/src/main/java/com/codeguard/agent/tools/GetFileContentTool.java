@@ -8,6 +8,7 @@ import com.codeguard.agent.graph.GraphNodeKind;
 import com.codeguard.agent.graph.ProjectSnapshot;
 import com.codeguard.agent.graph.ProjectSnapshotProvider;
 import com.codeguard.agent.graph.SourceSnapshotProvider;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.ConstructorDeclaration;
@@ -93,17 +94,41 @@ public final class GetFileContentTool implements AgentTool {
                 return ToolResult.error("source_not_found: " + symbol.file());
             }
 
-            SourceRange range = sourceRange(value, symbol);
+            JsonNode request = GraphToolSupport.JSON.readTree(input == null ? "" : input);
+            SourceRange fullRange = sourceRange(value, symbol);
+            int requestedStart = request.path("start_line").asInt(0);
+            int requestedEnd = request.path("end_line").asInt(0);
+            int cursor = request.path("cursor").asInt(0);
+            if (requestedStart <= 0 && cursor > 0) {
+                requestedStart = cursor;
+            }
+            boolean ranged = requestedStart > 0 || requestedEnd > 0 || cursor > 0;
+            SourceRange range = fullRange;
+            if (ranged) {
+                int start = requestedStart > 0 ? requestedStart : fullRange.startLine();
+                int end = requestedEnd > 0 ? requestedEnd : fullRange.endLine();
+                start = Math.max(fullRange.startLine(), start);
+                end = Math.min(fullRange.endLine(), end);
+                if (end < start) {
+                    return ToolResult.error("invalid_source_range: " + symbolId);
+                }
+                range = SourceRange.fromLines(start, end);
+            }
             if (range.endLine() < range.startLine()) {
                 return ToolResult.error("symbol_range_unavailable: " + symbolId);
             }
             String fragment = sliceSource(source, range);
             int bytes = fragment.getBytes(StandardCharsets.UTF_8).length;
             int lines = range.endLine() - range.startLine() + 1;
-            if (bytes > MAX_SOURCE_BYTES || lines > MAX_SOURCE_LINES) {
+            if (!ranged && (bytes > MAX_SOURCE_BYTES || lines > MAX_SOURCE_LINES)) {
                 return ToolResult.error(
                         "symbol_too_large: " + symbolId + " (" + bytes + " 字节, "
                                 + lines + " 行);请改查该类型下的具体成员");
+            }
+            if (ranged && (bytes > MAX_SOURCE_BYTES || lines > MAX_SOURCE_LINES)) {
+                return ToolResult.error(
+                        "source_range_too_large: " + symbolId + " (" + bytes + " 字节, "
+                                + lines + " 行);请缩小 start_line/end_line");
             }
 
             StringBuilder result = new StringBuilder();
@@ -115,7 +140,12 @@ public final class GetFileContentTool implements AgentTool {
             if (!symbol.ownerId().isBlank()) {
                 result.append("owner_id: ").append(symbol.ownerId()).append('\n');
             }
-            result.append("truncated: false\n\n");
+            result.append("truncated: ").append(ranged && (range.startLine() > fullRange.startLine()
+                    || range.endLine() < fullRange.endLine())).append('\n');
+            if (range.endLine() < fullRange.endLine()) {
+                result.append("next_cursor: ").append(range.endLine() + 1).append('\n');
+            }
+            result.append('\n');
             result.append(fragment);
             return ToolResult.ok(result.toString());
         } catch (Exception exception) {

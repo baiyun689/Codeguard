@@ -42,6 +42,7 @@ public final class InspectStructureTool implements AgentTool {
             return ToolResult.error("缺少 symbol_id");
         }
         try {
+            GraphToolSupport.QueryOptions options = GraphToolSupport.queryOptions(input);
             ProjectSnapshot value = snapshot.load(name(), input);
             symbol = GraphToolSupport.canonicalSymbol(value, symbol);
             List<GraphEdge> relationships = new ArrayList<>();
@@ -61,7 +62,8 @@ public final class InspectStructureTool implements AgentTool {
                     .flatMap(java.util.Optional::stream)
                     .forEach(nodes::add);
             return GraphToolSupport.facts(
-                    value, symbol, nodes, relationships, List.of(), true);
+                    value, symbol, nodes, relationships, List.of(), true,
+                    GraphToolSupport.sourceScope(value, symbol), 0, options);
         } catch (Exception exception) {
             return ToolResult.error("graph_unavailable: " + exception.getMessage());
         }

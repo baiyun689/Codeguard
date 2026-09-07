@@ -65,6 +65,7 @@ def _alias_echo(
     alias: str,
     arguments: dict[str, Any] | None = None,
     focus: GraphProjectionFocus | None = None,
+    lossless: bool = False,
 ) -> ToolResponse:
     """把证据编号回显进返回给 LLM 的文本;record 保留原始 payload 不污染。
 
@@ -76,7 +77,8 @@ def _alias_echo(
             error=f"{error}\n\n{ALIAS_TAG.format(alias=alias)}",
         )
     text = (
-        _reviewer_response(tool, response, arguments, focus).result or ""
+        (response.result if lossless else _reviewer_response(tool, response, arguments, focus).result)
+        or ""
     ).strip()
     if not text:
         return response
@@ -217,6 +219,11 @@ class CoordinatedDiscoveryToolClient:
         *,
         complete_patch_symbol_ids: set[str] | frozenset[str] = frozenset(),
         projection_focus: GraphProjectionFocus | None = None,
+        lossless_payload: bool = False,
+        max_tool_calls: int | None = None,
+        max_path_depth: int = 3,
+        initial_symbol_ids: set[str] | frozenset[str] = frozenset(),
+        symbol_catalog_ids: tuple[str, ...] = (),
     ) -> None:
         self._delegate = delegate
         self._coordinator = coordinator
@@ -224,6 +231,7 @@ class CoordinatedDiscoveryToolClient:
         self._seen: set[ToolKey] = set()
         self._in_flight: dict[ToolKey, Future[ToolResponse]] = {}
         self._records: list[DiscoveryToolRecord] = []
+        self._observation_aliases: dict[str, str] = {}
         self._first_call_ids: dict[ToolKey, str] = {}
         self._alias_counter = 0
         # 源码工具现在只接受 symbol_id。完整新增文件的 shortcut 仍由调用方
@@ -235,23 +243,131 @@ class CoordinatedDiscoveryToolClient:
             for symbol_id in complete_patch_symbol_ids
         }
         self._projection_focus = projection_focus
+        self._lossless_payload = lossless_payload
+        self._max_tool_calls = (
+            max(0, max_tool_calls) if max_tool_calls is not None else None
+        )
+        self._tool_calls = 0
+        self._closed = False
+        self._max_path_depth = max(1, min(3, max_path_depth))
+        initial_ids = {
+            unescape(symbol_id).strip()
+            for symbol_id in initial_symbol_ids
+            if symbol_id.strip()
+        }
+        catalog_ids = set(symbol_catalog_ids) | initial_ids
+        self._initial_allowed_symbol_ids = set(initial_ids)
+        self._raw_by_symbol_alias: dict[str, str] = {
+            f"S{index:02d}": symbol_id
+            for index, symbol_id in enumerate(sorted(catalog_ids), start=1)
+            if symbol_id
+        }
+        self._symbol_alias_by_raw = {
+            raw: alias for alias, raw in self._raw_by_symbol_alias.items()
+        }
+        self._alias_mode = bool(self._raw_by_symbol_alias)
+        # Sxx and Rxx are separate namespaces; a dynamic result always starts
+        # at R01 even when the initial catalog contains many Sxx symbols.
+        self._next_symbol_alias = 1
         # In a real reviewer run, source reads are limited to symbols exposed by
         # SymbolResolution or returned by an earlier graph query.  A missing
         # focus is retained for small, isolated clients/tests that do not have a
         # task context; production reviewer clients always carry one.
+        focus_ids = {
+            unescape(symbol_id).strip()
+            for symbol_id in (
+                projection_focus.changed_symbol_ids
+                if projection_focus is not None else ()
+            )
+            if symbol_id.strip()
+        }
         self._allowed_symbol_ids: set[str] | None = (
-            {
-                unescape(symbol_id).strip()
-                for symbol_id in projection_focus.changed_symbol_ids
-                if symbol_id.strip()
-            }
-            if projection_focus is not None
+            (
+                self._initial_allowed_symbol_ids
+                if self._alias_mode
+                else focus_ids | initial_ids
+            )
+            if (projection_focus is not None or initial_ids)
             else None
         )
 
     @property
     def projection_focus(self) -> GraphProjectionFocus | None:
         return self._projection_focus
+
+    @property
+    def lossless_payload(self) -> bool:
+        return self._lossless_payload
+
+    @property
+    def symbol_aliases(self) -> dict[str, str]:
+        with self._lock:
+            return dict(self._raw_by_symbol_alias)
+
+    def symbol_alias_for(self, symbol_id: str) -> str:
+        with self._lock:
+            return self._symbol_alias_by_raw.get(symbol_id, symbol_id)
+
+    def _resolve_symbol_ref(self, symbol_ref: str) -> str | None:
+        value = unescape(symbol_ref).strip()
+        with self._lock:
+            if self._alias_mode:
+                raw = self._raw_by_symbol_alias.get(value)
+                if raw is None or raw not in self._allowed_symbol_ids:
+                    return None
+                return raw
+        return value
+
+    def _alias_payload(self, tool: str, response: ToolResponse) -> ToolResponse:
+        if not self._alias_mode or not response.success or not response.result:
+            return response
+        text = response.result
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            if tool == "get_file_content":
+                with self._lock:
+                    for raw, alias in self._symbol_alias_by_raw.items():
+                        text = text.replace(f"symbol_id: {raw}", f"symbol_id: {alias}")
+            return ToolResponse(success=True, result=text)
+        if not isinstance(payload, dict):
+            return response
+        with self._lock:
+            aliases = dict(self._symbol_alias_by_raw)
+
+        def replace(value: Any, key: str = "") -> Any:
+            if isinstance(value, dict):
+                return {name: replace(item, name) for name, item in value.items()}
+            if isinstance(value, list):
+                return [replace(item, key) for item in value]
+            if isinstance(value, str) and key in {
+                "id", "symbol_id", "owner_id", "sourceId", "targetId",
+                "source_id", "target_id",
+            }:
+                return aliases.get(value, value)
+            return value
+
+        try:
+            return ToolResponse(success=True, result=json.dumps(
+                replace(payload), ensure_ascii=False, separators=(",", ":")
+            ))
+        except (TypeError, ValueError):
+            return response
+
+    def _visible_response(
+        self,
+        tool: str,
+        response: ToolResponse,
+        arguments: dict[str, Any] | None = None,
+    ) -> ToolResponse:
+        if response.success and self._lossless_payload:
+            return self._alias_payload(tool, response)
+        if not response.success:
+            return response
+        return self._alias_payload(
+            tool,
+            _reviewer_response(tool, response, arguments, self._projection_focus),
+        )
 
     def _invoke(
         self,
@@ -261,17 +377,41 @@ class CoordinatedDiscoveryToolClient:
     ) -> ToolResponse:
         key = canonical_tool_key(tool_name, arguments)
         started = perf_counter()
+        budget_exceeded = False
         with self._lock:
-            already_seen = key in self._seen
+            if self._closed:
+                budget_exceeded = True
+                close_error = "subtask_execution_closed"
+            elif self._max_tool_calls is not None and self._tool_calls >= self._max_tool_calls:
+                budget_exceeded = True
+                close_error = "subtask_tool_budget_exceeded"
+            else:
+                self._tool_calls += 1
+                close_error = ""
+            already_seen = False if budget_exceeded else key in self._seen
             if already_seen:
                 future = None
                 leader = False
-            else:
+            elif not budget_exceeded:
                 future = self._in_flight.get(key)
                 leader = future is None
                 if future is None:
                     future = Future()
                     self._in_flight[key] = future
+
+        if budget_exceeded:
+            response = ToolResponse(
+                success=False,
+                error=close_error or "subtask_tool_budget_exceeded",
+            )
+            self._record(
+                tool_name,
+                arguments,
+                response,
+                started,
+                "rejected",
+            )
+            return response
 
         if already_seen:
             response = ToolResponse(success=True, result=REPEATED_TOOL_RESULT)
@@ -299,13 +439,14 @@ class CoordinatedDiscoveryToolClient:
                     reused_from_call_id=self._first_call_ids.get(key, ""),
                 )
                 return repeated
-            self._record(tool_name, arguments, response, started)
+            record_call_id = self._record(tool_name, arguments, response, started)
             return _alias_echo(
                 tool_name,
-                response,
-                self._next_t_alias(),
+                self._visible_response(tool_name, response, arguments),
+                self._next_t_alias(record_call_id),
                 arguments,
                 self._projection_focus,
+                True,
             )
 
         try:
@@ -318,7 +459,7 @@ class CoordinatedDiscoveryToolClient:
                 if _cacheable(response):
                     self._seen.add(key)
                     self._first_call_ids[key] = first_call_id
-            self._record(
+            record_call_id = self._record(
                 tool_name,
                 arguments,
                 response,
@@ -333,17 +474,19 @@ class CoordinatedDiscoveryToolClient:
             if not coordinator_reused:
                 return _alias_echo(
                     tool_name,
-                    response,
-                    self._next_t_alias(),
+                    self._visible_response(tool_name, response, arguments),
+                    self._next_t_alias(record_call_id),
                     arguments,
                     self._projection_focus,
+                    True,
                 )
             return _alias_echo(
                 tool_name,
-                response,
-                self._next_t_alias(),
+                self._visible_response(tool_name, response, arguments),
+                self._next_t_alias(record_call_id),
                 arguments,
                 self._projection_focus,
+                True,
             )
         except BaseException as exc:
             if future is not None and not future.done():
@@ -370,11 +513,12 @@ class CoordinatedDiscoveryToolClient:
         """
         if tool_name not in GRAPH_DISCOVERY_TOOLS or not response.success:
             return
-        visible_response = _reviewer_response(
-            tool_name,
-            response,
-            arguments,
-            self._projection_focus,
+        visible_response = (
+            response
+            if self._alias_mode and self._lossless_payload
+            else _reviewer_response(
+                tool_name, response, arguments, self._projection_focus
+            )
         )
         try:
             payload = json.loads(visible_response.result or "")
@@ -394,6 +538,15 @@ class CoordinatedDiscoveryToolClient:
             return
         with self._lock:
             self._allowed_symbol_ids.update(ids)
+            if not self._alias_mode:
+                return
+            for symbol_id in sorted(ids):
+                if symbol_id in self._symbol_alias_by_raw:
+                    continue
+                alias = f"R{self._next_symbol_alias:02d}"
+                self._next_symbol_alias += 1
+                self._raw_by_symbol_alias[alias] = symbol_id
+                self._symbol_alias_by_raw[symbol_id] = alias
 
     def _record(
         self,
@@ -405,7 +558,7 @@ class CoordinatedDiscoveryToolClient:
         *,
         call_id: str | None = None,
         reused_from_call_id: str = "",
-    ) -> None:
+    ) -> str:
         canonical_arguments = _canonical_arguments(arguments)
         key = canonical_tool_key(tool_name, canonical_arguments)
         effective_status = status or _response_status(response)
@@ -440,13 +593,30 @@ class CoordinatedDiscoveryToolClient:
                 ),
             )
             self._records.append(record)
+            return effective_call_id
 
     @property
     def trace_records(self) -> tuple[DiscoveryToolRecord, ...]:
         with self._lock:
             return tuple(self._records)
 
-    def _next_t_alias(self) -> str:
+    @property
+    def tool_calls(self) -> int:
+        with self._lock:
+            return self._tool_calls
+
+    @property
+    def observation_aliases(self) -> dict[str, str]:
+        with self._lock:
+            return dict(self._observation_aliases)
+
+    def close(self) -> None:
+        """Prevent late React turns from issuing new Gateway calls after timeout."""
+
+        with self._lock:
+            self._closed = True
+
+    def _next_t_alias(self, call_id: str = "") -> str:
         """本客户端目录的下一个 T 编号(与 ledger 的 append_tool_records 同序)。
 
         编号 = 非短标记记录数(短标记不建 Artifact,跨任务复用建 REUSED
@@ -454,28 +624,48 @@ class CoordinatedDiscoveryToolClient:
         """
         with self._lock:
             self._alias_counter += 1
-            return f"T{self._alias_counter:02d}"
+            alias = f"T{self._alias_counter:02d}"
+            if call_id:
+                self._observation_aliases[alias] = call_id
+            return alias
 
-    def get_file_content(self, symbol_id: str) -> ToolResponse:
-        symbol_id = unescape(symbol_id)
+    def get_file_content(
+        self,
+        symbol_id: str,
+        *,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        cursor: str | None = None,
+    ) -> ToolResponse:
+        raw_symbol_id = self._resolve_symbol_ref(symbol_id)
+        arguments: dict[str, Any] = {"symbol_id": unescape(symbol_id)}
+        if raw_symbol_id is None:
+            return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
+        symbol_id = raw_symbol_id
+        if start_line is not None:
+            arguments["start_line"] = start_line
+        if end_line is not None:
+            arguments["end_line"] = end_line
+        if cursor is not None:
+            arguments["cursor"] = cursor
         if (
             self._allowed_symbol_ids is not None
             and symbol_id not in self._allowed_symbol_ids
         ):
             return self._invoke(
                 "get_file_content",
-                {"symbol_id": symbol_id},
+                arguments,
                 lambda: ToolResponse(
                     success=False,
                     error="symbol_not_in_review_context",
                 ),
             )
-        key = canonical_tool_key("get_file_content", {"symbol_id": symbol_id})
+        key = canonical_tool_key("get_file_content", arguments)
         if key in self._complete_patch_keys:
             response = ToolResponse(success=True, result=COMPLETE_PATCH_RESULT)
             self._record(
                 "get_file_content",
-                {"symbol_id": symbol_id},
+                arguments,
                 response,
                 perf_counter(),
                 "reused",
@@ -486,8 +676,12 @@ class CoordinatedDiscoveryToolClient:
             return response
         return self._invoke(
             "get_file_content",
-            {"symbol_id": symbol_id},
-            lambda: self._delegate.get_file_content(symbol_id),
+            arguments,
+            lambda: self._delegate.get_file_content(symbol_id)
+            if not any(value is not None for value in (start_line, end_line, cursor))
+            else self._delegate.get_file_content(
+                symbol_id, start_line=start_line, end_line=end_line, cursor=cursor
+            ),
         )
 
     def inspect_path(
@@ -495,34 +689,94 @@ class CoordinatedDiscoveryToolClient:
         symbol_id: str,
         path_kind: str,
         max_depth: int = 3,
+        *,
+        limit: int | None = None,
+        cursor: str | None = None,
     ) -> ToolResponse:
-        symbol_id = unescape(symbol_id)
+        raw_symbol_id = self._resolve_symbol_ref(symbol_id)
+        if raw_symbol_id is None:
+            return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
+        symbol_id = raw_symbol_id
         if path_kind not in {"behavior", "security"}:
             return ToolResponse(success=False, error="invalid_path_kind")
-        if not isinstance(max_depth, int) or isinstance(max_depth, bool) or not 1 <= max_depth <= 3:
+        if (
+            not isinstance(max_depth, int)
+            or isinstance(max_depth, bool)
+            or not 1 <= max_depth <= self._max_path_depth
+        ):
             return ToolResponse(success=False, error="invalid_max_depth")
+        arguments: dict[str, Any] = {
+            "symbol_id": symbol_id,
+            "path_kind": path_kind,
+            "max_depth": max_depth,
+        }
+        if limit is not None:
+            arguments["limit"] = limit
+        if cursor is not None:
+            arguments["cursor"] = cursor
         return self._invoke(
             "inspect_path",
-            {
-                "symbol_id": symbol_id,
-                "path_kind": path_kind,
-                "max_depth": max_depth,
-            },
-            lambda: self._delegate.inspect_path(symbol_id, path_kind, max_depth),
+            arguments,
+            lambda: self._delegate.inspect_path(symbol_id, path_kind, max_depth)
+            if limit is None and cursor is None
+            else self._delegate.inspect_path(
+                symbol_id, path_kind, max_depth, limit=limit, cursor=cursor
+            ),
         )
 
-    def inspect_change_impact(self, symbol_id: str) -> ToolResponse:
-        symbol_id = unescape(symbol_id)
+    def inspect_change_impact(
+        self,
+        symbol_id: str,
+        *,
+        max_depth: int | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> ToolResponse:
+        requested_ref = unescape(symbol_id)
+        raw_symbol_id = self._resolve_symbol_ref(requested_ref)
+        if raw_symbol_id is None:
+            return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
+        symbol_id = raw_symbol_id
+        arguments: dict[str, Any] = {"symbol_id": requested_ref}
+        if max_depth is not None:
+            arguments["max_depth"] = max_depth
+        if limit is not None:
+            arguments["limit"] = limit
+        if cursor is not None:
+            arguments["cursor"] = cursor
         return self._invoke(
             "inspect_change_impact",
-            {"symbol_id": symbol_id},
-            lambda: self._delegate.inspect_change_impact(symbol_id),
+            arguments,
+            lambda: self._delegate.inspect_change_impact(symbol_id)
+            if not any(value is not None for value in (max_depth, limit, cursor))
+            else self._delegate.inspect_change_impact(
+                symbol_id, max_depth=max_depth, limit=limit, cursor=cursor
+            ),
         )
 
-    def inspect_structure(self, symbol_id: str) -> ToolResponse:
-        symbol_id = unescape(symbol_id)
+    def inspect_structure(
+        self,
+        symbol_id: str,
+        *,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> ToolResponse:
+        requested_ref = unescape(symbol_id)
+        raw_symbol_id = self._resolve_symbol_ref(requested_ref)
+        if raw_symbol_id is None:
+            return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
+        symbol_id = raw_symbol_id
+        arguments: dict[str, Any] = {"symbol_id": requested_ref}
+        if limit is not None:
+            arguments["limit"] = limit
+        if cursor is not None:
+            arguments["cursor"] = cursor
         return self._invoke(
             "inspect_structure",
-            {"symbol_id": symbol_id},
-            lambda: self._delegate.inspect_structure(symbol_id),
+            arguments,
+            lambda: self._delegate.inspect_structure(symbol_id)
+            if limit is None and cursor is None
+            else self._delegate.inspect_structure(
+                symbol_id, limit=limit, cursor=cursor
+            ),
         )

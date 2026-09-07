@@ -26,11 +26,19 @@ from codeguard_agent.models.state import (
     ReviewerState,
     collect_candidate_reducer,
 )
-from codeguard_agent.models.schemas import DiscoveredIssue, DiscoveryReviewResult, Issue, ReviewResult
+from codeguard_agent.models.schemas import (
+    DiscoveredIssue,
+    DiscoveryReviewResult,
+    EvidenceRefSelection,
+    EvidenceRole,
+    Issue,
+    ReviewResult,
+)
 from codeguard_agent.models.tasks import (
     AssessmentStatus,
     CandidateSeed,
     EvidenceAssessment,
+    EvidenceNeed,
     EvidenceStep,
     KnowledgeRoutePlan,
     ReviewerGraphPlan,
@@ -43,6 +51,8 @@ from codeguard_agent.models.tasks import (
     SkippedTask,
     TaskSelection,
     TaskRoute,
+    InvestigationSeed,
+    SubtaskInstruction,
 )
 from codeguard_agent.pipeline.tasks import task_builder as task_prep
 from codeguard_agent.pipeline.execution.concurrency import run_bounded_parallel
@@ -76,6 +86,8 @@ from codeguard_agent.pipeline.controlled.graph_plan import (
     run_graph_plan,
 )
 from codeguard_agent.pipeline.controlled.planning import run_knowledge_route
+from codeguard_agent.pipeline.controlled.subtask_plan import run_subtask_plan
+from codeguard_agent.pipeline.controlled.subtask_react import SubtaskReactEngine
 from codeguard_agent.pipeline.controlled.routing import route_seed
 from codeguard_agent.pipeline.controlled.triage import run_direct_triage
 from codeguard_agent.pipeline.execution.engines import (
@@ -97,6 +109,7 @@ from codeguard_agent.models.evidence import (
 from codeguard_agent.pipeline.evidence.ledger import (
     EvidenceCatalogBuilder,
     bind_discovered_issue,
+    capture_tool_records,
 )
 from codeguard_agent.pipeline.evidence.planner import assemble_dossiers
 from codeguard_agent.pipeline.evidence.projection import graph_projection_focus
@@ -1641,7 +1654,120 @@ def _approved_replan_symbols(
     return approved, source_approved
 
 
-def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int = 3):
+def _neutral_seed_from_candidate(seed: CandidateSeed) -> InvestigationSeed:
+    """兼容旧 DirectTriage 输出：剥离 claim 后形成中性调查种子。"""
+
+    question = seed.graph_question
+    allowed = {
+        EvidenceNeed.INSPECT_PATH: ("inspect_path", "get_file_content"),
+        EvidenceNeed.INSPECT_CHANGE_IMPACT: (
+            "inspect_change_impact",
+            "get_file_content",
+        ),
+        EvidenceNeed.INSPECT_STRUCTURE: ("inspect_structure", "get_file_content"),
+    }.get(seed.evidence_need, ("inspect_path", "get_file_content"))
+    if question is not None and question.direction == "upstream":
+        allowed = ("inspect_change_impact", "get_file_content")
+    return InvestigationSeed(
+        seed_id=f"investigation-{seed.seed_id}",
+        reviewer=seed.reviewer,
+        change_unit_id=seed.change_unit_id,
+        observed_change=(
+            seed.mechanism.strip()
+            or "当前变更区间存在需要跨 symbol 核对的行为变化"
+        ),
+        investigation_question=(
+            question.question.strip()
+            if question is not None and question.question.strip()
+            else "核对当前变更与相关 symbol 之间是否存在直接可观察的行为影响"
+        ),
+        location_file=seed.location_file,
+        location_line=seed.location_line,
+        initial_symbol_ids=(
+            (question.subject_ref,)
+            if question is not None and question.subject_ref
+            else ()
+        ),
+        evidence_need=seed.evidence_need,
+        allowed_tools=allowed,
+        risk_dimension=seed.claim_type,
+        confidence=seed.confidence,
+    )
+
+
+def _investigation_candidate(
+    finding: Any,
+    *,
+    task: ReviewTask,
+    reviewer: str,
+    catalog: Any,
+    alias_by_call_id: dict[str, str],
+    candidate_index: int,
+) -> CandidateIssue | None:
+    """将子任务 finding 绑定到真实工具 Artifact；没有证据则不造候选。"""
+
+    selections: list[EvidenceRefSelection] = []
+    for observation in finding.observations:
+        observation_id = str(observation.observation_id).strip()
+        alias = alias_by_call_id.get(observation_id, "")
+        if not alias and observation_id in catalog.alias_to_artifact_id:
+            alias = observation_id
+        if not alias or alias not in catalog.alias_to_artifact_id:
+            continue
+        role = observation.role
+        role_map = {
+            "relation": EvidenceRole.REACHABILITY,
+            "mechanism": EvidenceRole.MECHANISM,
+            "impact": EvidenceRole.IMPACT,
+            "counter": EvidenceRole.COUNTER,
+            "location": EvidenceRole.LOCATION,
+        }
+        selections.append(
+            EvidenceRefSelection(alias=alias, role=role_map.get(role, EvidenceRole.MECHANISM))
+        )
+    if not selections:
+        return None
+    message = finding.claim.strip()
+    if finding.impact.strip() and finding.impact.strip() not in message:
+        message = f"{message}；{finding.impact.strip()}"
+    discovered = DiscoveredIssue(
+        file=finding.location_file or task.file,
+        line=finding.location_line,
+        type=finding.type_hint.strip() or reviewer,
+        message=message,
+        suggestion=finding.suggestion,
+        confidence=1.0,
+        evidence_refs=selections,
+    )
+    candidate = bind_discovered_issue(
+        discovered,
+        task=task,
+        reviewer=reviewer,
+        catalog=catalog,
+        candidate_index=candidate_index,
+    )
+    return candidate.model_copy(
+        update={
+            "mechanism": finding.mechanism,
+            "impact": finding.impact,
+            "claim_type": finding.type_hint,
+        }
+    )
+
+
+def _controlled_review_node(
+    llm,
+    tool_client=None,
+    *,
+    execute_concurrency: int = 3,
+    controlled_execution_mode: str = "planned_steps",
+    subtask_max_tool_calls: int = 4,
+    subtask_max_rounds: int = 4,
+    subtask_timeout_seconds: int = 120,
+    task_max_tool_calls: int = 24,
+    max_subtasks_per_reviewer: int = 4,
+    max_subtasks_per_task: int = 12,
+):
     """执行受控 DirectTriage → GraphPlan → EvidenceExecutor 链。"""
 
     def _node(state: ReviewState) -> dict:
@@ -1726,6 +1852,7 @@ def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int =
 
             triage_results = run_bounded_parallel(triage_jobs, triage_one, max_workers=3)
             seeds_by_reviewer: dict[str, list[CandidateSeed]] = {}
+            investigation_seeds_by_reviewer: dict[str, list[InvestigationSeed]] = {}
             for reviewer_config, outcome in zip((item[1] for item in triage_jobs), triage_results):
                 if outcome is None:
                     traces.append(CouncilTrace(node="direct_triage", event="reviewer_failed", detail=f"task={task.id} reviewer={reviewer_config.source_agent}"))
@@ -1738,6 +1865,9 @@ def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int =
                 result = result.model_copy(update={"issues": tuple(seeds)})
                 triage_state[f"{task.id}:{reviewer_config.source_agent}"] = result
                 seeds_by_reviewer[reviewer_config.source_agent] = seeds
+                investigation_seeds_by_reviewer[reviewer_config.source_agent] = list(
+                    result.investigation_seeds
+                )
                 traces.extend(CouncilTrace(node="direct_triage", event="diagnostic", detail=f"task={task.id} reviewer={reviewer_config.source_agent} {diagnostic}") for diagnostic in diagnostics)
                 traces.append(CouncilTrace(node="direct_triage", event="completed", detail=f"task={task.id} reviewer={reviewer_config.source_agent} seeds={len(seeds)}"))
 
@@ -1775,6 +1905,262 @@ def _controlled_review_node(llm, tool_client=None, *, execute_concurrency: int =
                 # reviewer plans concurrently, but collect them in the
                 # stable DEFAULT_REVIEWERS order below.
                 graph_plan_jobs.append((reviewer_config, reviewer_kind, graph_seeds))
+
+            if controlled_execution_mode == "subtask_react":
+                # New path: GraphPlan creates neutral bounded subtasks and each
+                # subtask runs one local React.  The legacy fixed-step executor
+                # below remains available under planned_steps until replay
+                # validation authorizes its removal.
+                subtask_plan_jobs: list[tuple[Any, ReviewerKind, tuple[InvestigationSeed, ...]]] = []
+                for reviewer_config in DEFAULT_REVIEWERS:
+                    reviewer_name = reviewer_config.source_agent
+                    reviewer_kind = ReviewerKind(reviewer_name)
+                    neutral = list(investigation_seeds_by_reviewer.get(reviewer_name, ()))
+                    existing_ids = {seed.seed_id for seed in neutral}
+                    for seed in seeds_by_reviewer.get(reviewer_name, ()):
+                        if route_seed(seed) != "graph_required":
+                            continue
+                        converted = _neutral_seed_from_candidate(seed)
+                        if converted.seed_id not in existing_ids:
+                            neutral.append(converted)
+                            existing_ids.add(converted.seed_id)
+                    reviewer_limit = max(0, max_subtasks_per_reviewer)
+                    if len(neutral) > reviewer_limit:
+                        omitted = neutral[reviewer_limit:]
+                        traces.append(CouncilTrace(
+                            node="graph_plan",
+                            event="task_review_failed",
+                            detail=(
+                                f"task={task.id} reviewer={reviewer_name} "
+                                f"reason=subtask_seed_limit omitted={len(omitted)}"
+                            ),
+                        ))
+                        neutral = neutral[:reviewer_limit]
+                    if neutral:
+                        subtask_plan_jobs.append((reviewer_config, reviewer_kind, tuple(neutral)))
+
+                def subtask_plan_one(job):
+                    reviewer_config, reviewer_kind, neutral = job
+                    plan, diagnostics = run_subtask_plan(
+                        reviewer=reviewer_kind,
+                        task=scoped_task,
+                        seeds=neutral,
+                        symbol_context=context,
+                        llm=llm,
+                        max_retries=state.get("max_retries", 3),
+                        structured_method=state.get("structured_method", "function_calling"),
+                        max_tool_calls=subtask_max_tool_calls,
+                        max_rounds=subtask_max_rounds,
+                        max_subtasks=max_subtasks_per_reviewer,
+                        max_path_depth=state.get("controlled_max_path_depth", 3),
+                        enabled_tools=state.get("enabled_tools"),
+                    )
+                    return reviewer_config, plan, diagnostics
+
+                subtask_plan_results = run_bounded_parallel(
+                    subtask_plan_jobs,
+                    subtask_plan_one,
+                    max_workers=min(
+                        max(1, execute_concurrency), len(subtask_plan_jobs)
+                    ) if subtask_plan_jobs else 1,
+                )
+                planned_subtasks: list[tuple[Any, SubtaskInstruction]] = []
+                for job, result in zip(subtask_plan_jobs, subtask_plan_results):
+                    reviewer_config, _reviewer_kind, _neutral = job
+                    if result is None:
+                        traces.append(CouncilTrace(
+                            node="graph_plan",
+                            event="failed",
+                            detail=f"task={task.id} reviewer={reviewer_config.source_agent} reason=worker_failed",
+                        ))
+                        continue
+                    _config, plan, diagnostics = result
+                    graph_plan_state[f"{task.id}:{reviewer_config.source_agent}"] = plan
+                    traces.extend(
+                        CouncilTrace(
+                            node="graph_plan",
+                            event="diagnostic",
+                            detail=f"task={task.id} reviewer={reviewer_config.source_agent} {diagnostic}",
+                        )
+                        for diagnostic in diagnostics
+                    )
+                    if any(
+                        diagnostic.startswith("subtask_plan_missing_seeds")
+                        or diagnostic.startswith("subtask_unknown_symbol")
+                        or diagnostic.startswith("subtask_no_allowed_tool")
+                        for diagnostic in diagnostics
+                    ):
+                        traces.append(CouncilTrace(
+                            node="graph_plan",
+                            event="task_review_failed",
+                            detail=(
+                                f"task={task.id} reviewer={reviewer_config.source_agent} "
+                                "reason=seed_not_planned"
+                            ),
+                        ))
+                    planned_subtasks.extend(
+                        (reviewer_config, item)
+                        for item in plan.subtasks
+                    )
+
+                planned_subtasks = planned_subtasks[: max(0, max_subtasks_per_task)]
+                if tool_client is None:
+                    traces.append(CouncilTrace(
+                        node="controlled_review",
+                        event="task_review_failed",
+                        detail=f"task={task.id} reason=tool_client_unavailable",
+                    ))
+                    all_artifacts.update(task_catalog.artifacts)
+                    continue
+
+                coordinator = DiscoveryToolCoordinator()
+                focus = graph_projection_focus(task, context)
+                # Divide the task budget before parallel execution so the
+                # aggregate upper bound is deterministic rather than relying
+                # on a post-hoc truncation of evidence.
+                per_subtask_budget = (
+                    min(subtask_max_tool_calls, task_max_tool_calls // max(1, len(planned_subtasks)))
+                    if planned_subtasks
+                    else 0
+                )
+
+                def run_subtask(item):
+                    reviewer_config, instruction = item
+                    # Each React owns its local trace/allowed-symbol set while
+                    # the coordinator still shares successful HTTP results.
+                    # This prevents parallel subtasks from attributing one
+                    # another's observations to the wrong finding.
+                    coordinated_client = CoordinatedDiscoveryToolClient(
+                        tool_client,
+                        coordinator,
+                        projection_focus=focus,
+                        lossless_payload=True,
+                        max_tool_calls=per_subtask_budget,
+                        max_path_depth=state.get("controlled_max_path_depth", 3),
+                        initial_symbol_ids=set(instruction.initial_symbol_ids),
+                        symbol_catalog_ids=tuple(
+                            symbol.symbol_id
+                            for symbol in (context.symbols if context is not None else ())
+                        ),
+                    )
+                    engine = SubtaskReactEngine(
+                        coordinated_client,
+                        max_tool_calls=per_subtask_budget,
+                        max_rounds=min(subtask_max_rounds, instruction.max_rounds),
+                        timeout_seconds=subtask_timeout_seconds,
+                    )
+                    outcome = engine.run(
+                        llm,
+                        task=scoped_task,
+                        symbol_context=context,
+                        instruction=instruction.model_copy(
+                            update={"max_tool_calls": per_subtask_budget}
+                        ),
+                        structured_method=state.get("structured_method", "function_calling"),
+                        max_retries=state.get("max_retries", 3),
+                    )
+                    return reviewer_config, instruction, outcome, coordinated_client
+
+                subtask_results = run_bounded_parallel(
+                    planned_subtasks,
+                    run_subtask,
+                    max_workers=min(
+                        max(1, execute_concurrency), len(planned_subtasks)
+                    ) if planned_subtasks else 1,
+                )
+                valid_subtask_results = [
+                    result for result in subtask_results if result is not None
+                ]
+                ordered_records = tuple(
+                    record
+                    for _reviewer_config, _instruction, _outcome, client in valid_subtask_results
+                    for record in client.trace_records
+                )
+                capture = capture_tool_records(task_catalog, ordered_records)
+                all_trace_refs.extend(capture.trace_refs)
+                all_artifacts.update(capture.catalog.artifacts)
+                alias_by_call_id = {
+                    artifact.call_id: alias
+                    for alias, artifact_id in capture.catalog.alias_to_artifact_id.items()
+                    if (artifact := capture.catalog.artifacts.get(artifact_id)) is not None
+                    and artifact.call_id
+                }
+                for reviewer_config, instruction, outcome, _client in valid_subtask_results:
+                    traces.extend(
+                        CouncilTrace(
+                            node="execute",
+                            event=event,
+                            detail=(
+                                f"task={task.id} subtask={instruction.subtask_id} "
+                                f"reviewer={reviewer_config.source_agent}"
+                            ),
+                        )
+                        for event in outcome.events
+                    )
+                    if outcome.result is None or outcome.result.outcome != "findings":
+                        if outcome.status in {"failed", "inconclusive"}:
+                            traces.append(CouncilTrace(
+                                node="execute",
+                                event="task_review_failed",
+                                detail=(
+                                    f"task={task.id} subtask={instruction.subtask_id} "
+                                    f"reason={outcome.reason or outcome.status}"
+                                ),
+                            ))
+                        if outcome.reason:
+                            traces.append(CouncilTrace(
+                                node="execute",
+                                event="subtask_limited",
+                                detail=f"task={task.id} subtask={instruction.subtask_id} reason={outcome.reason}",
+                            ))
+                        continue
+                    local_alias_by_call_id = {
+                        local_alias: alias_by_call_id.get(call_id, "")
+                        for local_alias, call_id in _client.observation_aliases.items()
+                        if alias_by_call_id.get(call_id, "")
+                    }
+                    finding_aliases = dict(alias_by_call_id)
+                    finding_aliases.update(local_alias_by_call_id)
+                    for finding in outcome.result.findings:
+                        candidate = _investigation_candidate(
+                            finding,
+                            task=task,
+                            reviewer=reviewer_config.source_agent,
+                            catalog=capture.catalog,
+                            alias_by_call_id=finding_aliases,
+                            candidate_index=len(all_candidates) + 1,
+                        )
+                        if candidate is None:
+                            traces.append(CouncilTrace(
+                                node="execute",
+                                event="finding_dropped_no_bound_evidence",
+                                detail=f"task={task.id} subtask={instruction.subtask_id}",
+                            ))
+                            traces.append(CouncilTrace(
+                                node="execute",
+                                event="task_review_failed",
+                                detail=(
+                                    f"task={task.id} subtask={instruction.subtask_id} "
+                                    "reason=finding_without_bound_evidence"
+                                ),
+                            ))
+                            continue
+                        all_candidates.append(candidate)
+                all_artifacts.update(task_catalog.artifacts)
+                traces.append(CouncilTrace(
+                    node="controlled_review",
+                    event="subtask_react_completed",
+                    detail=f"task={task.id} subtasks={len(planned_subtasks)} candidates={len(all_candidates) - task_candidate_start}",
+                ))
+                task_candidate_limit = state.get("controlled_max_seeds_per_task", 12)
+                if len(all_candidates) - task_candidate_start > task_candidate_limit:
+                    del all_candidates[task_candidate_start + task_candidate_limit :]
+                    traces.append(CouncilTrace(
+                        node="controlled_review",
+                        event="seed_task_limit",
+                        detail=f"task={task.id} limit={task_candidate_limit}",
+                    ))
+                continue
 
             def graph_plan_one(job):
                 reviewer_config, reviewer_kind, graph_seeds = job
@@ -2529,6 +2915,13 @@ def build_review_graph(
     controlled_max_seeds_per_task: int = 12,
     controlled_max_knowledge_topics: int = 4,
     controlled_execute_concurrency: int = 3,
+    controlled_execution_mode: str = "planned_steps",
+    controlled_subtask_max_tool_calls: int = 4,
+    controlled_subtask_max_rounds: int = 4,
+    controlled_subtask_timeout_seconds: int = 120,
+    controlled_task_max_tool_calls: int = 24,
+    controlled_max_subtasks_per_reviewer: int = 4,
+    controlled_max_subtasks_per_task: int = 12,
 ):
     """编译审查状态图。
 
@@ -2603,6 +2996,13 @@ def build_review_graph(
                 llm,
                 tool_client=tool_client,
                 execute_concurrency=controlled_execute_concurrency,
+                controlled_execution_mode=controlled_execution_mode,
+                subtask_max_tool_calls=controlled_subtask_max_tool_calls,
+                subtask_max_rounds=controlled_subtask_max_rounds,
+                subtask_timeout_seconds=controlled_subtask_timeout_seconds,
+                task_max_tool_calls=controlled_task_max_tool_calls,
+                max_subtasks_per_reviewer=controlled_max_subtasks_per_reviewer,
+                max_subtasks_per_task=controlled_max_subtasks_per_task,
             ),
         )
 

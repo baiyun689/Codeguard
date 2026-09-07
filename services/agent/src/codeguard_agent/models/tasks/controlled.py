@@ -231,12 +231,88 @@ class CandidateSeed(ControlledModel):
     confidence: StrictFloat = Field(default=0.5, ge=0.0, le=1.0)
 
 
+class InvestigationSeed(ControlledModel):
+    """初筛后交给 GraphPlan 的中性调查种子，不是问题候选。"""
+
+    seed_id: str = Field(default="", description="系统绑定；LLM 输出时必须为空")
+    reviewer: ReviewerKind
+    change_unit_id: str = Field(min_length=1)
+    observed_change: str = Field(min_length=1)
+    investigation_question: str = Field(min_length=1)
+    location_file: str = Field(min_length=1)
+    location_line: StrictInt = Field(default=0, ge=0)
+    initial_symbol_ids: tuple[str, ...] = Field(default=(), max_length=4)
+    evidence_need: EvidenceNeed = EvidenceNeed.INSPECT_PATH
+    allowed_tools: tuple[str, ...] = Field(default=(), max_length=3)
+    risk_dimension: str = ""
+    confidence: StrictFloat = Field(default=0.5, ge=0.0, le=1.0)
+
+
 class DirectTriageResult(ControlledModel):
     # Runtime validation fills missing ChangeUnit rows deterministically.  A
     # provider omission must not discard otherwise valid top-level candidates.
     coverage: tuple[CoverageDeclaration, ...] = ()
     issues: tuple[CandidateSeed, ...] = ()
+    # Graph-required work is intentionally not represented as a CandidateSeed.
+    # It is a neutral investigation request; the subtask React is the first
+    # component allowed to form an evidence-backed finding.
+    investigation_seeds: tuple[InvestigationSeed, ...] = ()
     limitations: Any = ()
+
+
+class InvestigationObservation(ControlledModel):
+    """React 最终结论引用的本次子任务局部观察。"""
+
+    observation_id: str = Field(min_length=1)
+    role: Literal["relation", "mechanism", "impact", "counter", "location"]
+
+
+class InvestigationFinding(ControlledModel):
+    """子任务 React 根据证据形成的候选草案。"""
+
+    claim: str = Field(min_length=1)
+    mechanism: str = Field(min_length=1)
+    impact: str = ""
+    observations: tuple[InvestigationObservation, ...] = Field(default=(), max_length=3)
+    location_file: str = Field(min_length=1)
+    location_line: StrictInt = Field(default=0, ge=0)
+    suggestion: str = ""
+    type_hint: str = ""
+
+
+class InvestigationResult(ControlledModel):
+    """一次子任务 React 的唯一终止结果。"""
+
+    subtask_id: str = Field(min_length=1)
+    outcome: Literal["findings", "no_finding", "inconclusive", "failed"]
+    findings: tuple[InvestigationFinding, ...] = Field(default=(), max_length=2)
+    limitations: tuple[str, ...] = Field(default=(), max_length=6)
+
+
+class SubtaskInstruction(ControlledModel):
+    """GraphPlan 交给单个子任务 React 的最小、封闭调查上下文。"""
+
+    subtask_id: str = Field(min_length=1)
+    seed_id: str = Field(min_length=1)
+    reviewer: ReviewerKind
+    change_unit_id: str = Field(min_length=1)
+    objective: str = Field(min_length=1)
+    observed_change: str = Field(min_length=1)
+    initial_symbol_ids: tuple[str, ...] = Field(default=(), max_length=4)
+    allowed_tools: tuple[str, ...] = Field(default=(), max_length=3)
+    primary_tool: str = ""
+    required_facts: tuple[str, ...] = Field(default=(), max_length=6)
+    stop_conditions: tuple[str, ...] = Field(default=(), max_length=6)
+    max_tool_calls: StrictInt = Field(default=4, ge=0, le=20)
+    max_rounds: StrictInt = Field(default=4, ge=1, le=12)
+
+
+class SubtaskPlan(ControlledModel):
+    """一个 reviewer 的 GraphPlan 输出；只包含调查指导，不包含候选。"""
+
+    reviewer: ReviewerKind
+    task_id: str = Field(min_length=1)
+    subtasks: tuple[SubtaskInstruction, ...] = Field(default=(), max_length=12)
 
 
 class EvidenceStep(ControlledModel):
@@ -363,12 +439,18 @@ __all__ = [
     "EvidenceAssessmentBatch",
     "EvidenceNeed",
     "EvidenceStep",
+    "InvestigationFinding",
+    "InvestigationObservation",
+    "InvestigationResult",
+    "InvestigationSeed",
     "GraphQuestion",
     "KnowledgeRoutePlan",
     "ProofMatch",
     "ProofMatchStatus",
     "ProofScope",
     "ReviewerGraphPlan",
+    "SubtaskInstruction",
+    "SubtaskPlan",
     "TaskKnowledgeRoute",
     "WorkItem",
 ]

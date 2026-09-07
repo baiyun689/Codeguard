@@ -16,6 +16,7 @@ from codeguard_agent.models.tasks import (
     CoverageDecision,
     DirectTriageResult,
     EvidenceNeed,
+    InvestigationSeed,
     ProofScope,
     ReviewTask,
     ReviewerKind,
@@ -312,6 +313,7 @@ def _coerce_provider_result(
     normalized: dict[str, Any] = {
         "coverage": [],
         "issues": [],
+        "investigation_seeds": [],
         "limitations": payload.get("limitations", ()),
     }
     coverage_rows = payload.get("coverage", ())
@@ -361,6 +363,27 @@ def _coerce_provider_result(
             normalized["issues"].append(candidate.model_dump())
         except Exception as exc:  # noqa: BLE001 - reject only this row
             invalid_rows.append(f"{index}:{type(exc).__name__}")
+
+    seed_rows = payload.get("investigation_seeds", ())
+    if isinstance(seed_rows, (list, tuple)):
+        for index, row in enumerate(seed_rows):
+            if hasattr(row, "model_dump"):
+                row = row.model_dump()
+            if not isinstance(row, dict):
+                continue
+            seed_payload = dict(row)
+            if _blank_provider_value(seed_payload.get("reviewer")) and reviewer is not None:
+                seed_payload["reviewer"] = reviewer.value
+            if _blank_provider_value(seed_payload.get("change_unit_id")):
+                seed_payload["change_unit_id"] = change_unit_id
+            if _blank_provider_value(seed_payload.get("location_file")):
+                seed_payload["location_file"] = location_file
+            try:
+                normalized["investigation_seeds"].append(
+                    InvestigationSeed.model_validate(seed_payload).model_dump()
+                )
+            except Exception as exc:  # noqa: BLE001 - reject only this row
+                invalid_rows.append(f"investigation:{index}:{type(exc).__name__}")
 
     try:
         result = DirectTriageResult.model_validate(normalized)
@@ -983,8 +1006,59 @@ def run_direct_triage(
         else:
             diagnostics.append(repair_diagnostic or "claim_style_repair_failed")
 
+    # Bind both legacy CandidateSeed IDs and neutral InvestigationSeed IDs
+    # once at the controlled boundary.  The latter are never passed to the
+    # subtask React as candidate claims.
+    result = bind_seed_ids(result)
+    normalized_investigations: list[InvestigationSeed] = []
+    visible_symbol_ids = {
+        symbol.symbol_id
+        for symbol in (symbol_context.symbols if symbol_context is not None else ())
+        if symbol.symbol_id
+    }
+    allowed_investigation_tools = {
+        "get_file_content",
+        "inspect_structure",
+        "inspect_change_impact",
+        "inspect_path",
+    }
+    for seed in result.investigation_seeds:
+        if seed.reviewer is not reviewer:
+            diagnostics.append(f"{seed.seed_id}:investigation_reviewer_mismatch")
+            continue
+        if seed.change_unit_id not in set(expected_ids):
+            if len(expected_ids) == 1:
+                seed = seed.model_copy(update={"change_unit_id": expected_ids[0]})
+                diagnostics.append(f"{seed.seed_id}:investigation_change_unit_repaired")
+            else:
+                diagnostics.append(f"{seed.seed_id}:investigation_unknown_change_unit")
+                continue
+        if not set(seed.initial_symbol_ids).issubset(visible_symbol_ids):
+            diagnostics.append(f"{seed.seed_id}:investigation_unknown_symbol")
+            continue
+        tools = tuple(tool for tool in seed.allowed_tools if tool in allowed_investigation_tools)
+        directional_tools = {
+            EvidenceNeed.INSPECT_PATH: {"inspect_path", "get_file_content"},
+            EvidenceNeed.INSPECT_CHANGE_IMPACT: {
+                "inspect_change_impact", "get_file_content"
+            },
+            EvidenceNeed.INSPECT_STRUCTURE: {
+                "inspect_structure", "get_file_content"
+            },
+        }.get(seed.evidence_need)
+        if directional_tools is not None:
+            tools = tuple(tool for tool in tools if tool in directional_tools)
+        if tools != seed.allowed_tools:
+            seed = seed.model_copy(update={"allowed_tools": tools})
+        if not tools:
+            diagnostics.append(f"{seed.seed_id}:investigation_no_allowed_tool")
+            continue
+        normalized_investigations.append(seed)
+        if len(normalized_investigations) >= max_seeds_per_reviewer:
+            diagnostics.append("investigation_seed_reviewer_limit")
+            break
     normalized_issues: list[CandidateSeed] = []
-    for seed in bind_seed_ids(result).issues:
+    for seed in result.issues:
         if not seed.mechanism.strip():
             seed = seed.model_copy(update={"mechanism": seed.claim})
             diagnostics.append(f"{seed.seed_id}:mechanism_filled_from_claim")
@@ -1088,7 +1162,12 @@ def run_direct_triage(
         max_seeds_per_reviewer=max_seeds_per_reviewer,
     )
     diagnostics.extend(budget_diagnostics)
-    return result.model_copy(update={"issues": tuple(selected_issues)}), tuple(diagnostics)
+    return result.model_copy(
+        update={
+            "issues": tuple(selected_issues),
+            "investigation_seeds": tuple(normalized_investigations),
+        }
+    ), tuple(diagnostics)
 
 
 def _needs_claim_style_repair(issues: tuple[CandidateSeed, ...]) -> bool:

@@ -73,11 +73,12 @@ public final class InspectPathTool implements AgentTool {
             return ToolResult.error("invalid_max_depth");
         }
         try {
+            GraphToolSupport.QueryOptions options = GraphToolSupport.queryOptions(input);
             ProjectSnapshot value = snapshot.load(name(), input);
             symbol = GraphToolSupport.canonicalSymbol(value, symbol);
             ToolResult result = pathKind.equals("security")
-                    ? securityPath(value, symbol, maxDepth)
-                    : behaviorPath(value, symbol, maxDepth);
+                    ? securityPath(value, symbol, maxDepth, options)
+                    : behaviorPath(value, symbol, maxDepth, options);
             return addPathKind(result, pathKind);
         } catch (Exception exception) {
             return ToolResult.error("graph_unavailable: " + exception.getMessage());
@@ -87,7 +88,8 @@ public final class InspectPathTool implements AgentTool {
     private static ToolResult behaviorPath(
             ProjectSnapshot value,
             String symbol,
-            int maxDepth
+            int maxDepth,
+            GraphToolSupport.QueryOptions options
     ) {
         SourceSet sourceScope = GraphToolSupport.sourceScope(value, symbol);
         Set<String> frontier = new LinkedHashSet<>(Set.of(symbol));
@@ -119,10 +121,15 @@ public final class InspectPathTool implements AgentTool {
         }
         List<GraphNode> nodes = nodesFor(value, symbol, relationships);
         return GraphToolSupport.facts(
-                value, symbol, nodes, relationships, List.of(), true, sourceScope);
+                value, symbol, nodes, relationships, List.of(), true, sourceScope, 0, options);
     }
 
-    private static ToolResult securityPath(ProjectSnapshot value, String symbol, int maxDepth) {
+    private static ToolResult securityPath(
+            ProjectSnapshot value,
+            String symbol,
+            int maxDepth,
+            GraphToolSupport.QueryOptions options
+    ) {
         SourceSet sourceScope = GraphToolSupport.sourceScope(value, symbol);
         List<GraphEdge> relationships = new ArrayList<>();
         int suppressedUnresolvedCount = 0;
@@ -160,7 +167,8 @@ public final class InspectPathTool implements AgentTool {
                 limits,
                 false,
                 sourceScope,
-                suppressedUnresolvedCount);
+                suppressedUnresolvedCount,
+                options);
     }
 
     private static List<GraphNode> nodesFor(

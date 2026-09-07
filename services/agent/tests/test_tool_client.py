@@ -84,6 +84,40 @@ def test_inspect_path_发送结构化_kind和深度():
     assert response.success is True
 
 
+def test_增量图查询发送_limit和cursor():
+    def handler(request: httpx.Request) -> httpx.Response:
+        query = json.loads(json.loads(request.content)["query"])
+        assert query == {
+            "symbol_id": "java:demo.Service#run()",
+            "path_kind": "behavior",
+            "max_depth": 2,
+            "limit": 10,
+            "cursor": "10",
+        }
+        return httpx.Response(200, json={"success": True, "result": "{}"})
+
+    response = _mock_client(handler).inspect_path(
+        "java:demo.Service#run()", "behavior", 2, limit=10, cursor="10"
+    )
+    assert response.success is True
+
+
+def test_影响面可选深度和续取保持旧纯字符串兼容():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(json.loads(request.content)["query"]) == {
+            "symbol_id": "java:demo.Service#run()",
+            "max_depth": 1,
+            "limit": 5,
+            "cursor": 0,
+        }
+        return httpx.Response(200, json={"success": True, "result": "{}"})
+
+    response = _mock_client(handler).inspect_change_impact(
+        "java:demo.Service#run()", max_depth=1, limit=5, cursor=0
+    )
+    assert response.success is True
+
+
 def test_graph_tool_发送前还原_html实体编码的_symbol_id():
     def handler(request: httpx.Request) -> httpx.Response:
         query = json.loads(json.loads(request.content)["query"])

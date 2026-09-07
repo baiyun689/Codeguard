@@ -191,6 +191,13 @@ def main(argv: list[str] | None = None) -> int:
             controlled_max_seeds_per_task=settings.controlled_max_seeds_per_task,
             controlled_max_knowledge_topics=settings.controlled_max_knowledge_topics,
             controlled_execute_concurrency=settings.controlled_execute_concurrency,
+            controlled_execution_mode=settings.controlled_execution_mode,
+            controlled_subtask_max_tool_calls=settings.controlled_subtask_max_tool_calls,
+            controlled_subtask_max_rounds=settings.controlled_subtask_max_rounds,
+            controlled_subtask_timeout_seconds=settings.controlled_subtask_timeout_seconds,
+            controlled_task_max_tool_calls=settings.controlled_task_max_tool_calls,
+            controlled_max_subtasks_per_reviewer=settings.controlled_max_subtasks_per_reviewer,
+            controlled_max_subtasks_per_task=settings.controlled_max_subtasks_per_task,
         )
 
         effective_thread_id = args.thread_id or str(uuid.uuid4())

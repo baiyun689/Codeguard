@@ -28,6 +28,14 @@ final class GraphToolSupport {
     private static final int MAX_UNRESOLVED_RELATIONSHIPS = 20;
     private static final int SCHEMA_VERSION = 2;
 
+    /** Optional bounded continuation parameters used by the incremental tools.
+     *  Legacy plain symbol requests keep the existing limits and semantics. */
+    record QueryOptions(int maxDepth, int limit, int cursor) {
+        static QueryOptions legacy() {
+            return new QueryOptions(0, MAX_RELATIONSHIPS, 0);
+        }
+    }
+
     private GraphToolSupport() {}
 
     private static long configuredBuildTimeoutSeconds() {
@@ -64,6 +72,25 @@ final class GraphToolSupport {
         return snapshot.graph().node(subject)
                 .map(GraphNode::sourceSet)
                 .orElse(SourceSet.MAIN);
+    }
+
+    static QueryOptions queryOptions(String input) {
+        if (input == null || input.isBlank() || !input.trim().startsWith("{")) {
+            return QueryOptions.legacy();
+        }
+        try {
+            JsonNode root = JSON.readTree(input);
+            int depth = positiveOrZero(root.path("max_depth").asInt(0), 3);
+            int limit = positiveOrZero(root.path("limit").asInt(MAX_RELATIONSHIPS), MAX_RELATIONSHIPS);
+            int cursor = positiveOrZero(root.path("cursor").asInt(0), 0);
+            return new QueryOptions(Math.min(depth, 3), Math.min(limit, MAX_RELATIONSHIPS), cursor);
+        } catch (Exception ignored) {
+            return QueryOptions.legacy();
+        }
+    }
+
+    private static int positiveOrZero(int value, int fallback) {
+        return value < 0 ? fallback : value;
     }
 
     /**
@@ -183,6 +210,80 @@ final class GraphToolSupport {
                 subjectAloneIsFact,
                 sourceScope,
                 0);
+    }
+
+    static ToolResult facts(
+            ProjectSnapshot snapshot,
+            String subject,
+            Collection<GraphNode> nodes,
+            Collection<GraphEdge> edges,
+            List<String> limitations,
+            boolean subjectAloneIsFact,
+            SourceSet sourceScope,
+            int suppressedUnresolvedCount,
+            QueryOptions options
+    ) {
+        try {
+            ObjectNode root = JSON.createObjectNode();
+            List<GraphNode> uniqueNodes = uniqueNodes(nodes);
+            List<GraphNode> primaryNodes = uniqueNodes.stream()
+                    .filter(node -> node.sourceSet() == sourceScope)
+                    .toList();
+            List<GraphEdge> primaryEdges = edges.stream()
+                    .filter(edge -> edge.sourceSet() == sourceScope)
+                    .toList();
+            List<GraphEdge> resolvedPrimaryEdges = resolved(primaryEdges);
+            List<GraphEdge> unresolvedPrimaryEdges = unresolved(primaryEdges);
+            int totalUnresolvedCount = unresolvedPrimaryEdges.size()
+                    + Math.max(0, suppressedUnresolvedCount);
+            int start = Math.min(Math.max(0, options.cursor()), resolvedPrimaryEdges.size());
+            int requestedLimit = options.limit() <= 0 ? MAX_RELATIONSHIPS : options.limit();
+            int end = Math.min(resolvedPrimaryEdges.size(), start + requestedLimit);
+            List<GraphEdge> pageEdges = resolvedPrimaryEdges.subList(start, end);
+            List<GraphNode> boundedPrimaryNodes = primaryNodes.stream().limit(MAX_SYMBOLS).toList();
+            List<GraphEdge> boundedUnresolvedEdges = unresolvedPrimaryEdges.stream()
+                    .limit(MAX_UNRESOLVED_RELATIONSHIPS).toList();
+            boolean pageTruncated = start > 0 || end < resolvedPrimaryEdges.size();
+            boolean nodeTruncated = boundedPrimaryNodes.size() < primaryNodes.size();
+            boolean subjectExists = snapshot.graph().node(subject).isPresent();
+            boolean found = !pageEdges.isEmpty()
+                    || (subjectAloneIsFact && !primaryNodes.isEmpty());
+            List<String> queryDiagnostics = queryDiagnostics(snapshot, subject, sourceScope);
+            boolean completeCoverage = subjectExists && !pageTruncated && !nodeTruncated
+                    && totalUnresolvedCount == 0 && queryDiagnostics.isEmpty();
+            String outcome = found ? "found" : (completeCoverage ? "not_found" : "indeterminate");
+            root.put("schema_version", SCHEMA_VERSION);
+            root.put("outcome", outcome);
+            root.put("coverage", completeCoverage ? "complete" : "partial");
+            root.put("source_scope", sourceScope.name());
+            root.put("snapshot_production_coverage", snapshot.productionComplete() ? "complete" : "partial");
+            root.put("snapshot_main_coverage", snapshot.coverageStatus(SourceSet.MAIN));
+            root.put("snapshot_test_coverage", snapshot.coverageStatus(SourceSet.TEST));
+            root.put("snapshot_generated_coverage", snapshot.coverageStatus(SourceSet.GENERATED));
+            root.put("subject_symbol_id", subject);
+            root.set("symbols", JSON.valueToTree(boundedPrimaryNodes));
+            root.set("relationships", JSON.valueToTree(pageEdges));
+            root.set("unresolved_relationships", JSON.valueToTree(boundedUnresolvedEdges));
+            root.put("unresolved_count", totalUnresolvedCount);
+            root.put("cursor", start);
+            if (end < resolvedPrimaryEdges.size()) {
+                root.put("next_cursor", end);
+            } else {
+                root.putNull("next_cursor");
+            }
+            ArrayNode allLimitations = root.putArray("limitations");
+            queryDiagnostics.forEach(allLimitations::add);
+            limitations.forEach(allLimitations::add);
+            if (!subjectExists) allLimitations.add("subject_not_found");
+            if (totalUnresolvedCount > 0) allLimitations.add("unresolved_relationships:" + totalUnresolvedCount);
+            if (suppressedUnresolvedCount > 0) {
+                allLimitations.add("unresolved_relationships_suppressed:" + suppressedUnresolvedCount);
+            }
+            if (pageTruncated || nodeTruncated) allLimitations.add("result_truncated");
+            return ToolResult.ok(JSON.writeValueAsString(root));
+        } catch (Exception exception) {
+            return ToolResult.error("graph_result_error: " + exception.getMessage());
+        }
     }
 
     static ToolResult facts(
