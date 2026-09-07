@@ -83,12 +83,12 @@ Phase 2 最小样本包括：删除 `@PreAuthorize`、新增 repository update�
 (`manifest.yaml + cases/<case_id>/`,含 planted-bugs.diff 与 checkpoint 数据)。
 
 `selected-20-v2` 的正式评测口径是当前启用 case 的 `case.yaml` 中的 `expected`，共 76 条已确认问题。
-所有启用用例均设置 `evidence_required: true`，每条标准答案通过 `evidence_anchors` 声明可接受的源码文件、行号或 symbol 位置；
+所有启用用例均保留 `evidence_required: true` 与 `evidence_anchors` 元数据，用于统计报告中的证据覆盖情况；
 位置清单同时保存在受版本控制的 [`selected-20-v2-evidence.yaml`](selected-20-v2-evidence.yaml) 中，
 加载器只允许用 case.yaml 的显式人工标注覆盖清单，不再自动把变更行伪装成证据；缺少锚点的标答直接拒绝加载。
-其中标记 `evidence_scope: cross_file` 的问题还必须出现变更文件之外的已验证来源或调用路径。评测只读取最终
-`Issue.evidence_locations` 做锚点校验，`root_cause` 仅是由已验证位置生成的展示文本，不读取内部 Txx/Cxx 编号。语义和位置看似命中但没有
-满足证据门槛的报告同时计为一次 FN 和一次无证据 FP，因此不能靠 diff 经验猜测获得 Recall。
+其中标记 `evidence_scope: cross_file` 的问题仍会在证据覆盖诊断中检查变更文件之外的来源或调用路径。评测命中只读取
+文件、行号和类型/语义匹配；`Issue.evidence_locations` 与 `root_cause` 不再阻断 TP/FN/FP，内部 Txx/Cxx 编号也不参与评分。
+没有来源的位置会记录为“无证据命中”，但仍保留语义命中结果。
 无工具 Direct 基线最多只有 `changed_code` 位置，不会伪装成已验证的跨文件根因。
 `cases/_bugs_gt.json` 是从启用 case 的 `planted-bugs.diff` 按 hunk 生成的 87 条变更区域诊断记录，包含未单独确认的
 附带改动，只用于旧的 hunk/跨文件分析，不作为正式 Recall 分母。`recall_analyzer` 默认使用正式标答；
@@ -109,8 +109,8 @@ Phase 2 最小样本包括：删除 `@PreAuthorize`、新增 repository update�
 | 误报率 | clean 样本 FP 总数 / clean 样本数 | 干净代码上平均误报几个 |
 | 定位准确率 | 命中项里行号对上的比例 | `Issue.line` 准不准 |
 | 级别准确率 | 命中项里 severity 对上的比例 | 严重级别判得准不准 |
-| 证据覆盖率 | 有证据要求的标答中，提供可接受来源位置的比例 | 报告是否给出可复核的源码/symbol 来源 |
-| 无证据命中 | 语义/位置命中但未满足锚点的数量 | 这类项同时计 FN + FP，不进入 Recall |
+| 证据覆盖率 | 已配对标答中，提供可接受来源位置的比例 | 报告是否给出可复核的源码/symbol 来源（诊断指标） |
+| 无证据命中 | 已配对但未满足锚点的数量 | 只作证据诊断，不影响 TP/FN/FP |
 
 ### 行为诊断指标族(复杂用例)
 
@@ -148,8 +148,8 @@ expected:                   # 标准答案;clean 样本留空 []
     tolerance: 3            # 行号容差
     severity: CRITICAL      # 可选,仅统计级别准确率
     note: 给人看的说明
-    evidence_anchors: ["X.java:13"]  # 最终报告来源位置必须命中其一
-    evidence_scope: local             # cross_file 时还必须有变更文件之外的来源/路径
+    evidence_anchors: ["X.java:13"]  # 用于证据覆盖诊断，不阻断问题命中
+    evidence_scope: local             # cross_file 时用于诊断跨文件来源/路径
 ```
 
 ## 复杂用例与诱饵(量"复杂场景下的行为")
@@ -223,8 +223,8 @@ expected:
 
 一条报告命中一条标准答案需同时满足:**文件名对上** + **行号在容差内** + **类型关键词命中其一**。
 开 `--judge` 时,规则命中的项再过一遍 LLM 语义复核,判定语义不符则不算命中,并给质量打分。
-若用例或标答设置了证据门槛，还必须由运行时从已验证 Artifact 生成的 `evidence_locations`（根因文本只是其派生展示）
-命中 `evidence_anchors`；`cross_file` 还要求至少一个 `root_cause/related_path` 来源不只是变更代码。
+`--judge` 只负责案例级语义配对，不会改变证据诊断口径。`evidence_locations`（根因文本只是其派生展示）继续用于报告和
+人工复核，但不再要求命中 `evidence_anchors` 才能计入 Recall；`cross_file` 的来源要求同样只作为诊断统计。
 最终用户报告只展示文件、symbol、行号和关系，不展示内部证据编号；完整原文仍保留在 Trace/Evidence Ledger。
 
 ## 模块

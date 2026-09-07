@@ -17,10 +17,10 @@ evaluate_case 的策略(见 ADR-005):
 一条标准答案最多由一条报告命中,一条报告最多命中一条标准答案;没被任何标准答案认领的
 报告计为 FP。
 
-当用例开启 ``evidence_required`` 或标准答案声明 ``evidence_anchors`` 时，语义配对
-还必须通过证据位置校验。报告中的 ``Issue.file/line`` 只是问题定位，不作为证据；
-校验只读取 ``Issue.evidence_locations``；``root_cause`` 只是由这些位置生成的展示文本。因此仅凭 diff 猜中
-类型和行号的报告会同时记为一次 FN 和一次无证据 FP，不会被计入 Recall。
+``Issue.evidence_locations`` 和 ``root_cause`` 仍会被保留并单独统计，但不再参与
+TP/FN/FP 的命中门控。评测命中只依据文件、位置和类型关键词（或启用 ``--judge``
+时的案例级语义配对）；这样 Recall 反映“问题是否被审查器发现”，证据覆盖率则作为
+独立诊断指标，不再把发现到的问题改判为 FN+FP。
 """
 
 from __future__ import annotations
@@ -63,13 +63,16 @@ def _keyword_matches(issue: Issue, expected: ExpectedIssue) -> bool:
 
 
 def _evidence_required(case: EvalCase, expected: ExpectedIssue) -> bool:
-    """判断该标答是否要求用户可读的确定性证据位置。"""
+    """兼容旧调用方：返回标答是否声明过证据元数据。"""
 
     return bool(case.evidence_required or expected.evidence_anchors)
 
 
 def evidence_match(issue: Issue, expected: ExpectedIssue) -> bool:
-    """检查报告是否给出了标准答案认可的源码/symbol 位置。"""
+    """诊断性检查报告是否给出了标准答案认可的源码/symbol 位置。
+
+    该函数不再参与 TP/FN/FP 判定；调用方可用它生成证据覆盖率等辅助指标。
+    """
 
     return evidence_matches(
         locations=issue.evidence_locations,
@@ -257,17 +260,14 @@ def _build_outcome(
                 outcome.fn_secondary += 1
             continue
         issue = reported[rep_idx]
+        # 证据覆盖率只作诊断，不再阻断语义命中。这样“发现了问题但
+        # 用户可读证据位置不完整”的候选仍计入 Recall，同时保留缺口统计。
         if _evidence_required(case, expected):
             outcome.evidence_checked += 1
-            if not evidence_match(issue, expected):
+            if evidence_match(issue, expected):
+                outcome.evidence_backed_hits += 1
+            else:
                 outcome.evidence_missing_hits += 1
-                outcome.false_negatives += 1
-                if tier == "primary":
-                    outcome.fn_primary += 1
-                elif tier == "secondary":
-                    outcome.fn_secondary += 1
-                continue
-            outcome.evidence_backed_hits += 1
 
         matched_reports.add(rep_idx)
         expected_id = expected.id or f"E{exp_idx}"

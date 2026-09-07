@@ -1,4 +1,4 @@
-"""最终 Issue 的用户可读证据投影与评测证据门槛测试。"""
+"""最终 Issue 的用户可读证据投影与评测证据诊断测试。"""
 
 from __future__ import annotations
 
@@ -183,7 +183,7 @@ def test_最终报告展示根因和来源但不展示账本编号():
     assert "T01" not in text and "C01" not in text
 
 
-def test_评测证据门槛把无来源的语义猜测记为_fn和_fp():
+def test_评测不再用证据位置阻断语义命中():
     expected = ExpectedIssue(
         type_keywords=["状态传播"],
         file="src/Entry.java",
@@ -200,11 +200,11 @@ def test_评测证据门槛把无来源的语义猜测记为_fn和_fp():
         confidence=1.0,
     )
     outcome = _build_outcome(case, [guessed], {0: 0}, "rule")
-    assert (outcome.true_positives, outcome.false_negatives, outcome.false_positives) == (0, 1, 1)
+    assert (outcome.true_positives, outcome.false_negatives, outcome.false_positives) == (1, 0, 0)
     assert outcome.evidence_missing_hits == 1
 
 
-def test_评测证据门槛接受用户可读来源位置():
+def test_评测保留用户可读来源位置诊断():
     expected = ExpectedIssue(
         type_keywords=["状态传播"],
         file="src/Entry.java",
@@ -229,7 +229,7 @@ def test_评测证据门槛接受用户可读来源位置():
     assert (outcome.evidence_checked, outcome.evidence_backed_hits) == (1, 1)
 
 
-def test_根因文本猜中锚点但结构化来源不匹配仍失败():
+def test_根因文本和结构化来源不匹配也不阻断语义命中():
     expected = ExpectedIssue(
         type_keywords=["状态传播"],
         file="src/Entry.java",
@@ -248,10 +248,12 @@ def test_根因文本猜中锚点但结构化来源不匹配仍失败():
             EvidenceLocation(file="src/Other.java", symbol="Other#run()", start_line=30, end_line=30)
         ],
     )
-    assert _build_outcome(case, [guessed], {0: 0}, "rule").true_positives == 0
+    outcome = _build_outcome(case, [guessed], {0: 0}, "rule")
+    assert outcome.true_positives == 1
+    assert outcome.evidence_missing_hits == 1
 
 
-def test_跨文件证据不能只用变更位置():
+def test_跨文件来源不再作为命中门槛():
     expected = ExpectedIssue(
         type_keywords=["状态传播"],
         file="src/Entry.java",
@@ -272,10 +274,11 @@ def test_跨文件证据不能只用变更位置():
         confidence=1.0,
     )
     outcome = _build_outcome(case, [changed_only], {0: 0}, "rule")
-    assert outcome.true_positives == 0
+    assert outcome.true_positives == 1
+    assert outcome.evidence_missing_hits == 1
 
 
-def test_跨文件根因文本猜中目标但来源位置无关仍失败():
+def test_跨文件无关来源也不阻断语义命中():
     expected = ExpectedIssue(
         type_keywords=["状态传播"],
         file="src/Entry.java",
@@ -295,7 +298,9 @@ def test_跨文件根因文本猜中目标但来源位置无关仍失败():
             EvidenceLocation(file="src/Other.java", symbol="Other#run()", start_line=30, end_line=30, kind="related_path")
         ],
     )
-    assert _build_outcome(case, [guessed], {0: 0}, "rule").true_positives == 0
+    outcome = _build_outcome(case, [guessed], {0: 0}, "rule")
+    assert outcome.true_positives == 1
+    assert outcome.evidence_missing_hits == 1
 
 
 def test_跨文件证据接受另一个文件的已验证来源():

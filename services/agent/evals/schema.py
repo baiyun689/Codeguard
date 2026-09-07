@@ -62,9 +62,9 @@ class ExpectedIssue(BaseModel):
       1. 文件名对得上(按 basename 或后缀);
       2. 行号落在 [line - tolerance, line + tolerance] 内(line=0 时跳过行号判定);
       3. 报告的 type/message 命中 type_keywords 里任一关键词(忽略大小写)。
-    当所属 EvalCase.evidence_required=true 时，还必须在报告的用户可读
-    evidence_locations 中命中 evidence_anchors；只有有明确来源位置的
-    报告才计入 TP。
+    evidence_anchors / evidence_scope 仍保留为证据覆盖率的诊断元数据；
+    当前评测不再用它们阻断 TP/FN/FP 命中。是否给出了可复核来源，
+    由 evidence_coverage 和 evidence_missing_hits 单独反映。
     """
 
     id: str = Field(default="", description="标答在用例内的稳定 ID")
@@ -139,7 +139,7 @@ class EvalCase(BaseModel):
     difficulty: str = Field(default="standard", description="难度或能力场景标签")
     evidence_required: bool = Field(
         default=False,
-        description="是否要求最终报告提供命中的用户可读证据位置；selected-20-v2 开启",
+        description="历史兼容字段；当前只控制证据诊断统计，不影响 TP/FN/FP",
     )
     provenance: CaseProvenance = Field(default_factory=CaseProvenance)
     diff: str = Field(description="unified diff 文本,喂给审查管线的输入")
@@ -356,15 +356,15 @@ class MatchOutcome(BaseModel):
     false_positives: int = Field(default=0, description="报了但对不上任何标准答案的数量")
     evidence_checked: int = Field(
         default=0,
-        description="参与证据位置校验的标准答案命中候选数",
+        description="参与证据位置诊断的标准答案命中候选数",
     )
     evidence_backed_hits: int = Field(
         default=0,
-        description="同时满足问题匹配与证据锚点匹配的数量",
+        description="已配对且证据位置命中锚点的数量（不影响 TP/FN/FP）",
     )
     evidence_missing_hits: int = Field(
         default=0,
-        description="问题语义命中但缺少明确证据位置的数量",
+        description="已配对但未命中证据锚点的数量（不影响 TP/FN/FP）",
     )
     expected_total: int = Field(default=0, description="该用例标准答案总数")
     reported_total: int = Field(default=0, description="该用例报告问题总数")

@@ -159,7 +159,7 @@ def aggregate(runs: list[list[MatchOutcome]]) -> AggregateMetrics:
     localization_acc = _safe_div(loc_hits, loc_checked)
     severity_acc = _safe_div(sev_hits, sev_checked)
 
-    # 证据覆盖率:只统计开启证据门槛的标答配对,不把“猜中了但没有来源”算 TP。
+    # 证据覆盖率:只统计开启证据诊断的标答配对,不参与 TP/FN/FP。
     evidence_checked = sum(o.evidence_checked for run in runs for o in run)
     evidence_backed = sum(o.evidence_backed_hits for run in runs for o in run)
     evidence_missing_hits = sum(o.evidence_missing_hits for run in runs for o in run)

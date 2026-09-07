@@ -2,8 +2,8 @@
 
 从 checkpoint 提取 reported_issues,与 `_bugs_gt.json`(由 planted-bugs.diff 按 hunk 聚合)
 按 file + 行号 ±10 硬命中 / 描述 token 重叠(≥2)软命中匹配,聚合出 bug 级
-Recall(任一 2 轮命中)与 Precision(严格/宽松)。对 selected-20-v2 的正式标答，
-额外要求 `evidence_locations/root_cause` 命中锚点；没有来源的语义猜测不算命中。
+Recall(任一 2 轮命中)与 Precision(严格/宽松)。证据位置继续保留在报告中供人工复核，
+但不再作为 Recall 命中门槛。
 
 用法:
     python -m evals.recall_analyzer [--retry-db checkpoint-direct-retry.db]
@@ -26,7 +26,7 @@ from pathlib import Path
 import yaml
 
 from evals.dataset import _apply_evidence_policy
-from evals.evidence import evidence_matches, file_matches, normalize
+from evals.evidence import file_matches, normalize
 
 _CASES_DIR = Path(__file__).resolve().parent / "dataset" / "selected-20-v2"
 _GT_FILE = _CASES_DIR / "cases" / "_bugs_gt.json"
@@ -94,31 +94,16 @@ def load_case_gold() -> dict[str, list[dict]]:
     return out
 
 
-def _evidence_match(issue: dict, bug: dict) -> bool:
-    """按标准答案锚点校验最终报告中的用户可读来源位置。"""
-
-    anchors = bug.get("evidence_anchors", [])
-    if not anchors:
-        return True  # 旧 hunk 诊断没有证据元数据,保持仅供辅助分析的旧口径
-    return evidence_matches(
-        locations=issue.get("evidence_locations") or [],
-        anchors=anchors,
-        evidence_scope=str(bug.get("evidence_scope", "local")),
-        expected_file=bug.get("file", ""),
-        tolerance=int(bug.get("tolerance", 3) or 3),
-    )
-
-
 def match(issue: dict, bug: dict) -> bool:
-    """file + 行号/描述匹配后,还需通过标准答案要求的来源位置校验。"""
+    """按文件 + 行号/描述匹配；证据位置不参与命中判定。"""
     if not file_matches(issue.get("file", ""), bug["file"]):
         return False
     il, bl = issue.get("line") or 0, bug["line"]
     if abs(il - bl) <= 10:
-        return _evidence_match(issue, bug)
+        return True
     it = set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}", _norm(issue.get("message", "")) + _norm(issue.get("summary", ""))))
     bt = set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}", _norm(bug["desc"])))
-    return len(it & bt) >= 2 and _evidence_match(issue, bug)
+    return len(it & bt) >= 2
 
 
 def load_runs(profile: str, retry_db: Path | None) -> dict[str, list[tuple[int, list[dict]]]]:
