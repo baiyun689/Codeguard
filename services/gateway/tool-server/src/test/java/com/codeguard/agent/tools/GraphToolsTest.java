@@ -695,4 +695,43 @@ class GraphToolsTest {
         assertTrue(result.isSuccess(), result.getError());
         assertTrue(result.getResult().contains("helper()"), result.getResult());
     }
+
+    @Test
+    void lazyStructureResolvesOverrideAgainstProjectIndex(@TempDir Path repo)
+            throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        // The child file sorts before the parent file. Lazy expansion parses
+        // the child independently, so override resolution must consult the
+        // complete declaration index instead of file-local nodes.
+        Files.writeString(root.resolve("AChild.java"), """
+                package demo;
+                public class AChild extends ZParent {
+                    @Override
+                    public void run() {}
+                }
+                """);
+        Files.writeString(root.resolve("ZParent.java"), """
+                package demo;
+                public class ZParent {
+                    public void run() {}
+                }
+                """);
+
+        ProjectSnapshotManager manager = new ProjectSnapshotManager();
+        var provider = manager.lazyProvider(ProjectKey.of(repo, "lazy-override-index"));
+        ToolResult result = new InspectStructureTool(provider).execute(
+                "java:demo.AChild#run()", new AgentContext(repo));
+        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
+
+        assertTrue(result.isSuccess(), result.getError());
+        assertTrue(payload.path("relationships").toString().contains(
+                "java:demo.ZParent#run()"), result.getResult());
+        assertTrue(payload.path("relationships").toString().contains(
+                "\"kind\":\"OVERRIDES\""), result.getResult());
+        assertTrue(payload.path("relationships").toString().contains(
+                "\"resolution\":\"RESOLVED\""), result.getResult());
+        assertTrue(payload.path("symbols").toString().contains(
+                "java:demo.ZParent#run()"), result.getResult());
+    }
 }

@@ -50,13 +50,14 @@ TOOL_PROOF_CONTRACTS: dict[str, ToolProofContract] = {
     "inspect_path": ToolProofContract(
         name="inspect_path",
         can_prove=(
-            "bounded downstream complete paths",
-            "relationship sequence",
-            "resolved behavior or security propagation paths",
+            "bounded downstream relationship facts",
+            "behavior complete paths when path_kind=behavior",
+            "sensitive call hits when path_kind=security",
         ),
         cannot_prove=(
             "path absence",
             "upstream callers",
+            "complete security data-flow or parameter propagation",
             "business impact by itself",
         ),
         required_arguments=("symbol_id", "path_kind", "max_depth"),

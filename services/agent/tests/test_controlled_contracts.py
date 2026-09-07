@@ -327,8 +327,11 @@ def test_proof_matcher_does_not_combine_disconnected_target_and_relationship():
 def test_proof_contracts_are_machine_readable():
     contract = get_tool_proof_contract("inspect_path")
     assert contract is not None
-    assert "bounded downstream complete paths" in contract.can_prove
+    assert "bounded downstream relationship facts" in contract.can_prove
+    assert "behavior complete paths when path_kind=behavior" in contract.can_prove
+    assert "sensitive call hits when path_kind=security" in contract.can_prove
     assert "path absence" in contract.cannot_prove
+    assert "complete security data-flow or parameter propagation" in contract.cannot_prove
     assert contract.required_arguments == ("symbol_id", "path_kind", "max_depth")
 
 

@@ -59,9 +59,9 @@ def make_path_tool(client: ToolClient):
         name="inspect_path",
         description=(
             "按 symbol_context 给出的稳定 symbol_id 查询有界下游路径。"
-            "path_kind=behavior 查询有界下游调用并附带字段访问、继承实现和框架入口事实；"
-            "path_kind=security 在有界下游遍历中返回敏感调用命中及起始 symbol 的入口线索，"
-            "不表示完整数据流或连通路径。"
+            "path_kind=behavior 查询有界下游调用，并保留完整的已解析 CALLS 路径及附属关系事实；"
+            "path_kind=security 只返回有界遍历中发现的敏感调用命中和入口线索，"
+            "不表示从起点到敏感调用的完整连通路径，也不证明参数污染或数据流传播。"
             "path_kind 只能是 behavior 或 security，max_depth 默认 3、最大 3。"
             "不得自行编造 symbol_id 或文件名。"
         ),

@@ -378,9 +378,6 @@ final class ProjectSnapshotBuilder {
                 edges.add(edge(owner, id, GraphEdgeKind.DECLARES, file, method,
                         ResolutionStatus.RESOLVED, "java-ast"));
                 addAnnotationEdges(edges, id, method, file);
-                if (method.getAnnotationByName("Override").isPresent()) {
-                    addOverrideEdges(nodes, edges, method, id, file);
-                }
                 addFrameworkNodes(nodes, edges, method, id, file);
             }
             for (ConstructorDeclaration constructor : unit.findAll(ConstructorDeclaration.class)) {
@@ -412,6 +409,24 @@ final class ProjectSnapshotBuilder {
                         }
                     }
                 });
+            }
+        });
+
+        // Resolve override edges only after every method node has been indexed.
+        // The previous inline resolution depended on filesystem iteration
+        // order: when a subclass file was visited before its parent file, an
+        // otherwise valid parent method was permanently marked UNRESOLVED.
+        // That hid the parent endpoint from the graph projection and blocked
+        // the controlled replan from reading the actual implementation.
+        units.forEach((file, unit) -> {
+            for (MethodDeclaration method : unit.findAll(MethodDeclaration.class)) {
+                if (!method.getAnnotationByName("Override").isPresent()) {
+                    continue;
+                }
+                String id = symbolIds.get(method);
+                if (id != null) {
+                    addOverrideEdges(nodes, edges, method, id, file);
+                }
             }
         });
 
@@ -810,7 +825,41 @@ final class ProjectSnapshotBuilder {
         if (unit == null) {
             throw new IllegalStateException("semantic parse failed: " + file);
         }
-        return extractGraph(Map.of(file, unit)).edges();
+        return resolveIndexedOverrideTargets(index, extractGraph(Map.of(file, unit)).edges());
+    }
+
+    /**
+     * A lazy expansion parses one source file at a time, so an override edge
+     * cannot rely on the nodes collected by that file-local extraction. The
+     * lightweight index already contains all project declarations; use it to
+     * upgrade an exact override target from UNRESOLVED to RESOLVED without
+     * inventing a symbol or re-scanning another file.
+     */
+    private static List<GraphEdge> resolveIndexedOverrideTargets(
+            ProjectSnapshot index,
+            List<GraphEdge> edges
+    ) {
+        return edges.stream()
+                .map(edge -> {
+                    if (edge.kind() != GraphEdgeKind.OVERRIDES
+                            || edge.resolution() == ResolutionStatus.RESOLVED) {
+                        return edge;
+                    }
+                    String target = canonicalNodeId(index, edge.targetId());
+                    if (index.graph().node(target).isEmpty()) {
+                        return edge;
+                    }
+                    return new GraphEdge(
+                            edge.sourceId(),
+                            target,
+                            edge.kind(),
+                            edge.file(),
+                            edge.line(),
+                            edge.sourceSet(),
+                            ResolutionStatus.RESOLVED,
+                            edge.extractor());
+                })
+                .toList();
     }
 
     private static void ensureNotInterrupted() throws InterruptedException {

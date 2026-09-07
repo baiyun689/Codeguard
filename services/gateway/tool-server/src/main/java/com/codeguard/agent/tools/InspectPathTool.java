@@ -20,7 +20,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
-/** 有界下游路径工具：行为执行路径或安全 source-to-sink 路径。 */
+/** 有界下游事实工具：行为调用路径或安全敏感调用命中。 */
 public final class InspectPathTool implements AgentTool {
     private static final int DEFAULT_MAX_DEPTH = 3;
     private static final List<String> SENSITIVE_TERMS = List.of(
@@ -44,9 +44,9 @@ public final class InspectPathTool implements AgentTool {
 
     @Override
     public String description() {
-        return "按稳定 symbol_id 查询有界下游路径。path_kind=behavior 查询 callee、"
-                + "callback、listener、接口实现和状态读写；path_kind=security 查询输入源、"
-                + "传播、防护和敏感 sink。path_kind 只能是 behavior 或 security。";
+        return "按稳定 symbol_id 查询有界下游事实。path_kind=behavior 返回完整的已解析 CALLS "
+                + "路径及附属关系；path_kind=security 只返回敏感调用命中和入口线索，"
+                + "不表示完整连通路径、参数污染或数据流传播。path_kind 只能是 behavior 或 security。";
     }
 
     @Override
