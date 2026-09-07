@@ -288,6 +288,30 @@ def test_security_hint_on_neutral_structure_seed_does_not_split_investigation():
     assert groups[0].seed.path_kind is None
 
 
+def test_reviewer_local_risk_labels_do_not_duplicate_same_investigation():
+    behavior = _seed().model_copy(update={
+        "evidence_need": EvidenceNeed.INSPECT_STRUCTURE,
+        "allowed_tools": ("inspect_structure", "get_file_content"),
+        "risk_dimension": "state_consistency",
+        "observed_change": "删除 super.parseFromLocalFileData 调用",
+        "investigation_question": "检查父类初始化状态是否丢失",
+    })
+    threat = behavior.model_copy(update={
+        "seed_id": "investigation-threat-risk-label",
+        "reviewer": ReviewerKind.THREAT_MODEL,
+        "risk_dimension": "input_validation",
+    })
+    groups = group_investigation_seeds({
+        ReviewerKind.BEHAVIOR: (behavior,),
+        ReviewerKind.THREAT_MODEL: (threat,),
+    })
+    assert len(groups) == 1
+    assert set(groups[0].seed_ids) == {
+        behavior.seed_id,
+        threat.seed_id,
+    }
+
+
 def test_same_anchor_structure_and_path_seeds_merge_into_one_coherent_investigation():
     path_seed = _seed().model_copy(
         update={

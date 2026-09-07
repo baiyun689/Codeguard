@@ -134,8 +134,15 @@ def _contracts_compatible(
             return False
         if (left_kind is None) != (right_kind is None):
             return False
+    # Risk labels are reviewer-local vocabulary.  The same behavior concern
+    # is commonly called ``input_validation`` by ThreatModel and
+    # ``state_consistency`` by Behavior; using that label as a cross-reviewer
+    # merge barrier would recreate one React per reviewer.  It remains useful
+    # inside a single reviewer to keep genuinely different risk questions
+    # apart when their wording happens to share an anchor.
     if (
-        left.risk_dimension.strip()
+        left.reviewer is right.reviewer
+        and left.risk_dimension.strip()
         and right.risk_dimension.strip()
         and left.risk_dimension.strip().lower()
         != right.risk_dimension.strip().lower()
