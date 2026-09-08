@@ -102,17 +102,45 @@ public final class GetFileContentTool implements AgentTool {
             if (requestedStart <= 0 && cursor > 0) {
                 requestedStart = cursor;
             }
+            // A continuation cursor beyond the declaration is a normal end
+            // condition, not a malformed range.  Returning a small terminal
+            // marker lets a bounded React stop instead of retrying the same
+            // impossible read with larger ranges/cursors.
+            if (cursor > 0 && cursor > fullRange.endLine()) {
+                StringBuilder terminal = new StringBuilder();
+                terminal.append("symbol_id: ").append(symbol.id()).append('\n');
+                terminal.append("kind: ").append(symbol.kind().name()).append('\n');
+                terminal.append("file: ").append(symbol.file()).append('\n');
+                terminal.append("end_of_symbol: true\n");
+                return ToolResult.ok(terminal.toString());
+            }
             boolean ranged = requestedStart > 0 || requestedEnd > 0 || cursor > 0;
             SourceRange range = fullRange;
             if (ranged) {
-                int start = requestedStart > 0 ? requestedStart : fullRange.startLine();
-                int end = requestedEnd > 0 ? requestedEnd : fullRange.endLine();
-                start = Math.max(fullRange.startLine(), start);
-                end = Math.min(fullRange.endLine(), end);
-                if (end < start) {
-                    return ToolResult.error("invalid_source_range: " + symbolId);
+                // Models sometimes infer a stale line range that ends just
+                // before a declaration (for example 1-69 for a method whose
+                // declaration starts at 70).  Treat that as a request for the
+                // first bounded portion of the known symbol, not as a
+                // transport failure.  The source reader remains symbol-scoped
+                // and never falls back to an arbitrary file read.
+                if (requestedEnd > 0 && requestedEnd < fullRange.startLine()
+                        && requestedStart <= fullRange.startLine()) {
+                    int end = Math.min(
+                            fullRange.endLine(),
+                            fullRange.startLine() + MAX_SOURCE_LINES - 1);
+                    range = SourceRange.fromLines(fullRange.startLine(), end);
+                } else {
+                    int start = requestedStart > 0
+                            ? requestedStart : fullRange.startLine();
+                    int end = requestedEnd > 0
+                            ? requestedEnd : fullRange.endLine();
+                    start = Math.max(fullRange.startLine(), start);
+                    end = Math.min(fullRange.endLine(), end);
+                    if (end < start) {
+                        return ToolResult.error("invalid_source_range: " + symbolId);
+                    }
+                    range = SourceRange.fromLines(start, end);
                 }
-                range = SourceRange.fromLines(start, end);
             }
             if (range.endLine() < range.startLine()) {
                 return ToolResult.error("symbol_range_unavailable: " + symbolId);

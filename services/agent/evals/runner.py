@@ -259,6 +259,14 @@ def run_once(
 _AGENT_MISUSE_MARKERS = (
     "文件类型不可读", "仅限源码文件", "不在白名单", "不允许访问",
     "文件不存在", "not allowed", "not in whitelist", "sandbox",
+    # The model may probe a stale continuation/range or emit a limit outside
+    # the typed tool contract.  Gateway rejects these safely; they are agent
+    # misuse warnings, not infrastructure failures that invalidate a strict
+    # tool run.
+    "invalid_source_range", "invalid_relation_page", "invalid_page",
+    "source_range_too_large", "symbol_too_large",
+    "relation_not_allowed", "relation_direction_not_allowed",
+    "symbol_ref_not_in_review_context", "unsupported_relation",
 )
 
 # 基础设施降级类失败:图谱/上下文/超时/网络,评测失真,严格评测必须中断。

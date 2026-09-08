@@ -786,6 +786,16 @@ class CoordinatedDiscoveryToolClient:
         raw_symbol_id = self._resolve_symbol_ref(subject_symbol_id)
         if raw_symbol_id is None:
             return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
+        # Compatible tool-calling models occasionally emit an exploratory
+        # limit/depth outside the Gateway contract.  Clamp those values at
+        # the Python boundary so a harmless over-request cannot consume a
+        # budget slot as an infrastructure failure; the effective values are
+        # also what enters the canonical cache/evidence key.
+        try:
+            depth = max(1, min(3, int(depth)))
+            limit = max(1, min(200, int(limit)))
+        except (TypeError, ValueError):
+            return ToolResponse(success=False, error="invalid_relation_page")
         if relation not in {
             "callers", "callees", "field_readers", "field_writers",
             "implementations", "overrides",

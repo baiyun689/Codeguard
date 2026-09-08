@@ -1791,7 +1791,13 @@ def _controlled_review_node(
     tool_client=None,
     *,
     execute_concurrency: int = 3,
-    controlled_execution_mode: str = "subtask_react",
+    # Keep direct unit-test/caller invocations on the historical fixed-step
+    # executor unless the graph builder explicitly supplies the configured
+    # mode.  The public graph/orchestrator default is still ``subtask_react``;
+    # this narrow compatibility default prevents legacy callers that construct
+    # the node directly from being silently switched to a different provider
+    # contract.
+    controlled_execution_mode: str = "planned_steps",
     subtask_max_tool_calls: int = 20,
     subtask_max_rounds: int = 12,
     subtask_timeout_seconds: int = 120,
