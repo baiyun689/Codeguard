@@ -267,6 +267,10 @@ _AGENT_MISUSE_MARKERS = (
     "source_range_too_large", "symbol_too_large",
     "relation_not_allowed", "relation_direction_not_allowed",
     "symbol_ref_not_in_review_context", "unsupported_relation",
+    # A bounded subtask may be closed after repeated probes return no new
+    # facts.  The coordinator rejects later calls deliberately; this is an
+    # agent-level termination signal, not a Gateway/infrastructure failure.
+    "subtask_no_progress",
 )
 
 # 基础设施降级类失败:图谱/上下文/超时/网络,评测失真,严格评测必须中断。

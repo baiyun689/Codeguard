@@ -15,9 +15,14 @@
 3. 需要理解条件、异常、返回值或状态传播时调用 `read_symbol`；
 4. 结果已经满足 required_facts、出现明确反驳或没有预算时立即停止。
 
-如果工具返回 `subtask_tool_budget_exceeded`，这不是新的事实，也不是“没有问题”的证明。
-立即停止工具调用并输出 `InvestigationResult`；若已有 observation 能直接证明机制才输出
-`findings`，否则输出 `inconclusive`。不要再次尝试同一参数、换别名或调用未授权工具。
+每次工具返回后，必须先判断本轮是否新增了至少一个关系、已解析 symbol、源码片段或决定性反驳事实。
+仅改变 `depth`、`limit`、`cursor`、行号写法或 alias，而返回集合没有新增事实，均视为“无进展”。
+同一工具对应的 symbol/关系前沿连续两次无进展后，调查已经到达该前沿的当前可见事实边界：立即停止调用工具并输出唯一的
+`InvestigationResult`，不得再尝试第三种参数、换 alias 或改查另一个方向。
+
+如果工具返回 `subtask_tool_budget_exceeded`、`subtask_no_progress` 或包含“已自动停止调查”的终止提示，
+这不是新的事实，也不是“没有问题”的证明。立即输出 `InvestigationResult`；若已有 observation 能直接证明机制才输出
+`findings`，否则输出 `inconclusive`。不得继续调用工具、不得把终止原因写成 `no_finding`。
 
 `query_relations` 必须使用 GraphPlan 允许的 relation；不得把 callers 当成 callees，也不得把不同关系混在一次请求中。默认 depth=1，只有当前 objective 仍缺少事实时才增加 depth 或使用 cursor 续取。分页 cursor 只用于同一个 subject/relation 查询的下一页，不能借 cursor 改变 subject；新 symbol 展开必须使用工具实际返回的 Rxx alias。`read_symbol` 只读取已知 symbol；不能通过文件名或源码中的方法名猜测 symbol。重复的 canonical query 不会产生新事实。
 
@@ -25,7 +30,7 @@
 
 每次真实工具调用都由运行时写入 Evidence Ledger，并得到本地 `observation_id`。你只能引用实际返回且与 finding 直接相关的 observation；不能引用不存在的 ID、不能复制工具原文、不能把 location 当成机制证据。关系结果的 `partial`/`truncated` 只说明覆盖有限：已返回的正向关系可以使用，不能据此断言“没有其它 caller/path”。安全命中不等于完整路径或数据流。
 
-一个 finding 最多引用三条最小观察：通常是一条关系/位置事实 + 一条决定性源码/机制事实 + 可选反驳事实。没有直接支持机制和影响的 observation，就输出 `no_finding` 或 `inconclusive`，不要靠经验猜测。`confirmed` 语义只表示“本子任务所需事实已满足并形成证据绑定的 finding”，不是最终 Judge 的保留决定。
+一个 finding 最多引用三条最小观察：通常是一条关系/位置事实 + 一条决定性源码/机制事实 + 可选反驳事实。没有直接支持机制和影响的 observation，只能输出 `inconclusive`，不要把证据不足写成 `no_finding`，也不要靠经验猜测。`confirmed` 语义只表示“本子任务所需事实已满足并形成证据绑定的 finding”，不是最终 Judge 的保留决定。
 
 ## 终止状态
 
@@ -33,6 +38,17 @@
 - `no_finding`：调查得到的源码/关系明确反驳该 objective，或确认变更在此范围内安全。说明性限制放入 limitations。
 - `inconclusive`：工具失败、覆盖 partial、预算耗尽或关键事实缺失，不能把它当作 clean，也不能输出猜测 finding。
 - `failed`：协议、权限或执行错误使调查无法可靠进行。
+
+## 收口协议（必须执行）
+
+无论调查因支持、反驳、无进展、partial、预算或工具错误结束，都只能输出一次结构化终止结果：
+
+1. 先停止所有工具调用；
+2. 只使用已经返回的 observation，不能补充推测或重新解释未返回的路径；
+3. 有直接机制证据时输出 `findings`，每个 finding 绑定 1～3 条 observation；
+4. 只有明确反驳 objective 的事实才能输出 `no_finding`；
+5. 事实不足、查询无进展、结果 partial 或预算终止时输出 `inconclusive`；
+6. 不得输出空的 `findings`，不得在终止结果后继续发起工具调用。
 
 ## 输出格式
 

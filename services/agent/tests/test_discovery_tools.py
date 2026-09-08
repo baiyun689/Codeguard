@@ -7,6 +7,7 @@ from threading import Event, Lock
 from codeguard_agent.pipeline.execution.discovery import (
     COMPLETE_PATCH_RESULT,
     REPEATED_TOOL_RESULT,
+    SUBTASK_NO_PROGRESS_TERMINAL_RESULT,
     CoordinatedDiscoveryToolClient,
     DiscoveryToolCoordinator,
     canonical_tool_key,
@@ -71,6 +72,113 @@ class _ResolvedGraphClient(_FakeClient, _FakeGraphClient):
         )
 
 
+class _StableRelationClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def query_relations(self, subject_symbol_id: str, relation: str, **_kwargs):
+        self.calls += 1
+        return ToolResponse(True, json.dumps({
+            "schema_version": 2,
+            "outcome": "found",
+            "coverage": "complete",
+            "source_scope": "MAIN",
+            "subject_symbol_id": subject_symbol_id,
+            "symbols": [
+                {"id": subject_symbol_id, "kind": "METHOD", "source_set": "MAIN"},
+                {"id": "java:demo.B#run()", "kind": "METHOD", "source_set": "MAIN"},
+            ],
+            "relationships": [{
+                "sourceId": subject_symbol_id,
+                "targetId": "java:demo.B#run()",
+                "kind": "CALLS",
+                "file": "src/A.java",
+                "line": 2,
+                "source_set": "MAIN",
+                "resolution": "RESOLVED",
+            }],
+            "unresolved_relationships": [],
+            "unresolved_count": 0,
+            "limitations": [],
+            "next_cursor": None,
+        }))
+
+
+class _EmptyRelationClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def query_relations(self, subject_symbol_id: str, relation: str, **_kwargs):
+        self.calls += 1
+        return ToolResponse(True, json.dumps({
+            "schema_version": 2,
+            "outcome": "found",
+            "coverage": "complete",
+            "source_scope": "MAIN",
+            "subject_symbol_id": subject_symbol_id,
+            "symbols": [],
+            "relationships": [],
+            "unresolved_relationships": [],
+            "unresolved_count": 0,
+            "limitations": [],
+            "next_cursor": None,
+        }))
+
+
+class _StableReadClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def read_symbol(self, symbol_id: str, **kwargs):
+        self.calls += 1
+        start = kwargs.get("start_line", 1)
+        end = kwargs.get("end_line", 4)
+        return ToolResponse(
+            True,
+            "\n".join([
+                f"symbol_id: {symbol_id}",
+                "kind: METHOD",
+                "file: src/A.java",
+                f"lines: {start}-{end}",
+                "truncated: true",
+                "",
+                "return value;",
+            ]),
+        )
+
+
+class _FailedRelationClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def query_relations(self, subject_symbol_id: str, relation: str, **_kwargs):
+        self.calls += 1
+        return ToolResponse(False, error="graph_unavailable: test")
+
+
+class _StableJsonGraphClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def inspect_path(self, symbol_id: str, path_kind: str, max_depth: int = 3, **_kwargs):
+        self.calls += 1
+        return ToolResponse(True, json.dumps({
+            "schema_version": 2,
+            "outcome": "found",
+            "coverage": "complete",
+            "path_kind": path_kind,
+            "max_depth": max_depth,
+            "next_cursor": self.calls,
+            "symbols": [{"id": symbol_id}],
+            "relationships": [{
+                "sourceId": symbol_id,
+                "targetId": "java:demo.B#run()",
+                "kind": "CALLS",
+            }],
+            "unresolved_relationships": [],
+        }))
+
+
 class _GraphWithHiddenSymbolClient(_FakeClient):
     def inspect_structure(self, symbol_id: str) -> ToolResponse:
         return ToolResponse(
@@ -131,6 +239,144 @@ def test_same_conversation_repeated_read_returns_short_marker() -> None:
     assert [record.status for record in records] == ["complete", "reused"]
     assert records[1].reuse_key == records[0].reuse_key
     assert records[1].reused_from_call_id == records[0].call_id
+
+
+def test_repeated_relation_probes_close_subtask_at_same_frontier() -> None:
+    raw = _StableRelationClient()
+    client = CoordinatedDiscoveryToolClient(
+        raw,
+        DiscoveryToolCoordinator(),
+        initial_symbol_ids={"java:demo.A#run()"},
+        symbol_catalog_ids=("java:demo.A#run()",),
+        lossless_payload=True,
+        max_no_progress_calls=2,
+    )
+
+    first = client.query_relations("S01", "callees", depth=1, limit=20)
+    second = client.query_relations("S01", "callees", depth=2, limit=50)
+    third = client.query_relations("S01", "callees", depth=3, limit=200)
+
+    assert first.success is True
+    assert second.success is True
+    assert third.success is True
+    assert SUBTASK_NO_PROGRESS_TERMINAL_RESULT in (third.result or "")
+    assert client.no_progress_exhausted is True
+    assert client.termination_reason == "no_progress"
+    # A fourth probe is rejected before it can reach the Gateway.
+    fourth = client.query_relations("S01", "callees", depth=3, limit=200, cursor=1)
+    assert fourth.success is False
+    assert "subtask_no_progress" in (fourth.error or "")
+    assert raw.calls == 3
+
+
+def test_empty_relation_response_counts_as_no_progress() -> None:
+    raw = _EmptyRelationClient()
+    client = CoordinatedDiscoveryToolClient(
+        raw,
+        DiscoveryToolCoordinator(),
+        initial_symbol_ids={"java:demo.A#run()"},
+        symbol_catalog_ids=("java:demo.A#run()",),
+        lossless_payload=True,
+        max_no_progress_calls=2,
+    )
+
+    first = client.query_relations("S01", "callees")
+    second = client.query_relations("S01", "callees", depth=2)
+
+    assert first.success is True
+    assert second.success is True
+    assert SUBTASK_NO_PROGRESS_TERMINAL_RESULT in (second.result or "")
+    assert client.no_progress_exhausted is True
+    assert raw.calls == 2
+
+
+def test_no_progress_isolated_per_relation_frontier() -> None:
+    raw = _EmptyRelationClient()
+    client = CoordinatedDiscoveryToolClient(
+        raw,
+        DiscoveryToolCoordinator(),
+        initial_symbol_ids={"java:demo.A#run()", "java:demo.B#run()"},
+        symbol_catalog_ids=("java:demo.A#run()", "java:demo.B#run()"),
+        lossless_payload=True,
+        max_no_progress_calls=2,
+    )
+
+    first = client.query_relations("S01", "callees")
+    other_frontier = client.query_relations("S02", "callees")
+    repeated = client.query_relations("S01", "callees", depth=2)
+
+    assert first.success is True
+    assert other_frontier.success is True
+    assert SUBTASK_NO_PROGRESS_TERMINAL_RESULT not in (other_frontier.result or "")
+    assert SUBTASK_NO_PROGRESS_TERMINAL_RESULT in (repeated.result or "")
+    assert client.no_progress_exhausted is True
+    assert raw.calls == 3
+
+
+def test_failed_tool_response_does_not_trigger_no_progress_close() -> None:
+    raw = _FailedRelationClient()
+    client = CoordinatedDiscoveryToolClient(
+        raw,
+        DiscoveryToolCoordinator(),
+        initial_symbol_ids={"java:demo.A#run()"},
+        symbol_catalog_ids=("java:demo.A#run()",),
+        lossless_payload=True,
+        max_no_progress_calls=2,
+    )
+
+    first = client.query_relations("S01", "callees")
+    second = client.query_relations("S01", "callees", depth=2)
+
+    assert first.success is False
+    assert second.success is False
+    assert client.no_progress_exhausted is False
+    assert raw.calls == 2
+
+
+def test_graph_page_metadata_does_not_count_as_new_progress() -> None:
+    raw = _StableJsonGraphClient()
+    client = CoordinatedDiscoveryToolClient(
+        raw,
+        DiscoveryToolCoordinator(),
+        initial_symbol_ids={"java:demo.A#run()"},
+        symbol_catalog_ids=("java:demo.A#run()",),
+        lossless_payload=True,
+        max_no_progress_calls=2,
+    )
+
+    first = client.inspect_path("S01", "behavior", 1)
+    second = client.inspect_path("S01", "behavior", 2)
+    third = client.inspect_path("S01", "behavior", 3)
+
+    assert first.success is True
+    assert second.success is True
+    assert third.success is True
+    assert SUBTASK_NO_PROGRESS_TERMINAL_RESULT in (third.result or "")
+    assert client.no_progress_exhausted is True
+    assert raw.calls == 3
+
+
+def test_source_range_metadata_does_not_count_as_new_progress() -> None:
+    raw = _StableReadClient()
+    client = CoordinatedDiscoveryToolClient(
+        raw,
+        DiscoveryToolCoordinator(),
+        initial_symbol_ids={"java:demo.A#run()"},
+        symbol_catalog_ids=("java:demo.A#run()",),
+        lossless_payload=True,
+        max_no_progress_calls=2,
+    )
+
+    first = client.read_symbol("S01", start_line=1, end_line=4)
+    second = client.read_symbol("S01", start_line=2, end_line=5)
+    third = client.read_symbol("S01", start_line=3, end_line=6)
+
+    assert first.success is True
+    assert second.success is True
+    assert third.success is True
+    assert SUBTASK_NO_PROGRESS_TERMINAL_RESULT in (third.result or "")
+    assert client.no_progress_exhausted is True
+    assert raw.calls == 3
 
 
 def test_complete_patch_file_read_hides_internal_alias_without_delegate_call() -> None:

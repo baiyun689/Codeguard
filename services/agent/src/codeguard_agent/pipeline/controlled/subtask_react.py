@@ -33,7 +33,7 @@ class SubtaskReactOutcome:
 
 
 class SubtaskReactEngine:
-    """运行一个范围封闭的调查 React，不做 synthesis、不启动 replan。"""
+    """运行范围封闭的调查 React，终止时最多做一次无工具结构化收口。"""
 
     def __init__(
         self,
@@ -102,7 +102,11 @@ class SubtaskReactEngine:
                 "GraphRecursionLimitError",
             }
             budget_hit = bool(getattr(self._tool_client, "budget_exhausted", False))
-            if inconclusive and budget_hit:
+            no_progress_hit = bool(
+                getattr(self._tool_client, "no_progress_exhausted", False)
+            )
+            terminal_hit = budget_hit or no_progress_hit
+            if inconclusive and terminal_hit:
                 finalized = self._finalize_after_budget(
                     llm,
                     task=task,
@@ -111,19 +115,33 @@ class SubtaskReactEngine:
                     records=records,
                     structured_method=structured_method,
                     max_retries=max_retries,
+                    termination_reason=(
+                        "no_progress" if no_progress_hit else "tool_budget_exceeded"
+                    ),
                 )
                 if finalized is not None and finalized.outcome == "findings":
                     return SubtaskReactOutcome(
                         finalized,
                         "complete",
-                        "tool_budget_exceeded_finalized",
+                        (
+                            "no_progress_finalized"
+                            if no_progress_hit
+                            else "tool_budget_exceeded_finalized"
+                        ),
                         records,
-                        ["subtask_react_findings_after_budget"],
+                        [
+                            "subtask_react_findings_after_no_progress"
+                            if no_progress_hit
+                            else "subtask_react_findings_after_budget"
+                        ],
                     )
             return SubtaskReactOutcome(
                 None,
                 "inconclusive" if inconclusive else "failed",
                 (
+                    "no_progress_detected"
+                    if inconclusive and no_progress_hit
+                    else
                     "tool_budget_exceeded"
                     if inconclusive and budget_hit
                     else "subtask_recursion_limit"
@@ -132,7 +150,9 @@ class SubtaskReactEngine:
                 ),
                 records,
                 [
-                    "subtask_tool_budget_exceeded"
+                    "subtask_no_progress_terminated"
+                    if inconclusive and no_progress_hit
+                    else "subtask_tool_budget_exceeded"
                     if inconclusive and budget_hit
                     else "subtask_inconclusive"
                     if inconclusive
@@ -157,29 +177,45 @@ class SubtaskReactEngine:
         # A provider may emit the terminal structured result immediately after
         # the first rejected call.  Preserve a finding backed by the successful
         # observations already captured; only ``no_finding`` remains unsafe
-        # after a budget rejection because the model may not have completed its
-        # negative search.
+        # after a terminal rejection because the model may not have completed
+        # its negative search.
         budget_hit = bool(getattr(self._tool_client, "budget_exhausted", False))
-        if budget_hit and parsed is not None and parsed.outcome == "findings":
+        no_progress_hit = bool(
+            getattr(self._tool_client, "no_progress_exhausted", False)
+        )
+        terminal_hit = budget_hit or no_progress_hit
+        if terminal_hit and parsed is not None and parsed.outcome == "findings":
             if parsed.subtask_id != instruction.subtask_id:
                 parsed = parsed.model_copy(update={"subtask_id": instruction.subtask_id})
             return SubtaskReactOutcome(
                 parsed,
                 "complete",
-                "tool_budget_exceeded_after_findings",
+                (
+                    "no_progress_after_findings"
+                    if no_progress_hit
+                    else "tool_budget_exceeded_after_findings"
+                ),
                 records,
-                ["subtask_react_findings_after_budget"],
+                [
+                    "subtask_react_findings_after_no_progress"
+                    if no_progress_hit
+                    else "subtask_react_findings_after_budget"
+                ],
             )
         # The coordinator records rejected calls without incrementing its
         # successful-call counter.  Do not let a rejected final query become a
         # false ``no_finding`` or a normal completed result.
-        if budget_hit:
+        if terminal_hit:
             return SubtaskReactOutcome(
                 None,
                 "inconclusive",
-                "tool_budget_exceeded",
+                "no_progress_detected" if no_progress_hit else "tool_budget_exceeded",
                 records,
-                ["subtask_tool_budget_exceeded"],
+                [
+                    "subtask_no_progress_terminated"
+                    if no_progress_hit
+                    else "subtask_tool_budget_exceeded"
+                ],
             )
         if parsed is None:
             return SubtaskReactOutcome(
@@ -208,8 +244,9 @@ class SubtaskReactEngine:
         records: list[DiscoveryToolRecord],
         structured_method: str,
         max_retries: int,
+        termination_reason: str = "tool_budget_exceeded",
     ) -> InvestigationResult | None:
-        """Close a budget-exhausted React using captured facts only.
+        """Close a terminal React using captured facts only.
 
         Some providers keep emitting tool calls after the gate has rejected a
         call, which makes LangGraph raise before its structured terminal turn.
@@ -251,19 +288,23 @@ class SubtaskReactEngine:
             )
         if not observations:
             return None
+        reason_text = (
+            "工具调用预算耗尽" if termination_reason == "tool_budget_exceeded"
+            else "连续工具调用没有产生新事实"
+        )
         user = (
             self._build_user_prompt(task, symbol_context, instruction)
             + "\n<captured_observations>\n"
             + "\n".join(observations[:8])
             + "\n</captured_observations>\n"
-            "ReAct 未能正常收口。你现在只能依据上面已捕获的工具输出做一次最终结构化收口；"
+            f"ReAct 因{reason_text}未正常收口。你现在只能依据上面已捕获的工具输出做一次最终结构化收口；"
             "不要调用工具，不要输出 no_finding。若这些 observation 不能直接支持完整机制，"
             "返回 inconclusive；只有能绑定实际 observation_id（原样填写上面 observation_id）"
             "时才返回 findings。"
         )
         system = (
             _PROMPT.read_text(encoding="utf-8")
-            + "\n\n这是预算终止后的无工具协议收口，不得补充任何未出现在 captured_observations 的事实。"
+            + "\n\n这是终止后的无工具协议收口，不得补充任何未出现在 captured_observations 的事实。"
         )
         try:
             raw = invoke_with_retry(

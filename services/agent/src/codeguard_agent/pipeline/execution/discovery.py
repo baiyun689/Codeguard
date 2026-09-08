@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from html import unescape
+import hashlib
 import json
 import posixpath
 from dataclasses import dataclass
@@ -39,6 +40,11 @@ SUBTASK_BUDGET_TERMINAL_RESULT = (
     "这是该子任务允许的最后一个工具窗口。立即停止调用任何工具并输出"
     " InvestigationResult：只有已返回的 observation 能直接支持时才输出 findings；"
     "否则输出 inconclusive。不要把工具预算不足当作 no_finding。"
+)
+SUBTASK_NO_PROGRESS_TERMINAL_RESULT = (
+    "当前子任务连续查询未发现新的关系、symbol 或源码事实，已自动停止调查。"
+    "立即停止调用工具并输出 InvestigationResult：只有已返回 observation 能直接支持时才输出 findings；"
+    "否则输出 inconclusive。不要把没有新事实当作 no_finding，也不要改变调查目标。"
 )
 COMPLETE_PATCH_RESULT = (
     "当前 task patch 已包含该新增文件的完整内容；请直接复用 patch，不要重复读取。"
@@ -154,6 +160,107 @@ def _response_status(response: ToolResponse) -> str:
     return "failed"
 
 
+def _progress_scope(tool_name: str, arguments: dict[str, Any]) -> str:
+    """Return the logical frontier on which a tool response can make progress."""
+
+    if tool_name == "query_relations":
+        return "query_relations:" + json.dumps(
+            {
+                "subject_symbol_id": arguments.get("subject_symbol_id", ""),
+                "relation": arguments.get("relation", ""),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    if tool_name in {"read_symbol", "get_file_content"}:
+        return f"{tool_name}:{arguments.get('symbol_id', '')}"
+    if tool_name == "inspect_path":
+        return (
+            "inspect_path:"
+            f"{arguments.get('symbol_id', '')}:"
+            f"{arguments.get('path_kind', '')}"
+        )
+    if tool_name in {"inspect_change_impact", "inspect_structure"}:
+        return f"{tool_name}:{arguments.get('symbol_id', '')}"
+    return tool_name
+
+
+def _progress_tokens(
+    tool_name: str,
+    arguments: dict[str, Any],
+    response: ToolResponse,
+) -> tuple[str, ...]:
+    """Extract stable facts from a response, ignoring pagination metadata."""
+
+    scope = _progress_scope(tool_name, arguments)
+    if not response.success:
+        return ()
+    text = (response.result or "").strip()
+    if not text:
+        return ()
+    if tool_name in {
+        "query_relations",
+        "inspect_path",
+        "inspect_change_impact",
+        "inspect_structure",
+    }:
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            facts: list[str] = []
+            for field in ("symbols", "relationships", "unresolved_relationships"):
+                values = payload.get(field)
+                if not isinstance(values, list):
+                    continue
+                for value in values:
+                    facts.append(
+                        f"{scope}:{field}:" + json.dumps(
+                            value,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                    )
+            # An empty page is a lack of progress, not a newly discovered
+            # fact.  Returning no tokens lets the caller increment the
+            # no-progress streak on the very first empty response.
+            return tuple(facts)
+    if tool_name in {"read_symbol", "get_file_content"}:
+        # Source responses include a changing range/continuation header.  It
+        # is navigation metadata, not a new code fact, so compare the source
+        # fragment itself.  Reaching the end cursor likewise adds no fact.
+        if "end_of_symbol: true" in text:
+            return ()
+        _, separator, fragment = text.partition("\n\n")
+        source = fragment if separator else text
+        if not source.strip():
+            return ()
+        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        return (f"{scope}:source:{digest}",)
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return (f"{scope}:payload:{digest}",)
+
+
+def _append_terminal_notice(response: ToolResponse, reason: str) -> ToolResponse:
+    """Append a human-readable stop notice without changing captured evidence."""
+
+    if reason != "no_progress":
+        return response
+    if response.success:
+        return ToolResponse(
+            success=True,
+            result=(response.result or "") + "\n\n" + SUBTASK_NO_PROGRESS_TERMINAL_RESULT,
+        )
+    return ToolResponse(
+        success=False,
+        result=SUBTASK_NO_PROGRESS_TERMINAL_RESULT,
+        error=response.error,
+    )
+
+
 class DiscoveryToolCoordinator:
     def __init__(self) -> None:
         self._lock = Lock()
@@ -235,6 +342,7 @@ class CoordinatedDiscoveryToolClient:
         allowed_relations: tuple[str, ...] | frozenset[str] | set[str] = (),
         initial_symbol_ids: set[str] | frozenset[str] = frozenset(),
         symbol_catalog_ids: tuple[str, ...] = (),
+        max_no_progress_calls: int = 2,
     ) -> None:
         self._delegate = delegate
         self._coordinator = coordinator
@@ -260,6 +368,11 @@ class CoordinatedDiscoveryToolClient:
         self._tool_calls = 0
         self._budget_exhausted = False
         self._closed = False
+        self._max_no_progress_calls = max(0, int(max_no_progress_calls))
+        self._observed_progress: dict[str, set[str]] = {}
+        self._no_progress_streaks: dict[str, int] = {}
+        self._no_progress_exhausted = False
+        self._termination_reason = ""
         self._max_path_depth = max(1, min(3, max_path_depth))
         if allowed_path_kind not in {None, "behavior", "security"}:
             raise ValueError(
@@ -403,7 +516,11 @@ class CoordinatedDiscoveryToolClient:
         with self._lock:
             if self._closed:
                 budget_exceeded = True
-                close_error = "subtask_execution_closed"
+                close_error = (
+                    "subtask_no_progress"
+                    if self._no_progress_exhausted
+                    else "subtask_execution_closed"
+                )
             elif self._max_tool_calls is not None and self._tool_calls >= self._max_tool_calls:
                 budget_exceeded = True
                 close_error = "subtask_tool_budget_exceeded"
@@ -429,6 +546,8 @@ class CoordinatedDiscoveryToolClient:
                 result=(
                     SUBTASK_BUDGET_TERMINAL_RESULT
                     if close_error == "subtask_tool_budget_exceeded"
+                    else SUBTASK_NO_PROGRESS_TERMINAL_RESULT
+                    if close_error == "subtask_no_progress"
                     else None
                 ),
             )
@@ -451,7 +570,14 @@ class CoordinatedDiscoveryToolClient:
                 "reused",
                 reused_from_call_id=self._first_call_ids.get(key, ""),
             )
-            return response
+            terminal_reason = (
+                "no_progress"
+                if self._note_progress(
+                    tool_name, arguments, response, progressed=False
+                )
+                else ""
+            )
+            return _append_terminal_notice(response, terminal_reason)
 
         if not leader:
             assert future is not None
@@ -466,9 +592,16 @@ class CoordinatedDiscoveryToolClient:
                     "reused",
                     reused_from_call_id=self._first_call_ids.get(key, ""),
                 )
-                return repeated
+                terminal_reason = (
+                    "no_progress"
+                    if self._note_progress(
+                        tool_name, arguments, repeated, progressed=False
+                    )
+                    else ""
+                )
+                return _append_terminal_notice(repeated, terminal_reason)
             record_call_id = self._record(tool_name, arguments, response, started)
-            return _alias_echo(
+            visible = _alias_echo(
                 tool_name,
                 self._visible_response(tool_name, response, arguments),
                 self._next_t_alias(record_call_id),
@@ -476,6 +609,12 @@ class CoordinatedDiscoveryToolClient:
                 self._projection_focus,
                 True,
             )
+            terminal_reason = (
+                "no_progress"
+                if self._note_progress(tool_name, arguments, response)
+                else ""
+            )
+            return _append_terminal_notice(visible, terminal_reason)
 
         try:
             assert future is not None
@@ -499,16 +638,12 @@ class CoordinatedDiscoveryToolClient:
             future.set_result(response)
             with self._lock:
                 self._in_flight.pop(key, None)
-            if not coordinator_reused:
-                return _alias_echo(
-                    tool_name,
-                    self._visible_response(tool_name, response, arguments),
-                    self._next_t_alias(record_call_id),
-                    arguments,
-                    self._projection_focus,
-                    True,
-                )
-            return _alias_echo(
+            terminal_reason = (
+                "no_progress"
+                if self._note_progress(tool_name, arguments, response)
+                else ""
+            )
+            visible = _alias_echo(
                 tool_name,
                 self._visible_response(tool_name, response, arguments),
                 self._next_t_alias(record_call_id),
@@ -516,6 +651,7 @@ class CoordinatedDiscoveryToolClient:
                 self._projection_focus,
                 True,
             )
+            return _append_terminal_notice(visible, terminal_reason)
         except BaseException as exc:
             if future is not None and not future.done():
                 future.set_exception(exc)
@@ -649,6 +785,18 @@ class CoordinatedDiscoveryToolClient:
             return self._budget_exhausted
 
     @property
+    def no_progress_exhausted(self) -> bool:
+        """Whether repeated tool probes stopped this subtask at the same frontier."""
+
+        with self._lock:
+            return self._no_progress_exhausted
+
+    @property
+    def termination_reason(self) -> str:
+        with self._lock:
+            return self._termination_reason
+
+    @property
     def observation_aliases(self) -> dict[str, str]:
         with self._lock:
             return dict(self._observation_aliases)
@@ -658,6 +806,52 @@ class CoordinatedDiscoveryToolClient:
 
         with self._lock:
             self._closed = True
+
+    def _note_progress(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        response: ToolResponse,
+        *,
+        progressed: bool | None = None,
+    ) -> bool:
+        """Track whether a call added facts and close after repeated no-progress calls.
+
+        The call itself is still captured before the gate fires.  Only future
+        tool calls are closed; the last real response remains available to the
+        React final structured-output turn.
+        """
+
+        scope = _progress_scope(tool_name, arguments)
+        if progressed is None:
+            # A failed Gateway/network call is not an observation frontier.
+            # Leave it visible as a failure so strict evaluation can diagnose
+            # infrastructure problems instead of relabeling them as a normal
+            # no-progress termination.
+            if not response.success:
+                with self._lock:
+                    self._no_progress_streaks[scope] = 0
+                return False
+            tokens = _progress_tokens(tool_name, arguments, response)
+            with self._lock:
+                observed = self._observed_progress.setdefault(scope, set())
+                progressed = any(token not in observed for token in tokens)
+                observed.update(tokens)
+        with self._lock:
+            if progressed:
+                self._no_progress_streaks[scope] = 0
+                return False
+            streak = self._no_progress_streaks.get(scope, 0) + 1
+            self._no_progress_streaks[scope] = streak
+            if (
+                self._max_no_progress_calls > 0
+                and streak >= self._max_no_progress_calls
+            ):
+                self._no_progress_exhausted = True
+                self._termination_reason = "no_progress"
+                self._closed = True
+                return True
+        return False
 
     def _next_t_alias(self, call_id: str = "") -> str:
         """本客户端目录的下一个 T 编号(与 ledger 的 append_tool_records 同序)。

@@ -68,3 +68,17 @@ def test_strict_tool_agent_misuse_is_warning_not_fatal() -> None:
 
     assert failures == []
     assert warnings == ["tool_rejected:get_file_content"]
+
+
+def test_strict_tool_profile_treats_no_progress_close_as_warning() -> None:
+    failures, warnings = _strict_tool_failures(
+        [type("Trace", (), {
+            "status": "failed",
+            "tool": "query_relations",
+            "content": "subtask_no_progress",
+        })()],
+        {"symbol_resolution_diagnostics": {}, "council": {}},
+    )
+
+    assert failures == []
+    assert warnings == ["tool_rejected:query_relations"]

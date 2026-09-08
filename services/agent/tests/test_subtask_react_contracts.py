@@ -732,6 +732,45 @@ def test_rejected_budget_call_cannot_be_reported_as_no_finding():
     assert outcome.events == ["subtask_tool_budget_exceeded"]
 
 
+def test_no_progress_cannot_be_reported_as_no_finding():
+    class Client:
+        trace_records = ()
+        tool_calls = 2
+        budget_exhausted = False
+        no_progress_exhausted = True
+
+    instruction = SubtaskInstruction(
+        subtask_id="subtask-no-progress",
+        seed_id="seed-no-progress",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-task-1",
+        objective="检查返回行为",
+        observed_change="返回表达式发生变化",
+        initial_symbol_ids=("java:A#run()",),
+        allowed_tools=("read_symbol",),
+    )
+    engine = SubtaskReactEngine(Client(), max_tool_calls=2, max_rounds=2)
+    engine._run_agent = lambda *args: {
+        "structured_response": InvestigationResult(
+            subtask_id="subtask-no-progress",
+            outcome="no_finding",
+        )
+    }
+
+    outcome = engine.run(
+        object(),
+        task=SimpleNamespace(file="src/A.java", patch="+return run();"),
+        symbol_context=SimpleNamespace(symbols=()),
+        instruction=instruction,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+
+    assert outcome.status == "inconclusive"
+    assert outcome.reason == "no_progress_detected"
+    assert outcome.events == ["subtask_no_progress_terminated"]
+
+
 def test_findings_after_budget_rejection_keep_successful_observations():
     class Client:
         trace_records = ()
