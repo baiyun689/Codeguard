@@ -451,6 +451,15 @@ class CoordinatedDiscoveryToolClient:
                 if raw is None or raw not in self._allowed_symbol_ids:
                     return None
                 return raw
+            # A focused client without presentation aliases still has a
+            # runtime symbol scope.  Enforce it here as well as in the source
+            # reader; otherwise a model could bypass the GraphPlan frontier
+            # simply by sending a raw Gateway symbol ID.
+            if (
+                self._allowed_symbol_ids is not None
+                and value not in self._allowed_symbol_ids
+            ):
+                return None
         return value
 
     def _alias_payload(self, tool: str, response: ToolResponse) -> ToolResponse:
@@ -879,7 +888,18 @@ class CoordinatedDiscoveryToolClient:
         # aliases are presentation-only and are local to a subtask.
         arguments: dict[str, Any] = {"symbol_id": raw_symbol_id}
         if raw_symbol_id is None:
-            return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
+            return self._invoke(
+                "get_file_content",
+                {"symbol_id": unescape(symbol_id).strip()},
+                lambda: ToolResponse(
+                    success=False,
+                    error=(
+                        "symbol_not_in_review_context"
+                        if self._allowed_symbol_ids is not None
+                        else "symbol_ref_not_in_review_context"
+                    ),
+                ),
+            )
         symbol_id = raw_symbol_id
         if start_line is not None:
             arguments["start_line"] = start_line

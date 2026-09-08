@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 import json
 from threading import Event, Lock
+from types import SimpleNamespace
 
 from codeguard_agent.pipeline.execution.discovery import (
     COMPLETE_PATCH_RESULT,
@@ -207,6 +208,21 @@ def test_graph_tools_decode_html_entities_in_symbol_id_before_gateway_call() -> 
     assert raw.path_calls == [(canonical, "behavior", 3)]
     assert raw.impact_calls == [canonical]
     assert raw.structure_calls == [canonical]
+
+
+def test_focused_client_rejects_raw_symbols_outside_its_scope() -> None:
+    raw = _FakeClient()
+    client = CoordinatedDiscoveryToolClient(
+        raw,
+        DiscoveryToolCoordinator(),
+        projection_focus=SimpleNamespace(changed_symbol_ids=("java:demo.A#m()",)),
+    )
+
+    response = client.read_symbol("java:demo.Other#n()")
+
+    assert response.success is False
+    assert response.error == "symbol_ref_not_in_review_context"
+    assert raw.calls == 0
 
 
 def test_canonical_key_normalizes_symbol_entities_without_lowercasing() -> None:
