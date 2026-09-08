@@ -221,7 +221,8 @@ def test_focused_client_rejects_raw_symbols_outside_its_scope() -> None:
     response = client.read_symbol("java:demo.Other#n()")
 
     assert response.success is False
-    assert response.error == "symbol_ref_not_in_review_context"
+    assert (response.error or "").startswith("symbol_not_in_review_context")
+    assert client.trace_records[-1].status == "failed"
     assert raw.calls == 0
 
 
