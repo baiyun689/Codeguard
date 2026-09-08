@@ -127,7 +127,7 @@ def select_shared_knowledge(
     budget: KnowledgeBudget,
     task_id: str = "plan",
 ) -> KnowledgeBundle:
-    """为 controlled task 选择一个供三个 reviewer 共享的专项知识包。
+    """为 controlled task 选择一个供统一 Reviewer 使用的专项知识包。
 
     这里不接受 reviewer 参数，也不根据领域拆分。主题必须来自合并后的闭集；
     非法主题被记录并忽略，超出预算的主题按 Plan 顺序省略。

@@ -332,21 +332,17 @@ class SubtaskReactEngine:
         from langchain.agents import create_agent
         from langchain.agents.structured_output import ToolStrategy
         from codeguard_agent.tools.definitions import (
-            make_change_impact_tool,
-            make_file_content_tool,
-            make_path_tool,
             make_query_relations_tool,
             make_read_symbol_tool,
-            make_structure_tool,
         )
 
+        # The subtask React path deliberately has only the two canonical
+        # actions.  Legacy inspect_* / get_file_content names remain available
+        # to the planned_steps compatibility executor, never to this dynamic
+        # investigation loop.
         factories = {
             "read_symbol": lambda: make_read_symbol_tool(self._tool_client),
             "query_relations": lambda: make_query_relations_tool(self._tool_client),
-            "get_file_content": lambda: make_file_content_tool(self._tool_client),
-            "inspect_change_impact": lambda: make_change_impact_tool(self._tool_client),
-            "inspect_path": lambda: make_path_tool(self._tool_client),
-            "inspect_structure": lambda: make_structure_tool(self._tool_client),
         }
         tools = [factories[name]() for name in instruction.allowed_tools if name in factories]
         agent = create_agent(

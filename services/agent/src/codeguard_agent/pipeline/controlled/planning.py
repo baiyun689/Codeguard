@@ -1,7 +1,7 @@
 """受控模式的 task 级知识路由。
 
 ReviewPlan 在 controlled 模式不选择 reviewer、工具或 symbol，只从闭合主题注册表
-中为每个 task 选择少量审查方法。三个 reviewer 随后共享同一份结果。
+中为每个 task 选择少量审查方法。统一 Reviewer 随后共享同一份结果。
 """
 
 from __future__ import annotations

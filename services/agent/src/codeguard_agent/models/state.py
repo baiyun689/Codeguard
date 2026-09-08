@@ -40,6 +40,7 @@ from codeguard_agent.models.tasks import (
     TaskRoute,
     TaskSelection,
     TaskSymbolContext,
+    SubtaskPlan,
 )
 
 
@@ -116,6 +117,13 @@ class ReviewState(TypedDict, total=False):
     knowledge_route_plan: dict[str, KnowledgeRoutePlan]
     controlled_triage: dict[str, DirectTriageResult]
     controlled_graph_plans: dict[str, ReviewerGraphPlan]
+    # The subtask React path has a different plan contract from the legacy
+    # fixed-step executor.  Keep it in a separate field instead of placing a
+    # ``SubtaskPlan`` in ``controlled_graph_plans`` and relying on consumers to
+    # guess which model is present for a given key.
+    controlled_subtask_plans: dict[str, SubtaskPlan]
+    controlled_subtask_outcomes: dict[str, str]
+    controlled_subtask_reasons: dict[str, str]
     controlled_assessments: dict[str, EvidenceAssessment]
     controlled_proof_matches: dict[str, ProofMatch]
     # CandidateIssue keeps explanatory fields out of generic model dumps so

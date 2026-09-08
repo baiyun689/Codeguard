@@ -15,7 +15,10 @@ from codeguard_agent.models.tasks import (
     SubtaskPlan,
 )
 from codeguard_agent.models.tasks.symbols import ResolvedSymbol
-from codeguard_agent.pipeline.controlled.subtask_plan import run_subtask_plan
+from codeguard_agent.pipeline.controlled.subtask_plan import (
+    _direction_safe_relations,
+    run_subtask_plan,
+)
 from codeguard_agent.pipeline.controlled.subtask_grouping import group_investigation_seeds
 from codeguard_agent.pipeline.controlled.subtask_capabilities import (
     coherent_tool_bundle,
@@ -401,6 +404,81 @@ def test_requested_graph_tools_never_returns_both_traversal_directions():
         seed,
         ("inspect_path", "inspect_change_impact", "inspect_structure"),
     ) == ("inspect_path", "inspect_structure")
+
+
+def test_subtask_relation_allowlist_matches_the_investigation_direction():
+    downstream = _seed().model_copy(update={
+        "evidence_need": EvidenceNeed.INSPECT_PATH,
+        "direction": "downstream",
+        "investigation_question": "检查下游调用如何使用返回值",
+    })
+    assert _direction_safe_relations(downstream) == ("callees",)
+
+    upstream = _seed().model_copy(update={
+        "evidence_need": EvidenceNeed.INSPECT_CHANGE_IMPACT,
+        "direction": "upstream",
+        "investigation_question": "检查调用方是否读取共享状态",
+    })
+    assert _direction_safe_relations(upstream) == (
+        "callers", "field_readers", "field_writers",
+    )
+
+
+def test_subtask_plan_repairs_every_seed_when_provider_omits_one():
+    first = _seed().model_copy(update={"seed_id": "investigation-first"})
+    second = _seed().model_copy(update={
+        "seed_id": "investigation-second",
+        "location_line": 20,
+        "initial_symbol_ids": ("java:B#run()",),
+    })
+
+    class _Structured:
+        def invoke(self, _messages):
+            return SubtaskPlan(
+                reviewer=ReviewerKind.BEHAVIOR,
+                task_id="task-1",
+                subtasks=(SubtaskInstruction(
+                    subtask_id="provider-1",
+                    seed_id=first.seed_id,
+                    reviewer=ReviewerKind.BEHAVIOR,
+                    change_unit_id=first.change_unit_id,
+                    objective=first.investigation_question,
+                    observed_change=first.observed_change,
+                    initial_symbol_ids=("S01",),
+                    allowed_tools=("inspect_change_impact", "get_file_content"),
+                    primary_tool="inspect_change_impact",
+                ),),
+            )
+
+    class _LLM:
+        def with_structured_output(self, _schema, method=None):  # noqa: ARG002
+            return _Structured()
+
+    context = SimpleNamespace(symbols=(
+        ResolvedSymbol(
+            file="A.java", symbol_id="java:A#run()", kind="METHOD",
+            start_line=1, end_line=15, source_set="MAIN",
+        ),
+        ResolvedSymbol(
+            file="A.java", symbol_id="java:B#run()", kind="METHOD",
+            start_line=16, end_line=30, source_set="MAIN",
+        ),
+    ))
+    plan, diagnostics = run_subtask_plan(
+        reviewer=ReviewerKind.BEHAVIOR,
+        task=SimpleNamespace(id="task-1", file="src/A.java", patch="+return run();"),
+        seeds=(first, second),
+        symbol_context=context,
+        llm=_LLM(),
+        max_retries=1,
+        structured_method="function_calling",
+        max_tool_calls=4,
+        max_rounds=3,
+        max_subtasks=2,
+        max_path_depth=3,
+    )
+    assert [item.seed_id for item in plan.subtasks] == [first.seed_id, second.seed_id]
+    assert "subtask_plan_missing_seeds_repaired:1" in diagnostics
 
 
 def test_discovery_client_rejects_invalid_allowed_path_kind():

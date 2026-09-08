@@ -20,6 +20,17 @@
 同一工具对应的 symbol/关系前沿连续两次无进展后，调查已经到达该前沿的当前可见事实边界：立即停止调用工具并输出唯一的
 `InvestigationResult`，不得再尝试第三种参数、换 alias 或改查另一个方向。
 
+每轮只维护下面四个内部状态，不需要把它们写进最终 JSON，也不要输出思考过程：
+
+- `current_frontier`：当前正在调查的合法 Sxx/Rxx symbol 与 relation；
+- `new_facts`：本轮相对已有观察新增的关系、源码或反驳事实；
+- `next_action`：仍缺哪个 required_fact，以及下一次调用为何能补上它；
+- `stop_reason`：支持、反驳、partial、无进展、预算或工具错误。
+
+如果 `new_facts` 为空，`next_action` 不得只是重复同一查询；如果已经满足 required_facts，
+应立即收口。每次深入只能从工具返回的已解析 Rxx 进入，并且必须说明它仍服务于原 objective；
+不要为了“再看一层”而扩大调查范围。
+
 如果工具返回 `subtask_tool_budget_exceeded`、`subtask_no_progress` 或包含“已自动停止调查”的终止提示，
 这不是新的事实，也不是“没有问题”的证明。立即输出 `InvestigationResult`；若已有 observation 能直接证明机制才输出
 `findings`，否则输出 `inconclusive`。不得继续调用工具、不得把终止原因写成 `no_finding`。

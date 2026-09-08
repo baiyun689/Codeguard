@@ -303,9 +303,9 @@ def collapse_candidate_duplicates(
 ) -> tuple[list[CandidateIssue], int]:
     """Collapse cross-reviewer reports of the same local mechanism.
 
-    The three fixed reviewers intentionally run independently, so their raw
-    outputs can describe one changed mechanism more than once. This reducer is
-    conservative: candidates must belong to the same task/file, be within a
+    The controlled default uses one unified reviewer.  Legacy replays may still
+    contain multiple reviewer outputs, so this reducer remains conservative:
+    candidates must belong to the same task/file, be within a
     three-line location window, and have materially similar claim/type text.
     It never merges unrelated same-line findings and leaves the semantic
     keep/drop decision to CouncilJudge.

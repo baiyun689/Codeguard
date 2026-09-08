@@ -1692,7 +1692,7 @@ def test_direct_triage_is_structured_and_does_not_route_by_confidence():
     assert any(item.startswith("seed_route:") for item in diagnostics)
 
 
-def test_controlled_review_node_runs_three_triage_reviewers_without_tools():
+def test_controlled_review_node_runs_unified_triage_without_tools():
     task = ReviewTask(
         id="A.java#h0",
         file="A.java",

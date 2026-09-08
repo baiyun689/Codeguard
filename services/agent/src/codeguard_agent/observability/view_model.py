@@ -335,6 +335,8 @@ def _controlled_review_summary(output: dict[str, Any]) -> str:
     """
     triage = output.get("controlled_triage")
     plans = output.get("controlled_graph_plans")
+    subtask_plans = output.get("controlled_subtask_plans")
+    subtask_outcomes = output.get("controlled_subtask_outcomes")
     assessments = output.get("controlled_assessments")
     proofs = output.get("controlled_proof_matches")
     records = output.get("tool_trace_records")
@@ -343,6 +345,10 @@ def _controlled_review_summary(output: dict[str, Any]) -> str:
         triage = {}
     if not isinstance(plans, dict):
         plans = {}
+    if not isinstance(subtask_plans, dict):
+        subtask_plans = {}
+    if not isinstance(subtask_outcomes, dict):
+        subtask_outcomes = {}
     if not isinstance(assessments, dict):
         assessments = {}
     if not isinstance(proofs, dict):
@@ -353,8 +359,20 @@ def _controlled_review_summary(output: dict[str, Any]) -> str:
         candidates = output.get("raw_candidate_issues")
     if not isinstance(candidates, list):
         candidates = []
+    subtask_count = sum(
+        len(value.get("subtasks") or [])
+        for value in subtask_plans.values()
+        if isinstance(value, dict)
+    )
+    plan_count = len(plans) + len(subtask_plans)
+    terminal_count = sum(
+        str(value) != "planned" for value in subtask_outcomes.values()
+    )
+    plan_text = f"{plan_count} 个调查计划"
+    if subtask_count:
+        plan_text += f" · {subtask_count} 个子任务（已结束 {terminal_count}）"
     return (
-        f"{len(triage)} 个初筛单元 · {len(plans)} 个图谱计划 · "
+        f"{len(triage)} 个初筛单元 · {plan_text} · "
         f"{len(records)} 次工具 · {len(assessments)} 条证据评估 · "
         f"{len(proofs)} 条证明匹配 · {len(candidates)} 个候选"
     )
@@ -1253,9 +1271,9 @@ def _controlled_sections(
 ) -> list[dict[str, Any]]:
     """把 ``controlled_review`` 的批量 State 拆成可导航的审查面板。
 
-    受控模式 deliberately 只有一个 LangGraph 节点，但节点内部仍有四类
-    有顺序的工作：DirectTriage → GraphPlan → 工具执行 → EvidenceAssessment，
-    必要时再显示一次受控 Graph Replan/Delta 执行。
+    受控模式只有一个 LangGraph 节点，但节点内部仍有三类
+    有顺序的工作：DirectTriage → GraphPlan → bounded subtask React；
+    兼容旧 planned_steps 时才显示 EvidenceAssessment/Replan。
     如果只展示那个节点，Trace 会看起来像“只调用了一个模型”；这里生成
     轻量的索引步骤，不改变 State 或 Evidence Artifact 原文。
     """
@@ -1263,12 +1281,16 @@ def _controlled_sections(
 
     triage = output.get("controlled_triage")
     plans = output.get("controlled_graph_plans")
+    subtask_plans = output.get("controlled_subtask_plans")
+    subtask_outcomes = output.get("controlled_subtask_outcomes")
     assessments = output.get("controlled_assessments")
     proofs = output.get("controlled_proof_matches")
     records = output.get("tool_trace_records")
     traces = output.get("council_trace")
     triage = triage if isinstance(triage, dict) else {}
     plans = plans if isinstance(plans, dict) else {}
+    subtask_plans = subtask_plans if isinstance(subtask_plans, dict) else {}
+    subtask_outcomes = subtask_outcomes if isinstance(subtask_outcomes, dict) else {}
     assessments = assessments if isinstance(assessments, dict) else {}
     proofs = proofs if isinstance(proofs, dict) else {}
     records = records if isinstance(records, list) else []
@@ -1452,9 +1474,51 @@ def _controlled_sections(
             }],
         )
 
+    # The default controlled path stores SubtaskPlan separately from the
+    # legacy WorkItem plan.  Render it as the actual GraphPlan output so the
+    # trace does not show an empty/unknown plan when bounded React is used.
+    for plan_index, (key, value) in enumerate(
+        sorted(subtask_plans.items(), key=lambda item: str(item[0]))
+    ):
+        task_id, reviewer = split_work_key(key, value)
+        section_key = section_for_reviewer(reviewer)
+        section_tasks[section_key].add(task_id)
+        subtasks = value.get("subtasks") if isinstance(value, dict) else None
+        subtasks = subtasks if isinstance(subtasks, list) else []
+        statuses: list[str] = []
+        for subtask in subtasks:
+            if not isinstance(subtask, dict):
+                continue
+            subtask_id = str(subtask.get("subtask_id") or "")
+            if not subtask_id:
+                continue
+            status = str(
+                subtask_outcomes.get(f"{task_id}:{subtask_id}") or "planned"
+            )
+            statuses.append(status)
+        status_text = ""
+        if statuses:
+            status_text = " · " + ", ".join(
+                f"{status} {statuses.count(status)}"
+                for status in sorted(set(statuses))
+            )
+        register_step(
+            section_key,
+            step_id=f"controlled:subtask-plan:{plan_index}",
+            code_name="graph_plan",
+            title=f"调查子任务计划 · {reviewer or '统一'} · {task_id}",
+            summary=f"{len(subtasks)} 个 bounded React 子任务{status_text}",
+            input_value={"task_id": task_id, "reviewer": reviewer},
+            state_refs=[{
+                "sequence": (controlled_node or {}).get("end_sequence"),
+                "field": "controlled_subtask_plans",
+                "key": str(key),
+            }],
+        )
+
     # 节点输出中的 application tool record 不带 reviewer 字段。根据 GraphPlan
-    # 的规范化查询键归属它；多个 reviewer 共享同一查询时放入共享面板，避免
-    # 在三个面板里重复渲染同一个 Evidence Artifact。
+    # 的规范化查询键归属它；兼容多来源 Trace 共享同一查询时放入共享面板，
+    # 避免重复渲染同一个 Evidence Artifact。
     tool_steps_by_call_id = {
         str(step.get("pair_id")): step
         for step in steps.values()
@@ -1648,9 +1712,10 @@ def _controlled_sections(
                 status="failed" if failed else "complete",
             )
 
-    # 三个受控 reviewer 都是固定执行单元。即使某个 reviewer 的 triage
-    # 超时、返回 None 或节点在写回前失败，也要在 Trace 中留下失败/缺失卡片，
-    # 否则“没有面板”会被误读成“没有执行”。
+    # 受控 reviewer 是固定执行单元。即使某个 reviewer 的 triage 超时、
+    # 返回 None 或节点在写回前失败，也要在 Trace 中留下失败/缺失卡片，
+    # 否则“没有面板”会被误读成“没有执行”。当前默认只有统一 Reviewer；
+    # 如果读取的是旧多 reviewer Trace，则按旧 Trace 中出现的 reviewer 兼容展示。
     triage_sections = {
         section_key
         for section_key, ids in section_steps.items()
@@ -1661,10 +1726,39 @@ def _controlled_sections(
     }
     controlled_status = str((controlled_node or {}).get("status") or "missing")
     missing_status = "failed" if controlled_status == "failed" else "missing"
-    reviewer_labels = {
-        f"controlled_{key}": title
-        for key, title, _code_name in REVIEWERS.values()
+    observed_reviewers: set[str] = set()
+    for mapping in (triage, plans, subtask_plans):
+        for key, value in mapping.items():
+            _task_id, reviewer = split_work_key(key, value)
+            if reviewer.strip():
+                observed_reviewers.add(reviewer.strip())
+    if not observed_reviewers and (
+        output.get("discovery_mode") == "controlled"
+        or output.get("controlled_execution_mode") == "subtask_react"
+    ):
+        # A failed controlled node may write no reviewer map at all.  The
+        # runtime default is still one unified reviewer, so do not fabricate
+        # three missing workstreams in the dashboard.
+        observed_reviewers.add("behavior")
+    reviewer_titles = {
+        key: title for key, title, _code_name in REVIEWERS.values()
     }
+    known_reviewers = set(reviewer_titles)
+    # The current default stores the unified reviewer under the historical
+    # ``behavior`` enum for wire compatibility.  Use the user-facing unified
+    # label while retaining the stable section key.
+    reviewer_labels = {
+        f"controlled_{key}": (
+            "统一审查员" if key == "behavior" and observed_reviewers == {"behavior"}
+            else reviewer_titles[key]
+        )
+        for key in sorted(observed_reviewers & known_reviewers)
+    }
+    if not reviewer_labels:
+        reviewer_labels = {
+            f"controlled_{key}": title
+            for key, title, _code_name in REVIEWERS.values()
+        }
     for section_key, reviewer_title in reviewer_labels.items():
         if section_key in triage_sections:
             continue

@@ -43,7 +43,47 @@ def _direction_safe_relations(seed: InvestigationSeed) -> tuple[str, ...]:
     merely by listing a different relation in its JSON response.
     """
 
-    allowed = set(_RELATIONS)
+    # A single ``query_relations`` tool is intentionally broad, but a
+    # subtask must not turn an investigation into an unfocused graph scan.
+    # Start with the relation family implied by the seed, then add only
+    # explicitly signalled state/polymorphism facts.  This keeps the React
+    # flexible about depth and order without making unrelated directions
+    # available to it.
+    text = " ".join(
+        (seed.observed_change, seed.investigation_question, seed.risk_dimension)
+    ).lower()
+    allowed: set[str] = set()
+    if seed.direction == "upstream" or seed.evidence_need is EvidenceNeed.INSPECT_CHANGE_IMPACT:
+        allowed.add("callers")
+    elif seed.direction == "downstream" or seed.evidence_need is EvidenceNeed.INSPECT_PATH:
+        allowed.add("callees")
+    elif seed.evidence_need is EvidenceNeed.INSPECT_STRUCTURE:
+        allowed.update(("implementations", "overrides"))
+
+    if seed.direction is None:
+        if any(marker in text for marker in ("caller", "调用方", "上游", "consumer", "消费者")):
+            allowed.add("callers")
+        if any(marker in text for marker in ("callee", "被调用", "下游")):
+            allowed.add("callees")
+
+    state_markers = (
+        "field", "字段", "state", "状态", "context", "上下文", "cache", "缓存",
+        "read", "write", "读取", "写入", "清理", "赋值",
+    )
+    if any(marker in text for marker in state_markers):
+        allowed.update(("field_readers", "field_writers"))
+
+    polymorphism_markers = (
+        "interface", "abstract", "implementation", "override", "继承",
+        "父类", "子类", "超类", "super", "接口", "抽象", "实现", "覆写", "覆盖",
+    )
+    if any(marker in text for marker in polymorphism_markers):
+        allowed.update(("implementations", "overrides"))
+
+    # An underspecified legacy seed still receives one useful direction rather
+    # than the entire six-family relation menu.
+    if not allowed:
+        allowed.add("callers" if seed.direction == "upstream" else "callees")
     if seed.direction == "downstream":
         allowed.discard("callers")
     elif seed.direction == "upstream":
@@ -53,11 +93,7 @@ def _direction_safe_relations(seed: InvestigationSeed) -> tuple[str, ...]:
 
 def _default_relations(seed: InvestigationSeed) -> tuple[str, ...]:
     """Choose a small direction-safe relation set when the model omits it."""
-    if seed.direction == "upstream":
-        return ("callers", "implementations", "overrides")
-    if seed.evidence_need is EvidenceNeed.INSPECT_STRUCTURE:
-        return ("field_readers", "field_writers", "implementations", "overrides")
-    return ("callees", "field_readers", "field_writers", "implementations", "overrides")
+    return _direction_safe_relations(seed)
 
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts" / "controlled"
 _DOMAIN_PROMPTS = {
@@ -374,38 +410,46 @@ def _validate_plan(
             valid.append(normalized_item)
         seen_seed.add(item.seed_id)
     missing = [seed for seed in seeds.values() if seed.seed_id not in seen_seed]
-    if missing and len(valid) < max_subtasks:
-        missing_count = len(missing)
+    if missing and len(seeds) <= max_subtasks:
+        # The normal controlled path already caps the input seed list to the
+        # configured capacity.  In that case every seed is executable and a
+        # provider omission must never silently remove an investigation.  Keep
+        # valid provider instructions, install deterministic instructions for
+        # the omitted seeds, then restore the stable input order.
+        valid_by_seed = {item.seed_id: item for item in valid}
         repaired_count = 0
-        for seed in missing:
-            fallback = _fallback_instruction(
-                reviewer,
-                task_id,
-                seed,
-                max_tool_calls=max_tool_calls,
-                max_rounds=max_rounds,
-                enabled_tools=enabled_tools,
-                subtask_index=len(valid) + 1,
-            )
-            if fallback is None:
-                continue
-            valid.append(fallback)
-            repaired_count += 1
-            seen_seed.add(seed.seed_id)
-            if len(valid) >= max_subtasks:
-                break
+        ordered: list[SubtaskInstruction] = []
+        for seed in seeds.values():
+            item = valid_by_seed.get(seed.seed_id)
+            if item is None:
+                item = _fallback_instruction(
+                    reviewer,
+                    task_id,
+                    seed,
+                    max_tool_calls=max_tool_calls,
+                    max_rounds=max_rounds,
+                    enabled_tools=enabled_tools,
+                    subtask_index=len(ordered) + 1,
+                )
+                if item is not None:
+                    repaired_count += 1
+            if item is not None:
+                ordered.append(item.model_copy(update={
+                    "subtask_id": f"subtask-{reviewer.value}-{task_id}-{len(ordered) + 1}"
+                }))
+        valid = ordered[:max_subtasks]
+        seen_seed = {item.seed_id for item in valid}
         if repaired_count:
             diagnostics.append(
                 f"subtask_plan_missing_seeds_repaired:{repaired_count}"
             )
-        if repaired_count < missing_count:
-            diagnostics.append(
-                f"subtask_plan_missing_seeds:{missing_count - repaired_count}"
-            )
+        unresolved = len(seeds) - len(seen_seed)
+        if unresolved:
+            diagnostics.append(f"subtask_plan_missing_seeds:{unresolved}")
     elif missing:
-        # The provider returned more seeds than the configured executable
-        # capacity.  Keep this as an unresolved diagnostic; unlike the branch
-        # above no deterministic fallback instruction was installed.
+        # More seeds were supplied than the configured executable capacity.
+        # The caller has already applied the deterministic priority cut; keep
+        # the omission explicit instead of inventing extra React work.
         diagnostics.append(f"subtask_plan_missing_seeds:{len(missing)}")
     return SubtaskPlan(reviewer=reviewer, task_id=task_id, subtasks=tuple(valid))
 

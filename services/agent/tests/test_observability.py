@@ -428,7 +428,7 @@ def test_trace_view_expands_controlled_review_into_reviewer_workstreams():
     ]
     controlled = view["steps"]["node:controlled-node"]
     assert controlled["title"] == "受控审查"
-    assert "2 个图谱计划" in controlled["summary"]
+    assert "2 个调查计划" in controlled["summary"]
     assert "1 次工具" in controlled["summary"]
 
     sections = {

@@ -2,7 +2,9 @@
 """ReviewCouncil 编排图。
 
 默认先按 PR 体量路由：small / medium 构建 file task；large 构建 hunk task。
-所有 task 经过 DirectGate，Full task 进入 Plan、发现、举证与裁决链。
+所有 task 经过 DirectGate，Full task 进入 Plan、发现、举证与裁决链；
+controlled 默认由一个统一 Reviewer 生成中性调查种子，再由 GraphPlan
+拆分为有界子任务 React。
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ from codeguard_agent.models.tasks import (
     TaskRoute,
     InvestigationSeed,
     SubtaskInstruction,
+    SubtaskPlan,
 )
 from codeguard_agent.pipeline.tasks import task_builder as task_prep
 from codeguard_agent.pipeline.execution.concurrency import run_bounded_parallel
@@ -1825,7 +1828,7 @@ def _controlled_review_node(
             # The controlled-mode budget is user-configurable.  Do not apply
             # the legacy three-fragment cap here: ReviewPlan already limits
             # the routed topic count, and this value is the final per-task
-            # injection budget shared by all three reviewers.
+            # injection budget shared by the unified reviewer.
             max_specialized_fragments=max(
                 0,
                 state.get("controlled_max_knowledge_topics", 4),
@@ -1837,6 +1840,9 @@ def _controlled_review_node(
         traces: list[CouncilTrace] = []
         triage_state: dict[str, Any] = {}
         graph_plan_state: dict[str, Any] = {}
+        subtask_plan_state: dict[str, SubtaskPlan] = {}
+        subtask_outcome_state: dict[str, str] = {}
+        subtask_reason_state: dict[str, str] = {}
         assessment_state: dict[str, Any] = {}
         proof_state: dict[str, Any] = {}
 
@@ -1939,9 +1945,10 @@ def _controlled_review_node(
 
                 # GraphPlan calls are independent: they only consume the
                 # immutable triage output and do not mutate the evidence
-                # catalog or the shared execution budget.  Run the three
-                # reviewer plans concurrently, but collect them in the
-                # stable DEFAULT_REVIEWERS order below.
+                # catalog or the shared execution budget.  The compatibility
+                # path may still build one plan per configured reviewer; the
+                # active default has one unified reviewer and collects plans
+                # in stable configuration order.
                 graph_plan_jobs.append((reviewer_config, reviewer_kind, graph_seeds))
 
             if controlled_execution_mode == "subtask_react":
@@ -1949,13 +1956,11 @@ def _controlled_review_node(
                 # subtask runs one local React.  The legacy fixed-step executor
                 # below remains available under planned_steps until replay
                 # validation authorizes its removal.
-                # The three fixed reviewers triage independently, so equivalent
-                # concerns can arrive with different wording and seed IDs.  Do
-                # the semantic-independent grouping before GraphPlan.  A group
-                # keeps one representative seed for execution and records all
+                # Equivalent concerns can arrive with different wording and
+                # seed IDs.  Group them before GraphPlan.  A group keeps one
+                # representative seed for execution and records all
                 # reviewer/seed provenance in the trace; it therefore cannot
-                # multiply the React/tool budget while still preserving which
-                # reviewers observed the concern.
+                # multiply the React/tool budget.
                 neutral_by_reviewer: dict[ReviewerKind, list[InvestigationSeed]] = {}
                 for reviewer_config in DEFAULT_REVIEWERS:
                     reviewer_name = reviewer_config.source_agent
@@ -2049,7 +2054,8 @@ def _controlled_review_node(
                         ))
                         continue
                     _config, plan, diagnostics = result
-                    graph_plan_state[f"{task.id}:{reviewer_config.source_agent}"] = plan
+                    plan_key = f"{task.id}:{reviewer_config.source_agent}"
+                    subtask_plan_state[plan_key] = plan
                     traces.extend(
                         CouncilTrace(
                             node="graph_plan",
@@ -2106,7 +2112,13 @@ def _controlled_review_node(
                         ),
                     ))
                 planned_subtasks = planned_subtasks[:max_runnable_subtasks]
+                for _reviewer_config, instruction in planned_subtasks:
+                    subtask_outcome_state[f"{task.id}:{instruction.subtask_id}"] = "planned"
                 if tool_client is None:
+                    for _reviewer_config, instruction in planned_subtasks:
+                        key = f"{task.id}:{instruction.subtask_id}"
+                        subtask_outcome_state[key] = "failed"
+                        subtask_reason_state[key] = "tool_client_unavailable"
                     traces.append(CouncilTrace(
                         node="controlled_review",
                         event="task_review_failed",
@@ -2188,6 +2200,12 @@ def _controlled_review_node(
                 valid_subtask_results = [
                     result for result in subtask_results if result is not None
                 ]
+                for planned_result, planned_item in zip(subtask_results, planned_subtasks):
+                    if planned_result is None:
+                        instruction = planned_item[1]
+                        key = f"{task.id}:{instruction.subtask_id}"
+                        subtask_outcome_state[key] = "failed"
+                        subtask_reason_state[key] = "worker_failed"
                 ordered_records = tuple(
                     record
                     for _subtask_index, _reviewer_config, _instruction, _outcome, client
@@ -2204,6 +2222,14 @@ def _controlled_review_node(
                     and artifact.call_id
                 }
                 for _subtask_index, reviewer_config, instruction, outcome, _client in valid_subtask_results:
+                    status_key = f"{task.id}:{instruction.subtask_id}"
+                    subtask_outcome_state[status_key] = (
+                        outcome.result.outcome
+                        if outcome.result is not None
+                        else outcome.status
+                    )
+                    if outcome.reason:
+                        subtask_reason_state[status_key] = outcome.reason
                     traces.extend(
                         CouncilTrace(
                             node="execute",
@@ -2796,6 +2822,9 @@ def _controlled_review_node(
             "tool_trace_records": all_trace_refs,
             "controlled_triage": triage_state,
             "controlled_graph_plans": graph_plan_state,
+            "controlled_subtask_plans": subtask_plan_state,
+            "controlled_subtask_outcomes": subtask_outcome_state,
+            "controlled_subtask_reasons": subtask_reason_state,
             "controlled_assessments": assessment_state,
             "controlled_proof_matches": proof_state,
             "controlled_candidate_contexts": candidate_contexts,
@@ -3067,8 +3096,8 @@ def build_review_graph(
         START → classify_mode
           ├─ small / medium → file_task_builder → task_route → task_selection → plan → summary?
           └─ large          → diff_task_builder → task_route → task_selection → plan → summary?
-                       → symbol_resolution → controlled_review
-                       (DirectTriage → GraphPlan → Execute → EvidenceAssessment)
+                        → symbol_resolution → controlled_review
+                        (DirectTriage → GraphPlan → bounded subtask React)
                        → council_coordinator(fan-in)
                          ├─ evidence_mode=full → evidence_verifier
                          │    → council_judge → causal_merge → END

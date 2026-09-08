@@ -45,10 +45,10 @@ class KnowledgeCatalog:
         return tuple(fragments)
 
     def shared_specialized_fragments(self) -> Sequence[KnowledgeFragment]:
-        """返回三个领域目录合并后的主题集合。
+        """返回历史领域目录合并后的主题集合。
 
-        Controlled 模式的 ReviewPlan 只负责 task 级知识路由；同一 task 的三个
-        reviewer 看到完全相同的专项主题，避免把知识路由误当成 reviewer 路由。
+        Controlled 模式的 ReviewPlan 只负责 task 级知识路由；统一 Reviewer
+        看到同一份专项主题，避免把知识路由误当成 reviewer 路由。
         同名主题按稳定领域顺序保留第一份，重复内容不会注入两次。
         """
         fragments: list[KnowledgeFragment] = []
