@@ -8,14 +8,19 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 import posixpath
 import stat
 import subprocess
 import tempfile
+import time
 from uuid import uuid4
 
 from evals.schema import EvalCase
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -26,10 +31,33 @@ class MaterializedWorkspace:
 
     def cleanup(self) -> None:
         """清理本次生成的明确目录，不触碰基线快照。"""
-        if self.path.exists():
-            import shutil
+        if not self.path.exists():
+            return
 
-            shutil.rmtree(self.path, onerror=_remove_readonly)
+        # Windows may keep a Git index/object or a Gateway file handle alive
+        # for a short period after the HTTP session has been destroyed.  A
+        # single rmtree therefore made an otherwise valid evaluation abort
+        # while cleaning up.  Retry the exact materialized directory with
+        # bounded backoff; if a third-party handle still wins, leave it in
+        # place and let the next maintenance pass remove it rather than
+        # discarding the completed case's score.
+        import shutil
+
+        delay = 0.25
+        for attempt in range(6):
+            try:
+                shutil.rmtree(self.path, onerror=_remove_readonly)
+                return
+            except (PermissionError, OSError) as exc:
+                if attempt == 5:
+                    logger.warning(
+                        "评测工作区清理延迟，保留待后续清理: %s (%s)",
+                        self.path,
+                        exc,
+                    )
+                    return
+                time.sleep(delay)
+                delay = min(delay * 2, 2.0)
 
 
 def tool_server_repo_path(repo_path: str | Path) -> str:
