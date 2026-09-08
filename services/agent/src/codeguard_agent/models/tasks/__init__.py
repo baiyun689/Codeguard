@@ -34,6 +34,7 @@ from codeguard_agent.models.tasks.controlled import (
     WorkItem,
 )
 from codeguard_agent.models.tasks.symbols import (
+    ResolvedReference,
     ResolvedSymbol,
     SymbolResolutionStatus,
     TaskSymbolContext,
@@ -78,6 +79,7 @@ __all__ = [
     "ProofMatchStatus",
     "ProofScope",
     "ResolvedSymbol",
+    "ResolvedReference",
     "ReviewAssignments",
     "ReviewBudget",
     "ReviewMode",

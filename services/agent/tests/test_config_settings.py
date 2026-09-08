@@ -109,8 +109,8 @@ def test_phase2_budget_defaults(monkeypatch):
     assert settings.max_review_tasks == 100
     assert settings.max_tasks_per_file == 10
     assert settings.graph_build_timeout_seconds == 120
-    assert settings.controlled_max_seeds_per_change_unit == 4
-    assert settings.controlled_subtask_max_tool_calls == 6
+    assert settings.controlled_max_seeds_per_change_unit == 8
+    assert settings.controlled_subtask_max_tool_calls == 20
 
 
 def test_phase2_budget_env_override(monkeypatch):
@@ -154,7 +154,7 @@ def test_subtask_react_budgets_are_configurable(monkeypatch):
 def test_unknown_controlled_execution_mode_falls_back_to_legacy(monkeypatch):
     monkeypatch.setattr(config_module, "_load_dotenv", lambda: None)
     monkeypatch.setenv("CODEGUARD_CONTROLLED_EXECUTION_MODE", "free-form")
-    assert Settings.from_env().controlled_execution_mode == "planned_steps"
+    assert Settings.from_env().controlled_execution_mode == "subtask_react"
 
 
 def test_local_html_trace_defaults_to_disabled(monkeypatch):

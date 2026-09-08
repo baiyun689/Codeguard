@@ -42,14 +42,14 @@ profiles:
     evidence_tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
     strict_tools: true
 
-  # 受控 Plan-and-Execute：三路 DirectTriage → GraphPlan → 有界 Execute，
+  # 受控 Plan-and-Execute：统一 DirectTriage → GraphPlan → 有界子任务 React，
   # 仅在 GraphPlan 明确声明时调用工具；预算由 CODEGUARD_CONTROLLED_* 配置。
   eval-controlled-codegraph:
     mode: pipeline
     execution: pipeline
     orchestration: plan-and-execute
     discovery_mode: controlled
-    tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
+    tools: [read_symbol, query_relations]
     evidence_tools: []
     strict_tools: true
 

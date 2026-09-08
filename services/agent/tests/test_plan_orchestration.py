@@ -41,9 +41,9 @@ def test_large_plan_units_are_reused_per_file():
 def test_plan_validation_rejects_cross_reviewer_topics():
     plan = TaskAgentPlan(
         plan_unit_id="A.java",
-        reviewers=(ReviewerKind.THREAT_MODEL,),
+        reviewers=(ReviewerKind.BEHAVIOR,),
         reviewer_plans=({
-            "reviewer": "threat_model",
+            "reviewer": "behavior",
             "objectives": ["检查新增管理入口的授权边界"],
             "knowledge_topics": ["COMPLEXITY_CONTROL_FLOW", "AUTHORIZATION"],
         },),
@@ -53,7 +53,7 @@ def test_plan_validation_rejects_cross_reviewer_topics():
         plan_unit_id="A.java",
         catalog=KnowledgeCatalog(),
     )
-    assert validated.reviewers == (ReviewerKind.THREAT_MODEL,)
+    assert validated.reviewers == (ReviewerKind.BEHAVIOR,)
     assert validated.reviewer_plans[0].knowledge_topics == ("AUTHORIZATION",)
     assert any("invalid_topic" in item for item in diagnostics)
 
@@ -61,10 +61,10 @@ def test_plan_validation_rejects_cross_reviewer_topics():
 def test_plan_validation_requires_objectives_and_matching_reviewer_lists():
     plan = TaskAgentPlan(
         plan_unit_id="A.java",
-        reviewers=(ReviewerKind.THREAT_MODEL, ReviewerKind.BEHAVIOR),
+        reviewers=(ReviewerKind.BEHAVIOR,),
         reviewer_plans=(
             {
-                "reviewer": "threat_model",
+                "reviewer": "behavior",
                 "objectives": [],
                 "knowledge_topics": [],
             },
@@ -76,8 +76,7 @@ def test_plan_validation_requires_objectives_and_matching_reviewer_lists():
         catalog=KnowledgeCatalog(),
     )
     assert validated.fallback is True
-    assert "empty_objectives:threat_model" in diagnostics
-    assert "reviewers_and_reviewer_plans_mismatch" in diagnostics
+    assert "empty_objectives:behavior" in diagnostics
 
 
 def test_plan_validation_falls_back_for_valid_but_mismatched_reviewer_lists():

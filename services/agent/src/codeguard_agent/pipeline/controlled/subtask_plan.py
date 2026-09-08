@@ -9,6 +9,7 @@ import json
 
 from codeguard_agent.llm.client import invoke_with_retry
 from codeguard_agent.models.tasks import (
+    EvidenceNeed,
     InvestigationSeed,
     ReviewerKind,
     SubtaskInstruction,
@@ -23,6 +24,41 @@ from codeguard_agent.pipeline.controlled.subtask_capabilities import (
     required_graph_tool,
 )
 
+_RELATIONS = {
+    "callers", "callees", "field_readers", "field_writers",
+    "implementations", "overrides",
+}
+_RELATION_ORDER = (
+    "callers", "callees", "field_readers", "field_writers",
+    "implementations", "overrides",
+)
+
+
+def _direction_safe_relations(seed: InvestigationSeed) -> tuple[str, ...]:
+    """Return relation families executable for a normalized seed direction.
+
+    ``query_relations`` is intentionally one tool with several typed relation
+    families.  The direction is part of the subtask contract, so a provider
+    cannot turn a downstream task into an upstream caller scan (or vice versa)
+    merely by listing a different relation in its JSON response.
+    """
+
+    allowed = set(_RELATIONS)
+    if seed.direction == "downstream":
+        allowed.discard("callers")
+    elif seed.direction == "upstream":
+        allowed.discard("callees")
+    return tuple(relation for relation in _RELATION_ORDER if relation in allowed)
+
+
+def _default_relations(seed: InvestigationSeed) -> tuple[str, ...]:
+    """Choose a small direction-safe relation set when the model omits it."""
+    if seed.direction == "upstream":
+        return ("callers", "implementations", "overrides")
+    if seed.evidence_need is EvidenceNeed.INSPECT_STRUCTURE:
+        return ("field_readers", "field_writers", "implementations", "overrides")
+    return ("callees", "field_readers", "field_writers", "implementations", "overrides")
+
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts" / "controlled"
 _DOMAIN_PROMPTS = {
     ReviewerKind.BEHAVIOR: "graph-plan-behavior.txt",
@@ -31,14 +67,17 @@ _DOMAIN_PROMPTS = {
 }
 
 
-def _system_prompt(reviewer: ReviewerKind) -> str:
+def _system_prompt(reviewer: ReviewerKind, *, unified: bool = False) -> str:
     common = (_PROMPT_DIR / "graph-plan-subtask-common.txt").read_text(encoding="utf-8")
-    domain = (_PROMPT_DIR / _DOMAIN_PROMPTS[reviewer]).read_text(encoding="utf-8")
+    prompt_name = "graph-plan-unified.txt" if unified else _DOMAIN_PROMPTS[reviewer]
+    domain = (_PROMPT_DIR / prompt_name).read_text(encoding="utf-8")
     return f"{common.strip()}\n\n{domain.strip()}"
 
 
-def prompt_hash(reviewer: ReviewerKind) -> str:
-    return hashlib.sha256(_system_prompt(reviewer).encode("utf-8")).hexdigest()[:16]
+def prompt_hash(reviewer: ReviewerKind, *, unified: bool = False) -> str:
+    return hashlib.sha256(
+        _system_prompt(reviewer, unified=unified).encode("utf-8")
+    ).hexdigest()[:16]
 
 
 def build_subtask_plan_user_prompt(
@@ -56,11 +95,20 @@ def build_subtask_plan_user_prompt(
         (symbol_context.symbols if symbol_context else ()),
         key=lambda symbol: symbol.symbol_id,
     ))
+    ordered_references = tuple(sorted(
+        (getattr(symbol_context, "references", ()) if symbol_context else ()),
+        key=lambda reference: (reference.symbol_id, reference.line),
+    ))
     aliases = {
         symbol.symbol_id: f"S{index:02d}"
         for index, symbol in enumerate(ordered_symbols, start=1)
         if symbol.symbol_id
     }
+    next_alias = len(aliases) + 1
+    for reference in ordered_references:
+        if reference.symbol_id and reference.symbol_id not in aliases:
+            aliases[reference.symbol_id] = f"S{next_alias:02d}"
+            next_alias += 1
 
     def render_symbol(symbol: Any) -> str:
         payload = symbol.model_dump()
@@ -80,6 +128,17 @@ def build_subtask_plan_user_prompt(
     symbols = "\n".join(
         render_symbol(symbol) for symbol in ordered_symbols
     ) or "(无已解析 symbol；只能生成无法执行的限制说明)"
+    references = "\n".join(
+        json.dumps(
+            {
+                **reference.model_dump(),
+                "symbol_id": aliases.get(reference.symbol_id, "UNAVAILABLE"),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        for reference in ordered_references
+    ) or "(无变更行引用目标)"
     seed_text = "\n".join(render_seed(seed) for seed in seeds)
     allowed = ", ".join(sorted(enabled_tools)) if enabled_tools is not None else "全部已注册工具"
     return (
@@ -87,6 +146,7 @@ def build_subtask_plan_user_prompt(
         f'max_subtasks="{max_subtasks}" max_tool_calls="{max_tool_calls}" max_rounds="{max_rounds}">\n'
         f"<task_patch file=\"{task.file}\">\n{task.patch}\n</task_patch>\n"
         f"<symbol_context>\n{symbols}\n</symbol_context>\n"
+        f"<changed_references>\n{references}\n</changed_references>\n"
         f"<investigation_seeds>\n{seed_text}\n</investigation_seeds>\n"
         f"允许工具：{allowed}\n"
         "不要输出候选；每个 seed 恰好给出一个 bounded SubtaskInstruction。"
@@ -107,8 +167,11 @@ def run_subtask_plan(
     max_subtasks: int,
     max_path_depth: int,
     enabled_tools: frozenset[str] | set[str] | None = None,
+    unified: bool = False,
 ) -> tuple[SubtaskPlan, tuple[str, ...]]:
-    diagnostics: list[str] = [f"subtask_plan_prompt_hash:{prompt_hash(reviewer)}"]
+    diagnostics: list[str] = [
+        f"subtask_plan_prompt_hash:{prompt_hash(reviewer, unified=unified)}"
+    ]
     normalized_seeds = tuple(normalize_investigation_seed(seed) for seed in seeds)
     seed_by_id = {seed.seed_id: seed for seed in normalized_seeds if seed.seed_id}
     if not normalized_seeds:
@@ -128,7 +191,10 @@ def run_subtask_plan(
     try:
         raw = invoke_with_retry(
             llm.with_structured_output(LlmSubtaskPlan, method=structured_method),
-            [("system", _system_prompt(reviewer)), ("human", prompt)],
+            [
+                ("system", _system_prompt(reviewer, unified=unified)),
+                ("human", prompt),
+            ],
             max_retries=max_retries,
         )
         payload = raw.model_dump() if hasattr(raw, "model_dump") else raw
@@ -171,6 +237,11 @@ def _validate_plan(
     diagnostics: list[str],
 ) -> SubtaskPlan:
     allowed_ids = {symbol.symbol_id for symbol in (symbol_context.symbols if symbol_context else ())}
+    allowed_ids.update(
+        reference.symbol_id
+        for reference in (getattr(symbol_context, "references", ()) if symbol_context else ())
+        if reference.symbol_id
+    )
     ordered_symbols = tuple(sorted(
         (symbol_context.symbols if symbol_context else ()),
         key=lambda symbol: symbol.symbol_id,
@@ -180,6 +251,14 @@ def _validate_plan(
         for index, symbol in enumerate(ordered_symbols, start=1)
         if symbol.symbol_id
     }
+    next_alias = len(alias_to_raw) + 1
+    for reference in sorted(
+        (getattr(symbol_context, "references", ()) if symbol_context else ()),
+        key=lambda item: (item.symbol_id, item.line),
+    ):
+        if reference.symbol_id and reference.symbol_id not in alias_to_raw:
+            alias_to_raw[f"S{next_alias:02d}"] = reference.symbol_id
+            next_alias += 1
     enabled = set(enabled_tools) if enabled_tools is not None else None
     valid: list[SubtaskInstruction] = []
     seen_seed: set[str] = set()
@@ -210,6 +289,17 @@ def _validate_plan(
         if not tools:
             diagnostics.append(f"subtask_no_allowed_tool:{item.seed_id}")
             continue
+        direction_relations = set(_direction_safe_relations(seed))
+        requested_relations = tuple(
+            relation
+            for relation in item.allowed_relations
+            if relation in direction_relations
+        )
+        relations = requested_relations or tuple(
+            relation
+            for relation in _default_relations(seed)
+            if relation in direction_relations
+        )
         primary = item.primary_tool if item.primary_tool in tools else _default_tool(seed, tools)
         depth = min(item.max_tool_calls, max_tool_calls)
         rounds = min(item.max_rounds, max_rounds)
@@ -220,6 +310,7 @@ def _validate_plan(
                 "subtask_id": f"subtask-{reviewer.value}-{task_id}-{len(valid)+1}",
                 "reviewer": reviewer,
                 "allowed_tools": tools,
+                "allowed_relations": relations,
                 "initial_symbol_ids": decoded_symbol_ids,
                 "primary_tool": primary,
                 "path_kind": seed.path_kind,
@@ -247,6 +338,9 @@ def _validate_plan(
             ))[:4]
             merged = existing.model_copy(update={
                 "allowed_tools": merged_tools,
+                "allowed_relations": tuple(dict.fromkeys(
+                    (*existing.allowed_relations, *normalized_item.allowed_relations)
+                ))[:6],
                 "initial_symbol_ids": tuple(dict.fromkeys(
                     (*existing.initial_symbol_ids, *normalized_item.initial_symbol_ids)
                 ))[:4],
@@ -276,7 +370,6 @@ def _validate_plan(
         else:
             if len(valid) >= max_subtasks:
                 diagnostics.append("subtask_plan_task_limit")
-                seen_seed.add(item.seed_id)
                 continue
             valid.append(normalized_item)
         seen_seed.add(item.seed_id)
@@ -364,6 +457,7 @@ def _fallback_instruction(
         observed_change=seed.observed_change,
         initial_symbol_ids=seed.initial_symbol_ids,
         allowed_tools=tools,
+        allowed_relations=_default_relations(seed),
         primary_tool=_default_tool(seed, tools),
         path_kind=seed.path_kind,
         direction=seed.direction,

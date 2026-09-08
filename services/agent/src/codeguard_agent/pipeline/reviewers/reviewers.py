@@ -1,8 +1,8 @@
-"""发现者 Agent 定义与辅助函数。
+"""统一代码审查 Reviewer 定义与辅助函数。
 
-Reviewer dataclass 描述每个发现者的配置（名称、prompt、共享工具边界）。
-DEFAULT_REVIEWERS 是三个默认发现者（ThreatModel/Behavior/Maintainability）。
-辅助函数供 graph.py 的发现者子图使用。
+旧的三维发现者名称和 prompt 仍保留在仓库中供兼容路径使用；当前默认受控
+管线只运行一个覆盖安全、行为和可维护性的 Reviewer，避免同一 task 被重复
+拆分、重复取证和重复消耗模型预算。
 """
 
 from __future__ import annotations
@@ -23,10 +23,8 @@ logger = logging.getLogger("codeguard")
 _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
 
 COMMON_REVIEW_TOOLS = [
-    "get_file_content",
-    "inspect_structure",
-    "inspect_change_impact",
-    "inspect_path",
+    "read_symbol",
+    "query_relations",
 ]
 
 
@@ -46,24 +44,13 @@ class Reviewer:
         object.__setattr__(self, "source_agent", self.source_agent or self.name)
 
 
-# 默认的三个并行领域审查员共享全部事实工具；领域 Prompt 决定使用时机。
+# 默认只运行一个统一 Reviewer。source_agent 保持 behavior 以兼容旧的
+# ReviewerKind、知识目录和候选来源字段；这不是“行为维度专属”含义。
 DEFAULT_REVIEWERS: tuple[Reviewer, ...] = (
     Reviewer(
-        "ThreatModelAgent",
-        "threat-model-base.txt",
-        source_agent="threat_model",
-        tool_allowlist=list(COMMON_REVIEW_TOOLS),
-    ),
-    Reviewer(
-        "BehaviorAgent",
-        "behavior-base.txt",
+        "UnifiedReviewAgent",
+        "unified-review-base.txt",
         source_agent="behavior",
-        tool_allowlist=list(COMMON_REVIEW_TOOLS),
-    ),
-    Reviewer(
-        "MaintainabilityAgent",
-        "maintainability-base.txt",
-        source_agent="maintainability",
         tool_allowlist=list(COMMON_REVIEW_TOOLS),
     ),
 )
@@ -174,26 +161,12 @@ def build_reviewer_user_prompt(
                 _text(symbol.model_dump_json()),
                 "    </symbol>",
             ])
-            domain = Path(user_prompt_file).stem
-            if domain == "behavior":
-                recommendation = (
-                    "caller/入口/影响范围→inspect_change_impact; "
-                    "callee/listener/callback→inspect_path(behavior); "
-                    "字段读写/一跳关系→inspect_structure; "
-                    "条件/顺序/状态赋值→先定位后 get_file_content"
-                )
-            elif domain == "threat-model":
-                recommendation = (
-                    "下游敏感调用线索→inspect_path(security); "
-                    "上游入口/影响范围→inspect_change_impact; "
-                    "参数使用/保护条件→先定位后 get_file_content"
-                )
-            else:
-                recommendation = (
-                    "局部耦合/继承/字段/一跳依赖→inspect_structure; "
-                    "跨符号执行耦合→inspect_path(behavior); "
-                    "受影响调用方→inspect_change_impact"
-                )
+            recommendation = (
+                "实现语义→read_symbol；调用方/入口→query_relations(relation=callers)；"
+                "被调用方/callback→query_relations(relation=callees)；"
+                "字段读写→query_relations(relation=field_readers 或 field_writers)；"
+                "接口实现/覆盖→query_relations(relation=implementations 或 overrides)"
+            )
             parts.append(
                 f'    <query_hint symbol_id="{_attr(symbol.symbol_id)}" '
                 f'range="{symbol.start_line}-{symbol.end_line}" '
@@ -201,6 +174,17 @@ def build_reviewer_user_prompt(
                 f'deletion_anchor_lines="{_attr(",".join(str(anchor.anchor_line) for anchor in task.deletion_anchors if symbol.start_line <= anchor.anchor_line <= symbol.end_line))}">'
                 f'{_text(recommendation)}</query_hint>'
             )
+        if getattr(symbol_context, "references", ()):
+            parts.append("    <changed_references>")
+            for reference in getattr(symbol_context, "references", ()):
+                parts.append(
+                    "      " + _text(reference.model_dump_json())
+                )
+            parts.append(
+                "      这些是变更新增行上由 Gateway 解析出的真实引用目标；"
+                "可作为 read_symbol/query_relations 的初始入口，不代表问题成立。"
+            )
+            parts.append("    </changed_references>")
         for limitation in symbol_context.limitations:
             parts.append(f"    <limitation>{_text(limitation)}</limitation>")
         parts.append("  </symbol_context>")

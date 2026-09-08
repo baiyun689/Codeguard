@@ -19,6 +19,36 @@ class ToolProofContract:
 
 
 TOOL_PROOF_CONTRACTS: dict[str, ToolProofContract] = {
+    "read_symbol": ToolProofContract(
+        name="read_symbol",
+        can_prove=(
+            "local source mechanism",
+            "local control flow and conditions",
+            "state reads and writes",
+        ),
+        cannot_prove=(
+            "cross-file reachability",
+            "caller or callee existence",
+            "runtime path absence",
+        ),
+        required_arguments=("symbol_id",),
+    ),
+    "query_relations": ToolProofContract(
+        name="query_relations",
+        can_prove=(
+            "typed bounded relation facts",
+            "resolved caller/callee relationships",
+            "field readers and writers",
+            "interface implementations and overrides",
+        ),
+        cannot_prove=(
+            "path absence",
+            "execution order",
+            "runtime reachability",
+            "complete data-flow or parameter propagation",
+        ),
+        required_arguments=("subject_symbol_id", "relation"),
+    ),
     "get_file_content": ToolProofContract(
         name="get_file_content",
         can_prove=(

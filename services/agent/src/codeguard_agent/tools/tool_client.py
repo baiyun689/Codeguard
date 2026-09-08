@@ -115,6 +115,48 @@ class ToolClient:
             query["cursor"] = cursor
         return self._post_tool("get_file_content", {"query": json.dumps(query, ensure_ascii=False)})
 
+    def read_symbol(
+        self,
+        symbol_id: str,
+        *,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        cursor: str | None = None,
+    ) -> ToolResponse:
+        """Read a known symbol through the stable controlled-review endpoint."""
+        query: dict[str, object] = {"symbol_id": unescape(symbol_id)}
+        if start_line is not None:
+            query["start_line"] = start_line
+        if end_line is not None:
+            query["end_line"] = end_line
+        if cursor is not None:
+            query["cursor"] = cursor
+        return self._post_tool("read_symbol", {"query": json.dumps(query, ensure_ascii=False)})
+
+    def query_relations(
+        self,
+        subject_symbol_id: str,
+        relation: str,
+        *,
+        depth: int = 1,
+        limit: int = 20,
+        cursor: int | None = None,
+        include_callsite: bool = True,
+        include_context: bool = True,
+    ) -> ToolResponse:
+        """Query one typed relation family from a known symbol."""
+        query: dict[str, object] = {
+            "subject_symbol_id": unescape(subject_symbol_id),
+            "relation": relation,
+            "depth": depth,
+            "limit": limit,
+            "include_callsite": include_callsite,
+            "include_context": include_context,
+        }
+        if cursor is not None:
+            query["cursor"] = cursor
+        return self._post_tool("query_relations", {"query": json.dumps(query, ensure_ascii=False)})
+
     def resolve_change_context(self, changes: list[dict]) -> ToolResponse:
         """批量把变更文件/行解析为稳定图谱符号。"""
         return self._post_tool(

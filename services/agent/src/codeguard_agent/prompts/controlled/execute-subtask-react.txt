@@ -10,16 +10,16 @@
 
 运行时只会暴露 `allowed_tools` 中的工具；如果工具被拒绝，不要绕过限制。通常顺序如下，但不是死板脚本：
 
-1. 使用 GraphPlan 指定的 primary tool 从初始 Sxx symbol 开始定位关系；
+1. 使用 GraphPlan 指定的 primary tool 从初始 Sxx symbol 开始定位关系或源码；
 2. 只有结果中出现了稳定、已解析的新 Rxx symbol alias，且 objective 仍需要它，才继续读取/展开该 symbol；
-3. 需要理解条件、异常、返回值或状态传播时再调用 `get_file_content`；
+3. 需要理解条件、异常、返回值或状态传播时调用 `read_symbol`；
 4. 结果已经满足 required_facts、出现明确反驳或没有预算时立即停止。
 
 如果工具返回 `subtask_tool_budget_exceeded`，这不是新的事实，也不是“没有问题”的证明。
 立即停止工具调用并输出 `InvestigationResult`；若已有 observation 能直接证明机制才输出
 `findings`，否则输出 `inconclusive`。不要再次尝试同一参数、换别名或调用未授权工具。
 
-`inspect_path(behavior)` 只向下，`inspect_change_impact` 只向上，`inspect_structure` 只一跳；不要为了“看看”调用不符合方向的工具。子任务中的 `path_kind` 是运行时约束：若为 `behavior`，只能把 inspect_path 的 path_kind 设为 behavior；若为 `security`，只能设为 security；若为空，则不能自行臆造安全路径。一个子任务可以同时使用一个方向的图查询和 inspect_structure，但不能把 inspect_path 与 inspect_change_impact 当成两个方向交替查询。分页 cursor 只用于同一个查询的下一页，不能借 cursor 改变 subject；新 symbol 展开必须使用工具实际返回的 Rxx alias。重复的 canonical query 不会产生新事实。
+`query_relations` 必须使用 GraphPlan 允许的 relation；不得把 callers 当成 callees，也不得把不同关系混在一次请求中。默认 depth=1，只有当前 objective 仍缺少事实时才增加 depth 或使用 cursor 续取。分页 cursor 只用于同一个 subject/relation 查询的下一页，不能借 cursor 改变 subject；新 symbol 展开必须使用工具实际返回的 Rxx alias。`read_symbol` 只读取已知 symbol；不能通过文件名或源码中的方法名猜测 symbol。重复的 canonical query 不会产生新事实。
 
 ## 证据纪律
 

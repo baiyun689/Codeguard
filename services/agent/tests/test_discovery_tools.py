@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+import json
 from threading import Event, Lock
 
 from codeguard_agent.pipeline.execution.discovery import (
@@ -419,3 +420,67 @@ def test_separate_coordinators_do_not_share_cache() -> None:
     assert one.get_file_content("java:demo.A#run()").success
     assert two.get_file_content("java:demo.A#run()").success
     assert raw.calls == 2
+
+
+def test_dynamic_aliases_never_pollute_shared_symbol_cache() -> None:
+    """R01 is local to each subtask; cache keys must use the raw symbol."""
+
+    class Delegate:
+        def __init__(self) -> None:
+            self.relation_calls = 0
+            self.source_calls = []
+
+        def query_relations(self, subject, relation, **_kwargs):
+            self.relation_calls += 1
+            target = "java:B#run()" if subject == "java:RootA#run()" else "java:C#run()"
+            return ToolResponse(True, json.dumps({
+                "schema_version": 2,
+                "outcome": "found",
+                "coverage": "complete",
+                "source_scope": "MAIN",
+                "subject_symbol_id": subject,
+                "symbols": [
+                    {"id": subject, "kind": "method", "source_set": "MAIN"},
+                    {"id": target, "kind": "method", "source_set": "MAIN"},
+                ],
+                "relationships": [{
+                    "sourceId": subject, "targetId": target, "kind": "CALLS",
+                    "file": "A.java", "line": 1, "source_set": "MAIN",
+                    "resolution": "RESOLVED",
+                }],
+                "unresolved_relationships": [], "unresolved_count": 0,
+                "limitations": [], "next_cursor": None,
+            }))
+
+        def read_symbol(self, symbol_id, **_kwargs):
+            self.source_calls.append(symbol_id)
+            return ToolResponse(True, f"source for {symbol_id}")
+
+    delegate = Delegate()
+    coordinator = DiscoveryToolCoordinator()
+    client_a = CoordinatedDiscoveryToolClient(
+        delegate, coordinator,
+        initial_symbol_ids={"java:RootA#run()"},
+        symbol_catalog_ids=("java:RootA#run()",),
+        lossless_payload=True,
+    )
+    client_b = CoordinatedDiscoveryToolClient(
+        delegate, coordinator,
+        initial_symbol_ids={"java:RootB#run()"},
+        symbol_catalog_ids=("java:RootB#run()",),
+        lossless_payload=True,
+    )
+
+    client_a.query_relations("S01", "callees")
+    client_b.query_relations("S01", "callees")
+    assert client_a.read_symbol("R01").result.startswith("source for java:B#run()")
+    assert client_b.read_symbol("R01").result.startswith("source for java:C#run()")
+
+    # A later page/query may contain endpoints that are already rendered as
+    # local aliases.  They must resolve back to B/C rather than creating a
+    # chained alias such as R02 -> R01.
+    client_a.query_relations("S01", "callees", cursor=0)
+    assert client_a.symbol_aliases.get("R01") == "java:B#run()"
+    assert "R02" not in client_a.symbol_aliases
+    assert delegate.source_calls == ["java:B#run()", "java:C#run()"]
+    assert delegate.source_calls == ["java:B#run()", "java:C#run()"]

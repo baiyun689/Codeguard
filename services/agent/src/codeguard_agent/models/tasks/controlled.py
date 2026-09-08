@@ -309,6 +309,15 @@ class SubtaskInstruction(ControlledModel):
     # source reader.  ``primary_tool`` is only an ordering hint; runtime
     # validation still enforces the domain/direction allowlist.
     allowed_tools: tuple[str, ...] = Field(default=(), max_length=4)
+    # Relation families are narrower than the tool itself.  The runtime uses
+    # this allowlist to prevent a downstream investigation from silently
+    # switching to callers or an unrelated field scan.
+    allowed_relations: tuple[
+        Literal[
+            "callers", "callees", "field_readers", "field_writers",
+            "implementations", "overrides",
+        ], ...
+    ] = Field(default=(), max_length=6)
     primary_tool: str = ""
     # Runtime copies these routing constraints from the neutral seed.  They
     # are not model-selected capabilities; they make the subtask contract
@@ -317,8 +326,11 @@ class SubtaskInstruction(ControlledModel):
     direction: Literal["downstream", "upstream"] | None = None
     required_facts: tuple[str, ...] = Field(default=(), max_length=6)
     stop_conditions: tuple[str, ...] = Field(default=(), max_length=6)
-    max_tool_calls: StrictInt = Field(default=6, ge=0, le=20)
-    max_rounds: StrictInt = Field(default=4, ge=1, le=12)
+    # Generous defaults keep the initial controlled implementation from
+    # turning a valid investigation into a budget artefact.  Deployments can
+    # still lower these through the CODEGUARD_CONTROLLED_* settings.
+    max_tool_calls: StrictInt = Field(default=20, ge=0, le=20)
+    max_rounds: StrictInt = Field(default=12, ge=1, le=12)
 
 
 class SubtaskPlan(ControlledModel):
@@ -326,7 +338,7 @@ class SubtaskPlan(ControlledModel):
 
     reviewer: ReviewerKind
     task_id: str = Field(min_length=1)
-    subtasks: tuple[SubtaskInstruction, ...] = Field(default=(), max_length=12)
+    subtasks: tuple[SubtaskInstruction, ...] = Field(default=(), max_length=24)
 
 
 class EvidenceStep(ControlledModel):

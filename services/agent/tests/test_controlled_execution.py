@@ -56,6 +56,7 @@ from codeguard_agent.pipeline.controlled.assessment import (
 from codeguard_agent.pipeline.controlled.routing import stable_seed_id
 from codeguard_agent.pipeline.controlled.triage import run_direct_triage
 from codeguard_agent.pipeline.controlled.triage import (
+    _candidate_to_investigation_seed,
     _merge_protocol_repair_issues,
     _needs_claim_consequence_repair,
     _needs_claim_scope_repair,
@@ -76,6 +77,32 @@ from codeguard_agent.pipeline.orchestration.graph import (
 )
 from codeguard_agent.pipeline.orchestration.graph import _auto_context_delta_step
 from codeguard_agent.tools.tool_client import ToolResponse
+
+
+def test_unified_triage_demotes_cross_file_candidate_to_neutral_seed():
+    seed = CandidateSeed(
+        seed_id="seed-cross-file",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-A.java#h0",
+        claim="调用方继续依赖旧返回行为",
+        mechanism="返回表达式从旧状态改为内部调用",
+        location_file="A.java",
+        location_line=2,
+        proof_scope=ProofScope.CROSS_FILE,
+        evidence_need=EvidenceNeed.INSPECT_PATH,
+        graph_question=GraphQuestion(
+            subject_ref="java:A#run()",
+            direction="downstream",
+            path_kind="behavior",
+            required_relationships=("CALLS",),
+            question="检查返回变化后的下游消费者行为",
+        ),
+    )
+    investigation = _candidate_to_investigation_seed(seed)
+    assert investigation is not None
+    assert investigation.initial_symbol_ids == ("java:A#run()",)
+    assert investigation.investigation_question == "检查返回变化后的下游消费者行为"
+    assert investigation.allowed_tools == ("query_relations", "read_symbol")
 
 
 def test_finalize_evidence_assessment_requires_complete_proof():

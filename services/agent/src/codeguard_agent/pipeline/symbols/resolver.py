@@ -10,6 +10,7 @@ from typing import Any, Sequence
 from pydantic import ValidationError
 
 from codeguard_agent.models.tasks import (
+    ResolvedReference,
     ResolvedSymbol,
     ReviewTask,
     SymbolResolutionStatus,
@@ -25,6 +26,7 @@ _LEGAL_OUTCOMES = {
     ("indeterminate", "partial"),
 }
 _SOURCE_SETS = {"MAIN", "TEST", "GENERATED"}
+_MAX_REFERENCES_PER_TASK = 32
 
 
 @dataclass(frozen=True)
@@ -44,12 +46,14 @@ def _context(
     status: SymbolResolutionStatus,
     *,
     symbols: Sequence[ResolvedSymbol] = (),
+    references: Sequence[ResolvedReference] = (),
     limitations: Sequence[str] = (),
     truncated: bool = False,
 ) -> TaskSymbolContext:
     return TaskSymbolContext(
         task_id=task.id,
         symbols=tuple(symbols),
+        references=tuple(references),
         status=status,
         limitations=tuple(dict.fromkeys(str(item) for item in limitations if str(item))),
         truncated=truncated,
@@ -78,6 +82,24 @@ def _parse_symbol(item: Any) -> ResolvedSymbol:
     return symbol
 
 
+def _parse_references(item: Any) -> tuple[ResolvedReference, ...]:
+    """Parse only concrete changed-line references emitted by Gateway."""
+    if not isinstance(item, dict):
+        return ()
+    raw = item.get("references", [])
+    if not isinstance(raw, list):
+        return ()
+    parsed: list[ResolvedReference] = []
+    for reference in raw:
+        try:
+            parsed.append(ResolvedReference.model_validate(reference))
+        except ValidationError:
+            # A malformed optional reference must not invalidate the enclosing
+            # symbol; it simply cannot be used as a navigation root.
+            continue
+    return tuple(parsed)
+
+
 def _limit_symbols(
     symbols: Sequence[ResolvedSymbol], max_chars: int | None
 ) -> tuple[tuple[ResolvedSymbol, ...], bool]:
@@ -101,6 +123,31 @@ def _limit_symbols(
         if compacted:
             return tuple(kept), True
     return tuple(kept), False
+
+
+def _limit_references(
+    references: Sequence[ResolvedReference],
+    max_count: int = _MAX_REFERENCES_PER_TASK,
+) -> tuple[tuple[ResolvedReference, ...], bool]:
+    """Bound navigation metadata without dropping the enclosing symbols."""
+
+    # Keep the first occurrence of a concrete edge.  Gateway already emits a
+    # stable order; this also protects compatibility responses that repeat an
+    # edge for several AST nodes on the same changed line.
+    unique: list[ResolvedReference] = []
+    seen: set[tuple[str, str, str, int]] = set()
+    for reference in references:
+        key = (
+            reference.symbol_id,
+            reference.relation,
+            reference.file,
+            reference.line,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(reference)
+    return tuple(unique[:max_count]), len(unique) > max_count
 
 
 def resolve_task_symbols(
@@ -164,7 +211,15 @@ def resolve_task_symbols(
         raw_contexts = payload.get("contexts", [])
         if not isinstance(raw_contexts, list):
             raise ValueError("invalid_contexts")
-        parsed_symbols = tuple(_parse_symbol(item) for item in raw_contexts)
+        parsed_entries = tuple(
+            (_parse_symbol(item), _parse_references(item)) for item in raw_contexts
+        )
+        parsed_symbols = tuple(symbol for symbol, _ in parsed_entries)
+        references_by_symbol: dict[str, tuple[ResolvedReference, ...]] = {
+            symbol.symbol_id: references
+            for symbol, references in parsed_entries
+            if references
+        }
         symbols = tuple(
             {
                 (_normalize_path(symbol.file), symbol.symbol_id): symbol
@@ -194,9 +249,17 @@ def resolve_task_symbols(
             and any(symbol.start_line <= line <= symbol.end_line for line in task_lines)
         ]
         limited, truncated = _limit_symbols(matches, max_chars_per_task)
+        task_references = tuple(
+            reference
+            for symbol in limited
+            for reference in references_by_symbol.get(symbol.symbol_id, ())
+        )
+        task_references, references_truncated = _limit_references(task_references)
         task_limitations = list(limitations)
         if truncated:
             task_limitations.append("symbol_context_truncated")
+        if references_truncated:
+            task_limitations.append("reference_context_truncated")
         if limited:
             status = SymbolResolutionStatus.RESOLVED
         elif coverage == "complete":
@@ -207,8 +270,9 @@ def resolve_task_symbols(
             task,
             status,
             symbols=limited,
+            references=task_references,
             limitations=task_limitations,
-            truncated=truncated,
+            truncated=truncated or references_truncated,
         )
 
     logger.info(

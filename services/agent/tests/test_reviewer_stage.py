@@ -14,20 +14,14 @@ from codeguard_agent.pipeline.reviewers.reviewers import (
 
 
 def test_default_reviewers_point_to_base_prompt_files():
-    names = {reviewer.name: reviewer.prompt_file for reviewer in DEFAULT_REVIEWERS}
-
-    assert names["ThreatModelAgent"] == "threat-model-base.txt"
-    assert names["BehaviorAgent"] == "behavior-base.txt"
-    assert names["MaintainabilityAgent"] == "maintainability-base.txt"
+    assert len(DEFAULT_REVIEWERS) == 1
+    reviewer = DEFAULT_REVIEWERS[0]
+    assert reviewer.name == "UnifiedReviewAgent"
+    assert reviewer.prompt_file == "unified-review-base.txt"
 
 
 def test_default_reviewers_share_all_fact_tools():
-    expected = [
-        "get_file_content",
-        "inspect_structure",
-        "inspect_change_impact",
-        "inspect_path",
-    ]
+    expected = ["read_symbol", "query_relations"]
     assert all(reviewer.tool_allowlist == expected for reviewer in DEFAULT_REVIEWERS)
 
 
@@ -35,7 +29,7 @@ def test_system_prompts_include_shared_tool_contract_once():
     for reviewer in DEFAULT_REVIEWERS:
         prompt = build_reviewer_system_prompt(reviewer)
         assert prompt.count("## 共享图谱工具合同") == 1
-        assert prompt.count("inspect_path") >= 3
+        assert prompt.count("query_relations") >= 2
 
 
 def test_base_prompts_do_not_contain_knowledge_graph_heading():
@@ -83,7 +77,7 @@ def test_reviewer_subgraph_合法clean结果不再次直审(monkeypatch):
             raise AssertionError("合法 clean 结果不应再次直审")
 
     monkeypatch.setattr(graph_module, "_make_engine", lambda *_args, **_kwargs: CleanEngine())
-    reviewer = DEFAULT_REVIEWERS[1]
+    reviewer = DEFAULT_REVIEWERS[0]
     subgraph = graph_module.build_reviewer_subgraph(
         reviewer,
         llm=FailIfDirectLLM(),
@@ -124,7 +118,7 @@ def test_reviewer_subgraph_协议失败不得伪装成clean(monkeypatch):
             )
 
     monkeypatch.setattr(graph_module, "_make_engine", lambda *_args, **_kwargs: FailedEngine())
-    reviewer = DEFAULT_REVIEWERS[1]
+    reviewer = DEFAULT_REVIEWERS[0]
     subgraph = graph_module.build_reviewer_subgraph(
         reviewer,
         llm=object(),
@@ -174,7 +168,7 @@ def test_reviewer_subgraph_严格工具失败仍保留已捕获证据(monkeypatc
     )
     tool_client = type("Client", (), {"trace_records": [record]})()
     monkeypatch.setattr(graph_module, "_make_engine", lambda *_args, **_kwargs: RaisingEngine())
-    reviewer = DEFAULT_REVIEWERS[1]
+    reviewer = DEFAULT_REVIEWERS[0]
     subgraph = graph_module.build_reviewer_subgraph(
         reviewer,
         llm=object(),

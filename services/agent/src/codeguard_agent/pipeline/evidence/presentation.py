@@ -23,7 +23,7 @@ from codeguard_agent.models.schemas import EvidenceLocation
 from codeguard_agent.models.tasks import TaskSymbolContext
 
 
-_GRAPH_TOOLS = frozenset({"inspect_path", "inspect_change_impact", "inspect_structure"})
+_GRAPH_TOOLS = frozenset({"query_relations", "inspect_path", "inspect_change_impact", "inspect_structure"})
 _INTERNAL_EVIDENCE_RE = re.compile(
     r"(?:\[\s*证据编号\s*(?:P|C|T|F)\d+\s*\]|\b(?:P|C|T|F)\d{2,3}\b)",
     flags=re.IGNORECASE,
@@ -111,7 +111,7 @@ def _collect_locations(
             if location is not None and location.symbol:
                 locations.append(location.model_copy(update={"kind": "changed_code"}))
             continue
-        if artifact.tool == "get_file_content":
+        if artifact.tool in {"get_file_content", "read_symbol"}:
             location = _source_tool_location(artifact.payload, artifact.arguments)
             if location is not None:
                 kind = (

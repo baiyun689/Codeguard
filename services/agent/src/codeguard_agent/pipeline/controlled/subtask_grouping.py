@@ -196,14 +196,21 @@ def _merged_direction(
     return directions[0] if directions else None
 
 
-def _key(seed: InvestigationSeed) -> tuple[str, str, int, tuple[str, ...], str, str]:
+def _key(
+    seed: InvestigationSeed,
+    *,
+    strict_questions: bool = False,
+) -> tuple[
+    str, str, int, tuple[str, ...], str, str, str, str
+]:
     """Return a conservative, provider-independent merge key.
 
     Same line + same resolved symbol + same investigation family is
-    deliberately required.  Compatible graph capabilities are merged inside
-    that anchor so one React can move between graph lookup and source reading.
-    Opposite directions, security/behavior paths, and different changed lines
-    remain separate.
+    deliberately required.  The normalized investigation question and risk
+    dimension are also part of the key: two different questions about one
+    changed line must not be silently turned into one React objective.  Exact
+    duplicates still merge, while compatible graph/source capabilities remain
+    available inside that one objective.
     """
 
     line = seed.location_line if seed.location_line > 0 else 0
@@ -216,6 +223,16 @@ def _key(seed: InvestigationSeed) -> tuple[str, str, int, tuple[str, ...], str, 
         text_fingerprint = " ".join(
             f"{seed.observed_change} {seed.investigation_question}".split()
         ).lower()[:160]
+    question_fingerprint = (
+        " ".join(seed.investigation_question.split()).lower()[:240]
+        if strict_questions
+        else ""
+    )
+    risk_fingerprint = (
+        " ".join(seed.risk_dimension.split()).lower()
+        if strict_questions
+        else ""
+    )
     return (
         _path(seed.location_file),
         seed.change_unit_id,
@@ -223,6 +240,8 @@ def _key(seed: InvestigationSeed) -> tuple[str, str, int, tuple[str, ...], str, 
         tuple(sorted(set(seed.initial_symbol_ids))),
         _tool_family(seed),
         text_fingerprint,
+        question_fingerprint,
+        risk_fingerprint,
     )
 
 
@@ -241,18 +260,22 @@ def _short_merge_text(values: Iterable[str], *, limit: int = 420) -> str:
 
 def group_investigation_seeds(
     seeds_by_reviewer: Mapping[ReviewerKind, Iterable[InvestigationSeed]],
+    *,
+    strict_questions: bool = False,
 ) -> tuple[InvestigationSeedGroup, ...]:
-    """Merge duplicate neutral seeds across the three fixed reviewers.
+    """Merge duplicate neutral seeds across reviewers.
 
     The representative is selected by confidence, then reviewer priority, and
     finally seed ID.  Its identity remains stable, while the explanatory text
     and allowed symbols/tools are merged conservatively.  Provenance is
     returned separately for trace rendering and does not enter the LLM-facing
-    candidate protocol.
+    candidate protocol. ``strict_questions`` is enabled by the current unified
+    path so distinct objectives at one anchor remain separate; the default
+    keeps the historical helper contract.
     """
 
     buckets: dict[
-        tuple[str, str, int, tuple[str, ...], str, str],
+        tuple[str, str, int, tuple[str, ...], str, str, str, str],
         list[list[InvestigationSeed]],
     ] = {}
     for reviewer in sorted(
@@ -262,7 +285,9 @@ def group_investigation_seeds(
         for seed in seeds_by_reviewer.get(reviewer, ()):
             if not seed.seed_id:
                 continue
-            base = buckets.setdefault(_key(seed), [])
+            base = buckets.setdefault(
+                _key(seed, strict_questions=strict_questions), []
+            )
             compatible_group = next(
                 (group for group in base if _contracts_compatible(group[0], seed)),
                 None,

@@ -45,6 +45,34 @@ class GraphToolsTest {
     }
 
     @Test
+    void unifiedRelationQuerySupportsTypedCalleesAndContinuation(@TempDir Path repo)
+            throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("Service.java"), """
+                package demo;
+                class Service { void run() { helper(); } void helper() {} }
+                """);
+        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
+                .getOrBuild(ProjectKey.of(repo, "query-relations"));
+        AgentContext context = new AgentContext(repo);
+
+        ToolResult first = new QueryRelationsTool((toolName, input) ->
+                GraphToolSupport.await(snapshot)).execute(
+                "{\"subject_symbol_id\":\"java:demo.Service#run()\","
+                        + "\"relation\":\"callees\",\"depth\":1,\"limit\":1}",
+                context);
+        JsonNode payload = GraphToolSupport.JSON.readTree(first.getResult());
+        assertTrue(first.isSuccess(), first.getError());
+        assertEquals("query_relations", payload.path("tool").asText());
+        assertEquals("callees", payload.path("relation").asText());
+        assertTrue(payload.path("relationships").toString().contains("helper()"),
+                first.getResult());
+        assertTrue(payload.path("relationships").get(0).has("callsite"),
+                first.getResult());
+    }
+
+    @Test
     void pathRejectsUnknownKind(@TempDir Path repo) throws Exception {
         Files.writeString(repo.resolve("Service.java"), "class Service { void run() {} }");
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
@@ -81,6 +109,7 @@ class GraphToolsTest {
         assertTrue(resolved.isSuccess(), resolved.getError());
         assertTrue(resolved.getResult().contains("\"symbol_id\":\"java:demo.Service#run()\""),
                 resolved.getResult());
+        assertTrue(resolved.getResult().contains("\"references\":["), resolved.getResult());
 
         ToolResult impact = new InspectChangeImpactTool(snapshot)
                 .execute("java:demo.Service#run()", context);

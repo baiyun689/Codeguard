@@ -63,7 +63,7 @@ def test_subtask_plan_without_llm_keeps_each_seed_as_bounded_neutral_task():
     )
     assert len(plan.subtasks) == 1
     assert plan.subtasks[0].seed_id == "investigation-behavior-1"
-    assert plan.subtasks[0].primary_tool == "inspect_change_impact"
+    assert plan.subtasks[0].primary_tool == "query_relations"
     assert "subtask_plan_deterministic_fallback" in diagnostics
 
 
@@ -87,10 +87,7 @@ def test_structure_subtask_fallback_exposes_source_reader_for_method_body():
         max_subtasks=2,
         max_path_depth=3,
     )
-    assert plan.subtasks[0].allowed_tools == (
-        "inspect_structure",
-        "get_file_content",
-    )
+    assert plan.subtasks[0].allowed_tools == ("query_relations", "read_symbol")
 
 
 def test_investigation_result_can_confirm_only_with_local_observation_ids():
@@ -551,9 +548,7 @@ def test_subtask_plan_merges_duplicate_instructions_and_keeps_graph_reader_bundl
     )
 
     assert len(plan.subtasks) == 1
-    assert set(plan.subtasks[0].allowed_tools) == {
-        "inspect_structure", "get_file_content",
-    }
+    assert set(plan.subtasks[0].allowed_tools) == {"query_relations", "read_symbol"}
     assert plan.subtasks[0].max_tool_calls == 4
     assert any(item.startswith("subtask_duplicate_seed_merged:") for item in diagnostics)
 

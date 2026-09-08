@@ -335,11 +335,15 @@ class ToolAgentEngine(ReviewEngine):
             make_change_impact_tool,
             make_file_content_tool,
             make_path_tool,
+            make_query_relations_tool,
+            make_read_symbol_tool,
             make_structure_tool,
         )
 
         # 已实现工具的工厂表。领域 Prompt 决定查询时机与 path_kind。
         available = {
+            "read_symbol": lambda: make_read_symbol_tool(self._tool_client),
+            "query_relations": lambda: make_query_relations_tool(self._tool_client),
             "get_file_content": lambda: make_file_content_tool(self._tool_client),
             "inspect_structure": lambda: make_structure_tool(self._tool_client),
             "inspect_change_impact": lambda: make_change_impact_tool(self._tool_client),

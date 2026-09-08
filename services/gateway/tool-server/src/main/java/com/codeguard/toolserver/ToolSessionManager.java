@@ -11,6 +11,8 @@ import com.codeguard.agent.tools.GetFileContentTool;
 import com.codeguard.agent.tools.InspectChangeImpactTool;
 import com.codeguard.agent.tools.InspectPathTool;
 import com.codeguard.agent.tools.InspectStructureTool;
+import com.codeguard.agent.tools.QueryRelationsTool;
+import com.codeguard.agent.tools.ReadSymbolTool;
 import com.codeguard.agent.tools.ResolveChangeContextTool;
 import com.codeguard.agent.tools.ToolRegistry;
 
@@ -78,6 +80,10 @@ public final class ToolSessionManager {
             this.registry = new ToolRegistry();
             // 加工具 = 在这里 register 一个实现即可,无需改协议(扩展接缝 design.md D2)。
             this.registry.register(new GetFileContentTool((SourceSnapshotProvider) snapshotProvider));
+            // Stable controlled-review capabilities.  The historical tools
+            // below remain registered for an explicit compatibility mode.
+            this.registry.register(new ReadSymbolTool(snapshotProvider));
+            this.registry.register(new QueryRelationsTool(snapshotProvider));
             this.registry.register(new ResolveChangeContextTool(snapshotProvider));
             this.registry.register(new InspectPathTool(snapshotProvider));
             this.registry.register(new InspectChangeImpactTool(snapshotProvider));

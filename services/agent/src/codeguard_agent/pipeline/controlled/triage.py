@@ -1,4 +1,4 @@
-"""受控 DirectTriage：三个固定领域 reviewer 的无工具初筛。"""
+"""受控 DirectTriage：统一 Reviewer 的无工具初筛（旧领域提示词仍兼容）。"""
 
 from __future__ import annotations
 
@@ -69,16 +69,17 @@ _GRAPH_RELATIONSHIP_KINDS = frozenset(
 )
 
 
-def _prompt_for(reviewer: ReviewerKind) -> str:
+def _prompt_for(reviewer: ReviewerKind, *, unified: bool = False) -> str:
     common = (_PROMPT_DIR / "direct-triage-common.txt").read_text(encoding="utf-8")
-    domain = (_PROMPT_DIR / _DOMAIN_PROMPTS[reviewer]).read_text(encoding="utf-8")
+    prompt_name = "direct-triage-unified.txt" if unified else _DOMAIN_PROMPTS[reviewer]
+    domain = (_PROMPT_DIR / prompt_name).read_text(encoding="utf-8")
     return f"{common.strip()}\n\n{domain.strip()}"
 
 
-def prompt_hash(reviewer: ReviewerKind) -> str:
+def prompt_hash(reviewer: ReviewerKind, *, unified: bool = False) -> str:
     """返回 DirectTriage system prompt 的内容哈希，供 Trace 审计。"""
 
-    return hashlib.sha256(_prompt_for(reviewer).encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(_prompt_for(reviewer, unified=unified).encode("utf-8")).hexdigest()[:16]
 
 
 def build_triage_user_prompt(
@@ -94,6 +95,13 @@ def build_triage_user_prompt(
     if symbol_context is not None:
         symbols = [symbol.model_dump_json() for symbol in symbol_context.symbols]
     symbol_text = "\n".join(symbols) if symbols else "(没有解析到 symbol；只能依据 diff 做局部判断)"
+    references = []
+    if symbol_context is not None:
+        references = [
+            reference.model_dump_json()
+            for reference in getattr(symbol_context, "references", ())
+        ]
+    reference_text = "\n".join(references) if references else "(没有变更行上的已解析引用目标)"
     knowledge = task_knowledge.strip() or "(无专项知识；使用领域基础方法)"
     summary = diff_summary.strip() or "(无变更摘要；直接阅读 task patch)"
     parts = [
@@ -101,6 +109,7 @@ def build_triage_user_prompt(
         f"<task_patch>\n{task.patch}\n</task_patch>\n"
         f"<diff_summary>{summary}</diff_summary>\n"
         f"<symbol_context>\n{symbol_text}\n</symbol_context>\n"
+        f"<changed_references>\n{reference_text}\n</changed_references>\n"
     ]
     if task.deletion_anchors:
         parts.extend([
@@ -550,6 +559,43 @@ def _is_empty_provider_candidate(value: Any) -> bool:
     ) and payload.get("graph_question") is None
 
 
+def _candidate_to_investigation_seed(seed: CandidateSeed) -> InvestigationSeed | None:
+    """Demote a non-local triage claim to a neutral investigation request.
+
+    The unified reviewer may still serialize an old-style ``CandidateSeed``.
+    Its claim must not cross the DirectTriage boundary as an asserted finding;
+    retain only the observed mechanism and the executable graph question.
+    """
+
+    question = seed.graph_question
+    if question is None or not question.subject_ref:
+        return None
+    observed = seed.mechanism.strip() or "当前变更区间存在需要跨 symbol 核对的行为变化"
+    investigation_question = question.question.strip()
+    if not investigation_question:
+        target = ", ".join(question.expected_targets)
+        relation = ", ".join(question.required_relationships)
+        detail = target or relation or "相关关系"
+        investigation_question = f"核对当前变更与 {detail} 之间是否存在直接可观察的行为影响"
+    allowed_tools = ("query_relations", "read_symbol")
+    return InvestigationSeed(
+        seed_id=f"investigation-from-{seed.seed_id}",
+        reviewer=seed.reviewer,
+        change_unit_id=seed.change_unit_id,
+        observed_change=observed,
+        investigation_question=investigation_question,
+        location_file=seed.location_file,
+        location_line=seed.location_line,
+        initial_symbol_ids=(question.subject_ref,),
+        evidence_need=seed.evidence_need,
+        allowed_tools=allowed_tools,
+        path_kind=question.path_kind,
+        direction=question.direction,
+        risk_dimension=seed.claim_type,
+        confidence=seed.confidence,
+    )
+
+
 def run_direct_triage(
     *,
     reviewer: ReviewerKind,
@@ -562,12 +608,13 @@ def run_direct_triage(
     structured_method: str,
     max_seeds_per_change_unit: int = 4,
     max_seeds_per_reviewer: int = 4,
+    unified: bool = False,
 ) -> tuple[DirectTriageResult | None, tuple[str, ...]]:
     """执行一次 reviewer DirectTriage；非法结果只允许一次修复重试。"""
 
     if llm is None:
         return None, ("triage_llm_unavailable",)
-    system = _prompt_for(reviewer)
+    system = _prompt_for(reviewer, unified=unified)
     user = build_triage_user_prompt(
         task=task,
         symbol_context=symbol_context,
@@ -584,7 +631,9 @@ def run_direct_triage(
         change_unit_id=f"CU-{task.id}",
         location_file=task.file,
     )
-    diagnostics: list[str] = [f"triage_prompt_hash:{prompt_hash(reviewer)}"]
+    diagnostics: list[str] = [
+        f"triage_prompt_hash:{prompt_hash(reviewer, unified=unified)}"
+    ]
     if result is None:
         diagnostics.append(diagnostic)
         repair_user = (
@@ -1021,12 +1070,24 @@ def run_direct_triage(
         for symbol in (symbol_context.symbols if symbol_context is not None else ())
         if symbol.symbol_id
     }
-    allowed_investigation_tools = {
-        "get_file_content",
-        "inspect_structure",
-        "inspect_change_impact",
-        "inspect_path",
-    }
+    visible_symbol_ids.update(
+        reference.symbol_id
+        for reference in (
+            getattr(symbol_context, "references", ())
+            if symbol_context is not None else ()
+        )
+        if reference.symbol_id
+    )
+    allowed_investigation_tools = (
+        {"query_relations", "read_symbol"}
+        if unified
+        else {
+            "get_file_content",
+            "inspect_structure",
+            "inspect_change_impact",
+            "inspect_path",
+        }
+    )
     for investigation_seed in result.investigation_seeds:
         investigation_seed = normalize_investigation_seed(investigation_seed)
         if investigation_seed.reviewer is not reviewer:
@@ -1174,6 +1235,20 @@ def run_direct_triage(
         if normalized_location[0] is None:
             continue
         seed = normalized_location[0]
+        if unified and route_seed(seed) == "graph_required":
+            investigation = _candidate_to_investigation_seed(seed)
+            if investigation is None:
+                diagnostics.append(
+                    f"{seed.seed_id}:graph_candidate_demoted_without_question"
+                )
+                continue
+            investigation = normalize_investigation_seed(investigation)
+            if len(normalized_investigations) >= max_seeds_per_reviewer:
+                diagnostics.append("investigation_seed_reviewer_limit")
+                continue
+            normalized_investigations.append(investigation)
+            diagnostics.append(f"{seed.seed_id}:candidate_demoted_to_investigation_seed")
+            continue
         normalized_issues.append(seed)
         diagnostics.append(f"seed_route:{seed.seed_id}:{route_seed(seed)}")
     selected_issues, budget_diagnostics = _select_seed_budget(
@@ -1183,12 +1258,15 @@ def run_direct_triage(
         max_seeds_per_reviewer=max_seeds_per_reviewer,
     )
     diagnostics.extend(budget_diagnostics)
-    return result.model_copy(
+    normalized_result = result.model_copy(
         update={
             "issues": tuple(selected_issues),
             "investigation_seeds": tuple(normalized_investigations),
         }
-    ), tuple(diagnostics)
+    )
+    # Converted graph claims receive the same deterministic IDs as provider
+    # supplied investigation seeds; IDs never come from the model.
+    return bind_seed_ids(normalized_result), tuple(diagnostics)
 
 
 def _needs_claim_style_repair(issues: tuple[CandidateSeed, ...]) -> bool:
@@ -2037,6 +2115,14 @@ def _normalize_graph_question(
         for symbol in (symbol_context.symbols if symbol_context is not None else ())
         if symbol.symbol_id
     }
+    allowed_symbols.update(
+        reference.symbol_id
+        for reference in (
+            getattr(symbol_context, "references", ())
+            if symbol_context is not None else ()
+        )
+        if reference.symbol_id
+    )
     subject_ref = question.subject_ref
     if subject_ref not in allowed_symbols:
         # Providers sometimes serialize a source location (``file:line``)

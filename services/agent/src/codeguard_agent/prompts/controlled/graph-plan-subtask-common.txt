@@ -2,9 +2,9 @@
 
 每个合并后的 investigation seed 只产生一个子任务。子任务必须围绕一个 seed、一个 change_unit 和一个连贯的调查问题运行；禁止为了分别调用图工具和源码工具而拆成多个子任务，也不要为同一 seed 增加“源码核对”子任务。一个子任务可以拥有多个允许工具，React 在同一条轨迹内按事实决定先定位关系还是读取源码。`objective` 必须是中性事实问题，不得写“确认漏洞”“证明问题”“应当修复”、severity 或最终答案。不要传入 DirectTriage 的 claim/mechanism；只能复述 observed_change 和 investigation_question。
 
-初始 symbol 只能逐字复制 symbol_context/seed 中已有的 `Sxx` symbol alias，禁止输出完整 Gateway symbol_id。`allowed_tools` 是一个连贯调查的能力集合，只能取系统 allowlist；它不能因为 provider 填了一个 `primary_tool` 就缩成单工具。通常图工具应与 `get_file_content` 一起开放：图工具负责定位新 symbol，源码工具负责解释条件、异常、状态和父类实现。`primary_tool` 只是首选顺序提示，不是永久限制。inspect_path(behavior) 只向下，inspect_change_impact 只向上，inspect_structure 只一跳，get_file_content 只解释当前轨迹中已经出现的 symbol 源码。不要因为复杂度审查就扫描所有 symbol；关系数量本身不是缺陷证据。
+初始 symbol 只能逐字复制 symbol_context/seed 中已有的 `Sxx` symbol alias，禁止输出完整 Gateway symbol_id。`allowed_tools` 是一个连贯调查的能力集合，只能取系统 allowlist；通常同时开放 `query_relations` 和 `read_symbol`：关系工具负责定位新 symbol，源码工具负责解释条件、异常、状态、返回值和父类实现。`primary_tool` 只是首选顺序提示，不是永久限制。`query_relations` 通过 relation 选择 callers、callees、field_readers、field_writers、implementations 或 overrides；默认一跳，结果超限时用 cursor 续取，确有需要时才把已返回的 symbol 作为下一次 subject。`read_symbol` 只解释当前轨迹中已经出现的 symbol 源码。不要因为复杂度审查就扫描所有 symbol；关系数量本身不是缺陷证据。
 
-工具能力必须与事实问题匹配：`inspect_structure` 只能定位父类、字段、声明或一跳关系，不能替代方法体读取；如果 required_facts 包含父类实现、字段赋值、条件、异常、返回值或调用顺序，必须在同一个子任务中允许并在必要时使用 `get_file_content`。图谱工具返回的新 symbol 只能在当前子任务内继续读取；不要把新 symbol 交给另一个子任务，也不要凭源码中的名字创造 symbol。图谱工具不能证明外部协议、格式规范或未返回关系的不存在；这类缺口只能输出 `inconclusive`，不能凭经验确认。
+工具能力必须与事实问题匹配：`query_relations` 只回答明确的关系事实，不能替代方法体读取；`read_symbol` 不能证明跨文件关系。若 required_facts 包含父类实现、字段赋值、条件、异常、返回值或调用顺序，必须在同一个子任务中允许并在必要时使用 `read_symbol`。关系工具返回的新 symbol 只能在当前子任务内继续读取；不要把新 symbol 交给另一个子任务，也不要凭源码中的名字创造 symbol。图谱工具不能证明外部协议、格式规范或未返回关系的不存在；这类缺口只能输出 `inconclusive`，不能凭经验确认。
 
 GraphPlan 不需要预先指定固定深度。用 required_facts 表示 React 必须寻找的关系/源码事实，用 stop_conditions 表示支持、反驳、partial 或预算耗尽时的终止条件。`max_tool_calls` 和 `max_rounds` 不得超过系统上限。工具返回的新 symbol 只能由 React 在同一 objective 下继续使用，不能在计划中凭名称创造。
 

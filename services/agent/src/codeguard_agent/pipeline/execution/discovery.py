@@ -19,12 +19,15 @@ from codeguard_agent.pipeline.evidence.projection import (
 from codeguard_agent.tools.tool_client import ToolResponse
 
 DISCOVERY_GATEWAY_TOOLS = frozenset({
+    "read_symbol",
+    "query_relations",
     "get_file_content",
     "inspect_change_impact",
     "inspect_structure",
     "inspect_path",
 })
 GRAPH_DISCOVERY_TOOLS = frozenset({
+    "query_relations",
     "inspect_change_impact",
     "inspect_structure",
     "inspect_path",
@@ -228,6 +231,8 @@ class CoordinatedDiscoveryToolClient:
         max_tool_calls: int | None = None,
         max_path_depth: int = 3,
         allowed_path_kind: Literal["behavior", "security"] | None = None,
+        allowed_direction: Literal["downstream", "upstream"] | None = None,
+        allowed_relations: tuple[str, ...] | frozenset[str] | set[str] = (),
         initial_symbol_ids: set[str] | frozenset[str] = frozenset(),
         symbol_catalog_ids: tuple[str, ...] = (),
     ) -> None:
@@ -243,9 +248,8 @@ class CoordinatedDiscoveryToolClient:
         # 源码工具现在只接受 symbol_id。完整新增文件的 shortcut 仍由调用方
         # 显式传入对应的 resolved symbol IDs，避免根据 LLM 提供的路径猜测。
         self._complete_patch_keys = {
-            canonical_tool_key(
-                "get_file_content", {"symbol_id": unescape(symbol_id)}
-            )
+            canonical_tool_key(tool_name, {"symbol_id": unescape(symbol_id)})
+            for tool_name in ("get_file_content", "read_symbol")
             for symbol_id in complete_patch_symbol_ids
         }
         self._projection_focus = projection_focus
@@ -262,6 +266,12 @@ class CoordinatedDiscoveryToolClient:
                 "allowed_path_kind must be 'behavior', 'security', or None"
             )
         self._allowed_path_kind = allowed_path_kind
+        if allowed_direction not in {None, "downstream", "upstream"}:
+            raise ValueError(
+                "allowed_direction must be 'downstream', 'upstream', or None"
+            )
+        self._allowed_direction = allowed_direction
+        self._allowed_relations = frozenset(str(item) for item in allowed_relations)
         initial_ids = {
             unescape(symbol_id).strip()
             for symbol_id in initial_symbol_ids
@@ -337,7 +347,7 @@ class CoordinatedDiscoveryToolClient:
         try:
             payload = json.loads(text)
         except (TypeError, ValueError, json.JSONDecodeError):
-            if tool == "get_file_content":
+            if tool in {"get_file_content", "read_symbol"}:
                 with self._lock:
                     for raw, alias in self._symbol_alias_by_raw.items():
                         text = text.replace(f"symbol_id: {raw}", f"symbol_id: {alias}")
@@ -354,7 +364,7 @@ class CoordinatedDiscoveryToolClient:
                 return [replace(item, key) for item in value]
             if isinstance(value, str) and key in {
                 "id", "symbol_id", "owner_id", "sourceId", "targetId",
-                "source_id", "target_id",
+                "source_id", "target_id", "subject_symbol_id",
             }:
                 return aliases.get(value, value)
             return value
@@ -555,10 +565,18 @@ class CoordinatedDiscoveryToolClient:
         if not ids or self._allowed_symbol_ids is None:
             return
         with self._lock:
-            self._allowed_symbol_ids.update(ids)
+            # ``_alias_payload`` may already have rewritten known endpoints to
+            # local Sxx/Rxx presentation aliases.  Never treat those aliases
+            # as graph symbols: resolving them here prevents a second query
+            # from creating R02 -> R01 (or poisoning the source-read allowlist).
+            raw_ids = {
+                self._raw_by_symbol_alias.get(symbol_id, symbol_id)
+                for symbol_id in ids
+            }
+            self._allowed_symbol_ids.update(raw_ids)
             if not self._alias_mode:
                 return
-            for symbol_id in sorted(ids):
+            for symbol_id in sorted(raw_ids):
                 if symbol_id in self._symbol_alias_by_raw:
                     continue
                 alias = f"R{self._next_symbol_alias:02d}"
@@ -663,7 +681,9 @@ class CoordinatedDiscoveryToolClient:
         cursor: str | None = None,
     ) -> ToolResponse:
         raw_symbol_id = self._resolve_symbol_ref(symbol_id)
-        arguments: dict[str, Any] = {"symbol_id": unescape(symbol_id)}
+        # Cache and evidence keys always use the canonical raw symbol.  Sxx/Rxx
+        # aliases are presentation-only and are local to a subtask.
+        arguments: dict[str, Any] = {"symbol_id": raw_symbol_id}
         if raw_symbol_id is None:
             return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
         symbol_id = raw_symbol_id
@@ -706,6 +726,102 @@ class CoordinatedDiscoveryToolClient:
             if not any(value is not None for value in (start_line, end_line, cursor))
             else self._delegate.get_file_content(
                 symbol_id, start_line=start_line, end_line=end_line, cursor=cursor
+            ),
+        )
+
+    def read_symbol(
+        self,
+        symbol_id: str,
+        *,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        cursor: str | None = None,
+    ) -> ToolResponse:
+        """Stable alias for the source reader with canonical cache arguments."""
+        raw_symbol_id = self._resolve_symbol_ref(symbol_id)
+        if raw_symbol_id is None:
+            return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
+        arguments: dict[str, Any] = {"symbol_id": raw_symbol_id}
+        if start_line is not None:
+            arguments["start_line"] = start_line
+        if end_line is not None:
+            arguments["end_line"] = end_line
+        if cursor is not None:
+            arguments["cursor"] = cursor
+        key = canonical_tool_key("read_symbol", arguments)
+        if key in self._complete_patch_keys:
+            response = ToolResponse(success=True, result=COMPLETE_PATCH_RESULT)
+            self._record(
+                "read_symbol",
+                arguments,
+                response,
+                perf_counter(),
+                "reused",
+                reused_from_call_id="task_patch",
+            )
+            return response
+        return self._invoke(
+            "read_symbol",
+            arguments,
+            lambda: self._delegate.read_symbol(
+                raw_symbol_id,
+                start_line=start_line,
+                end_line=end_line,
+                cursor=cursor,
+            ),
+        )
+
+    def query_relations(
+        self,
+        subject_symbol_id: str,
+        relation: str,
+        *,
+        depth: int = 1,
+        limit: int = 20,
+        cursor: int | None = None,
+        include_callsite: bool = True,
+        include_context: bool = True,
+    ) -> ToolResponse:
+        """Typed relation navigation; returned resolved symbols extend this subtask scope."""
+        raw_symbol_id = self._resolve_symbol_ref(subject_symbol_id)
+        if raw_symbol_id is None:
+            return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
+        if relation not in {
+            "callers", "callees", "field_readers", "field_writers",
+            "implementations", "overrides",
+        }:
+            return ToolResponse(success=False, error="unsupported_relation")
+        if self._allowed_relations and relation not in self._allowed_relations:
+            return ToolResponse(success=False, error="relation_not_allowed")
+        if (
+            self._allowed_direction == "downstream"
+            and relation == "callers"
+        ) or (
+            self._allowed_direction == "upstream"
+            and relation == "callees"
+        ):
+            return ToolResponse(success=False, error="relation_direction_not_allowed")
+        arguments: dict[str, Any] = {
+            "subject_symbol_id": raw_symbol_id,
+            "relation": relation,
+            "depth": depth,
+            "limit": limit,
+            "include_callsite": include_callsite,
+            "include_context": include_context,
+        }
+        if cursor is not None:
+            arguments["cursor"] = cursor
+        return self._invoke(
+            "query_relations",
+            arguments,
+            lambda: self._delegate.query_relations(
+                raw_symbol_id,
+                relation,
+                depth=depth,
+                limit=limit,
+                cursor=cursor,
+                include_callsite=include_callsite,
+                include_context=include_context,
             ),
         )
 
@@ -767,7 +883,7 @@ class CoordinatedDiscoveryToolClient:
         if raw_symbol_id is None:
             return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
         symbol_id = raw_symbol_id
-        arguments: dict[str, Any] = {"symbol_id": requested_ref}
+        arguments: dict[str, Any] = {"symbol_id": raw_symbol_id}
         if max_depth is not None:
             arguments["max_depth"] = max_depth
         if limit is not None:
@@ -796,7 +912,7 @@ class CoordinatedDiscoveryToolClient:
         if raw_symbol_id is None:
             return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
         symbol_id = raw_symbol_id
-        arguments: dict[str, Any] = {"symbol_id": requested_ref}
+        arguments: dict[str, Any] = {"symbol_id": raw_symbol_id}
         if limit is not None:
             arguments["limit"] = limit
         if cursor is not None:

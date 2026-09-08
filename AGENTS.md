@@ -10,7 +10,7 @@
 
 Codeguard 是一个 **AI 代码审查引擎**,以 Agent 为最终核心,双语言架构(Python Agent + Java Gateway)。它的输入是代码变更(git diff),输出是结构化的审查问题(`Issue` 列表),覆盖安全、逻辑、质量等维度。
 
-默认审查使用证据驱动的 ReviewCouncil、task 级 DirectGate、OCR 式 PlanUnit、task-scoped reviewer、按需知识注入，以及策略驱动的证据规划与裁决链。双语言边界保持不变:Python 智能层 + Java 护栏层。当前默认仍是 `planned_steps` 兼容路径；设置 `CODEGUARD_CONTROLLED_EXECUTION_MODE=subtask_react` 才启用新的子任务 React 路径:
+默认审查使用证据驱动的 ReviewCouncil、task 级 DirectGate、OCR 式 PlanUnit、单一 task-scoped Reviewer、按需知识注入，以及策略驱动的证据规划与裁决链。双语言边界保持不变:Python 智能层 + Java 护栏层。当前默认是 `subtask_react` 子任务 React 路径；`planned_steps` 仅作显式兼容路径:
 
 ```
 git diff → PRModeClassifier → FileTaskBuilder/HunkTaskBuilder
@@ -18,8 +18,8 @@ git diff → PRModeClassifier → FileTaskBuilder/HunkTaskBuilder
          ├─ direct task → DirectTaskReview
          └─ full task → TaskSelection → PlanUnit(按文件复用)
               → Plan → [Summary] → SymbolResolution
-              → controlled_review(DirectTriage → GraphPlan → Execute/Assessment
-                                  → [一次 Graph Replan/Delta Execute])
+              → controlled_review(DirectTriage → GraphPlan
+                                  → bounded subtask React → InvestigationResult)
               → CandidateLocator → CouncilCoordinator → EvidenceVerifier(账本验证,零 LLM)
               → CouncilJudge(批量 EvidenceJudge)→ ReviewResult
 ```
@@ -29,7 +29,7 @@ H2 状态、非阻塞重试、恢复、反馈与停机；workspace 按完整 SHA
 Compose 的 `observability` profile 提供 Prometheus、预置告警规则和自动配置的 Grafana
 看板，覆盖审查吞吐/耗时、AST 工具调用及 LLM provider 重试、fallback 和熔断状态。
 
-ReviewCouncil 发现者由 `ThreatModelAgent` / `BehaviorAgent` / `MaintainabilityAgent` 方法论分工;最终 category 仍兼容 `security` / `logic` / `quality`。三类发现者各自声明工具 allowlist，并通过 `CandidateIssue` / `EvidenceRef` / `Verdict` / `CouncilTrace` 结构化黑板通信。三路发现者只通过 ID reducer 汇集 raw candidates；CouncilCoordinator 在 fan-in 后按完整路径和局部位置构块，并以最多 8 个并行结构化 LLM 调用进行保守归并。非法、低置信或失败结果一律保留候选。
+当前由一个统一 Reviewer 覆盖安全、行为和可维护性；最终 category 仍兼容 `security` / `logic` / `quality`。Reviewer 通过 `CandidateIssue` / `EvidenceRef` / `Verdict` / `CouncilTrace` 结构化黑板通信；候选由语义合并和 CouncilJudge 保守归并。旧三维发现者仅作显式兼容路径使用。
 
 证据采用 **Evidence Ledger**（取代 ADR-046 的 evidence_chain 重放验证与更早的多阶段 Concern/Strategist/Researcher/ImpactAssessor，后者已废弃勿恢复）：patch（P01）、预取上下文（Cxx）、真实工具结果（Txx）由运行时代码捕获为内容寻址 Artifact。ReAct 审查员在同一轨迹的终止消息中输出候选和最多 3 个短编号引用（`evidence_refs`），不生产任何证据文本；只有终止输出缺失、畸形或 schema 不合法时，才使用已捕获的有界 Catalog 做一次结构化 synthesis。EvidenceVerifier 全部确定性、零 LLM、正常路径零重放——Artifact 健康检查（patch 摘要一致、图响应 schema/outcome/scope/coverage 护栏）、引用范围核对；`indeterminate` 形成不可引用的 EvidenceGap，仅执行失败、空响应、解析失败和 revision 不一致进入重放，重放结果必须重新校验。鉴权和事务注解不在 Verifier 阶段决定候选去留，统一交由 CouncilJudge 根据候选主张和有效证据裁决。CouncilJudge 用批量 EvidenceJudge（每批 ≤8 候选）一次完成支持/反驳/去留/定级，输出经确定性合同校验（keep 必须引用支持事实、ID 必须可见、维护性候选不得 CRITICAL、LOCATION 不能单独支持），违规重试/二分拆批，单候选最终失败 fail-closed 不输出。旧 Supervisor 图迁移到 `services/agent/legacy/supervisor_graph/`,仅作历史参考,不作为默认路径、feature flag 或 eval profile 回退。
 
@@ -56,12 +56,12 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 
 ```
 默认(受控):git diff → task 构建/DirectGate → Plan → [Summary] → SymbolResolution
-            → controlled_review(DirectTriage → GraphPlan → Execute/Assessment
-                                → [一次 Graph Replan/Delta Execute])
+            → controlled_review(DirectTriage → GraphPlan
+                                → bounded subtask React → InvestigationResult)
             → CandidateLocator → EvidenceVerifier → 批量 Judge → 打印
 默认(有工具):配置 CODEGUARD_TOOL_SERVER_URL 后,Tool Server 按 revision 构建完整 Java ProjectSnapshot；
               设置 `CODEGUARD_CONTROLLED_EXECUTION_MODE=subtask_react` 时由子任务 React 按需调用
-              inspect_structure / inspect_change_impact / inspect_path / get_file_content，
+              read_symbol / query_relations，
               工具结果由运行时捕获为 Txx Artifact 进账；`planned_steps` 保留旧固定执行兼容。
 显式(兼容):设置 CODEGUARD_DISCOVERY_MODE=react 后，Full task 才进入 ReviewPlan 和 ReAct 发现者。
 ```
@@ -72,12 +72,12 @@ Python 智能层 + Java 护栏层。审查统一走多阶段管线,审查员执�
 - **PR 规模与 Task 路由**:`PRModeClassifier` 只按 diff 体量选择 task 粒度：SMALL 整个 diff 一个 task，MEDIUM 按文件建 task，LARGE 按 hunk 建 task。TaskBuilder 之后由确定性 DirectGate 逐 task 决定 direct/full；低风险文档/注释任务走 Direct，其余默认 Full。SMALL 不再绕过统一管线。LARGE 同一文件的 Full hunk 共享一个 PlanUnit，Plan 只调用一次；HTML Trace 展示 TaskRoute、DirectTaskReview 和 Plan。
 - **SymbolResolution**:在 ReviewCouncil 前把 Full task 的变更文件与行号批量解析为强类型 `TaskSymbolContext`。它只提供稳定 `symbol_id`、声明范围、注解、局部控制流和来源集合，供领域工具与 Evidence Ledger 使用；不负责摘要、知识选择、Reviewer 分派、深层图谱查询或问题判断。
 - **大 diff 降级**:仅在超过 5000 行时，Python 确定性收紧为最多 20 个任务、每文件 3 个、每任务上下文 2000 字符；普通 diff 全选 Full task。Plan 不引入新的总 Token 预算，成本由 task 粒度、同文件 Plan 复用、并发限制、超时和现有重试控制。Java 不重复判断。
-- **Plan 与 ReviewCouncilSubgraph**:受控模式的 Full task 按 PlanUnit 执行结构化 Plan，Plan 只路由知识主题；三个 reviewer 固定运行 DirectTriage。局部证据充分的 finding 直接进入候选，跨 symbol 的部分形成中性 investigation seed。默认 `planned_steps` 仍走旧 Execute/Assessment/Replan 兼容实现；设置 `subtask_react` 后，每个 reviewer 的 GraphPlan 将 seed 拆成有限子任务，每个子任务运行范围封闭的 bounded React，输出 InvestigationResult 后由运行时绑定证据，待回放完成后删除旧路径。显式选择 `react` 时才由 Plan 生成 Reviewer 分派并进入历史 ReAct 发现者。
-- **安全路径查询边界**:`inspect_path(path_kind=security)` 只沿已解析调用关系执行最多三层传播；未解析调用仅在目标名称直接命中敏感 sink 时进入 `unresolved_relationships`。普通未解析调用不作为安全事实且不输出关系明细，但会汇总进 `unresolved_count` 并保持 `partial`，避免通用解析噪声膨胀响应，也不把无法遍历的下游误判为完整缺席。
+- **Plan 与 ReviewCouncilSubgraph**:受控模式的 Full task 按 PlanUnit 执行结构化 Plan，Plan 只路由知识主题；统一 Reviewer 先做 DirectTriage，局部事实充分的 finding 直接进入候选，跨 symbol 的部分形成中性 investigation seed。默认 `subtask_react` 下，GraphPlan 将 seed 拆成有限完整调查子任务，每个子任务运行范围封闭的 bounded React，输出 InvestigationResult 后由运行时绑定证据；`planned_steps` 仅作旧固定执行兼容实现。
+- **统一工具边界**:`read_symbol` 读取已知 symbol 的有界源码；`query_relations` 按 callers/callees/field_readers/field_writers/implementations/overrides 查询关系，默认一跳并支持 depth/cursor 续取。旧 `inspect_*` 工具仅作显式兼容路径使用。
 - **图谱响应合同**:schema v2 只输出当前 `source_scope` 的 canonical `symbols`、`relationships`、`unresolved_relationships`；每项 `source_set` 必须与 scope 一致，不再双写 MAIN/TEST/GENERATED 专用数组。带旧 scope 数组的 Gateway 响应视为协议不兼容。
 - **CandidateLocator(节点内定位护栏)**:Full 与 Direct 的 `DiscoveredIssue` 在绑定稳定候选 ID 前统一校验 `location_snippet`。只允许当前 task 新增行中的 1～5 行连续原文；唯一匹配可修正 Reviewer 行号，合法原行号可兜底，其余按 task 每批最多 8 条调用 LLM 重新提取片段并确定性复验。最终失败保留为 `line=0` 文件级候选，并向 Judge 暴露 `candidate_location_unresolved` 限制；该步骤不新增 LangGraph 节点，定位片段也不进入产品输出或证据账本。
-- **发现者工具协调**:`pipeline/execution/discovery.py` 在单次 review 的单个 reviewer node 内按规范化工具参数执行 single-flight/cache；不同 task 首次复用完整结果，同一 ReAct 对话重复调用只返回短标记，fallback 使用的 gathered context 也按相同 canonical key 去重，三个发现者之间及跨 review 不共享。只有未被大 diff 策略截断的完整新增文件 patch 才可代替 `get_file_content`。
-- **工具响应投影**:Gateway 原始响应只进入 Evidence Artifact；旧 `planned_steps`/历史 Reviewer 路径继续使用确定性 `PayloadProjection`，新 `subtask_react` 路径向单个子任务提供完整的有界 Gateway page（不再做第二次有损投影），由 Gateway 的 limit/cursor 和运行时预算控制大小。`get_file_content(symbol_id)` 只提供已解析 symbol 的有界源码片段。工具轨迹通道只流转 `ToolTraceRef`，不再把 `DiscoveryToolRecord.output/resolved_output` 写入 State；Evidence Ledger 的 Artifact 仍作为证据状态保留。HTML Trace 按 `payload_hash` 单份保存原文，事件通过 `call_id/artifact_id` 引用。
+- **发现者工具协调**:`pipeline/execution/discovery.py` 在单次 review 的单个 reviewer node 内按规范化工具参数执行 single-flight/cache；不同 task 首次复用完整结果，同一 ReAct 对话重复调用只返回短标记，fallback 使用的 gathered context 也按相同 canonical key 去重。别名仅用于模型展示，共享缓存和证据键始终使用真实 symbol；不同 review 不共享。只有未被大 diff 策略截断的完整新增文件 patch 才可代替 `read_symbol`。
+- **工具响应投影**:Gateway 原始响应只进入 Evidence Artifact；旧 `planned_steps`/历史 Reviewer 路径继续使用确定性 `PayloadProjection`，新 `subtask_react` 路径向单个子任务提供完整的有界 Gateway page（不再做第二次有损投影），由 Gateway 的 limit/cursor 和运行时预算控制大小。`read_symbol(symbol_id)` 只提供已解析 symbol 的有界源码片段，`query_relations` 返回有类型的一跳关系并支持受限深度和 cursor 续取。工具轨迹通道只流转 `ToolTraceRef`，不再把 `DiscoveryToolRecord.output/resolved_output` 写入 State；Evidence Ledger 的 Artifact 仍作为证据状态保留。HTML Trace 按 `payload_hash` 单份保存原文，事件通过 `call_id/artifact_id` 引用。
 - **EvidenceVerifier(证据账本验证,零 LLM)**:审查员只从运行时捕获的 `<evidence_catalog>` 里选编号(`evidence_refs` 最多 3 条，LLM 只可引用 Cxx/Txx；patch=P01 在运行时自动绑定且不暴露)，离开发现子图即绑定为内容寻址 artifact ID——LLM 无法伪造、改写或重新填写证据。Verifier 只证明 Artifact 真实、可用、属于候选范围：patch 摘要一致、图响应 schema/outcome/scope/coverage 护栏（`MAIN/TEST/GENERATED` 分类，生产查询不消费 TEST 关系，测试事实不能证明生产可达/影响/severity）、引用范围核对；`found + partial` 只保留正向事实，`indeterminate + partial` 进入 EvidenceGap，只有可恢复执行异常进入重放且重放后重新执行相同校验。鉴权和事务注解只作为候选可见上下文，不在 Verifier 阶段直接淘汰候选。
 - **CouncilJudge(批量证据裁决)**:每批 ≤8 候选、最多 4 批并行，一次完成支持/反驳/去留/定级。Patch 可以证明局部代码机制，但不能自动证明跨文件调用、生产可达性或外部契约；定位事实（LOCATION）不能单独证明缺陷成立；未找到保护不等于证明保护不存在。输出经确定性合同校验（keep 必须引用 ≥1 支持事实、引用 ID 必须属于候选可见范围、supporting/counter 不得重叠、维护性候选不得 CRITICAL），违规重试/二分拆批，单候选最终失败 fail-closed 不输出。Judge 不补证、不按标签直定级，也不接受 LLM 直接选择危险等级。
 
@@ -136,7 +136,7 @@ Codeguard/
     │   │   │   ├── task_builder.py
     │   │   │   └── scope.py
     │   │   ├── pipeline/symbols/          # ★Full task 变更位置到稳定项目符号的解析
-    │   │   ├── pipeline/reviewers/        # ★三路发现者、工具协调与 prompt 构造
+    │   │   ├── pipeline/reviewers/        # ★统一 Reviewer、工具协调与 prompt 构造
     │   │   ├── pipeline/planning/         # ★OCR 式 PlanUnit、Reviewer 与知识主题规划
     │   │   ├── pipeline/location/         # ★候选新增行定位校验与批量重定位
     │   │   ├── pipeline/evidence/         # ★证据账本:注册/绑定/目录渲染、健康检查/图护栏/异常重放
@@ -146,7 +146,7 @@ Codeguard/
     │   │   │   ├── engines.py
     │   │   │   ├── discovery.py
     │   │   │   └── concurrency.py
-    │   │   └── prompts/                   # Plan、三路发现、证据、裁决、摘要与知识主题
+    │   │   └── prompts/                   # Plan、统一审查、证据、裁决、摘要与知识主题
     │   ├── legacy/                # 不打包、不参与默认 pytest 的历史实现
     │   │   ├── supervisor_graph/  # 旧 Supervisor 图
     │   │   ├── runtime_archive/   # 旧 stages/prompts/fp rules
@@ -185,7 +185,7 @@ Codeguard/
    - `[Summary]` 对 TaskRank 选中范围产出可选变更摘要。
    - `SymbolResolution` 把选中 Full task 的变更行解析为只读 `TaskSymbolContext`。
    - `ReviewCouncil` 并行运行 task-scoped 发现者 Agent；没有匹配任务的 reviewer 记录 `no_tasks_routed`。发现结果在绑定候选 ID 前经过统一新增行定位校验，必要时按 task 批量重定位。
-   - `CouncilCoordinator` 完成三路 fan-in 和保守归并。
+   - `CouncilCoordinator` 汇总统一 Reviewer 的候选并执行保守归并。
    - `EvidenceVerifier → CouncilJudge` 完成证据账本验证(健康检查/图护栏/异常重放,零 LLM)与批量证据裁决(支持/反驳/去留/定级,合同校验 fail-closed)。
    - `CouncilRunStats` 从稳定 survivor candidate 映射与结构化 request/finding/verdict/trace 派生，进入 eval/report/archive，不进入产品输出。
 7. **`cli.py:_print_result`** 打印;**退出码**:发现任一 `CRITICAL` 返回 1,审查任务/协议未完成返回 2,否则 0(方便接 CI 门禁,且不把执行失败伪装成“未发现问题”)。
@@ -295,13 +295,19 @@ python -m evals.runner --profile eval-codeguard-full --runs 1   # 完整档单�
 | `CODEGUARD_GRAPH_CACHE_TTL_MINUTES` | `30` | 项目快照访问后过期分钟数 |
 | `CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS` | `120` | 全项目 AST/语义图构建超时 |
 | `CODEGUARD_DISCOVERY_MODE` | `controlled` | 发现执行模式：`controlled`（Plan-and-Execute，默认）/ `react` / `direct` |
-| `CODEGUARD_CONTROLLED_INITIAL_TOOL_BUDGET` | `6` | controlled 每 task 初始证据工具调用预算 |
-| `CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET` | `2` | `planned_steps` 兼容路径的 Delta 证据调用预算 |
+| `CODEGUARD_CONTROLLED_INITIAL_TOOL_BUDGET` | `12` | controlled 每 task 初始证据工具调用预算 |
+| `CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET` | `4` | `planned_steps` 兼容路径的 Delta 证据调用预算 |
 | `CODEGUARD_CONTROLLED_MAX_PATH_DEPTH` | `3` | controlled 图谱路径最大深度（不超过 3） |
-| `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_CHANGE_UNIT` | `4` | 单 ChangeUnit 最多保留的初筛候选数 |
-| `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_REVIEWER` | `4` | 单 reviewer/task 最多保留的初筛候选数 |
-| `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_TASK` | `12` | 单 task 初筛候选硬上限 |
+| `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_CHANGE_UNIT` | `8` | 单 ChangeUnit 最多保留的初筛候选数 |
+| `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_REVIEWER` | `8` | 单 Reviewer/task 最多保留的初筛候选数 |
+| `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_TASK` | `24` | 单 task 初筛候选硬上限 |
 | `CODEGUARD_CONTROLLED_MAX_KNOWLEDGE_TOPICS` | `4` | ReviewPlan 每 task 最多注入的知识主题数 |
+| `CODEGUARD_CONTROLLED_EXECUTION_MODE` | `subtask_react` | 默认子任务 React；`planned_steps` 仅兼容旧固定步骤 |
+| `CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS` | `20` | 单调查子任务工具调用上限，初始宽松且可配置 |
+| `CODEGUARD_CONTROLLED_SUBTASK_MAX_ROUNDS` | `12` | 单调查子任务 React 轮数上限，初始宽松且可配置 |
+| `CODEGUARD_CONTROLLED_TASK_MAX_TOOL_CALLS` | `96` | 单 task 调查工具调用总上限，初始宽松且可配置 |
+| `CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_REVIEWER` | `8` | 单 Reviewer 子任务上限 |
+| `CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_TASK` | `24` | 单 task 子任务上限 |
 
 > **Windows/PowerShell 注意**:bash 的 `VAR=value cmd` 内联写法在 PowerShell 不生效,要先 `$env:VAR="value"` 再跑命令;或直接写 `.env`(推荐)。
 

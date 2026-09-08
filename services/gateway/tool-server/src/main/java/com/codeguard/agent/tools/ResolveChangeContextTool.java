@@ -4,6 +4,9 @@ import com.codeguard.agent.core.AgentContext;
 import com.codeguard.agent.core.AgentTool;
 import com.codeguard.agent.core.ToolResult;
 import com.codeguard.agent.graph.GraphNode;
+import com.codeguard.agent.graph.GraphEdge;
+import com.codeguard.agent.graph.GraphEdgeKind;
+import com.codeguard.agent.graph.ResolutionStatus;
 import com.codeguard.agent.graph.ProjectSnapshot;
 import com.codeguard.agent.graph.ProjectSnapshotProvider;
 import com.codeguard.agent.graph.SourceSet;
@@ -19,6 +22,10 @@ import java.util.concurrent.CompletableFuture;
 
 /** 将 diff 文件/行批量解析为真实、稳定的图谱符号。 */
 public final class ResolveChangeContextTool implements AgentTool {
+    /** Keep changed-line navigation useful without allowing metadata to grow
+     * unboundedly when a generated/large hunk contains many references. */
+    private static final int MAX_REFERENCES_PER_CONTEXT = 32;
+
     private final ProjectSnapshotProvider snapshot;
 
     public ResolveChangeContextTool(CompletableFuture<ProjectSnapshot> snapshot) {
@@ -102,6 +109,8 @@ public final class ResolveChangeContextTool implements AgentTool {
                     item.set("annotations", GraphToolSupport.JSON.valueToTree(symbol.annotations()));
                     item.set("control_flow", GraphToolSupport.JSON.valueToTree(
                             controlFlow(value, symbol)));
+                    item.set("references", referencesAt(value, symbol, file,
+                            change.path("lines")));
                     item.put("resolution", "resolved");
                 }
             }
@@ -129,6 +138,57 @@ public final class ResolveChangeContextTool implements AgentTool {
                         "IfStmt", "SwitchStmt", "ForStmt", "ForEachStmt",
                         "WhileStmt", "DoStmt", "TryStmt", "ThrowStmt").contains(name))
                 .forEach(result::add);
+        return result;
+    }
+
+    /**
+     * Emits resolved symbols used directly on changed lines.  The enclosing
+     * symbol remains the primary context, while these targets provide stable
+     * navigation roots for a later bounded investigation (for example a newly
+     * added call to f()).  Unresolved edges are deliberately omitted: a name
+     * that cannot be resolved is not a safe symbol_id for a tool call.
+     */
+    private static ArrayNode referencesAt(
+            ProjectSnapshot snapshot,
+            GraphNode owner,
+            String file,
+            JsonNode lines
+    ) {
+        Set<Integer> changedLines = new LinkedHashSet<>();
+        for (JsonNode line : lines) {
+            if (line.isInt() || line.isLong()) {
+                changedLines.add(line.asInt());
+            }
+        }
+        ArrayNode result = GraphToolSupport.JSON.createArrayNode();
+        Set<String> emitted = new LinkedHashSet<>();
+        for (GraphEdgeKind kind : List.of(
+                GraphEdgeKind.CALLS, GraphEdgeKind.READS_FIELD,
+                GraphEdgeKind.WRITES_FIELD, GraphEdgeKind.REFERENCES_TYPE,
+                GraphEdgeKind.IMPLEMENTS, GraphEdgeKind.OVERRIDES)) {
+            snapshot.graph().outgoing(owner.id(), kind)
+                    .stream()
+                    .filter(edge -> edge.sourceSet() == owner.sourceSet())
+                    .filter(edge -> edge.resolution() == ResolutionStatus.RESOLVED)
+                    .filter(edge -> file.equals(edge.file()) && changedLines.contains(edge.line()))
+                    .limit(MAX_REFERENCES_PER_CONTEXT + 1L)
+                    .forEach(edge -> snapshot.graph().node(edge.targetId()).ifPresent(target -> {
+                        if (result.size() >= MAX_REFERENCES_PER_CONTEXT) {
+                            return;
+                        }
+                        String key = edge.kind().name() + ":" + target.id() + ":" + edge.line();
+                        if (!emitted.add(key)) return;
+                        ObjectNode reference = result.addObject();
+                        reference.put("symbol_id", target.id());
+                        reference.put("relation", edge.kind().name().toLowerCase());
+                        reference.put("file", file);
+                        reference.put("line", edge.line());
+                        reference.put("resolution", edge.resolution().name().toLowerCase());
+                        reference.put("target_file", target.file());
+                        reference.put("target_kind", target.kind().name().toLowerCase());
+                        reference.put("target_signature", target.signature());
+                    }));
+        }
         return result;
     }
 }

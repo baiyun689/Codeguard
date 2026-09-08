@@ -14,9 +14,18 @@ from codeguard_agent.models.tasks import EvidenceNeed, InvestigationSeed, Review
 
 
 _GRAPH_TOOLS = {
+    "query_relations",
+    "read_symbol",
     "inspect_path",
     "inspect_change_impact",
     "inspect_structure",
+}
+
+_TOOL_ALIASES = {
+    "get_file_content": "read_symbol",
+    "inspect_path": "query_relations",
+    "inspect_change_impact": "query_relations",
+    "inspect_structure": "query_relations",
 }
 
 _GRAPH_TOOL_BY_NEED = {
@@ -53,16 +62,29 @@ def requested_graph_tools(
     here (rather than merely filtered later by the bundle builder).
     """
 
-    requested = set(requested_tools)
+    raw_requested = tuple(str(tool) for tool in requested_tools)
+    legacy_requested = any(tool in _GRAPH_TOOLS - {"query_relations", "read_symbol"}
+                           or tool == "get_file_content" for tool in raw_requested)
+    requested = {_TOOL_ALIASES.get(tool, tool) for tool in raw_requested}
     required = required_graph_tool(seed)
+    if legacy_requested and "query_relations" not in raw_requested:
+        legacy_required = required
+        if legacy_required == "inspect_path" and seed.direction == "upstream":
+            legacy_required = "inspect_change_impact"
+        if legacy_required == "inspect_change_impact" and seed.direction == "downstream":
+            legacy_required = "inspect_path"
+        tools = [legacy_required] if legacy_required else []
+        if "inspect_structure" in raw_requested and "inspect_structure" not in tools:
+            tools.append("inspect_structure")
+        return tuple(tools)
     tools: list[str] = []
     if required is not None:
-        tools.append(required)
+        tools.append("query_relations")
     # ``inspect_structure`` is a neutral one-hop supplement.  It can be used
     # with either directional graph query to locate declarations/fields, but
     # the two opposite traversal tools must never be mixed in one subtask.
-    if "inspect_structure" in requested and "inspect_structure" not in tools:
-        tools.append("inspect_structure")
+    if "query_relations" in requested and "query_relations" not in tools:
+        tools.append("query_relations")
     return tuple(tools)
 
 
@@ -125,20 +147,47 @@ def coherent_tool_bundle(
 
     domain = set(domain_tools)
     enabled = set(enabled_tools) if enabled_tools is not None else None
-    requested = tuple(dict.fromkeys(str(tool) for tool in requested_tools))
+    raw_requested = tuple(str(tool) for tool in requested_tools)
+    requested = tuple(dict.fromkeys(
+        _TOOL_ALIASES.get(tool, tool) for tool in raw_requested
+    ))
+
+    # Explicit planned_steps callers may still expose only legacy names.  Keep
+    # their old bundle semantics while the new default path receives the two
+    # canonical tools below.
+    new_capabilities = {"read_symbol", "query_relations"}.intersection(domain)
+    if not new_capabilities:
+        legacy_domain = set(domain)
+        legacy_enabled = set(enabled_tools) if enabled_tools is not None else None
+        def legacy_available(name: str) -> bool:
+            return name in legacy_domain and (
+                legacy_enabled is None or name in legacy_enabled
+            )
+        required = required_graph_tool(seed)
+        if required == "inspect_path" and seed.direction == "upstream":
+            required = "inspect_change_impact"
+        if required == "inspect_change_impact" and seed.direction == "downstream":
+            required = "inspect_path"
+        legacy_tools = [required] if required and legacy_available(required) else []
+        if legacy_tools and legacy_available("get_file_content"):
+            legacy_tools.append("get_file_content")
+        if not legacy_tools and (
+            "get_file_content" in raw_requested or "read_symbol" in raw_requested
+        ) and legacy_available("get_file_content"):
+            legacy_tools.append("get_file_content")
+        return tuple(legacy_tools)[:max(0, max_tools)]
 
     def available(tool: str) -> bool:
         return tool in domain and (enabled is None or tool in enabled)
 
-    graph_tool = required_graph_tool(seed)
-    requested_graph = requested_graph_tools(seed, requested)
+    graph_tool = "query_relations" if required_graph_tool(seed) else None
     tools: list[str] = []
     if graph_tool and available(graph_tool):
         tools.append(graph_tool)
-        if "inspect_structure" in requested_graph and available("inspect_structure"):
-            tools.append("inspect_structure")
-        if available("get_file_content"):
-            tools.append("get_file_content")
+        if available("query_relations") and "query_relations" not in tools:
+            tools.append("query_relations")
+        if available("read_symbol"):
+            tools.append("read_symbol")
     elif graph_tool is None:
         # A source-only/compatibility seed has no directional graph contract.
         tools.extend(
@@ -149,11 +198,11 @@ def coherent_tool_bundle(
     # Preserve a requested source reader even if no graph service is enabled;
     # this allows a direct source-only compatibility task to remain useful.
     if (
-        "get_file_content" in requested
-        and available("get_file_content")
-        and "get_file_content" not in tools
+        "read_symbol" in requested
+        and available("read_symbol")
+        and "read_symbol" not in tools
     ):
-        tools.append("get_file_content")
+        tools.append("read_symbol")
 
     if max_tools <= 0:
         return ()

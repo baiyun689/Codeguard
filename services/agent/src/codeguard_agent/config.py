@@ -107,27 +107,27 @@ class Settings:
     discovery_mode: str = "controlled"
     # Controlled mode budgets. These are task-scoped and include failed tool calls;
     # cache hits do not consume budget.
-    controlled_initial_tool_budget: int = 6
-    controlled_delta_tool_budget: int = 2
+    controlled_initial_tool_budget: int = 12
+    controlled_delta_tool_budget: int = 4
     controlled_max_path_depth: int = 3
-    controlled_max_seeds_per_change_unit: int = 4
-    controlled_max_seeds_per_reviewer: int = 4
-    controlled_max_seeds_per_task: int = 12
+    controlled_max_seeds_per_change_unit: int = 8
+    controlled_max_seeds_per_reviewer: int = 8
+    controlled_max_seeds_per_task: int = 24
     controlled_max_knowledge_topics: int = 4
     # 同一 task 内 Execute 对无依赖证据步骤的最大并发数。
     controlled_execute_concurrency: int = 3
     # 子任务 React 是新受控执行器；planned_steps 保持旧 GraphPlan→Execute
     # 兼容路径，subtask_react 启用“一子任务一局部 React”。
-    controlled_execution_mode: str = "planned_steps"
+    controlled_execution_mode: str = "subtask_react"
     # A coherent graph+source investigation needs enough calls to locate a
     # related symbol and then read its implementation.  The task budget still
     # bounds the aggregate cost, and this remains configurable via env.
-    controlled_subtask_max_tool_calls: int = 6
-    controlled_subtask_max_rounds: int = 4
+    controlled_subtask_max_tool_calls: int = 20
+    controlled_subtask_max_rounds: int = 12
     controlled_subtask_timeout_seconds: int = 120
-    controlled_task_max_tool_calls: int = 24
-    controlled_max_subtasks_per_reviewer: int = 4
-    controlled_max_subtasks_per_task: int = 12
+    controlled_task_max_tool_calls: int = 96
+    controlled_max_subtasks_per_reviewer: int = 8
+    controlled_max_subtasks_per_task: int = 24
 
     @property
     def needs_api_key(self) -> bool:
@@ -190,10 +190,10 @@ class Settings:
             )
             discovery_mode = "controlled"
         controlled_initial_tool_budget = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_INITIAL_TOOL_BUDGET", 6
+            "CODEGUARD_CONTROLLED_INITIAL_TOOL_BUDGET", 12
         )
         controlled_delta_tool_budget = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET", 2
+            "CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET", 4
         )
         controlled_max_path_depth = _positive_int_env(
             "CODEGUARD_CONTROLLED_MAX_PATH_DEPTH", 3
@@ -201,13 +201,13 @@ class Settings:
         if controlled_max_path_depth > 3:
             raise ValueError("CODEGUARD_CONTROLLED_MAX_PATH_DEPTH must be <= 3")
         controlled_max_seeds_per_change_unit = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_CHANGE_UNIT", 4
+            "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_CHANGE_UNIT", 8
         )
         controlled_max_seeds_per_reviewer = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_REVIEWER", 4
+            "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_REVIEWER", 8
         )
         controlled_max_seeds_per_task = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_TASK", 12
+            "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_TASK", 24
         )
         controlled_max_knowledge_topics = _nonnegative_int_env(
             "CODEGUARD_CONTROLLED_MAX_KNOWLEDGE_TOPICS", 4
@@ -216,31 +216,31 @@ class Settings:
             "CODEGUARD_CONTROLLED_EXECUTE_CONCURRENCY", 3
         )
         controlled_execution_mode = os.environ.get(
-            "CODEGUARD_CONTROLLED_EXECUTION_MODE", "planned_steps"
+            "CODEGUARD_CONTROLLED_EXECUTION_MODE", "subtask_react"
         ).strip().lower()
         if controlled_execution_mode not in {"planned_steps", "subtask_react"}:
             logger.warning(
-                "未知 CODEGUARD_CONTROLLED_EXECUTION_MODE '%s',回退 'planned_steps'",
+                "未知 CODEGUARD_CONTROLLED_EXECUTION_MODE '%s',回退 'subtask_react'",
                 controlled_execution_mode,
             )
-            controlled_execution_mode = "planned_steps"
+            controlled_execution_mode = "subtask_react"
         controlled_subtask_max_tool_calls = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS", 6
+            "CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS", 20
         )
         controlled_subtask_max_rounds = _positive_int_env(
-            "CODEGUARD_CONTROLLED_SUBTASK_MAX_ROUNDS", 4
+            "CODEGUARD_CONTROLLED_SUBTASK_MAX_ROUNDS", 12
         )
         controlled_subtask_timeout_seconds = _positive_int_env(
             "CODEGUARD_CONTROLLED_SUBTASK_TIMEOUT_SECONDS", 120
         )
         controlled_task_max_tool_calls = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_TASK_MAX_TOOL_CALLS", 24
+            "CODEGUARD_CONTROLLED_TASK_MAX_TOOL_CALLS", 96
         )
         controlled_max_subtasks_per_reviewer = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_REVIEWER", 4
+            "CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_REVIEWER", 8
         )
         controlled_max_subtasks_per_task = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_TASK", 12
+            "CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_TASK", 24
         )
         return cls(
             provider=provider,

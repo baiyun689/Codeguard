@@ -1791,15 +1791,15 @@ def _controlled_review_node(
     tool_client=None,
     *,
     execute_concurrency: int = 3,
-    controlled_execution_mode: str = "planned_steps",
-    subtask_max_tool_calls: int = 6,
-    subtask_max_rounds: int = 4,
+    controlled_execution_mode: str = "subtask_react",
+    subtask_max_tool_calls: int = 20,
+    subtask_max_rounds: int = 12,
     subtask_timeout_seconds: int = 120,
-    task_max_tool_calls: int = 24,
-    max_subtasks_per_reviewer: int = 4,
-    max_subtasks_per_task: int = 12,
+    task_max_tool_calls: int = 96,
+    max_subtasks_per_reviewer: int = 8,
+    max_subtasks_per_task: int = 24,
 ):
-    """执行受控 DirectTriage → GraphPlan → EvidenceExecutor 链。"""
+    """执行受控 DirectTriage → GraphPlan → bounded subtask React 链。"""
 
     def _node(state: ReviewState) -> dict:
         tasks = {task.id: task for task in state.get("review_tasks") or []}
@@ -1877,8 +1877,9 @@ def _controlled_review_node(
                     task_knowledge=shared_knowledge(task),
                     max_retries=state.get("max_retries", 3),
                     structured_method=state.get("structured_method", "function_calling"),
-                    max_seeds_per_change_unit=state.get("controlled_max_seeds_per_change_unit", 4),
-                    max_seeds_per_reviewer=state.get("controlled_max_seeds_per_reviewer", 4),
+                    max_seeds_per_change_unit=state.get("controlled_max_seeds_per_change_unit", 8),
+                    max_seeds_per_reviewer=state.get("controlled_max_seeds_per_reviewer", 8),
+                    unified=controlled_execution_mode == "subtask_react",
                 )
 
             triage_results = run_bounded_parallel(triage_jobs, triage_one, max_workers=3)
@@ -1964,7 +1965,10 @@ def _controlled_review_node(
                             existing_ids.add(converted.seed_id)
                     neutral_by_reviewer[reviewer_kind] = neutral
 
-                grouped_seeds = group_investigation_seeds(neutral_by_reviewer)
+                grouped_seeds = group_investigation_seeds(
+                    neutral_by_reviewer,
+                    strict_questions=True,
+                )
                 for group in grouped_seeds:
                     if len(group.seed_ids) > 1:
                         traces.append(CouncilTrace(
@@ -2017,6 +2021,7 @@ def _controlled_review_node(
                         max_subtasks=max_subtasks_per_reviewer,
                         max_path_depth=state.get("controlled_max_path_depth", 3),
                         enabled_tools=state.get("enabled_tools"),
+                        unified=True,
                     )
                     return reviewer_config, plan, diagnostics
 
@@ -2133,11 +2138,21 @@ def _controlled_review_node(
                         max_tool_calls=per_subtask_budget,
                         max_path_depth=state.get("controlled_max_path_depth", 3),
                         allowed_path_kind=instruction.path_kind,
+                        allowed_direction=instruction.direction,
+                        allowed_relations=instruction.allowed_relations,
                         initial_symbol_ids=set(instruction.initial_symbol_ids),
-                        symbol_catalog_ids=tuple(
-                            symbol.symbol_id
-                            for symbol in (context.symbols if context is not None else ())
-                        ),
+                        symbol_catalog_ids=tuple(dict.fromkeys(
+                            [
+                                *(
+                                    symbol.symbol_id
+                                    for symbol in (context.symbols if context is not None else ())
+                                ),
+                                *(
+                                    reference.symbol_id
+                                    for reference in (context.references if context is not None else ())
+                                ),
+                            ]
+                        )),
                     )
                     engine = SubtaskReactEngine(
                         coordinated_client,
@@ -2264,7 +2279,7 @@ def _controlled_review_node(
                     event="subtask_react_completed",
                     detail=f"task={task.id} subtasks={len(planned_subtasks)} candidates={len(all_candidates) - task_candidate_start}",
                 ))
-                task_candidate_limit = state.get("controlled_max_seeds_per_task", 12)
+                task_candidate_limit = state.get("controlled_max_seeds_per_task", 24)
                 if len(all_candidates) - task_candidate_start > task_candidate_limit:
                     del all_candidates[task_candidate_start + task_candidate_limit :]
                     traces.append(CouncilTrace(
@@ -2715,7 +2730,7 @@ def _controlled_review_node(
                                 assessment=assessment,
                             )
                         )
-            task_candidate_limit = state.get("controlled_max_seeds_per_task", 12)
+            task_candidate_limit = state.get("controlled_max_seeds_per_task", 24)
             if len(all_candidates) - task_candidate_start > task_candidate_limit:
                 del all_candidates[task_candidate_start + task_candidate_limit :]
                 traces.append(
@@ -3019,21 +3034,21 @@ def build_review_graph(
     discovery_only: bool = False,
     evidence_mode: str = "full",
     discovery_mode: str = "controlled",
-    controlled_initial_tool_budget: int = 6,
-    controlled_delta_tool_budget: int = 2,
+    controlled_initial_tool_budget: int = 12,
+    controlled_delta_tool_budget: int = 4,
     controlled_max_path_depth: int = 3,
-    controlled_max_seeds_per_change_unit: int = 4,
-    controlled_max_seeds_per_reviewer: int = 4,
-    controlled_max_seeds_per_task: int = 12,
+    controlled_max_seeds_per_change_unit: int = 8,
+    controlled_max_seeds_per_reviewer: int = 8,
+    controlled_max_seeds_per_task: int = 24,
     controlled_max_knowledge_topics: int = 4,
     controlled_execute_concurrency: int = 3,
-    controlled_execution_mode: str = "planned_steps",
-    controlled_subtask_max_tool_calls: int = 6,
-    controlled_subtask_max_rounds: int = 4,
+    controlled_execution_mode: str = "subtask_react",
+    controlled_subtask_max_tool_calls: int = 20,
+    controlled_subtask_max_rounds: int = 12,
     controlled_subtask_timeout_seconds: int = 120,
-    controlled_task_max_tool_calls: int = 24,
-    controlled_max_subtasks_per_reviewer: int = 4,
-    controlled_max_subtasks_per_task: int = 12,
+    controlled_task_max_tool_calls: int = 96,
+    controlled_max_subtasks_per_reviewer: int = 8,
+    controlled_max_subtasks_per_task: int = 24,
 ):
     """编译审查状态图。
 

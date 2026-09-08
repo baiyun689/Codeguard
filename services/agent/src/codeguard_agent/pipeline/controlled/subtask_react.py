@@ -39,8 +39,8 @@ class SubtaskReactEngine:
         self,
         tool_client: Any,
         *,
-        max_tool_calls: int = 6,
-        max_rounds: int = 4,
+        max_tool_calls: int = 20,
+        max_rounds: int = 12,
         timeout_seconds: int = 120,
     ) -> None:
         self._tool_client = tool_client
@@ -294,10 +294,14 @@ class SubtaskReactEngine:
             make_change_impact_tool,
             make_file_content_tool,
             make_path_tool,
+            make_query_relations_tool,
+            make_read_symbol_tool,
             make_structure_tool,
         )
 
         factories = {
+            "read_symbol": lambda: make_read_symbol_tool(self._tool_client),
+            "query_relations": lambda: make_query_relations_tool(self._tool_client),
             "get_file_content": lambda: make_file_content_tool(self._tool_client),
             "inspect_change_impact": lambda: make_change_impact_tool(self._tool_client),
             "inspect_path": lambda: make_path_tool(self._tool_client),
@@ -358,6 +362,17 @@ class SubtaskReactEngine:
             render_symbol(symbol) for symbol in (symbol_context.symbols if symbol_context else ())
             if symbol.symbol_id in set(instruction.initial_symbol_ids)
         ) or "(仅允许使用 instruction 中的 symbol_id)"
+        references = "\n".join(
+            json.dumps(
+                {
+                    **reference.model_dump(),
+                    "symbol_id": raw_to_alias.get(reference.symbol_id, reference.symbol_id),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            for reference in (getattr(symbol_context, "references", ()) if symbol_context else ())
+        ) or "(无变更行引用目标)"
         safe_instruction = instruction.model_copy(update={
             "initial_symbol_ids": tuple(
                 raw_to_alias.get(symbol_id, symbol_id)
@@ -369,6 +384,7 @@ class SubtaskReactEngine:
             f'change_unit="{instruction.change_unit_id}">\n'
             f"<task_patch file=\"{task.file}\">\n{task.patch}\n</task_patch>\n"
             f"<symbol_context>\n{symbols}\n</symbol_context>\n"
+            f"<changed_references>\n{references}\n</changed_references>\n"
             f"<instruction>\n{safe_instruction.model_dump_json(exclude_defaults=True)}\n</instruction>\n"
             "只调查该子任务；根据实际工具事实返回 InvestigationResult。"
         )

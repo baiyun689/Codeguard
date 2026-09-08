@@ -510,7 +510,25 @@ def _classify_edges(
     traversal: list[tuple[_GraphEdge, str, str]] = []
     attached: list[_GraphEdge] = []
     for edge in edges:
-        if tool == "inspect_path" and edge.kind == "CALLS":
+        relation = str((arguments or {}).get("relation", "")).lower()
+        if tool == "query_relations" and relation in {
+            "callees", "callers", "field_readers", "field_writers",
+            "implementations", "overrides",
+        }:
+            # query_relations returns one typed family.  Preserve a complete
+            # path only for caller/callee expansion; the other families are
+            # one-hop structural facts.  For callers/readers/writers and
+            # implementations, the graph edge points from the consumer or
+            # implementation to the subject, so reverse it for traversal.
+            if relation == "callees" and edge.kind == "CALLS":
+                traversal.append((edge, edge.source, edge.target))
+            elif relation == "callers" and edge.kind == "CALLS":
+                traversal.append((edge, edge.target, edge.source))
+            elif relation in {"field_readers", "field_writers", "implementations"}:
+                attached.append(edge)
+            elif relation == "overrides":
+                attached.append(edge)
+        elif tool == "inspect_path" and edge.kind == "CALLS":
             traversal.append((edge, edge.source, edge.target))
         elif (
             tool == "inspect_change_impact"
@@ -813,7 +831,10 @@ def _as_int(value: Any) -> int | None:
 
 
 def _max_depth(arguments: Mapping[str, Any] | None) -> int:
-    value = _as_int((arguments or {}).get("max_depth"))
+    raw = arguments or {}
+    value = _as_int(raw.get("depth"))
+    if value is None:
+        value = _as_int(raw.get("max_depth"))
     return max(1, min(3, value or 3))
 
 

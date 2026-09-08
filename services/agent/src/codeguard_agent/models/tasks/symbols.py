@@ -27,9 +27,27 @@ class ResolvedSymbol(BaseModel):
     source_set: Literal["MAIN", "TEST", "GENERATED"]
 
 
+class ResolvedReference(BaseModel):
+    """A concrete symbol referenced at a changed line.
+
+    The enclosing symbol and the referenced target are both resolved by the
+    Gateway.  This inventory is navigation context, not a finding or proof.
+    """
+
+    symbol_id: str
+    relation: str
+    file: str
+    line: StrictInt = Field(ge=1)
+    resolution: str = "resolved"
+    target_file: str = ""
+    target_kind: str = ""
+    target_signature: str = ""
+
+
 class TaskSymbolContext(BaseModel):
     task_id: str
     symbols: tuple[ResolvedSymbol, ...] = ()
+    references: tuple[ResolvedReference, ...] = ()
     status: SymbolResolutionStatus
     limitations: tuple[str, ...] = ()
     truncated: bool = False

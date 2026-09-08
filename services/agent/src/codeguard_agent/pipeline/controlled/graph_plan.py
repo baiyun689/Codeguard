@@ -39,12 +39,16 @@ _DOMAIN_PROMPTS = {
 # then added to the proof contract registry and tests together.
 DOMAIN_TOOL_ALLOWLIST: dict[ReviewerKind, frozenset[str]] = {
     ReviewerKind.BEHAVIOR: frozenset({
+        "read_symbol", "query_relations",
+        # Compatibility names remain valid only for the planned_steps path.
         "get_file_content", "inspect_structure", "inspect_change_impact", "inspect_path"
     }),
     ReviewerKind.THREAT_MODEL: frozenset({
+        "read_symbol", "query_relations",
         "get_file_content", "inspect_structure", "inspect_change_impact", "inspect_path"
     }),
     ReviewerKind.MAINTAINABILITY: frozenset({
+        "read_symbol", "query_relations",
         "get_file_content", "inspect_structure", "inspect_change_impact", "inspect_path"
     }),
 }
@@ -117,6 +121,11 @@ def build_graph_plan_user_prompt(
         if symbol_context is not None and symbol_context.symbols
         else "(无已解析 symbol；不能生成可执行图谱步骤)"
     )
+    references = (
+        "\n".join(reference.model_dump_json() for reference in getattr(symbol_context, "references", ()))
+        if symbol_context is not None and getattr(symbol_context, "references", ())
+        else "(无变更行引用目标)"
+    )
     # Do not echo provider-compatibility defaults into the next LLM prompt;
     # they are transport-only fields and their empty values invite the model
     # to reproduce metadata instead of planning executable evidence steps.
@@ -128,6 +137,7 @@ def build_graph_plan_user_prompt(
         f'<graph_plan reviewer="{reviewer.value}" task_id="{task_id}" '
         f'max_path_depth="{max_path_depth}">\n'
         f"<symbol_context>\n{symbols}\n</symbol_context>\n"
+        f"<changed_references>\n{references}\n</changed_references>\n"
         f"<graph_seeds>\n{seed_text}\n</graph_seeds>\n"
         f"允许工具：{tool_text}\n"
         "只为 graph_needed seed 生成 WorkItem；subject_ref 必须是 symbol_context 中出现的精确 symbol_id。"
@@ -210,6 +220,11 @@ def validate_graph_plan(
         for symbol in (symbol_context.symbols if symbol_context is not None else ())
         if symbol.symbol_id
     }
+    allowed_symbols.update(
+        reference.symbol_id
+        for reference in (getattr(symbol_context, "references", ()) if symbol_context is not None else ())
+        if reference.symbol_id
+    )
     source_symbols = {
         symbol.symbol_id
         for symbol in (symbol_context.symbols if symbol_context is not None else ())
@@ -1018,6 +1033,11 @@ def _baseline_graph_plan(
         for symbol in (symbol_context.symbols if symbol_context is not None else ())
         if symbol.symbol_id
     }
+    allowed_symbols.update(
+        reference.symbol_id
+        for reference in (getattr(symbol_context, "references", ()) if symbol_context is not None else ())
+        if reference.symbol_id
+    )
     diagnostics: list[str] = []
     for seed in seeds:
         question = seed.graph_question
