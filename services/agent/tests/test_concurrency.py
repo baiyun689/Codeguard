@@ -51,8 +51,8 @@ def test_run_bounded_parallel_caps_workers_at_global_limit(monkeypatch):
         def __exit__(self, *_args: object) -> None:
             return None
 
-        def submit(self, fn, item: int) -> _ImmediateFuture:
-            return _ImmediateFuture(fn(item))
+        def submit(self, fn, *args) -> _ImmediateFuture:
+            return _ImmediateFuture(fn(*args))
 
     monkeypatch.setattr(concurrency, "ThreadPoolExecutor", _CapturingExecutor)
 
@@ -60,3 +60,20 @@ def test_run_bounded_parallel_caps_workers_at_global_limit(monkeypatch):
         range(9)
     )
     assert observed_worker_counts == [8]
+
+
+def test_parallel_work_inherits_trace_context_without_leaking_worker_changes():
+    from contextvars import ContextVar
+
+    trace_id = ContextVar("trace_id", default="unset")
+    token = trace_id.set("review-1")
+    try:
+        def worker(item):
+            inherited = trace_id.get()
+            trace_id.set(str(item))
+            return inherited
+
+        assert run_bounded_parallel([1, 2], worker) == ["review-1", "review-1"]
+        assert trace_id.get() == "review-1"
+    finally:
+        trace_id.reset(token)

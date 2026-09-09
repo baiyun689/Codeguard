@@ -10,29 +10,13 @@ before any routing or execution occurs.
 """
 
 from __future__ import annotations
-
 from typing import Any, get_args
-
-from pydantic import ConfigDict, model_validator
-
+from pydantic import ConfigDict, Field, model_validator
 from codeguard_agent.models.tasks import (
-    CandidateSeed,
-    CoverageDeclaration,
-    DirectTriageResult,
-    EvidenceAssessment,
-    EvidenceAssessmentBatch,
-    EvidenceStep,
-    GraphQuestion,
     InvestigationFinding,
     InvestigationObservation,
     InvestigationResult,
-    InvestigationSeed,
-    ReviewerGraphPlan,
-    SubtaskInstruction,
-    SubtaskPlan,
-    WorkItem,
 )
-from codeguard_agent.models.tasks.controlled import ProofScope, ReviewerKind
 
 
 class _ProviderEnvelope:
@@ -50,98 +34,33 @@ class _ProviderEnvelope:
     def _drop_null_defaults(cls, value: Any) -> Any:
         if not isinstance(value, dict):
             return value
-        fields = cls.model_fields
-        # A second, narrower compatibility repair handles display-only string
-        # fields that some providers serialize as booleans/numbers.  Semantic
-        # strings (claim, symbol IDs, questions, executable tool names) remain
-        # strict and therefore still fail closed when their type is wrong.
+        fields = getattr(cls, "model_fields")
         display_fields = {
-            "reason",
-            "reason_for_not_local",
-            "issue_type",
-            "coverage_issue_type",
-            "coverage_issue_type_top",
-            "issues_top",
-            "decision_motivation",
-            "evidence_need",
-            "evidence_need_top",
-            "confidence_note",
-            "confidence_note2",
-            "evidence_note",
-            "evidence_basis_note",
-            "evidence_need_note",
-            "evidence_need_note2",
-            "location_line_note",
-            "limitations_note",
-            "claim_type",
+            "claim",
+            "mechanism",
             "impact",
-            "impact_locale",
-            "impact_locale_note",
+            "location_file",
+            "location_snippet",
             "suggestion",
-            "status_reason",
-            "supporting_refs_note",
-            "supporting_refs_note_placeholder",
-            "counter_refs_note",
-            "counter_refs_note_placeholder",
-            "mechanism_note",
-            "mechanism_note2",
-            "mechanism_note_detail",
-            "proof_scope_confirmed",
-            "proof_scope_raw",
-            "expected_fact_note",
-            "direction2",
-            "evidence",
-            "result_selector",
+            "type_hint",
+            "subtask_id",
+            "observation_id",
         }
         normalized: dict[str, Any] = {}
         for key, item in value.items():
-            if item is None and key in fields and not fields[key].is_required():
+            if item is None and key in fields and (not fields[key].is_required()):
                 continue
             annotation = fields[key].annotation if key in fields else None
             string_compatible = annotation is str or str in get_args(annotation)
             if (
                 key in display_fields
                 and string_compatible
-                and item is not None
-                and not isinstance(item, str)
+                and (item is not None)
+                and (not isinstance(item, str))
             ):
                 item = str(item)
             normalized[key] = item
         return normalized
-
-
-class LlmGraphQuestion(_ProviderEnvelope, GraphQuestion):
-    model_config = ConfigDict(extra="ignore")
-    # Empty optional literals are a frequent OpenAI-compatible serialization
-    # artifact.  Keep them as strings at the transport boundary; triage
-    # normalizes blank values before strict runtime validation.
-    direction: str = "downstream"
-    path_kind: str | None = None
-
-
-class LlmCandidateSeed(_ProviderEnvelope, CandidateSeed):
-    model_config = ConfigDict(extra="ignore")
-    # A few OpenAI-compatible models emit an empty placeholder item after a
-    # valid candidate.  Keep the provider envelope permissive enough to parse
-    # that placeholder; triage filters it before converting to strict
-    # CandidateSeed.  Non-empty malformed candidates still fail closed.
-    reviewer: ReviewerKind | None = None
-    change_unit_id: str = ""
-    claim: str = ""
-    proof_scope: ProofScope | None = None
-    location_file: str = ""
-    graph_question: LlmGraphQuestion | None = None
-
-
-class LlmCoverageDeclaration(_ProviderEnvelope, CoverageDeclaration):
-    model_config = ConfigDict(extra="ignore")
-
-
-class LlmDirectTriageResult(_ProviderEnvelope, DirectTriageResult):
-    model_config = ConfigDict(extra="ignore")
-    coverage: tuple[LlmCoverageDeclaration, ...] = ()
-    issues: tuple[LlmCandidateSeed, ...] = ()
-    investigation_seeds: tuple[InvestigationSeed, ...] = ()
 
 
 class LlmInvestigationObservation(_ProviderEnvelope, InvestigationObservation):
@@ -150,51 +69,11 @@ class LlmInvestigationObservation(_ProviderEnvelope, InvestigationObservation):
 
 class LlmInvestigationFinding(_ProviderEnvelope, InvestigationFinding):
     model_config = ConfigDict(extra="ignore")
-    observations: tuple[LlmInvestigationObservation, ...] = ()
+    observations: tuple[LlmInvestigationObservation, ...] = Field(
+        default=(), max_length=3
+    )
 
 
 class LlmInvestigationResult(_ProviderEnvelope, InvestigationResult):
     model_config = ConfigDict(extra="ignore")
-    findings: tuple[LlmInvestigationFinding, ...] = ()
-
-
-class LlmSubtaskInstruction(_ProviderEnvelope, SubtaskInstruction):
-    model_config = ConfigDict(extra="ignore")
-
-
-class LlmSubtaskPlan(_ProviderEnvelope, SubtaskPlan):
-    model_config = ConfigDict(extra="ignore")
-    subtasks: tuple[LlmSubtaskInstruction, ...] = ()
-
-
-class LlmEvidenceStep(_ProviderEnvelope, EvidenceStep):
-    model_config = ConfigDict(extra="ignore")
-
-
-class LlmWorkItem(_ProviderEnvelope, WorkItem):
-    model_config = ConfigDict(extra="ignore")
-    evidence_steps: tuple[LlmEvidenceStep, ...]
-
-
-class LlmReviewerGraphPlan(_ProviderEnvelope, ReviewerGraphPlan):
-    model_config = ConfigDict(extra="ignore")
-    work_items: tuple[LlmWorkItem, ...] = ()
-
-
-class LlmEvidenceAssessment(_ProviderEnvelope, EvidenceAssessment):
-    model_config = ConfigDict(extra="ignore")
-    additional_steps: tuple[LlmEvidenceStep, ...] = ()
-
-
-class LlmEvidenceAssessmentBatch(_ProviderEnvelope, EvidenceAssessmentBatch):
-    model_config = ConfigDict(extra="ignore")
-    assessments: tuple[LlmEvidenceAssessment, ...] = ()
-
-
-__all__ = [
-    "LlmDirectTriageResult",
-    "LlmEvidenceAssessmentBatch",
-    "LlmInvestigationResult",
-    "LlmReviewerGraphPlan",
-    "LlmSubtaskPlan",
-]
+    findings: tuple[LlmInvestigationFinding, ...] = Field(default=(), max_length=8)

@@ -126,7 +126,7 @@ public final class ToolServerController {
             JsonNode body = mapper.readTree(ctx.body());
             // 工具请求统一承载在 query 字符串中。源码工具已经是 symbol-only
             // 契约，旧的 file_path 入参直接拒绝，避免协议表面上继续支持路径读取。
-            if (toolName.equals("get_file_content") && body.has("file_path")) {
+            if (toolName.equals("read_symbol") && body.has("file_path")) {
                 ctx.json(error("symbol_id_only"));
                 return;
             }

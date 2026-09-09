@@ -88,7 +88,7 @@ class ToolServerControllerTest {
             }
 
             Request symbolQuery = new Request.Builder()
-                    .url(base + "/api/v1/tools/get_file_content")
+                    .url(base + "/api/v1/tools/read_symbol")
                     .header("X-Codeguard-Tool-Token", TOKEN)
                     .header("X-Session-Id", sessionId)
                     .post(json("{\"query\":\"{\\\"symbol_id\\\":\\\"java:demo.Service#run()\\\"}\"}"))
@@ -101,7 +101,7 @@ class ToolServerControllerTest {
             }
 
             Request legacyPath = new Request.Builder()
-                    .url(base + "/api/v1/tools/get_file_content")
+                    .url(base + "/api/v1/tools/read_symbol")
                     .header("X-Codeguard-Tool-Token", TOKEN)
                     .header("X-Session-Id", sessionId)
                     .post(json("{\"file_path\":\"src/main/java/demo/Service.java\"}"))
@@ -114,7 +114,7 @@ class ToolServerControllerTest {
             }
 
             Request mixedLegacyPath = new Request.Builder()
-                    .url(base + "/api/v1/tools/get_file_content")
+                    .url(base + "/api/v1/tools/read_symbol")
                     .header("X-Codeguard-Tool-Token", TOKEN)
                     .header("X-Session-Id", sessionId)
                     .post(json("{\"file_path\":\"src/main/java/demo/Service.java\","

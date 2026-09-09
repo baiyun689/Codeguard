@@ -114,15 +114,7 @@ final class GraphToolSupport {
         if (!value.startsWith("java:")) {
             return value;
         }
-        int separator = value.lastIndexOf('#');
-        if (separator < 0) {
-            return value.replaceAll("\\s+", "");
-        }
-        String owner = value.substring(0, separator).replaceAll("\\s+", "");
-        String signature = value.substring(separator + 1)
-                .replaceAll("\\s+", "")
-                .replaceAll("[A-Za-z_$][\\w$]*\\.", "");
-        return owner + "#" + signature;
+        return value.replaceAll("\\s+", "");
     }
 
     static boolean inScope(GraphEdge edge, SourceSet sourceScope) {

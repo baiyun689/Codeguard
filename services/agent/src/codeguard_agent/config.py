@@ -5,19 +5,12 @@
 """
 
 from __future__ import annotations
-
 import logging
 import os
 from dataclasses import dataclass
 
 logger = logging.getLogger("codeguard")
-
-# 各 provider 的默认模型:用户不显式指定 CODEGUARD_MODEL 时按 provider 回退到对应默认值,
-# 避免出现"provider=openai 却用着 claude 模型名"的错配。
-_DEFAULT_MODELS = {
-    "openai": "gpt-4o-mini",
-    "claude": "claude-sonnet-4-20250514",
-}
+_DEFAULT_MODELS = {"openai": "gpt-4o-mini", "claude": "claude-sonnet-4-20250514"}
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -53,7 +46,6 @@ def _load_dotenv() -> None:
         from dotenv import find_dotenv, load_dotenv
     except ImportError:
         return
-    # usecwd=True:从当前工作目录向上找,无论在仓库哪一层运行都能定位到 .env。
     load_dotenv(find_dotenv(usecwd=True), override=False)
 
 
@@ -61,73 +53,34 @@ def _load_dotenv() -> None:
 class Settings:
     """运行时配置。"""
 
-    provider: str           # LLM 提供商:openai | claude | mock
-    model: str              # 模型名
-    api_key: str            # API 密钥
-    api_base_url: str       # 自定义 API 地址(走代理时用),为空则用官方默认
-    max_retries: int        # LLM 调用最大重试次数
-    structured_method: str  # 结构化输出方式:function_calling | json_schema | json_mode
-    disable_thinking: bool  # 是否禁用思考模式(DeepSeek 等推理模型需要)
-    # Java 工具服务地址。实际发现方式由 discovery_mode 决定；react/controlled
-    # 使用工具服务，direct 明确不创建工具会话。
+    provider: str
+    model: str
+    api_key: str
+    api_base_url: str
+    max_retries: int
+    structured_method: str
+    disable_thinking: bool
+    llm_timeout_seconds: int = 60
     tool_server_url: str = ""
-    # Java Tool Server 的内部鉴权 Token。仅在配置 tool_server_url 时需要。
     tool_server_token: str = ""
-    # 首次语义工具调用需要等待 Java 异步 ProjectSnapshot 构建完成；客户端预算
-    # 与 Gateway 使用同一配置，并在调用处额外留出网络缓冲。
     graph_build_timeout_seconds: int = 120
-    # 前置摘要阶段开关:默认开。关闭时审查员不收到 diff_summary 背景。
-    enable_summary: bool = True
-    # 证据链开关:"full"(默认,取证/门控/综合全跑) | "off"(跳过取证与门控,
-    # 候选由 DirectJudge 直接终审——消融基线档)。
     evidence_mode: str = "full"
-    # 大 diff 覆盖预算；普通 diff 默认全选。
     max_review_tasks: int = 100
     max_tasks_per_file: int = 10
-    # checkpoint 后端: "sqlite" | "memory" | 空=不启用(默认空)。
     checkpoint_backend: str = ""
-    # SqliteSaver 数据库文件路径(仅 checkpoint_backend="sqlite" 时生效)
     checkpoint_db: str = "codeguard_checkpoints.db"
-    # ReAct Agent 的递归步数上限(单审查员)。默认 48:每个工具往返耗 2 步,48 步可做 ~16-20 次
-    # 工具调用 + 思考;实测 24 太紧(含 repo_map + 多次 file 读的难例会撞墙),调大到 48 步后
-    # 通过降级兜底确保安全(见 ADR-016→018→028)。
-    react_recursion_limit: int = 48
-    # DeepSeek 推理深度(仅 DeepSeek v4 系列生效):"high"(默认) | "max"。
-    # "max" 给模型更多思考预算,对复杂代码审查任务可能有更好的推理质量(走 extra_body 透传)。
-    # 留空不设;非 DeepSeek 端点静默无视。注意:"max" 会消耗更多 token(含不可见的 reasoning_tokens)。
     reasoning_effort: str = ""
-    # 本地 HTML 追踪默认关闭；LangSmith 使用其标准环境变量独立自动追踪。
     trace_enabled: bool = False
-    # 追踪文件输出目录。
     trace_dir: str = "trace"
-    # LLM 输出截断字符数,0=不截断。
     trace_max_llm_content: int = 0
-    # Discovery execution strategy: controlled (Plan + Execute/default), react (legacy),
-    # or direct (disable tool-backed discovery for an explicit no-tool baseline).
     discovery_mode: str = "controlled"
-    # Controlled mode budgets. These are task-scoped and include failed tool calls;
-    # cache hits do not consume budget.
-    controlled_initial_tool_budget: int = 12
-    controlled_delta_tool_budget: int = 4
     controlled_max_path_depth: int = 3
-    controlled_max_seeds_per_change_unit: int = 8
-    controlled_max_seeds_per_reviewer: int = 8
-    controlled_max_seeds_per_task: int = 24
-    controlled_max_knowledge_topics: int = 4
-    # 同一 task 内 Execute 对无依赖证据步骤的最大并发数。
     controlled_execute_concurrency: int = 3
-    # 子任务 React 是新受控执行器；planned_steps 保持旧 GraphPlan→Execute
-    # 兼容路径，subtask_react 启用“一子任务一局部 React”。
-    controlled_execution_mode: str = "subtask_react"
-    # A coherent graph+source investigation needs enough calls to locate a
-    # related symbol and then read its implementation.  The task budget still
-    # bounds the aggregate cost, and this remains configurable via env.
-    controlled_subtask_max_tool_calls: int = 20
-    controlled_subtask_max_rounds: int = 12
+    controlled_subtask_max_tool_calls: int = 8
+    controlled_subtask_max_rounds: int = 6
     controlled_subtask_timeout_seconds: int = 120
-    controlled_task_max_tool_calls: int = 96
-    controlled_max_subtasks_per_reviewer: int = 8
-    controlled_max_subtasks_per_task: int = 24
+    controlled_task_max_tool_calls: int = 32
+    controlled_max_subtasks_per_task: int = 8
 
     @property
     def needs_api_key(self) -> bool:
@@ -143,24 +96,18 @@ class Settings:
         """
         _load_dotenv()
         provider = os.environ.get("CODEGUARD_PROVIDER", "openai").strip().lower()
-        # 模型名:用户没指定时,按 provider 回退到该 provider 的默认模型。
-        model = os.environ.get("CODEGUARD_MODEL", "").strip() or _DEFAULT_MODELS.get(provider, "")
-        # 结构化输出方式默认 function_calling:兼容性最好(OpenAI/DeepSeek/Anthropic 都支持)。
-        # 注意:DeepSeek 等不支持 OpenAI 的 json_schema(response_format),用 function_calling 才能跑通。
+        model = os.environ.get("CODEGUARD_MODEL", "").strip() or _DEFAULT_MODELS.get(
+            provider, ""
+        )
         structured_method = os.environ.get(
             "CODEGUARD_STRUCTURED_METHOD", "function_calling"
         ).strip()
-        # 是否禁用思考模式。DeepSeek 的推理模型(thinking 模式)与 function_calling/结构化输出
-        # 冲突,需要显式关闭。默认 false:真正的 OpenAI 不认这个字段,发了反而会报错。
         disable_thinking = os.environ.get(
             "CODEGUARD_DISABLE_THINKING", "false"
         ).strip().lower() in ("1", "true", "yes", "on")
-        # 摘要阶段开关:默认开。设为 0/false/no/off 时关闭。
-        enable_summary = os.environ.get(
-            "CODEGUARD_ENABLE_SUMMARY", "true"
-        ).strip().lower() not in ("0", "false", "no", "off")
-        # 证据链开关:只接受 full/off,非法值告警并回退 full。
-        evidence_mode = os.environ.get("CODEGUARD_EVIDENCE_MODE", "full").strip().lower()
+        evidence_mode = (
+            os.environ.get("CODEGUARD_EVIDENCE_MODE", "full").strip().lower()
+        )
         if evidence_mode not in ("full", "off"):
             logger.warning(
                 "未知 CODEGUARD_EVIDENCE_MODE '%s',回退 'full'", evidence_mode
@@ -171,76 +118,54 @@ class Settings:
         graph_build_timeout_seconds = _positive_int_env(
             "CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS", 120
         )
-        checkpoint_backend = os.environ.get("CODEGUARD_CHECKPOINT_BACKEND", "").strip().lower()
-        checkpoint_db = os.environ.get("CODEGUARD_CHECKPOINT_DB", "codeguard_checkpoints.db").strip()
-        react_recursion_limit = int(os.environ.get("CODEGUARD_REACT_RECURSION_LIMIT", "48"))
-        reasoning_effort = os.environ.get("CODEGUARD_REASONING_EFFORT", "").strip().lower()
-        # 只接受 high/max,其余当未设(空字符串→不传参,用模型默认 high)。
+        checkpoint_backend = (
+            os.environ.get("CODEGUARD_CHECKPOINT_BACKEND", "").strip().lower()
+        )
+        checkpoint_db = os.environ.get(
+            "CODEGUARD_CHECKPOINT_DB", "codeguard_checkpoints.db"
+        ).strip()
+        reasoning_effort = (
+            os.environ.get("CODEGUARD_REASONING_EFFORT", "").strip().lower()
+        )
         if reasoning_effort not in ("high", "max"):
             reasoning_effort = ""
         trace_enabled = os.environ.get(
             "CODEGUARD_TRACE_ENABLED", "false"
         ).strip().lower() not in ("0", "false", "no", "off")
         trace_dir = os.environ.get("CODEGUARD_TRACE_DIR", "trace").strip()
-        trace_max_llm_content = int(os.environ.get("CODEGUARD_TRACE_MAX_LLM_CONTENT", "0"))
-        discovery_mode = os.environ.get("CODEGUARD_DISCOVERY_MODE", "controlled").strip().lower()
-        if discovery_mode not in {"controlled", "react", "direct"}:
+        trace_max_llm_content = int(
+            os.environ.get("CODEGUARD_TRACE_MAX_LLM_CONTENT", "0")
+        )
+        discovery_mode = (
+            os.environ.get("CODEGUARD_DISCOVERY_MODE", "controlled").strip().lower()
+        )
+        if discovery_mode not in {"controlled", "direct"}:
             logger.warning(
                 "未知 CODEGUARD_DISCOVERY_MODE '%s',回退 'controlled'", discovery_mode
             )
             discovery_mode = "controlled"
-        controlled_initial_tool_budget = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_INITIAL_TOOL_BUDGET", 12
-        )
-        controlled_delta_tool_budget = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET", 4
-        )
         controlled_max_path_depth = _positive_int_env(
             "CODEGUARD_CONTROLLED_MAX_PATH_DEPTH", 3
         )
         if controlled_max_path_depth > 3:
             raise ValueError("CODEGUARD_CONTROLLED_MAX_PATH_DEPTH must be <= 3")
-        controlled_max_seeds_per_change_unit = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_CHANGE_UNIT", 8
-        )
-        controlled_max_seeds_per_reviewer = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_REVIEWER", 8
-        )
-        controlled_max_seeds_per_task = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_MAX_SEEDS_PER_TASK", 24
-        )
-        controlled_max_knowledge_topics = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_MAX_KNOWLEDGE_TOPICS", 4
-        )
         controlled_execute_concurrency = _positive_int_env(
             "CODEGUARD_CONTROLLED_EXECUTE_CONCURRENCY", 3
         )
-        controlled_execution_mode = os.environ.get(
-            "CODEGUARD_CONTROLLED_EXECUTION_MODE", "subtask_react"
-        ).strip().lower()
-        if controlled_execution_mode not in {"planned_steps", "subtask_react"}:
-            logger.warning(
-                "未知 CODEGUARD_CONTROLLED_EXECUTION_MODE '%s',回退 'subtask_react'",
-                controlled_execution_mode,
-            )
-            controlled_execution_mode = "subtask_react"
         controlled_subtask_max_tool_calls = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS", 20
+            "CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS", 8
         )
         controlled_subtask_max_rounds = _positive_int_env(
-            "CODEGUARD_CONTROLLED_SUBTASK_MAX_ROUNDS", 12
+            "CODEGUARD_CONTROLLED_SUBTASK_MAX_ROUNDS", 6
         )
         controlled_subtask_timeout_seconds = _positive_int_env(
             "CODEGUARD_CONTROLLED_SUBTASK_TIMEOUT_SECONDS", 120
         )
         controlled_task_max_tool_calls = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_TASK_MAX_TOOL_CALLS", 96
-        )
-        controlled_max_subtasks_per_reviewer = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_REVIEWER", 8
+            "CODEGUARD_CONTROLLED_TASK_MAX_TOOL_CALLS", 32
         )
         controlled_max_subtasks_per_task = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_TASK", 24
+            "CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_TASK", 8
         )
         return cls(
             provider=provider,
@@ -248,37 +173,28 @@ class Settings:
             api_key=os.environ.get("CODEGUARD_API_KEY", "").strip(),
             api_base_url=os.environ.get("CODEGUARD_API_BASE_URL", "").strip(),
             max_retries=int(os.environ.get("CODEGUARD_MAX_RETRIES", "3")),
+            llm_timeout_seconds=_positive_int_env("CODEGUARD_LLM_TIMEOUT_SECONDS", 60),
             structured_method=structured_method,
             disable_thinking=disable_thinking,
             tool_server_url=os.environ.get("CODEGUARD_TOOL_SERVER_URL", "").strip(),
             tool_server_token=os.environ.get("CODEGUARD_TOOL_SERVER_TOKEN", "").strip(),
             graph_build_timeout_seconds=graph_build_timeout_seconds,
-            enable_summary=enable_summary,
             evidence_mode=evidence_mode,
             max_review_tasks=max_review_tasks,
             max_tasks_per_file=max_tasks_per_file,
             checkpoint_backend=checkpoint_backend,
             checkpoint_db=checkpoint_db,
-            react_recursion_limit=react_recursion_limit,
             reasoning_effort=reasoning_effort,
             trace_enabled=trace_enabled,
             trace_dir=trace_dir,
             trace_max_llm_content=trace_max_llm_content,
             discovery_mode=discovery_mode,
-            controlled_initial_tool_budget=controlled_initial_tool_budget,
-            controlled_delta_tool_budget=controlled_delta_tool_budget,
             controlled_max_path_depth=controlled_max_path_depth,
-            controlled_max_seeds_per_change_unit=controlled_max_seeds_per_change_unit,
-            controlled_max_seeds_per_reviewer=controlled_max_seeds_per_reviewer,
-            controlled_max_seeds_per_task=controlled_max_seeds_per_task,
-            controlled_max_knowledge_topics=controlled_max_knowledge_topics,
             controlled_execute_concurrency=controlled_execute_concurrency,
-            controlled_execution_mode=controlled_execution_mode,
             controlled_subtask_max_tool_calls=controlled_subtask_max_tool_calls,
             controlled_subtask_max_rounds=controlled_subtask_max_rounds,
             controlled_subtask_timeout_seconds=controlled_subtask_timeout_seconds,
             controlled_task_max_tool_calls=controlled_task_max_tool_calls,
-            controlled_max_subtasks_per_reviewer=controlled_max_subtasks_per_reviewer,
             controlled_max_subtasks_per_task=controlled_max_subtasks_per_task,
         )
 
@@ -299,35 +215,40 @@ class Settings:
         (那个 `disable_thinking` 的 extra_body 是 DeepSeek 专用,塞给千问会出错)。
         """
         base = cls.from_env()
-        provider = os.environ.get("CODEGUARD_JUDGE_PROVIDER", "").strip().lower() or base.provider
-
+        provider = (
+            os.environ.get("CODEGUARD_JUDGE_PROVIDER", "").strip().lower()
+            or base.provider
+        )
         api_key = os.environ.get("CODEGUARD_JUDGE_API_KEY", "").strip()
         api_base_url = os.environ.get("CODEGUARD_JUDGE_API_BASE_URL", "").strip()
-
-        # 同端点:provider 相同,且没单独指定 base_url(或指定的与主一致)。
-        same_endpoint = provider == base.provider and api_base_url in ("", base.api_base_url)
-
+        same_endpoint = provider == base.provider and api_base_url in (
+            "",
+            base.api_base_url,
+        )
         model = os.environ.get("CODEGUARD_JUDGE_MODEL", "").strip()
         if not model:
-            model = base.model if same_endpoint else _DEFAULT_MODELS.get(provider, base.model)
-
+            model = (
+                base.model
+                if same_endpoint
+                else _DEFAULT_MODELS.get(provider, base.model)
+            )
         if same_endpoint:
             api_key = api_key or base.api_key
             api_base_url = api_base_url or base.api_base_url
-
-        # disable_thinking 是厂商相关的:显式给了就听显式;否则只有同端点才沿用主配置,换家默认关。
-        explicit_dt = os.environ.get("CODEGUARD_JUDGE_DISABLE_THINKING", "").strip().lower()
+        explicit_dt = (
+            os.environ.get("CODEGUARD_JUDGE_DISABLE_THINKING", "").strip().lower()
+        )
         if explicit_dt:
             disable_thinking = explicit_dt in ("1", "true", "yes", "on")
         else:
             disable_thinking = base.disable_thinking if same_endpoint else False
-
         return cls(
             provider=provider,
             model=model,
             api_key=api_key,
             api_base_url=api_base_url,
             max_retries=base.max_retries,
+            llm_timeout_seconds=base.llm_timeout_seconds,
             structured_method=base.structured_method,
             disable_thinking=disable_thinking,
         )

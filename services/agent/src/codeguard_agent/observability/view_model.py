@@ -1,56 +1,23 @@
 """把无损追踪事件整理为 Dashboard 使用的稳定视图模型。"""
 
 from __future__ import annotations
-
 import json
-import re
-from collections import Counter, defaultdict
+from collections import defaultdict
 from typing import Any, Iterable
-
 from codeguard_agent.observability.models import TraceEvent, TraceReport
 from codeguard_agent.observability.serialization import normalize_tool_result
 
-REVIEWERS: dict[str, tuple[str, str, str]] = {
-    "discover_threat_model": (
-        "threat_model",
-        "威胁建模审查员",
-        "ThreatModelAgent",
-    ),
-    "discover_behavior": (
-        "behavior",
-        "行为审查员",
-        "BehaviorAgent",
-    ),
-    "discover_maintainability": (
-        "maintainability",
-        "可维护性审查员",
-        "MaintainabilityAgent",
-    ),
-}
-
+REVIEWERS: dict[str, tuple[str, str, str]] = {}
 _NODE_TITLES: dict[str, str] = {
     "classify_mode": "PR 规模判定",
     "file_task_builder": "文件级任务构建",
-    "summary": "变更摘要",
     "diff_task_builder": "Hunk 级任务构建",
     "task_route": "Task 路由",
     "direct_task_review": "Direct Task 审查",
     "task_selection": "任务选择",
-    "plan": "审查规划",
-    "review_plan": "审查分配",
     "symbol_resolution": "符号解析",
     "controlled_review": "受控审查",
-    "direct_triage": "Direct 初筛",
-    "graph_plan": "图谱取证计划",
-    "graph_replan": "证据补充计划",
-    "delta_execute": "补充证据执行",
-    "evidence_assessment": "证据评估",
     "controlled_diagnostics": "受控审查诊断",
-    "discover_threat_model": "安全候选发现",
-    "discover_behavior": "行为候选发现",
-    "discover_maintainability": "可维护性候选发现",
-    "prepare": "准备审查",
-    "collect": "汇总候选问题",
     "discovery_collector": "发现结果汇总",
     "council_coordinator": "候选汇总",
     "evidence_verifier": "证据验证",
@@ -77,10 +44,7 @@ def _event_state_write(event: TraceEvent | None) -> Any:
 
 def build_trace_view(report: TraceReport) -> dict[str, Any]:
     """构建不复制大字段内容的 Dashboard 视图索引。"""
-    events_by_sequence = {
-        event.sequence: event
-        for event in report.events
-    }
+    events_by_sequence = {event.sequence: event for event in report.events}
     node_steps = _pair_events(report.events, "node_start", "node_end")
     routing = _routing_view(report.events)
     llm_steps = _pair_events(report.events, "llm_start", "llm_end")
@@ -88,43 +52,29 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
     application_tool_steps = _application_tool_steps(
         report.events, tool_steps, report.artifacts
     )
-    main_placeholders = _missing_main_steps(node_steps, routing)
-    node_steps_with_placeholders = node_steps + main_placeholders
+    node_steps_with_placeholders = node_steps
     visible_node_steps = [
-        step
-        for step in node_steps_with_placeholders
-        if _is_visible_node_step(step)
+        step for step in node_steps_with_placeholders if _is_visible_node_step(step)
     ]
     state_node_steps = _state_only_node_steps(
-        node_steps,
-        visible_node_steps,
-        events_by_sequence,
+        node_steps, visible_node_steps, events_by_sequence
     )
     decision_summary = _decision_summary(report.events)
-    review_council_step = _review_council_step(node_steps)
     steps = _index_steps(
         visible_node_steps
         + state_node_steps
         + llm_steps
         + tool_steps
         + application_tool_steps
-        + [review_council_step]
     )
-    controlled_sections = _controlled_sections(
-        steps,
-        report.events,
-        report.artifacts,
-    )
+    controlled_sections = _controlled_sections(steps, report.events, report.artifacts)
     degradation = report.degradation
     return {
         "main_stages": _main_stages(
-            node_steps_with_placeholders,
-            review_council_step,
-            routing,
-            decision_summary=decision_summary,
+            node_steps_with_placeholders, decision_summary=decision_summary
         ),
         "routing": routing,
-        "reviewer_sections": _reviewer_sections(steps),
+        "reviewer_sections": [],
         "controlled_sections": controlled_sections,
         "decision_summary": decision_summary,
         "steps": steps,
@@ -134,9 +84,11 @@ def build_trace_view(report: TraceReport) -> dict[str, Any]:
             "is_clean": degradation.is_clean,
             "total": degradation.total_degradations,
             "items": [
-                {"label": "ReAct→直连(递归)", "count": degradation.react_degraded_recursion},
-                {"label": "ReAct结构化收口降级", "count": degradation.react_synthesis_fallback},
-                {"label": "Direct分派", "count": degradation.direct_tier_tasks, "info": True},
+                {
+                    "label": "Direct分派",
+                    "count": degradation.direct_tier_tasks,
+                    "info": True,
+                },
                 {"label": "发现者失败", "count": degradation.discoverer_failed},
                 {"label": "Task失败", "count": degradation.task_review_failed},
                 {"label": "Judge失败", "count": degradation.judge_synthesis_failed},
@@ -159,14 +111,13 @@ def _routing_view(events: Iterable[TraceEvent]) -> dict[str, Any]:
             route.update(candidate)
         if event.node_name == "classify_mode":
             mode = output.get("review_mode")
-            if mode in {"small", "medium", "large"}:
+            if mode in {"normal", "large"}:
                 route.setdefault("initial_mode", mode)
                 route.setdefault("effective_mode", mode)
                 route.setdefault(
                     "selected_node",
                     {
-                        "small": "file_task_builder",
-                        "medium": "file_task_builder",
+                        "normal": "file_task_builder",
                         "large": "diff_task_builder",
                     }[mode],
                 )
@@ -175,20 +126,10 @@ def _routing_view(events: Iterable[TraceEvent]) -> dict[str, Any]:
 
 
 def _pair_events(
-    events: Iterable[TraceEvent],
-    start_type: str,
-    end_type: str,
+    events: Iterable[TraceEvent], start_type: str, end_type: str
 ) -> list[dict[str, Any]]:
-    starts = {
-        event.run_id: event
-        for event in events
-        if event.event_type == start_type
-    }
-    ends = {
-        event.run_id: event
-        for event in events
-        if event.event_type == end_type
-    }
+    starts = {event.run_id: event for event in events if event.event_type == start_type}
+    ends = {event.run_id: event for event in events if event.event_type == end_type}
     kind = "llm" if start_type == "llm_start" else "node"
     result: list[dict[str, Any]] = []
     for run_id, start in starts.items():
@@ -203,10 +144,7 @@ def _pair_events(
 
 
 def _step_from_pair(
-    step_id: str,
-    kind: str,
-    start: TraceEvent | None,
-    end: TraceEvent | None,
+    step_id: str, kind: str, start: TraceEvent | None, end: TraceEvent | None
 ) -> dict[str, Any]:
     event = start or end
     assert event is not None
@@ -217,51 +155,26 @@ def _step_from_pair(
         else 0.0
     )
     code_name = event.node_name
-    metrics = (
-        _evidence_batch_metrics(end)
-        if code_name == "evidence_verifier"
-        else {}
-    )
+    metrics = _evidence_batch_metrics(end) if code_name == "evidence_verifier" else {}
     summary = end.summary if end is not None else event.summary
     node_summary = _node_state_summary(code_name, end)
     if node_summary:
         summary = node_summary
     if metrics:
         if "candidates" in metrics and "artifacts_patch" in metrics:
-            # Evidence Ledger 验证指标(源文档 §10.4 新摘要)。
             parts = [
-                f"artifacts p{metrics.get('artifacts_patch', 0)}/"
-                f"c{metrics.get('artifacts_context', 0)}/"
-                f"t{metrics.get('artifacts_tool', 0)} · "
-                f"refs {metrics.get('refs_selected', 0)}"
-                f"(v{metrics.get('refs_valid', 0)}/"
-                f"l{metrics.get('refs_limited', 0)}/"
-                f"i{metrics.get('refs_invalid', 0)}) · "
-                f"replay {metrics.get('replay_requested', 0)}"
-                f"(v{metrics.get('replay_valid', 0)}/"
-                f"l{metrics.get('replay_limited', 0)}/"
-                f"fl{metrics.get('replay_failed', 0)}) · "
-                f"gaps {metrics.get('evidence_gaps', 0)} · "
-                f"judge {metrics.get('judge_eligible', 0)}/"
-                f"{metrics.get('judge_rejected', 0)}",
+                f"artifacts p{metrics.get('artifacts_patch', 0)}/c{metrics.get('artifacts_context', 0)}/t{metrics.get('artifacts_tool', 0)} · refs {metrics.get('refs_selected', 0)}(v{metrics.get('refs_valid', 0)}/l{metrics.get('refs_limited', 0)}/i{metrics.get('refs_invalid', 0)}) · replay {metrics.get('replay_requested', 0)}(v{metrics.get('replay_valid', 0)}/l{metrics.get('replay_limited', 0)}/fl{metrics.get('replay_failed', 0)}) · gaps {metrics.get('evidence_gaps', 0)} · judge {metrics.get('judge_eligible', 0)}/{metrics.get('judge_rejected', 0)}"
             ]
         else:
             parts = [
-                f"{metrics.get('request_count', 0)} 个请求 · "
-                f"{metrics.get('fact_count', 0)} 条事实",
+                f"{metrics.get('request_count', 0)} 个请求 · {metrics.get('fact_count', 0)} 条事实"
             ]
-            # 重放四态仅新 payload 携带;旧 trace 报告缺键时不渲染,避免显示误导性全零
             if "replay_verified_count" in metrics:
                 parts.append(
-                    "(verified "
-                    f"{metrics.get('replay_verified_count', 0)} / unverified "
-                    f"{metrics.get('replay_unverified_count', 0)} / failed "
-                    f"{metrics.get('replay_failed_count', 0)} / recipe "
-                    f"{metrics.get('recipe_fact_count', 0)})"
+                    f"(verified {metrics.get('replay_verified_count', 0)} / unverified {metrics.get('replay_unverified_count', 0)} / failed {metrics.get('replay_failed_count', 0)} / recipe {metrics.get('recipe_fact_count', 0)})"
                 )
             parts.append(
-                f" · {metrics.get('llm_analysis_calls', 0)} 次 LLM · "
-                f"分析 {float(metrics.get('fact_analysis_ms', 0.0)) / 1000:.3f}s"
+                f" · {metrics.get('llm_analysis_calls', 0)} 次 LLM · 分析 {float(metrics.get('fact_analysis_ms', 0.0)) / 1000:.3f}s"
             )
             if "chain_used" in metrics:
                 parts.append(
@@ -272,11 +185,9 @@ def _step_from_pair(
         "id": step_id,
         "sequence": sequence,
         "kind": kind,
-        "title": (
-            "模型决策"
-            if kind == "llm"
-            else _NODE_TITLES.get(code_name, code_name)
-        ),
+        "title": "模型决策"
+        if kind == "llm"
+        else _NODE_TITLES.get(code_name, code_name),
         "code_name": code_name,
         "node_path": event.node_path or code_name,
         "invocation_id": event.invocation_id,
@@ -304,12 +215,7 @@ def _node_state_summary(code_name: str, event: TraceEvent | None) -> str:
         if isinstance(route, dict):
             metrics = route.get("metrics")
             metrics = metrics if isinstance(metrics, dict) else {}
-            return (
-                f"{route.get('initial_mode', 'unknown')} 模式 · "
-                f"{metrics.get('file_count', 0)} 文件 · "
-                f"{metrics.get('hunk_count', 0)} hunks · "
-                f"{metrics.get('diff_chars', 0)} 字符"
-            )
+            return f"{route.get('initial_mode', 'unknown')} 模式 · {metrics.get('file_count', 0)} 文件 · {metrics.get('hunk_count', 0)} hunks · {metrics.get('diff_chars', 0)} 字符"
     traces = output.get("council_trace")
     if code_name == "controlled_review":
         traces = []
@@ -327,100 +233,9 @@ def _node_state_summary(code_name: str, event: TraceEvent | None) -> str:
 
 
 def _controlled_review_summary(output: dict[str, Any]) -> str:
-    """从受控审查节点的 State patch 派生可读摘要。
-
-    受控审查把多个 task/reviewer 的中间结果一次性写回节点，Trace 中不再
-    有旧 ReAct 的 discover_* 子节点。因此主流程需要显示真实的工作量，而
-    不是把该节点误标为“未采集到审查员执行”。
-    """
-    triage = output.get("controlled_triage")
-    triage_outcomes = output.get("controlled_triage_outcomes")
-    plans = output.get("controlled_graph_plans")
-    subtask_plans = output.get("controlled_subtask_plans")
-    subtask_outcomes = output.get("controlled_subtask_outcomes")
-    subtask_seed_outcomes = output.get("controlled_subtask_seed_outcomes")
-    assessments = output.get("controlled_assessments")
-    proofs = output.get("controlled_proof_matches")
-    records = output.get("tool_trace_records")
-    candidates = output.get("candidate_issues")
-    if not isinstance(triage, dict):
-        triage = {}
-    if not isinstance(triage_outcomes, dict):
-        triage_outcomes = {}
-    if not isinstance(plans, dict):
-        plans = {}
-    if not isinstance(subtask_plans, dict):
-        subtask_plans = {}
-    if not isinstance(subtask_outcomes, dict):
-        subtask_outcomes = {}
-    if not isinstance(subtask_seed_outcomes, dict):
-        # Older traces mixed omitted seed statuses into the subtask map. Keep
-        # that format readable while new runs use a dedicated state field.
-        subtask_seed_outcomes = {
-            str(key): value
-            for key, value in subtask_outcomes.items()
-            if ":seed:" in str(key)
-        }
-    if not isinstance(assessments, dict):
-        assessments = {}
-    if not isinstance(proofs, dict):
-        proofs = {}
-    if not isinstance(records, list):
-        records = []
-    if not isinstance(candidates, list):
-        candidates = output.get("raw_candidate_issues")
-    if not isinstance(candidates, list):
-        candidates = []
-    subtask_count = sum(
-        len(value.get("subtasks") or [])
-        for value in subtask_plans.values()
-        if isinstance(value, dict)
-    )
-    plan_count = len(plans) + len(subtask_plans)
-    subtask_statuses = {
-        str(key): str(value)
-        for key, value in subtask_outcomes.items()
-        if ":seed:" not in str(key)
-    }
-    seed_statuses = {
-        str(key): str(value) for key, value in subtask_seed_outcomes.items()
-    }
-    terminal_count = sum(value != "planned" for value in subtask_statuses.values())
-    triage_failure_count = sum(
-        str(value) == "failed" for value in triage_outcomes.values()
-    )
-    plan_text = f"{plan_count} 个调查计划"
-    if subtask_count:
-        status_counts = Counter(subtask_statuses.values())
-        status_text = " · ".join(
-            f"{status} {count}"
-            for status, count in sorted(status_counts.items())
-            if status
-        )
-        plan_text += f" · {subtask_count} 个子任务（已结束 {terminal_count}"
-        if status_text:
-            plan_text += f" · {status_text}"
-        if seed_statuses:
-            seed_counts = Counter(seed_statuses.values())
-            seed_text = "、".join(
-                f"{status} {count}"
-                for status, count in sorted(seed_counts.items())
-            )
-            plan_text += f" · 种子记录 {seed_text}"
-        plan_text += "）"
-    elif seed_statuses:
-        seed_counts = Counter(seed_statuses.values())
-        seed_text = "、".join(
-            f"{status} {count}"
-            for status, count in sorted(seed_counts.items())
-        )
-        plan_text += f" · 种子记录 {seed_text}"
-    return (
-        f"{len(triage)} 个初筛单元 · {plan_text} · "
-        f"初筛失败 {triage_failure_count} · "
-        f"{len(records)} 次工具 · {len(assessments)} 条证据评估 · "
-        f"{len(proofs)} 条证明匹配 · {len(candidates)} 个候选"
-    )
+    outcomes = output.get("controlled_subtask_outcomes") or {}
+    candidates = output.get("candidate_issues") or []
+    return f"变更调查 {len(outcomes)} 组 · 候选 {len(candidates)} · 未完成 {sum((v in {'inconclusive', 'omitted', 'failed'} for v in outcomes.values()))}"
 
 
 def _evidence_batch_metrics(event: TraceEvent | None) -> dict[str, Any]:
@@ -451,8 +266,7 @@ def _evidence_batch_metrics(event: TraceEvent | None) -> dict[str, Any]:
 
 
 def _tool_event_steps(
-    events: Iterable[TraceEvent],
-    artifacts: dict[str, Any] | None = None,
+    events: Iterable[TraceEvent], artifacts: dict[str, Any] | None = None
 ) -> list[dict[str, Any]]:
     starts = {
         event.run_id: event
@@ -471,10 +285,7 @@ def _tool_event_steps(
         end = ends.get(event.run_id)
         result.append(_tool_step(event, end, artifacts or {}))
     for event in events:
-        if (
-            event.event_type not in {"tool_end", "tool_error"}
-            or event.run_id in starts
-        ):
+        if event.event_type not in {"tool_end", "tool_error"} or event.run_id in starts:
             continue
         result.append(_tool_step(None, event, artifacts or {}))
     return result
@@ -546,29 +357,32 @@ def _application_tool_steps(
                     json.dumps(arguments, ensure_ascii=False, sort_keys=True),
                     subtask_id,
                 )
-                # call_id is the authoritative native/application identity.
-                # If it is unavailable, keep scoped records separate from an
-                # unscoped native step rather than merging two subtasks.
                 if call_id and call_id in native_call_ids:
                     continue
-                if status != "reused" and dedup_key in native_keys:
+                if (
+                    status != "reused"
+                    and dedup_key in native_keys
+                    and (
+                        not item.get("artifact_id")
+                        or any(
+                            (
+                                step.get("artifact_id") == item["artifact_id"]
+                                for step in native_tool_steps
+                            )
+                        )
+                    )
+                ):
                     continue
                 if status != "reused":
                     native_keys.add(dedup_key)
                 artifact_id = str(item.get("artifact_id") or "")
                 artifact = (artifacts or {}).get(artifact_id)
                 preview = (
-                    artifact.preview
-                    if artifact is not None
-                    else item.get("output")
+                    artifact.preview if artifact is not None else item.get("output")
                 )
-                reused_from_call_id = str(
-                    item.get("reused_from_call_id") or ""
-                )
+                reused_from_call_id = str(item.get("reused_from_call_id") or "")
                 normalized_output = normalize_tool_result(
-                    preview,
-                    status=status,
-                    reused_from_call_id=reused_from_call_id,
+                    preview, status=status, reused_from_call_id=reused_from_call_id
                 )
                 result.append(
                     {
@@ -584,9 +398,7 @@ def _application_tool_steps(
                         "pair_id": call_id,
                         "start_sequence": None,
                         "end_sequence": None,
-                        "duration_ms": max(
-                            0.0, float(item.get("duration_ms") or 0.0)
-                        ),
+                        "duration_ms": max(0.0, float(item.get("duration_ms") or 0.0)),
                         "status": status,
                         "summary": _application_tool_summary(
                             tool_name,
@@ -597,11 +409,9 @@ def _application_tool_steps(
                         "input": arguments,
                         "output": normalized_output,
                         "artifact_id": artifact_id,
-                        "payload_hash": (
-                            artifact.payload_hash
-                            if artifact is not None
-                            else ""
-                        ),
+                        "payload_hash": artifact.payload_hash
+                        if artifact is not None
+                        else "",
                         "reuse_key": str(item.get("reuse_key") or ""),
                         "reused_from_call_id": reused_from_call_id,
                         "reused_from_artifact_id": str(
@@ -631,9 +441,7 @@ def _application_tool_steps(
                 continue
             if call_id:
                 seen_application_call_ids.add(call_id)
-            reused_from_call_id = str(
-                detail.get("reused_from_call_id") or ""
-            )
+            reused_from_call_id = str(detail.get("reused_from_call_id") or "")
             normalized_output = normalize_tool_result(
                 detail.get("output"),
                 status="reused",
@@ -674,38 +482,24 @@ def _application_tool_steps(
 
 
 def _application_tool_summary(
-    tool: str,
-    output: Any,
-    status: str,
-    *,
-    reused_from_call_id: str = "",
+    tool: str, output: Any, status: str, *, reused_from_call_id: str = ""
 ) -> str:
     if status == "reused":
         if reused_from_call_id == "task_patch":
             return "复用当前 task patch（未执行 Gateway）"
         return "复用已缓存工具结果"
-    if tool not in {
-        "inspect_change_impact",
-        "inspect_path",
-        "inspect_structure",
-    }:
+    if tool != "query_relations":
         return f"应用级工具记录 · {status}"
     payload = output
     if not isinstance(payload, dict) or payload.get("schema_version") != 2:
         return "图谱协议不兼容"
     relations = payload.get("relationships")
     resolved = len(relations) if isinstance(relations, list) else 0
-    return (
-        f"图谱查询 · {payload.get('outcome', 'invalid')}/"
-        f"{payload.get('coverage', 'invalid')} · "
-        f"已解析 {resolved} · 未解析 {int(payload.get('unresolved_count') or 0)}"
-    )
+    return f"图谱查询 · {payload.get('outcome', 'invalid')}/{payload.get('coverage', 'invalid')} · 已解析 {resolved} · 未解析 {int(payload.get('unresolved_count') or 0)}"
 
 
 def _tool_step(
-    start: TraceEvent | None,
-    end: TraceEvent | None,
-    artifacts: dict[str, Any],
+    start: TraceEvent | None, end: TraceEvent | None, artifacts: dict[str, Any]
 ) -> dict[str, Any]:
     event = start or end
     assert event is not None
@@ -738,9 +532,6 @@ def _tool_step(
         "code_name": tool_name,
         "node_path": event.node_path or event.node_name,
         "reviewer_root": _reviewer_root_for_event(event),
-        # Native LangChain events may not carry the application-level
-        # subtask id.  Keep the slot so a matching application record can
-        # propagate its owner without changing the view shape.
         "subtask_id": "",
         "invocation_id": event.invocation_id,
         "pair_id": run_id,
@@ -761,12 +552,12 @@ def _tool_step(
 
 def _reviewer_root_for_event(event: TraceEvent) -> str:
     path_root = str(event.node_path).split("/", 1)[0]
-    if path_root in REVIEWERS:
+    if path_root == "controlled_review":
         return path_root
     metadata = event.detail.get("metadata")
     if isinstance(metadata, dict):
         namespace = str(metadata.get("langgraph_checkpoint_ns") or "")
-        for path_root in REVIEWERS:
+        for path_root in ("controlled_review",):
             if path_root in namespace:
                 return path_root
     return ""
@@ -781,9 +572,6 @@ def _is_visible_node_step(step: dict[str, Any]) -> bool:
         "task_route",
         "direct_task_review",
         "task_selection",
-        "plan",
-        "review_plan",
-        "summary",
         "symbol_resolution",
         "controlled_review",
         "discovery_collector",
@@ -824,146 +612,49 @@ def _state_only_node_steps(
     return result
 
 
-def _index_steps(
-    steps: Iterable[dict[str, Any]],
-) -> dict[str, dict[str, Any]]:
+def _index_steps(steps: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {
-        step["id"]: step
-        for step in sorted(steps, key=lambda item: item["sequence"])
+        step["id"]: step for step in sorted(steps, key=lambda item: item["sequence"])
     }
 
 
 def _main_stages(
-    node_steps: list[dict[str, Any]],
-    review_council_step: dict[str, Any],
-    routing: dict[str, Any],
-    *,
-    decision_summary: dict[str, Any] | None = None,
+    node_steps: list[dict[str, Any]], *, decision_summary: dict[str, Any] | None = None
 ) -> list[dict[str, Any]]:
-    by_name: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_name = defaultdict(list)
     for step in node_steps:
         by_name[step["code_name"]].append(step)
-
-    stages: list[dict[str, Any]] = []
-    if "classify_mode" in by_name:
-        stages.append(_main_stage(
-            "classify_mode",
-            _NODE_TITLES["classify_mode"],
-            by_name["classify_mode"],
-        ))
-        builder = str(routing.get("selected_node") or "")
-        if builder not in {"file_task_builder", "diff_task_builder"}:
-            if "file_task_builder" in by_name:
-                builder = "file_task_builder"
-            elif "diff_task_builder" in by_name:
-                builder = "diff_task_builder"
-        if builder in {"file_task_builder", "diff_task_builder"} and builder in by_name:
-            stages.append(_main_stage(builder, _NODE_TITLES[builder], by_name[builder]))
-        for code_name in ("task_route", "task_selection", "plan", "review_plan"):
-            if code_name in by_name:
-                stages.append(_main_stage(
-                    code_name,
-                    _NODE_TITLES[code_name],
-                    by_name[code_name],
-                ))
-    else:
-        for code_name, title in (
-            ("diff_task_builder", "审查任务构建"),
-            ("task_selection", "任务选择"),
-            ("review_plan", "审查计划"),
-        ):
-            if code_name in by_name:
-                stages.append(_main_stage(code_name, title, by_name[code_name]))
-    stages.append(_main_stage("summary", "变更摘要", by_name.get("summary")))
-    stages.append(_main_stage(
+    order = (
+        "classify_mode",
+        "file_task_builder",
+        "diff_task_builder",
+        "task_route",
+        "direct_task_review",
+        "task_selection",
         "symbol_resolution",
-        "符号解析",
-        by_name.get("symbol_resolution"),
-    ))
-
-    council_code_name = review_council_step["code_name"]
-    stages.append({
-        "id": f"main:{council_code_name}",
-        "title": review_council_step.get("title") or "多维审查",
-        "code_name": council_code_name,
-        "status": review_council_step["status"],
-        "step_id": review_council_step["id"],
-        "sequence": review_council_step["sequence"],
-        "duration_ms": review_council_step.get("duration_ms", 0.0),
-        "summary": review_council_step["summary"],
-    })
-    if "discovery_collector" in by_name:
-        stages.append(_main_stage(
-            "discovery_collector",
-            _NODE_TITLES["discovery_collector"],
-            by_name["discovery_collector"],
-        ))
-    for code_name in ("council_coordinator", "evidence_verifier", "direct_judge"):
-        if code_name in by_name:
-            stages.append(_main_stage(
-                code_name,
-                _NODE_TITLES[code_name],
-                by_name[code_name],
-            ))
-    judge_stage = _main_stage(
+        "controlled_review",
+        "discovery_collector",
+        "council_coordinator",
+        "evidence_verifier",
         "council_judge",
-        "结果裁决",
-        by_name.get("council_judge"),
+        "direct_judge",
+        "causal_merge",
     )
-    if "discovery_collector" in by_name and "council_judge" not in by_name:
-        judge_stage["status"] = "skipped"
-        judge_stage["summary"] = "discovery_only：发现阶段结束，不执行裁决"
-    decision_summary = decision_summary or {}
-    judge_summary = decision_summary.get("judge") or {}
-    if judge_summary.get("candidate_count"):
-        judge_stage["summary"] = _judge_summary(judge_summary)
-        judge_stage["metrics"] = judge_summary
-    if "council_judge" in by_name or "discovery_collector" in by_name:
-        stages.append(judge_stage)
-    causal_candidates = by_name.get("causal_merge")
-    if causal_candidates:
-        causal_stage = _main_stage(
-            "causal_merge",
-            "语义合并",
-            causal_candidates,
+    stages = [
+        _main_stage(name, _NODE_TITLES.get(name, name), by_name[name])
+        for name in order
+        if name in by_name
+    ]
+    for stage in stages:
+        key = {"council_judge": "judge", "causal_merge": "causal_merge"}.get(
+            stage["code_name"]
         )
-        causal_summary = decision_summary.get("causal_merge") or {}
-        causal_stage["summary"] = _causal_merge_summary(causal_summary)
-        causal_stage["metrics"] = causal_summary
-        stages.append(causal_stage)
-    _attach_direct_task_branch(stages, by_name)
+        data = (decision_summary or {}).get(key or "", {})
+        if data and key == "judge":
+            stage["summary"] = _judge_summary(data)
+        elif data and key == "causal_merge":
+            stage["summary"] = _causal_merge_summary(data)
     return stages
-
-
-def _attach_direct_task_branch(
-    stages: list[dict[str, Any]],
-    by_name: dict[str, list[dict[str, Any]]],
-) -> None:
-    """将真实的 Direct 审查作为 TaskRoute 的条件分支展示。"""
-    route_steps = by_name.get("task_route") or []
-    direct_steps = by_name.get("direct_task_review") or []
-    if not route_steps or not direct_steps or _direct_task_count(route_steps) == 0:
-        return
-    route_stage = next(
-        (stage for stage in stages if stage["code_name"] == "task_route"),
-        None,
-    )
-    if route_stage is None:
-        return
-    step = direct_steps[0]
-    route_stage["branch"] = {
-        "title": "Direct 分支审查",
-        "step_id": step["id"],
-        "summary": step["summary"],
-        "duration_ms": step["duration_ms"],
-    }
-
-
-def _direct_task_count(route_steps: Iterable[dict[str, Any]]) -> int:
-    return max(
-        (int(step.get("direct_task_count") or 0) for step in route_steps),
-        default=0,
-    )
 
 
 def _direct_task_count_from_event(event: TraceEvent | None) -> int:
@@ -974,58 +665,11 @@ def _direct_task_count_from_event(event: TraceEvent | None) -> int:
     if not isinstance(routes, dict):
         return 0
     return sum(
-        isinstance(route, dict) and route.get("route") == "direct"
-        for route in routes.values()
+        (
+            isinstance(route, dict) and route.get("route") == "direct"
+            for route in routes.values()
+        )
     )
-
-
-def _review_council_step(
-    node_steps: list[dict[str, Any]],
-) -> dict[str, Any]:
-    controlled_candidates = [
-        step for step in node_steps if step["code_name"] == "controlled_review"
-    ]
-    controlled = max(
-        controlled_candidates,
-        key=lambda step: step.get("end_sequence") or step.get("sequence") or -1,
-        default=None,
-    )
-    if controlled is not None:
-        # 受控模式的单个节点本身就是审查阶段的真实执行实例。直接复用
-        # 配对信息可让主流程、状态演进和 Inspector 指向同一条事件链。
-        result = dict(controlled)
-        result["title"] = "受控审查"
-        return result
-    discoverers = [
-        step
-        for step in node_steps
-        if step["code_name"] in REVIEWERS
-    ]
-    return {
-        "id": "group:review_council",
-        "sequence": min(
-            (step["sequence"] for step in discoverers),
-            default=0,
-        ),
-        "kind": "group",
-        "title": "多维审查",
-        "code_name": "review_council",
-        "node_path": "review_council",
-        "invocation_id": "",
-        "pair_id": "",
-        "start_sequence": None,
-        "end_sequence": None,
-        "duration_ms": max(
-            (float(step.get("duration_ms") or 0.0) for step in discoverers),
-            default=0.0,
-        ),
-        "status": "complete" if discoverers else "missing",
-        "summary": (
-            f"{len(discoverers)} 名审查员并行执行"
-            if discoverers
-            else "未采集到审查员执行"
-        ),
-    }
 
 
 def _decision_summary(events: Iterable[TraceEvent]) -> dict[str, Any]:
@@ -1040,10 +684,7 @@ def _decision_summary(events: Iterable[TraceEvent]) -> dict[str, Any]:
     return {"judge": judge, "causal_merge": causal}
 
 
-def _latest_node_output(
-    events: Iterable[TraceEvent],
-    node_name: str,
-) -> dict[str, Any]:
+def _latest_node_output(events: Iterable[TraceEvent], node_name: str) -> dict[str, Any]:
     output: dict[str, Any] = {}
     for event in sorted(events, key=lambda item: item.sequence):
         if event.event_type != "node_end" or event.node_name != node_name:
@@ -1089,22 +730,22 @@ def _judge_summary_data(events: Iterable[TraceEvent]) -> dict[str, Any]:
         if event in {"judge_verdict", "direct_judge_verdict"}
     ]
     batch_count = sum(
-        event == "evidence_judge_batch_started" for event, _payload in payloads
+        (event == "evidence_judge_batch_started" for event, _payload in payloads)
     )
     contract_violations = sum(
-        len(payload.get("violations") or [])
-        for event, payload in payloads
-        if event == "evidence_judge_contract_violations"
+        (
+            len(payload.get("violations") or [])
+            for event, payload in payloads
+            if event == "evidence_judge_contract_violations"
+        )
     )
-    keep_count = sum(payload.get("action") == "keep" for payload in verdicts)
-    drop_count = sum(payload.get("action") == "drop" for payload in verdicts)
+    keep_count = sum((payload.get("action") == "keep" for payload in verdicts))
+    drop_count = sum((payload.get("action") == "drop" for payload in verdicts))
     insufficient_count = sum(
-        payload.get("reason_code") == "insufficient_evidence"
-        for payload in verdicts
+        (payload.get("reason_code") == "insufficient_evidence" for payload in verdicts)
     )
     failed_count = sum(
-        payload.get("reason_code") == "verification_failed"
-        for payload in verdicts
+        (payload.get("reason_code") == "verification_failed" for payload in verdicts)
     )
     return {
         "candidate_count": len(verdicts),
@@ -1138,10 +779,13 @@ def _causal_merge_summary_data(events: Iterable[TraceEvent]) -> dict[str, Any]:
         "successful_batch_count": int(stats.get("successful_batch_count", 0)),
         "failed_batch_count": int(stats.get("failed_batch_count", 0)),
         "comparison_count": sum(
-            int(payload.get("comparisons", 0))
-            for event, payload in _council_trace_payloads(output)
-            if event == "causal_merge_batch_completed"
-        ) or int(completed.get("comparisons", 0)),
+            (
+                int(payload.get("comparisons", 0))
+                for event, payload in _council_trace_payloads(output)
+                if event == "causal_merge_batch_completed"
+            )
+        )
+        or int(completed.get("comparisons", 0)),
         "merged_group_count": int(stats.get("merged_group_count", 0)),
         "merged_candidate_count": int(stats.get("merged_candidate_count", 0)),
         "final_issue_count": len(output.get("final_issues") or []),
@@ -1149,10 +793,7 @@ def _causal_merge_summary_data(events: Iterable[TraceEvent]) -> dict[str, Any]:
 
 
 def _judge_summary(data: dict[str, Any]) -> str:
-    text = (
-        f"Judge {data.get('candidate_count', 0)} 个候选 → "
-        f"保留 {data.get('keep_count', 0)} / 丢弃 {data.get('drop_count', 0)}"
-    )
+    text = f"Judge {data.get('candidate_count', 0)} 个候选 → 保留 {data.get('keep_count', 0)} / 丢弃 {data.get('drop_count', 0)}"
     reasons: list[str] = []
     if data.get("insufficient_evidence_count"):
         reasons.append(f"证据不足 {data['insufficient_evidence_count']}")
@@ -1164,109 +805,11 @@ def _judge_summary(data: dict[str, Any]) -> str:
 
 
 def _causal_merge_summary(data: dict[str, Any]) -> str:
-    return (
-        f"因果合并 {data.get('survivor_count', 0)} 个 survivor → "
-        f"比较 {data.get('comparison_count', 0)} 次 → "
-        f"合并 {data.get('merged_group_count', 0)} 组 → "
-        f"最终 {data.get('final_issue_count', 0)} 个 Issue"
-    )
-
-
-def _missing_main_steps(
-    node_steps: list[dict[str, Any]],
-    routing: dict[str, Any],
-) -> list[dict[str, Any]]:
-    present = {step["code_name"] for step in node_steps}
-    placeholders: list[dict[str, Any]] = []
-    discovery_only = "discovery_collector" in present
-    controlled_flow = "controlled_review" in present
-    has_task_plan_flow = any(
-        name in present for name in ("task_route", "direct_task_review", "plan")
-    )
-    expected: tuple[str, ...]
-    if has_task_plan_flow:
-        if controlled_flow:
-            expected = (
-                "task_route",
-                "task_selection",
-                "plan",
-                "summary",
-                "symbol_resolution",
-                "council_judge",
-            )
-            if "direct_task_review" in present:
-                expected = (
-                    "task_route",
-                    "direct_task_review",
-                    "task_selection",
-                    "plan",
-                    "summary",
-                    "symbol_resolution",
-                    "council_judge",
-                )
-        else:
-            expected = (
-                "task_route",
-                "direct_task_review",
-                "task_selection",
-                "plan",
-                "review_plan",
-                "summary",
-                "symbol_resolution",
-                "council_judge",
-            )
-    elif "classify_mode" in present:
-        expected = (
-            "task_selection",
-            "review_plan",
-            "summary",
-            "symbol_resolution",
-            "council_judge",
-        )
-    else:
-        expected = ("summary", "symbol_resolution", "council_judge")
-    for index, code_name in enumerate(expected, start=1):
-        if code_name in present:
-            continue
-        configured_skip = (
-            code_name == "summary"
-            and "symbol_resolution" in present
-            and "summary" not in present
-        )
-        discovery_skip = discovery_only and code_name == "council_judge"
-        status = (
-            "skipped"
-            if configured_skip or discovery_skip
-            else "missing"
-        )
-        placeholders.append({
-            "id": f"placeholder:{code_name}",
-            "sequence": 1_000_000 + index,
-            "kind": "node",
-            "title": _NODE_TITLES[code_name],
-            "code_name": code_name,
-            "node_path": code_name,
-            "invocation_id": "",
-            "pair_id": "",
-            "start_sequence": None,
-            "end_sequence": None,
-            "duration_ms": 0.0,
-            "status": status,
-            "summary": (
-                "Summary 未启用，按配置跳过"
-                if configured_skip
-                else "discovery_only 模式按设计跳过"
-                if discovery_skip
-                else "当前 Trace 未采集到该节点"
-            ),
-        })
-    return placeholders
+    return f"因果合并 {data.get('survivor_count', 0)} 个 survivor → 比较 {data.get('comparison_count', 0)} 次 → 合并 {data.get('merged_group_count', 0)} 组 → 最终 {data.get('final_issue_count', 0)} 个 Issue"
 
 
 def _main_stage(
-    code_name: str,
-    title: str,
-    candidates: list[dict[str, Any]] | None,
+    code_name: str, title: str, candidates: list[dict[str, Any]] | None
 ) -> dict[str, Any]:
     step = candidates[0] if candidates else None
     return {
@@ -1281,938 +824,84 @@ def _main_stage(
     }
 
 
-def _reviewer_sections(
-    steps: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    sections: list[dict[str, Any]] = []
-    for path_root, (key, title, code_name) in REVIEWERS.items():
-        owned = [
-            step
-            for step in steps.values()
-            if (
-                str(step["node_path"]).split("/", 1)[0] == path_root
-                or step.get("reviewer_root") == path_root
-            )
-            and not step.get("hidden")
-        ]
-        if not owned:
-            # Phase 4+ 的 task-scoped 发现者把发现流程收敛为单个
-            # discover_* 节点，不再产生旧 prepare/review/collect 子节点。
-            # 该 wrapper 节点仍有 candidate_issues 等 State patch，必须作为
-            # Reviewer 面板的可见锚点，不能因其被 State 视图标为 hidden 而丢失。
-            owned = [
-                step
-                for step in steps.values()
-                if step["code_name"] == path_root
-            ]
-        owned.sort(key=lambda item: item["sequence"])
-        round_number = 0
-        for step in owned:
-            if step["kind"] == "llm":
-                round_number += 1
-            step["round"] = round_number
-            step["reviewer"] = key
-        sections.append({
-            "key": key,
-            "title": title,
-            "code_name": code_name,
-            "path_root": path_root,
-            "step_ids": [step["id"] for step in owned],
-            "tool_step_ids": [
-                step["id"] for step in owned if step["kind"] == "tool"
-            ],
-            "tool_call_count": sum(
-                step["kind"] == "tool" for step in owned
-            ),
-        })
-    return sections
-
-
 def _controlled_sections(
     steps: dict[str, dict[str, Any]],
     events: Iterable[TraceEvent],
     artifacts: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """把 ``controlled_review`` 的批量 State 拆成可导航的审查面板。
-
-    受控模式只有一个 LangGraph 节点，但节点内部仍有三类
-    有顺序的工作：DirectTriage → GraphPlan → bounded subtask React；
-    兼容旧 planned_steps 时才显示 EvidenceAssessment/Replan。
-    如果只展示那个节点，Trace 会看起来像“只调用了一个模型”；这里生成
-    轻量的索引步骤，不改变 State 或 Evidence Artifact 原文。
-    """
     output = _latest_node_output(events, "controlled_review")
-
-    triage = output.get("controlled_triage")
-    triage_outcomes = output.get("controlled_triage_outcomes")
-    triage_reasons = output.get("controlled_triage_reasons")
-    plans = output.get("controlled_graph_plans")
-    subtask_plans = output.get("controlled_subtask_plans")
-    subtask_results = output.get("controlled_subtask_results")
-    subtask_outcomes = output.get("controlled_subtask_outcomes")
-    subtask_reasons = output.get("controlled_subtask_reasons")
-    subtask_seed_outcomes = output.get("controlled_subtask_seed_outcomes")
-    subtask_seed_reasons = output.get("controlled_subtask_seed_reasons")
-    assessments = output.get("controlled_assessments")
-    proofs = output.get("controlled_proof_matches")
-    records = output.get("tool_trace_records")
-    traces = output.get("council_trace")
-    triage = triage if isinstance(triage, dict) else {}
-    triage_outcomes = triage_outcomes if isinstance(triage_outcomes, dict) else {}
-    triage_reasons = triage_reasons if isinstance(triage_reasons, dict) else {}
-    plans = plans if isinstance(plans, dict) else {}
-    subtask_plans = subtask_plans if isinstance(subtask_plans, dict) else {}
-    subtask_results = subtask_results if isinstance(subtask_results, dict) else {}
-    subtask_outcomes = subtask_outcomes if isinstance(subtask_outcomes, dict) else {}
-    subtask_reasons = subtask_reasons if isinstance(subtask_reasons, dict) else {}
-    if not isinstance(subtask_seed_outcomes, dict):
-        # Backward-compatible reader for traces written before seed lifecycle
-        # received its own State field.
-        subtask_seed_outcomes = {
-            str(key): value
-            for key, value in subtask_outcomes.items()
-            if ":seed:" in str(key)
-        }
-    if not isinstance(subtask_seed_reasons, dict):
-        subtask_seed_reasons = {
-            str(key): value
-            for key, value in subtask_reasons.items()
-            if ":seed:" in str(key)
-        }
-    assessments = assessments if isinstance(assessments, dict) else {}
-    proofs = proofs if isinstance(proofs, dict) else {}
-    records = records if isinstance(records, list) else []
-    traces = traces if isinstance(traces, list) else []
-    unified_active = (
-        bool(subtask_plans)
-        or output.get("controlled_execution_mode") == "subtask_react"
-    )
-
-    controlled_candidates = [
-        step
-        for step in steps.values()
-        if step.get("code_name") == "controlled_review"
+    plans = output.get("controlled_subtask_plans") or {}
+    outcomes = output.get("controlled_subtask_outcomes") or {}
+    parents = [
+        step for step in steps.values() if step.get("code_name") == "controlled_review"
     ]
-    controlled_node = max(
-        controlled_candidates,
-        key=lambda step: step.get("end_sequence") or step.get("sequence") or -1,
-        default=None,
-    )
-    if controlled_node is None:
+    if not parents:
         return []
-    base_sequence = float(
-        (controlled_node or {}).get("end_sequence")
-        or (controlled_node or {}).get("sequence")
-        or 0
+    parent = max(
+        parents, key=lambda step: step.get("end_sequence") or step.get("sequence") or 0
     )
-    counter = 0
-
-    def next_sequence() -> float:
-        nonlocal counter
-        counter += 1
-        return base_sequence + (counter / 1000)
-
-    section_steps: dict[str, list[str]] = defaultdict(list)
-    section_tasks: dict[str, set[str]] = defaultdict(set)
-    subtask_owners: dict[str, set[str]] = defaultdict(set)
-
-    def section_for_reviewer(reviewer: str) -> str:
-        reviewer = reviewer.strip() or "shared"
-        return (
-            f"controlled_{reviewer}"
-            if reviewer in {item[0] for item in REVIEWERS.values()}
-            else "controlled_shared"
-        )
-
-    def register_step(
-        section_key: str,
-        *,
-        step_id: str,
-        code_name: str,
-        title: str,
-        summary: str,
-        input_value: Any,
-        output_value: Any = _STATE_REF_UNSET,
-        state_refs: list[dict[str, Any]] | None = None,
-        status: str = "complete",
-    ) -> None:
-        step = {
-            "id": step_id,
-            "sequence": next_sequence(),
-            "kind": "controlled",
-            "title": title,
-            "code_name": code_name,
-            "node_path": f"controlled_review/{section_key}/{code_name}",
-            "reviewer_root": "controlled_review",
-            "invocation_id": (controlled_node or {}).get("invocation_id", ""),
-            "pair_id": "",
-            "start_sequence": None,
-            "end_sequence": None,
-            "duration_ms": 0.0,
-            "status": status,
-            "summary": summary,
-            "metrics": {},
-            "input": input_value,
-            "reviewer": section_key,
-        }
-        if output_value is not _STATE_REF_UNSET:
-            step["output"] = output_value
-        if state_refs:
-            step["state_refs"] = state_refs
-        steps[step_id] = step
-        section_steps[section_key].append(step_id)
-
-    def split_work_key(key: Any, value: Any = None) -> tuple[str, str]:
-        text = str(key or "")
-        if ":" in text:
-            task_id, reviewer = text.rsplit(":", 1)
-        else:
-            task_id = text
-            reviewer = ""
-        if not reviewer and isinstance(value, dict):
-            reviewer = str(value.get("reviewer") or "")
-        return task_id, reviewer
-
-    def split_seed_status_key(key: Any) -> tuple[str, str, str]:
-        """Decode both new reviewer-scoped and old task-scoped seed keys."""
-
-        text = str(key or "")
-        prefix, marker, seed_id = text.partition(":seed:")
-        if not marker:
-            return "", "", ""
-        task_id, separator, reviewer = prefix.rpartition(":")
-        if not separator:
-            # Legacy format: task:seed:<seed_id>; reviewer is unknown.
-            return prefix, "", seed_id
-        return task_id, reviewer, seed_id
-
-    for index, (key, value) in enumerate(
-        sorted(triage.items(), key=lambda item: str(item[0]))
-    ):
-        task_id, reviewer = split_work_key(key, value)
-        section_key = section_for_reviewer(reviewer)
-        section_tasks[section_key].add(task_id)
-        issues = value.get("issues") if isinstance(value, dict) else None
-        coverage = value.get("coverage") if isinstance(value, dict) else None
-        issues = issues if isinstance(issues, list) else []
-        coverage = coverage if isinstance(coverage, list) else []
-        decisions = sorted({
-            str(item.get("decision"))
-            for item in coverage
-            if isinstance(item, dict) and item.get("decision")
-        })
-        suffix = f" · {', '.join(decisions)}" if decisions else ""
-        register_step(
-            section_key,
-            step_id=f"controlled:triage:{index}",
-            code_name="direct_triage",
-            title=(
-                f"Direct 初筛 · {'统一审查员' if unified_active and reviewer == 'behavior' else reviewer or '共享'} · {task_id}"
-            ),
-            summary=(
-                f"初筛候选 {len(issues)} · coverage {len(coverage)}"
-                f"{suffix}"
-            ),
-            input_value={"task_id": task_id, "reviewer": reviewer},
-            state_refs=[{
-                "sequence": (controlled_node or {}).get("end_sequence"),
-                "field": "controlled_triage",
-                "key": str(key),
-            }],
-        )
-
-    # Preserve a visible DirectTriage step when the model/worker failed before
-    # it could produce a typed result.  A missing result is a failed stage, not
-    # an empty clean review, and it must remain distinguishable in the panel.
-    for index, (key, status) in enumerate(
-        sorted(triage_outcomes.items(), key=lambda item: str(item[0]))
-    ):
-        key_text = str(key)
-        if key_text in triage:
-            continue
-        task_id, reviewer = split_work_key(key, None)
-        section_key = section_for_reviewer(reviewer)
-        section_tasks[section_key].add(task_id)
-        reason = str(triage_reasons.get(key_text) or "")
-        register_step(
-            section_key,
-            step_id=f"controlled:triage-failed:{index}",
-            code_name="direct_triage",
-            title=(
-                f"Direct 初筛 · {'统一审查员' if unified_active and reviewer == 'behavior' else reviewer or '共享'} · {task_id}"
-            ),
-            summary=f"初筛未完成 · {status}{(' · ' + reason) if reason else ''}",
-            input_value={"task_id": task_id, "reviewer": reviewer},
-            state_refs=[{
-                "sequence": (controlled_node or {}).get("end_sequence"),
-                "field": "controlled_triage_outcomes",
-                "key": key_text,
-            }, {
-                "sequence": (controlled_node or {}).get("end_sequence"),
-                "field": "controlled_triage_reasons",
-                "key": key_text,
-            }],
-            status="failed" if str(status) == "failed" else "complete",
-        )
-
-    work_item_owners: dict[str, set[str]] = defaultdict(set)
-    query_owners: dict[tuple[str, str, str, str], set[str]] = defaultdict(set)
-    for plan_index, (key, value) in enumerate(
-        sorted(plans.items(), key=lambda item: str(item[0]))
-    ):
-        task_id, reviewer = split_work_key(key, value)
-        section_key = section_for_reviewer(reviewer)
-        section_tasks[section_key].add(task_id)
-        work_items = value.get("work_items") if isinstance(value, dict) else None
-        work_items = work_items if isinstance(work_items, list) else []
-        for work_item in work_items:
-            if not isinstance(work_item, dict):
-                continue
-            work_item_id = str(work_item.get("work_item_id") or "")
-            if work_item_id:
-                work_item_owners[work_item_id].add(section_key)
-            evidence_steps = work_item.get("evidence_steps")
-            if not isinstance(evidence_steps, list):
-                continue
-            for evidence_step in evidence_steps:
-                query_key = _controlled_query_key(
-                    evidence_step.get("tool") if isinstance(evidence_step, dict) else "",
-                    {
-                        "symbol_id": evidence_step.get("subject_ref")
-                        if isinstance(evidence_step, dict)
-                        else "",
-                        "path_kind": evidence_step.get("path_kind")
-                        if isinstance(evidence_step, dict)
-                        else "",
-                        "max_depth": evidence_step.get("max_depth")
-                        if isinstance(evidence_step, dict)
-                        else "",
-                    },
-                )
-                if query_key[0]:
-                    query_owners[query_key].add(section_key)
-
-        tool_names = sorted({
-            str(item.get("tool") or "")
-            for work_item in work_items
-            if isinstance(work_item, dict)
-            for item in (work_item.get("evidence_steps") or [])
-            if isinstance(item, dict) and item.get("tool")
-        })
-        register_step(
-            section_key,
-            step_id=f"controlled:graph-plan:{plan_index}",
-            code_name="graph_plan",
-            title=f"图谱取证计划 · {reviewer or '共享'} · {task_id}",
-            summary=(
-                f"{len(work_items)} 个 WorkItem · "
-                f"工具: {', '.join(tool_names) if tool_names else '无'}"
-            ),
-            input_value={"task_id": task_id, "reviewer": reviewer},
-            state_refs=[{
-                "sequence": (controlled_node or {}).get("end_sequence"),
-                "field": "controlled_graph_plans",
-                "key": str(key),
-            }],
-        )
-
-    # A SubtaskPlan deliberately stores capabilities rather than a fixed tool
-    # sequence.  Register its initial frontier as an ownership hint for trace
-    # grouping; dynamically discovered Rxx symbols are handled by the unified
-    # reviewer fallback below because they are intentionally absent from the
-    # plan.  This keeps active React calls with their plan instead of the
-    # generic shared-evidence bucket.
-    for key, value in subtask_plans.items():
-        task_id, reviewer = split_work_key(key, value)
-        section_key = section_for_reviewer(reviewer)
-        subtasks = value.get("subtasks") if isinstance(value, dict) else None
-        if not isinstance(subtasks, list):
-            continue
-        for subtask in subtasks:
-            if not isinstance(subtask, dict):
-                continue
-            subtask_id = str(subtask.get("subtask_id") or "")
-            if subtask_id:
-                subtask_owners[subtask_id].add(section_key)
-            for symbol_id in subtask.get("initial_symbol_ids") or []:
-                for relation in subtask.get("allowed_relations") or []:
-                    query_owners[_controlled_query_key(
-                        "query_relations",
-                        {"subject_symbol_id": symbol_id, "relation": relation},
-                    )].add(section_key)
-            section_tasks[section_key].add(task_id)
-
-    # The default controlled path stores SubtaskPlan separately from the
-    # legacy WorkItem plan.  Render it as the actual GraphPlan output so the
-    # trace does not show an empty/unknown plan when bounded React is used.
-    for plan_index, (key, value) in enumerate(
-        sorted(subtask_plans.items(), key=lambda item: str(item[0]))
-    ):
-        task_id, reviewer = split_work_key(key, value)
-        section_key = section_for_reviewer(reviewer)
-        section_tasks[section_key].add(task_id)
-        subtasks = value.get("subtasks") if isinstance(value, dict) else None
-        subtasks = subtasks if isinstance(subtasks, list) else []
-        statuses: list[str] = []
-        rendered_subtasks: list[dict[str, Any]] = []
-        planned_ids: set[str] = set()
-        for subtask in subtasks:
-            if not isinstance(subtask, dict):
-                continue
-            subtask_id = str(subtask.get("subtask_id") or "")
-            if not subtask_id:
-                continue
-            planned_ids.add(subtask_id)
-            result = subtask_results.get(f"{task_id}:{subtask_id}")
-            result_status = (
-                str(result.get("outcome") or "")
-                if isinstance(result, dict)
-                else ""
+    ids = []
+    for plan_key, plan in plans.items():
+        task_id = plan.get("task_id", plan_key)
+        for group in plan.get("subtasks", []):
+            key = f"{task_id}:{group['subtask_id']}"
+            step_id = f"investigation:{key}"
+            steps[step_id] = dict(
+                id=step_id,
+                sequence=parent.get("sequence", 0),
+                kind="controlled",
+                task_id=task_id,
+                subtask_id=group["subtask_id"],
+                title="变更调查",
+                code_name="investigation",
+                node_path="controlled_review/investigation",
+                reviewer_root="controlled_review",
+                invocation_id=parent.get("invocation_id", ""),
+                pair_id="",
+                start_sequence=None,
+                end_sequence=None,
+                duration_ms=0,
+                status=outcomes.get(key, "inconclusive"),
+                summary=outcomes.get(key, "inconclusive"),
+                metrics={},
+                input=group,
+                state_refs=[
+                    dict(
+                        sequence=parent.get("end_sequence"),
+                        field="controlled_subtask_results",
+                        key=key,
+                    ),
+                    dict(
+                        sequence=parent.get("end_sequence"),
+                        field="controlled_subtask_reasons",
+                        key=key,
+                    ),
+                ],
             )
-            status = str(
-                subtask_outcomes.get(f"{task_id}:{subtask_id}")
-                or result_status
-                or "planned"
-            )
-            statuses.append(status)
-            rendered_subtasks.append({
-                "subtask_id": subtask_id,
-                "seed_id": str(subtask.get("seed_id") or ""),
-                "objective": str(subtask.get("objective") or ""),
-                "primary_tool": str(subtask.get("primary_tool") or ""),
-                "allowed_tools": list(subtask.get("allowed_tools") or ()),
-                "allowed_relations": list(subtask.get("allowed_relations") or ()),
-                "status": status,
-                "reason": str(
-                    subtask_reasons.get(f"{task_id}:{subtask_id}") or ""
-                ),
-                "result_limitations": list(
-                    result.get("limitations") or ()
-                    if isinstance(result, dict) else ()
-                ),
-                "finding_count": len(result.get("findings") or ())
-                if isinstance(result, dict) else 0,
-            })
-        # Keep seeds/subtasks rejected by a cap or a failed GraphPlan visible.
-        # They are deliberately not invented as executable subtasks, but hiding
-        # them makes a bounded review look like a successful empty search.
-        unplanned: list[dict[str, str]] = []
-        for status_key, status_value in sorted(subtask_seed_outcomes.items()):
-            seed_task, seed_reviewer, local_id = split_seed_status_key(status_key)
-            if seed_task != task_id:
-                continue
-            if seed_reviewer and reviewer and seed_reviewer != reviewer:
-                continue
-            if local_id in planned_ids:
-                continue
-            key_text = str(status_key)
-            unplanned.append({
-                "id": local_id,
-                "status": str(status_value),
-                "reason": str(subtask_seed_reasons.get(key_text) or ""),
-            })
-        status_text = ""
-        if statuses:
-            status_text = " · " + ", ".join(
-                f"{status} {statuses.count(status)}"
-                for status in sorted(set(statuses))
-            )
-        register_step(
-            section_key,
-            step_id=f"controlled:subtask-plan:{plan_index}",
-            code_name="graph_plan",
-            title=f"调查子任务计划 · {reviewer or '统一'} · {task_id}",
-            summary=f"{len(subtasks)} 个 bounded React 子任务{status_text}",
-            input_value={"task_id": task_id, "reviewer": reviewer},
-            output_value={
-                "task_id": task_id,
-                "reviewer": reviewer or "统一",
-                "subtasks": rendered_subtasks,
-                "unplanned": unplanned,
-            },
-            state_refs=[{
-                "sequence": (controlled_node or {}).get("end_sequence"),
-                "field": "controlled_subtask_plans",
-                "key": str(key),
-            }, {
-                "sequence": (controlled_node or {}).get("end_sequence"),
-                "field": "controlled_subtask_results",
-                "key_prefix": f"{task_id}:",
-            }, {
-                "sequence": (controlled_node or {}).get("end_sequence"),
-                "field": "controlled_subtask_reasons",
-                "key_prefix": f"{task_id}:",
-            }, {
-                "sequence": (controlled_node or {}).get("end_sequence"),
-                "field": "controlled_subtask_seed_outcomes",
-                "key_prefix": (
-                    f"{task_id}:{reviewer}:seed:"
-                    if reviewer else f"{task_id}:seed:"
-                ),
-            }, {
-                "sequence": (controlled_node or {}).get("end_sequence"),
-                "field": "controlled_subtask_seed_reasons",
-                "key_prefix": (
-                    f"{task_id}:{reviewer}:seed:"
-                    if reviewer else f"{task_id}:seed:"
-                ),
-            }],
-        )
-
-    # A GraphPlan can fail before it returns a SubtaskPlan, or a hard cap can
-    # omit an instruction after planning.  In both cases the state contains a
-    # terminal seed status scoped by task/reviewer, but there is no plan object
-    # to render above.  Add a compact diagnostic card rather than
-    # hiding this work from the user and making the review look like a clean
-    # zero-finding run.
-    planned_plan_scopes: set[tuple[str, str]] = set()
-    for key, value in subtask_plans.items():
-        task_id, reviewer = split_work_key(key, value)
-        planned_plan_scopes.add((task_id, reviewer))
-    orphan_by_scope: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
-    for status_key, status_value in sorted(subtask_seed_outcomes.items()):
-        key_text = str(status_key)
-        task_id, reviewer, local_id = split_seed_status_key(key_text)
-        if not task_id:
-            continue
-        if (task_id, reviewer) in planned_plan_scopes or (
-            not reviewer and any(scope_task == task_id for scope_task, _ in planned_plan_scopes)
-        ):
-            continue
-        orphan_by_scope[(task_id, reviewer)].append({
-            "id": local_id,
-            "status": str(status_value),
-            "reason": str(subtask_seed_reasons.get(key_text) or ""),
-            "reviewer": reviewer,
-        })
-    for index, ((task_id, reviewer), entries) in enumerate(sorted(orphan_by_scope.items())):
-        section_key = (
-            section_for_reviewer(reviewer)
-            if reviewer
-            else ("controlled_behavior" if unified_active else "controlled_shared")
-        )
-        section_tasks[section_key].add(task_id)
-        status_summary = Counter(item["status"] for item in entries)
-        summary = "、".join(
-            f"{status} {count}" for status, count in sorted(status_summary.items())
-        )
-        register_step(
-            section_key,
-            step_id=f"controlled:subtask-plan-orphan:{index}",
-            code_name="graph_plan",
-            title=(
-                f"调查子任务计划 · "
-                f"{'统一' if unified_active and not reviewer else reviewer or '共享'} · {task_id}"
-            ),
-            summary=f"未形成可执行子任务 · {summary}",
-            input_value={
-                "task_id": task_id,
-                "reviewer": reviewer or ("behavior" if unified_active else "shared"),
-            },
-            output_value={"task_id": task_id, "unplanned": entries},
-            state_refs=[{
-                "sequence": (controlled_node or {}).get("end_sequence"),
-                "field": "controlled_subtask_seed_outcomes",
-                "key_prefix": (
-                    f"{task_id}:{reviewer}:seed:"
-                    if reviewer else f"{task_id}:seed:"
-                ),
-            }, {
-                "sequence": (controlled_node or {}).get("end_sequence"),
-                "field": "controlled_subtask_seed_reasons",
-                "key_prefix": (
-                    f"{task_id}:{reviewer}:seed:"
-                    if reviewer else f"{task_id}:seed:"
-                ),
-            }],
-            status="failed" if any(item["status"] == "failed" for item in entries) else "complete",
-        )
-
-    # 节点输出中的 application tool record 不带 reviewer 字段。根据 GraphPlan
-    # 的规范化查询键归属它；兼容多来源 Trace 共享同一查询时放入共享面板，
-    # 避免重复渲染同一个 Evidence Artifact。
-    tool_steps_by_call_id = {
-        str(step.get("pair_id")): step
-        for step in steps.values()
+            ids.append(step_id)
+    tool_ids = [
+        key
+        for key, step in steps.items()
         if step.get("kind") == "tool"
-        and str(step.get("node_path", "")).startswith("controlled_review/")
-        and step.get("pair_id")
-    }
-    for index, item in enumerate(records):
-        if not isinstance(item, dict):
-            continue
-        call_id = str(item.get("call_id") or "")
-        step = tool_steps_by_call_id.get(call_id)
-        if step is None:
-            # 旧/裁剪 Trace 可能没有 pair_id，按工具参数做一次保守匹配。
-            query_key = _controlled_query_key(item.get("tool"), item.get("arguments"))
-            candidates = [
-                candidate
-                for candidate in steps.values()
-                if candidate.get("kind") == "tool"
-                and str(candidate.get("node_path", "")).startswith("controlled_review/")
-                and _controlled_query_key(
-                    candidate.get("code_name"), candidate.get("input")
-                ) == query_key
-            ]
-            # Without a call/artifact identity, never attach an application
-            # record to an arbitrary one of several equal native calls.  The
-            # record is rendered as its own scoped card instead.
-            step = candidates[0] if len(candidates) == 1 else None
-        query_key = _controlled_query_key(item.get("tool"), item.get("arguments"))
-        owners = query_owners.get(query_key, set())
-        subtask_id = str(item.get("subtask_id") or "")
-        if subtask_id:
-            owners = subtask_owners.get(subtask_id, set()) or owners
-        if not owners and str(item.get("tool") or "") == "query_relations":
-            # Depth/cursor are execution details, not ownership.  Match the
-            # plan's subject/relation hint when a provider chose depth > 1 or
-            # a continuation page.
-            base_key = _controlled_query_key(
-                "query_relations",
-                {
-                    "subject_symbol_id": (item.get("arguments") or {}).get(
-                        "subject_symbol_id", ""
-                    ) if isinstance(item.get("arguments"), dict) else "",
-                    "relation": (item.get("arguments") or {}).get(
-                        "relation", ""
-                    ) if isinstance(item.get("arguments"), dict) else "",
-                },
-            )
-            owners = query_owners.get(base_key, set())
-        if not owners and unified_active:
-            section_key = "controlled_behavior"
-        else:
-            section_key = next(iter(owners)) if len(owners) == 1 else "controlled_shared"
-        if step is not None:
-            step["reviewer"] = section_key
-            step["reviewer_root"] = "controlled_review"
-            if subtask_id:
-                step["subtask_id"] = subtask_id
-            section_steps[section_key].append(step["id"])
-            arguments = step.get("input")
-            task_id = ""
-            if isinstance(arguments, dict):
-                task_id = str(arguments.get("task_id") or "")
-            if task_id:
-                section_tasks[section_key].add(task_id)
-        else:
-            # 某些 provider 会产生原生 tool_start/tool_end，但不会把
-            # application record 合并成可见的 controlled_review/* 路径。
-            # 这时用节点已捕获的记录补一个同构卡片，仍然不复制 Artifact 原文。
-            status = str(item.get("status") or "complete")
-            reused_from_call_id = str(item.get("reused_from_call_id") or "")
-            artifact_id = str(item.get("artifact_id") or "")
-            reused_from_artifact_id = str(
-                item.get("reused_from_artifact_id") or ""
-            )
-            display_artifact_id = artifact_id or reused_from_artifact_id
-            artifact = (artifacts or {}).get(display_artifact_id)
-            normalized_output = normalize_tool_result(
-                artifact.preview if artifact is not None else item.get("output"),
-                status=status,
-                reused_from_call_id=reused_from_call_id,
-            )
-            step_id = f"controlled:tool:{index}"
-            steps[step_id] = {
-                "id": step_id,
-                "sequence": next_sequence(),
-                "kind": "tool",
-                "title": "工具调用",
-                "code_name": str(item.get("tool") or "unknown"),
-                "node_path": f"controlled_review/{section_key}/tool",
-                "reviewer_root": "controlled_review",
-                "subtask_id": str(item.get("subtask_id") or ""),
-                "invocation_id": (controlled_node or {}).get("invocation_id", ""),
-                "pair_id": call_id,
-                "start_sequence": None,
-                "end_sequence": None,
-                "duration_ms": max(0.0, float(item.get("duration_ms") or 0.0)),
-                "status": status,
-                "summary": _application_tool_summary(
-                    str(item.get("tool") or "unknown"),
-                    normalized_output,
-                    status,
-                    reused_from_call_id=reused_from_call_id,
-                ),
-                "input": item.get("arguments", {}),
-                "output": normalized_output,
-                "artifact_id": display_artifact_id,
-                "payload_hash": (
-                    artifact.payload_hash if artifact is not None else ""
-                ),
-                "reuse_key": str(item.get("reuse_key") or ""),
-                "reused_from_call_id": reused_from_call_id,
-                "reused_from_artifact_id": reused_from_artifact_id,
-            }
-            section_steps[section_key].append(step_id)
-
-    assessments_by_section: dict[str, dict[str, Any]] = defaultdict(dict)
-    proofs_by_section: dict[str, dict[str, Any]] = defaultdict(dict)
-    for work_item_id, assessment in sorted(
-        assessments.items(), key=lambda item: str(item[0])
-    ):
-        owners = work_item_owners.get(str(work_item_id), set())
-        section_key = next(iter(owners)) if len(owners) == 1 else "controlled_shared"
-        assessments_by_section[section_key][str(work_item_id)] = assessment
-        if str(work_item_id) in proofs:
-            proofs_by_section[section_key][str(work_item_id)] = proofs[str(work_item_id)]
-
-    for section_key in sorted(assessments_by_section):
-        section_assessments = assessments_by_section[section_key]
-        statuses = [
-            str(item.get("status") or "unknown")
-            for item in section_assessments.values()
-            if isinstance(item, dict)
-        ]
-        summary = (
-            f"{len(section_assessments)} 条 assessment · "
-            + ", ".join(
-                f"{status} {statuses.count(status)}"
-                for status in sorted(set(statuses))
-            )
-            + f" · proof_match {len(proofs_by_section[section_key])}"
+        and "controlled_review" in str(step.get("node_path", ""))
+    ]
+    return [
+        dict(
+            key="controlled_behavior",
+            title="统一审查员",
+            code_name="ChangeReviewer",
+            path_root="controlled_review",
+            mode="controlled",
+            step_ids=ids + tool_ids,
+            tool_step_ids=tool_ids,
+            tool_call_count=len(tool_ids),
+            task_count=len(plans),
         )
-        register_step(
-            section_key,
-            step_id=f"controlled:evidence-assessment:{section_key}",
-            code_name="evidence_assessment",
-            title="证据评估与证明匹配",
-            summary=summary,
-            input_value={"work_item_ids": sorted(section_assessments)},
-            state_refs=[
-                {
-                    "sequence": (controlled_node or {}).get("end_sequence"),
-                    "field": "controlled_assessments",
-                    "key": work_item_id,
-                    "label": "assessments",
-                }
-                for work_item_id in sorted(section_assessments)
-            ] + [
-                {
-                    "sequence": (controlled_node or {}).get("end_sequence"),
-                    "field": "controlled_proof_matches",
-                    "key": work_item_id,
-                    "label": "proof_matches",
-                }
-                for work_item_id in sorted(proofs_by_section[section_key])
-            ],
-        )
-
-    # A controlled WorkItem may receive at most one Graph Replan.  Render the
-    # decision as a separate step after EvidenceAssessment so the trace makes
-    # the bounded loop visible without pretending it is a new LangGraph node.
-    # Trace events are emitted for diagnostics as well as completion/rejection.
-    # Aggregate one card per WorkItem so a bounded replan is readable as one
-    # decision, rather than a noisy sequence of implementation events.
-    for trace_node, code_name, title in (
-        ("graph_replan", "graph_replan", "证据补充计划"),
-        ("delta_execute", "delta_execute", "补充证据执行"),
-    ):
-        grouped_events: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for item in traces:
-            if not isinstance(item, dict) or item.get("node") != trace_node:
-                continue
-            detail = str(item.get("detail") or "")
-            work_item_match = re.search(r"work_item=([^ ]+)", detail)
-            work_item_id = work_item_match.group(1) if work_item_match else ""
-            grouped_events[work_item_id or "<unknown>"].append(item)
-        for index, (work_item_id, group_events) in enumerate(sorted(grouped_events.items())):
-            owners = work_item_owners.get(work_item_id, set())
-            section_key = (
-                next(iter(owners)) if len(owners) == 1 else "controlled_shared"
-            )
-            task_ids: set[str] = set()
-            summaries: list[str] = []
-            for event in group_events:
-                detail = str(event.get("detail") or "")
-                task_match = re.search(r"task=([^ ]+)", detail)
-                if task_match:
-                    task_ids.add(task_match.group(1))
-                summaries.append(
-                    f"{event.get('event') or 'event'}: {detail}".rstrip()
-                )
-            section_tasks[section_key].update(task_ids)
-            failed = any(
-                str(event.get("event") or "")
-                in {"rejected", "rejected_invalid_step"}
-                for event in group_events
-            )
-            register_step(
-                section_key,
-                step_id=f"controlled:{code_name}:{index}",
-                code_name=code_name,
-                title=title,
-                summary=" · ".join(summaries),
-                input_value={
-                    "work_item_id": "" if work_item_id == "<unknown>" else work_item_id,
-                    "events": [str(event.get("event") or "") for event in group_events],
-                },
-                output_value={"events": group_events},
-                status="failed" if failed else "complete",
-            )
-
-    # 受控 reviewer 是固定执行单元。即使某个 reviewer 的 triage 超时、
-    # 返回 None 或节点在写回前失败，也要在 Trace 中留下失败/缺失卡片，
-    # 否则“没有面板”会被误读成“没有执行”。当前默认只有统一 Reviewer；
-    # 如果读取的是旧多 reviewer Trace，则按旧 Trace 中出现的 reviewer 兼容展示。
-    triage_sections = {
-        section_key
-        for section_key, ids in section_steps.items()
-        if any(
-            steps[step_id].get("code_name") == "direct_triage"
-            for step_id in ids
-        )
-    }
-    controlled_status = str((controlled_node or {}).get("status") or "missing")
-    missing_status = "failed" if controlled_status == "failed" else "missing"
-    observed_reviewers: set[str] = set()
-    for mapping in (triage, plans, subtask_plans):
-        for key, value in mapping.items():
-            _task_id, reviewer = split_work_key(key, value)
-            if reviewer.strip():
-                observed_reviewers.add(reviewer.strip())
-    if not observed_reviewers and (
-        output.get("discovery_mode") == "controlled"
-        or output.get("controlled_execution_mode") == "subtask_react"
-    ):
-        # A failed controlled node may write no reviewer map at all.  The
-        # runtime default is still one unified reviewer, so do not fabricate
-        # three missing workstreams in the dashboard.
-        observed_reviewers.add("behavior")
-    reviewer_titles = {
-        key: title for key, title, _code_name in REVIEWERS.values()
-    }
-    known_reviewers = set(reviewer_titles)
-    # The current default stores the unified reviewer under the historical
-    # ``behavior`` enum for wire compatibility.  Use the user-facing unified
-    # label while retaining the stable section key.
-    reviewer_labels = {
-        f"controlled_{key}": (
-            "统一审查员" if key == "behavior" and observed_reviewers == {"behavior"}
-            else reviewer_titles[key]
-        )
-        for key in sorted(observed_reviewers & known_reviewers)
-    }
-    if not reviewer_labels:
-        reviewer_labels = {
-            f"controlled_{key}": title
-            for key, title, _code_name in REVIEWERS.values()
-        }
-    for section_key, reviewer_title in reviewer_labels.items():
-        if section_key in triage_sections:
-            continue
-        missing_step_id = f"controlled:triage-missing:{section_key}"
-        register_step(
-            section_key,
-            step_id=missing_step_id,
-            code_name="direct_triage",
-            title=f"Direct 初筛 · {reviewer_title}",
-            summary=(
-                "该 reviewer 未返回初筛结果 · 受控审查节点失败"
-                if missing_status == "failed"
-                else "该 reviewer 未返回初筛结果 · 可能超时或未写回"
-            ),
-            input_value={"reviewer": section_key.removeprefix("controlled_")},
-            output_value={"status": missing_status},
-            status=missing_status,
-        )
-        section_steps[section_key].remove(missing_step_id)
-        section_steps[section_key].insert(0, missing_step_id)
-
-    if traces:
-        diagnostics = [
-            item for item in traces
-            if isinstance(item, dict) and item.get("event") == "diagnostic"
-        ]
-        completed = [
-            item for item in traces
-            if isinstance(item, dict) and item.get("event") == "completed"
-        ]
-        register_step(
-            "controlled_shared",
-            step_id="controlled:diagnostics",
-            code_name="controlled_diagnostics",
-            title="受控审查诊断",
-            summary=f"{len(traces)} 条诊断 · diagnostic {len(diagnostics)} · completed {len(completed)}",
-            input_value={},
-            state_refs=[{
-                "sequence": (controlled_node or {}).get("end_sequence"),
-                "field": "council_trace",
-            }],
-        )
-
-    # 同一工具可能因为缓存/跨 reviewer 复用而多次出现在记录中，面板只去重
-    # step id，不去重调用次数；用户需要看到预算是否被消耗以及哪些调用复用。
-    section_defs: list[dict[str, Any]] = []
-    reviewer_meta = {
-        key: (title, code_name)
-        for key, title, code_name in REVIEWERS.values()
-    }
-    ordered_keys = [
-        f"controlled_{key}" for key, _title, _code_name in REVIEWERS.values()
-    ] + ["controlled_shared"]
-    for section_key in ordered_keys:
-        ids = list(dict.fromkeys(section_steps.get(section_key, [])))
-        if not ids:
-            continue
-        if section_key.startswith("controlled_") and section_key != "controlled_shared":
-            reviewer = section_key[len("controlled_"):]
-            title, code_name = reviewer_meta.get(
-                reviewer,
-                (reviewer, "ControlledReviewer"),
-            )
-            if unified_active and reviewer == "behavior":
-                title = "统一审查员"
-            title = f"{title} · 受控"
-        else:
-            title, code_name = "共享受控证据", "ControlledEvidence"
-        section_defs.append({
-            "key": section_key,
-            "title": title,
-            "code_name": code_name,
-            "path_root": "controlled_review",
-            "mode": "controlled",
-            "step_ids": ids,
-            "tool_step_ids": [
-                step_id for step_id in ids if steps[step_id].get("kind") == "tool"
-            ],
-            "tool_call_count": sum(
-                steps[step_id].get("kind") == "tool" for step_id in ids
-            ),
-            "task_count": len(section_tasks.get(section_key, set())),
-        })
-    return section_defs
-
-
-def _controlled_query_key(
-    tool: Any,
-    arguments: Any,
-) -> tuple[str, str, str, str]:
-    """生成 GraphPlan 与实际工具记录之间稳定、无 prose 的匹配键。"""
-    args = arguments if isinstance(arguments, dict) else {}
-    return (
-        str(tool or ""),
-        str(
-            args.get("symbol_id")
-            or args.get("subject_symbol_id")
-            or args.get("subject_ref")
-            or ""
-        ),
-        # Keep the historical four-component key shape used by older trace
-        # consumers while incorporating the canonical relation/page fields.
-        # The final component is deliberately a string so legacy path keys
-        # remain comparable with new query_relations records.
-        str(args.get("relation") or "") + "|" + str(args.get("path_kind") or ""),
-        str(args.get("depth") or args.get("max_depth") or "")
-        + "|"
-        + str(args.get("cursor") or ""),
-    )
+    ]
 
 
 def _state_writes(
-    steps: dict[str, dict[str, Any]],
-    events_by_sequence: dict[int, TraceEvent],
+    steps: dict[str, dict[str, Any]], events_by_sequence: dict[int, TraceEvent]
 ) -> dict[str, list[dict[str, Any]]]:
     writes: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for step in steps.values():
@@ -2223,29 +912,26 @@ def _state_writes(
         if not isinstance(output, dict):
             continue
         for field_name in output:
-            writes[str(field_name)].append({
-                "step_id": step["id"],
-                "sequence": step["sequence"],
-                "node_path": step["node_path"],
-                "semantics": "state_patch",
-            })
+            writes[str(field_name)].append(
+                {
+                    "step_id": step["id"],
+                    "sequence": step["sequence"],
+                    "node_path": step["node_path"],
+                    "semantics": "state_patch",
+                }
+            )
     return dict(writes)
 
 
 def _integrity(events: Iterable[TraceEvent]) -> dict[str, Any]:
     event_list = list(events)
     starts = {
-        event.run_id
-        for event in event_list
-        if event.event_type.endswith("_start")
+        event.run_id for event in event_list if event.event_type.endswith("_start")
     }
     ends = {
         event.run_id
         for event in event_list
-        if (
-            event.event_type.endswith("_end")
-            or event.event_type == "tool_error"
-        )
+        if event.event_type.endswith("_end") or event.event_type == "tool_error"
     }
     missing_end = starts - ends
     missing_start = ends - starts
@@ -2254,7 +940,7 @@ def _integrity(events: Iterable[TraceEvent]) -> dict[str, Any]:
         for event in event_list
         if (event.node_path or event.node_name) in {"", "unknown"}
     ]
-    is_complete = not missing_end and not missing_start and not unassociated
+    is_complete = not missing_end and (not missing_start) and (not unassociated)
     return {
         "status": "complete" if is_complete else "incomplete",
         "event_count": len(event_list),

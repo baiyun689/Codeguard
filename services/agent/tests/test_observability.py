@@ -1,14 +1,12 @@
 """追踪模块的确定性单元测试。"""
 
 from __future__ import annotations
-
 from dataclasses import dataclass
 import json
 import logging
 import re
 import tempfile
 from pathlib import Path
-
 from codeguard_agent.models.evidence import (
     ArtifactAvailability,
     EvidenceArtifact,
@@ -21,7 +19,10 @@ from codeguard_agent.observability.collector import (
     _TraceCollector,
     _phase_for,
 )
-from codeguard_agent.observability.dashboard import render_dashboard, render_dashboard_file
+from codeguard_agent.observability.dashboard import (
+    render_dashboard,
+    render_dashboard_file,
+)
 from codeguard_agent.observability.models import (
     NodeStats,
     TokenUsage,
@@ -83,11 +84,7 @@ def _flow_report_fixture() -> TraceReport:
             detail={"output": {"diff_summary": "summary"}},
         ),
         _flow_event(
-            3,
-            "node_start",
-            "symbol_resolution",
-            "symbol_resolution",
-            "context-run",
+            3, "node_start", "symbol_resolution", "symbol_resolution", "context-run"
         ),
         _flow_event(
             4,
@@ -105,11 +102,7 @@ def _flow_report_fixture() -> TraceReport:
             "discover-run",
         ),
         _flow_event(
-            6,
-            "node_start",
-            "prepare",
-            "discover_threat_model/prepare",
-            "prepare-run",
+            6, "node_start", "prepare", "discover_threat_model/prepare", "prepare-run"
         ),
         _flow_event(
             7,
@@ -134,7 +127,7 @@ def _flow_report_fixture() -> TraceReport:
             "model",
             "discover_threat_model/review/model",
             "llm-run",
-            detail={"response": {"tool_calls": [{"name": "get_file_content"}]}},
+            detail={"response": {"tool_calls": [{"name": "read_symbol"}]}},
             invocation_id="model-run",
         ),
         _flow_event(
@@ -144,7 +137,7 @@ def _flow_report_fixture() -> TraceReport:
             "discover_threat_model/review/tools",
             "tool-run",
             detail={
-                "tool_name": "get_file_content",
+                "tool_name": "read_symbol",
                 "input": {"symbol_id": "java:Foo#run()"},
             },
             invocation_id="tools-run",
@@ -155,18 +148,11 @@ def _flow_report_fixture() -> TraceReport:
             "tools",
             "discover_threat_model/review/tools",
             "tool-run",
-            detail={
-                "tool_name": "get_file_content",
-                "output": {"content": "class Foo {}"},
-            },
+            detail={"tool_name": "read_symbol", "output": {"content": "class Foo {}"}},
             invocation_id="tools-run",
         ),
         _flow_event(
-            12,
-            "node_start",
-            "collect",
-            "discover_threat_model/collect",
-            "collect-run",
+            12, "node_start", "collect", "discover_threat_model/collect", "collect-run"
         ),
         _flow_event(
             13,
@@ -199,11 +185,7 @@ def _flow_report_fixture() -> TraceReport:
             detail={"output": {"council_route": "evidence_verifier"}},
         ),
         _flow_event(
-            17,
-            "node_start",
-            "evidence_verifier",
-            "evidence_verifier",
-            "evidence-run",
+            17, "node_start", "evidence_verifier", "evidence_verifier", "evidence-run"
         ),
         _flow_event(
             18,
@@ -234,13 +216,7 @@ def _flow_report_fixture() -> TraceReport:
             "coordinator-run-2",
             detail={"output": {"council_route": "council_judge"}},
         ),
-        _flow_event(
-            21,
-            "node_start",
-            "council_judge",
-            "council_judge",
-            "judge-run",
-        ),
+        _flow_event(21, "node_start", "council_judge", "council_judge", "judge-run"),
         _flow_event(
             22,
             "node_end",
@@ -251,18 +227,13 @@ def _flow_report_fixture() -> TraceReport:
         ),
     ]
     return TraceReport(
-        run_id="flow-run",
-        timestamp="2026-07-09T00:00:00",
-        events=events,
+        run_id="flow-run", timestamp="2026-07-09T00:00:00", events=events
     )
 
 
 def _extract_trace_payload(html: str) -> dict:
     match = re.search(
-        (
-            r'<script id="trace-data" type="application/json">'
-            r"(.*?)</script>"
-        ),
+        '<script id="trace-data" type="application/json">(.*?)</script>',
         html,
         re.DOTALL,
     )
@@ -271,42 +242,9 @@ def _extract_trace_payload(html: str) -> dict:
 
 
 def _dashboard_template() -> str:
-    return Path(
-        "src/codeguard_agent/observability/dashboard_template.html"
-    ).read_text(encoding="utf-8")
-
-
-def test_trace_view_groups_reviewer_react_steps_and_state_writes():
-    report = _flow_report_fixture()
-
-    view = build_trace_view(report)
-
-    assert [item["code_name"] for item in view["main_stages"]] == [
-        "summary",
-        "symbol_resolution",
-        "review_council",
-        "council_coordinator",
-        "evidence_verifier",
-        "council_judge",
-    ]
-    assert view["main_stages"][0]["duration_ms"] == 10.0
-    threat = next(
-        item
-        for item in view["reviewer_sections"]
-        if item["key"] == "threat_model"
+    return Path("src/codeguard_agent/observability/dashboard_template.html").read_text(
+        encoding="utf-8"
     )
-    assert [
-        view["steps"][step_id]["kind"]
-        for step_id in threat["step_ids"]
-    ] == ["node", "llm", "tool", "node"]
-    assert threat["tool_call_count"] == 1
-    assert threat["tool_step_ids"] == ["tool:tool-run"]
-    tool_step = view["steps"][threat["tool_step_ids"][0]]
-    assert tool_step["start_sequence"] == 10
-    assert tool_step["end_sequence"] == 11
-    assert tool_step["duration_ms"] == 10.0
-    assert view["state_writes"]["raw_candidate_issues"][0]["step_id"]
-    assert view["integrity"]["missing_end_count"] == 0
 
 
 def _controlled_review_report_fixture() -> TraceReport:
@@ -317,28 +255,32 @@ def _controlled_review_report_fixture() -> TraceReport:
     output = {
         "raw_candidate_issues": [{"id": "seed-1", "type": "behavior"}],
         "candidate_issues": [{"id": "candidate-1", "type": "behavior"}],
-        "tool_trace_records": [{
-            "call_id": "controlled-call-1",
-            "artifact_id": "",
-            "tool": "inspect_path",
-            "arguments": {
-                "symbol_id": subject,
-                "path_kind": "behavior",
-                "max_depth": "3",
-            },
-            "status": "complete",
-            "duration_ms": 12.0,
-            "output": {
-                "schema_version": 2,
-                "outcome": "found",
-                "coverage": "complete",
-                "relationships": [{
-                    "sourceId": subject,
-                    "targetId": "java:demo.Listener#open()",
-                    "kind": "CALLS",
-                }],
-            },
-        }],
+        "tool_trace_records": [
+            {
+                "call_id": "controlled-call-1",
+                "artifact_id": "",
+                "tool": "query_relations",
+                "arguments": {
+                    "symbol_id": subject,
+                    "path_kind": "behavior",
+                    "max_depth": "3",
+                },
+                "status": "complete",
+                "duration_ms": 12.0,
+                "output": {
+                    "schema_version": 2,
+                    "outcome": "found",
+                    "coverage": "complete",
+                    "relationships": [
+                        {
+                            "sourceId": subject,
+                            "targetId": "java:demo.Listener#open()",
+                            "kind": "CALLS",
+                        }
+                    ],
+                },
+            }
+        ],
         "controlled_triage": {
             f"{task_id}:behavior": {
                 "coverage": [{"decision": "graph_needed"}],
@@ -357,22 +299,24 @@ def _controlled_review_report_fixture() -> TraceReport:
             f"{task_id}:behavior": {
                 "reviewer": "behavior",
                 "task_id": task_id,
-                "work_items": [{
-                    "work_item_id": work_item_id,
-                    "seed_id": "seed-1",
-                    "reviewer": "behavior",
-                    "evidence_steps": [{
-                        "tool": "inspect_path",
-                        "subject_ref": subject,
-                        "path_kind": "behavior",
-                        "max_depth": 3,
-                        "purpose": "verify callback path",
-                        "required": True,
-                    }],
-                }],
+                "work_items": [
+                    {
+                        "work_item_id": work_item_id,
+                        "seed_id": "seed-1",
+                        "reviewer": "behavior",
+                        "evidence_steps": [
+                            {
+                                "tool": "query_relations",
+                                "subject_ref": subject,
+                                "path_kind": "behavior",
+                                "max_depth": 3,
+                                "purpose": "verify callback path",
+                                "required": True,
+                            }
+                        ],
+                    }
+                ],
             },
-            # 第二个 reviewer 的计划用于覆盖步骤 ID 不冲突；它没有工具，
-            # 但仍应在对应面板中显示为独立的 GraphPlan。
             f"{task_id}:threat_model": {
                 "reviewer": "threat_model",
                 "task_id": task_id,
@@ -387,10 +331,7 @@ def _controlled_review_report_fixture() -> TraceReport:
             }
         },
         "controlled_proof_matches": {
-            work_item_id: {
-                "status": "proved",
-                "matched_relationships": ["CALLS"],
-            }
+            work_item_id: {"status": "proved", "matched_relationships": ["CALLS"]}
         },
         "council_trace": [
             {"node": "direct_triage", "event": "diagnostic", "detail": "seed route"},
@@ -420,219 +361,52 @@ def _controlled_review_report_fixture() -> TraceReport:
     )
 
 
-def test_trace_view_expands_controlled_review_into_reviewer_workstreams():
-    view = build_trace_view(_controlled_review_report_fixture())
-
-    assert "controlled_review" in [
-        stage["code_name"] for stage in view["main_stages"]
-    ]
-    assert "review_plan" not in [
-        stage["code_name"] for stage in view["main_stages"]
-    ]
-    controlled = view["steps"]["node:controlled-node"]
-    assert controlled["title"] == "受控审查"
-    assert "2 个调查计划" in controlled["summary"]
-    assert "1 次工具" in controlled["summary"]
-
-    sections = {
-        section["key"]: section for section in view["controlled_sections"]
-    }
-    assert {"controlled_behavior", "controlled_threat_model",
-            "controlled_maintainability", "controlled_shared"} <= sections.keys()
-    behavior = sections["controlled_behavior"]
-    behavior_steps = [view["steps"][step_id] for step_id in behavior["step_ids"]]
-    assert [step["code_name"] for step in behavior_steps] == [
-        "direct_triage", "graph_plan", "inspect_path", "evidence_assessment"
-    ]
-    assert behavior["tool_call_count"] == 1
-    assert behavior_steps[2]["reviewer"] == "controlled_behavior"
-    assert behavior_steps[2]["pair_id"] == "controlled-call-1"
-    assert "output" not in behavior_steps[3]
-    assert behavior_steps[3]["state_refs"][0]["field"] == "controlled_assessments"
-    assert behavior_steps[3]["state_refs"][-1]["field"] == "controlled_proof_matches"
-
-    graph_plan_ids = [
-        step_id
-        for section in sections.values()
-        for step_id in section["step_ids"]
-        if view["steps"][step_id]["code_name"] == "graph_plan"
-    ]
-    assert len(graph_plan_ids) == len(set(graph_plan_ids)) == 2
-
-    # 没有候选的 reviewer 也保留一个明确的 triage 卡片，避免 Trace 看起来像
-    # 该 reviewer 根本没有被执行。
-    threat = sections["controlled_threat_model"]
-    triage = view["steps"][threat["step_ids"][0]]
-    assert triage["code_name"] == "direct_triage"
-    assert "初筛候选 0" in triage["summary"]
-    assert any(
-        view["steps"][step_id]["code_name"] == "controlled_diagnostics"
-        for step_id in sections["controlled_shared"]["step_ids"]
-    )
-
-
-def test_dashboard_renders_controlled_sections_instead_of_empty_react_panels():
-    html = render_dashboard(_controlled_review_report_fixture())
-
-    assert "return controlled.concat" in html
-    assert "受控审查（未产出）" in html
-    assert "stateReferenceValue" in html
-    assert "stepSequenceLabel" in html
-    assert "受控审查" in html
-    assert "Direct 初筛" in html
-    assert "图谱取证计划" in html
-
-
-def test_controlled_summary_reports_orphan_seed_status_without_fake_parentheses():
-    summary = _controlled_review_summary({
-        "controlled_triage": {},
-        "controlled_graph_plans": {},
-        "controlled_subtask_plans": {},
-        "controlled_subtask_outcomes": {
-            "task-a:seed:seed-1": "omitted",
-        },
-        "controlled_assessments": {},
-        "controlled_proof_matches": {},
-        "tool_trace_records": [],
-        "candidate_issues": [],
-    })
-
-    assert "种子记录 omitted 1" in summary
-    assert "种子记录 omitted 1）" not in summary
-
-
-def test_controlled_trace_keeps_failed_seed_reviewer_scope_separate():
-    report = _controlled_review_report_fixture()
-    output = report.events[1].detail["output"]
-    output["controlled_execution_mode"] = "subtask_react"
-    output["controlled_subtask_plans"] = {
-        "task-a:behavior": {
-            "reviewer": "behavior",
-            "task_id": "task-a",
-            "subtasks": [],
-        },
-    }
-    output["controlled_subtask_seed_outcomes"] = {
-        "task-a:threat_model:seed:seed-threat": "failed",
-    }
-    output["controlled_subtask_seed_reasons"] = {
-        "task-a:threat_model:seed:seed-threat": "graph_plan_worker_failed",
-    }
-
-    view = build_trace_view(report)
-    threat = next(
-        section
-        for section in view["controlled_sections"]
-        if section["key"] == "controlled_threat_model"
-    )
-    orphan = next(
-        view["steps"][step_id]
-        for step_id in threat["step_ids"]
-        if step_id.startswith("controlled:subtask-plan-orphan:")
-    )
-    assert orphan["status"] == "failed"
-    assert orphan["output"]["unplanned"][0]["reason"] == (
-        "graph_plan_worker_failed"
-    )
-
-    behavior = next(
-        section
-        for section in view["controlled_sections"]
-        if section["key"] == "controlled_behavior"
-    )
-    assert not any(
-        step_id.startswith("controlled:subtask-plan-orphan:")
-        for step_id in behavior["step_ids"]
-    )
-
-
-def test_controlled_summary_reports_failed_direct_triage():
-    summary = _controlled_review_summary({
-        "controlled_triage": {},
-        "controlled_triage_outcomes": {
-            "task-a:behavior": "failed",
-        },
-        "controlled_graph_plans": {},
-        "controlled_subtask_plans": {},
-        "controlled_subtask_outcomes": {},
-        "controlled_assessments": {},
-        "controlled_proof_matches": {},
-        "tool_trace_records": [],
-        "candidate_issues": [],
-    })
-
-    assert "初筛失败 1" in summary
-
-
-def test_controlled_trace_renders_failed_direct_triage_state():
-    report = _controlled_review_report_fixture()
-    output = report.events[1].detail["output"]
-    output["controlled_triage"] = {}
-    output["controlled_triage_outcomes"] = {
-        "task-a:behavior": "failed",
-    }
-    output["controlled_triage_reasons"] = {
-        "task-a:behavior": "triage_result_missing",
-    }
-
-    view = build_trace_view(report)
-    behavior = next(
-        section
-        for section in view["controlled_sections"]
-        if section["key"] == "controlled_behavior"
-    )
-    triage = next(
-        view["steps"][step_id]
-        for step_id in behavior["step_ids"]
-        if view["steps"][step_id]["code_name"] == "direct_triage"
-    )
-    assert triage["status"] == "failed"
-    assert "triage_result_missing" in triage["summary"]
-
-
 def test_controlled_trace_recovers_tool_record_when_native_path_is_unscoped():
     report = _controlled_review_report_fixture()
     report.events[1].detail["output"]["tool_trace_records"][0]["subtask_id"] = (
         "subtask-behavior-task-a-1"
     )
-    report.events.extend([
-        _flow_event(
-            3,
-            "tool_start",
-            "tools",
-            "controlled_review",
-            "native-tool",
-            detail={
-                "tool_name": "inspect_path",
-                "input": {
-                    "symbol_id": "java:demo.Service#execute()",
-                    "path_kind": "behavior",
-                    "max_depth": "3",
+    report.events.extend(
+        [
+            _flow_event(
+                3,
+                "tool_start",
+                "tools",
+                "controlled_review",
+                "native-tool",
+                detail={
+                    "tool_name": "query_relations",
+                    "input": {
+                        "symbol_id": "java:demo.Service#execute()",
+                        "path_kind": "behavior",
+                        "max_depth": "3",
+                    },
                 },
-            },
-        ),
-        _flow_event(
-            4,
-            "tool_end",
-            "tools",
-            "controlled_review",
-            "native-tool",
-            detail={
-                "tool_name": "inspect_path",
-                "output": {
-                    "schema_version": 2,
-                    "outcome": "found",
-                    "coverage": "complete",
+            ),
+            _flow_event(
+                4,
+                "tool_end",
+                "tools",
+                "controlled_review",
+                "native-tool",
+                detail={
+                    "tool_name": "query_relations",
+                    "output": {
+                        "schema_version": 2,
+                        "outcome": "found",
+                        "coverage": "complete",
+                    },
                 },
-            },
-        ),
-    ])
-
+            ),
+        ]
+    )
     view = build_trace_view(report)
     behavior = next(
-        section
-        for section in view["controlled_sections"]
-        if section["key"] == "controlled_behavior"
+        (
+            section
+            for section in view["controlled_sections"]
+            if section["key"] == "controlled_behavior"
+        )
     )
     scoped_tools = [
         view["steps"][step_id]
@@ -653,41 +427,41 @@ def test_controlled_trace_keeps_dynamic_tool_owned_by_subtask():
         "task-a:behavior": {
             "reviewer": "behavior",
             "task_id": "task-a",
-            "subtasks": [{
-                "subtask_id": "subtask-behavior-task-a-1",
-                "seed_id": "seed-1",
-                "objective": "核对 callback 路径",
-                "initial_symbol_ids": ["java:demo.Service#execute()"],
-                "allowed_tools": ["query_relations", "read_symbol"],
-                "allowed_relations": ["callees"],
-            }],
-        },
+            "subtasks": [
+                {
+                    "subtask_id": "subtask-behavior-task-a-1",
+                    "seed_id": "seed-1",
+                    "objective": "核对 callback 路径",
+                    "initial_symbol_ids": ["java:demo.Service#execute()"],
+                    "allowed_tools": ["query_relations", "read_symbol"],
+                    "allowed_relations": ["callees"],
+                }
+            ],
+        }
     }
     output["controlled_subtask_outcomes"] = {
-        "task-a:subtask-behavior-task-a-1": "findings",
+        "task-a:subtask-behavior-task-a-1": "findings"
     }
-    output["tool_trace_records"][0]["subtask_id"] = (
-        "subtask-behavior-task-a-1"
-    )
-
+    output["tool_trace_records"][0]["subtask_id"] = "subtask-behavior-task-a-1"
     view = build_trace_view(report)
     behavior = next(
-        section for section in view["controlled_sections"]
-        if section["key"] == "controlled_behavior"
+        (
+            section
+            for section in view["controlled_sections"]
+            if section["key"] == "controlled_behavior"
+        )
     )
     tool_steps = [
         view["steps"][step_id]
         for step_id in behavior["tool_step_ids"]
-        if view["steps"][step_id]["code_name"] == "inspect_path"
+        if view["steps"][step_id]["code_name"] == "query_relations"
     ]
-
     assert len(tool_steps) == 1
-    assert tool_steps[0]["reviewer"] == "controlled_behavior"
+    assert tool_steps[0]["subtask_id"] == "subtask-behavior-task-a-1"
 
 
 def test_controlled_trace_does_not_merge_same_query_from_two_subtasks():
     """Equal query arguments still keep each bounded React owner visible."""
-
     report = _controlled_review_report_fixture()
     output = report.events[1].detail["output"]
     output["controlled_execution_mode"] = "subtask_react"
@@ -709,13 +483,13 @@ def test_controlled_trace_does_not_merge_same_query_from_two_subtasks():
                     "allowed_relations": ["callees"],
                 },
             ],
-        },
+        }
     }
     output["tool_trace_records"] = [
         {
             "call_id": "app-1",
             "subtask_id": "subtask-1",
-            "tool": "inspect_path",
+            "tool": "query_relations",
             "arguments": {
                 "symbol_id": "java:demo.Service#execute()",
                 "path_kind": "behavior",
@@ -728,7 +502,7 @@ def test_controlled_trace_does_not_merge_same_query_from_two_subtasks():
         {
             "call_id": "app-2",
             "subtask_id": "subtask-2",
-            "tool": "inspect_path",
+            "tool": "query_relations",
             "arguments": {
                 "symbol_id": "java:demo.Service#execute()",
                 "path_kind": "behavior",
@@ -739,55 +513,56 @@ def test_controlled_trace_does_not_merge_same_query_from_two_subtasks():
             "output": {},
         },
     ]
-    report.events.extend([
-        _flow_event(
-            3,
-            "tool_start",
-            "tools",
-            "controlled_review",
-            "native-1",
-            detail={
-                "tool_name": "inspect_path",
-                "input": {
-                    "symbol_id": "java:demo.Service#execute()",
-                    "path_kind": "behavior",
-                    "max_depth": "3",
+    report.events.extend(
+        [
+            _flow_event(
+                3,
+                "tool_start",
+                "tools",
+                "controlled_review",
+                "native-1",
+                detail={
+                    "tool_name": "query_relations",
+                    "input": {
+                        "symbol_id": "java:demo.Service#execute()",
+                        "path_kind": "behavior",
+                        "max_depth": "3",
+                    },
                 },
-            },
-        ),
-        _flow_event(
-            4,
-            "tool_end",
-            "tools",
-            "controlled_review",
-            "native-1",
-            detail={"tool_name": "inspect_path", "output": {}},
-        ),
-        _flow_event(
-            5,
-            "tool_start",
-            "tools",
-            "controlled_review",
-            "native-2",
-            detail={
-                "tool_name": "inspect_path",
-                "input": {
-                    "symbol_id": "java:demo.Service#execute()",
-                    "path_kind": "behavior",
-                    "max_depth": "3",
+            ),
+            _flow_event(
+                4,
+                "tool_end",
+                "tools",
+                "controlled_review",
+                "native-1",
+                detail={"tool_name": "query_relations", "output": {}},
+            ),
+            _flow_event(
+                5,
+                "tool_start",
+                "tools",
+                "controlled_review",
+                "native-2",
+                detail={
+                    "tool_name": "query_relations",
+                    "input": {
+                        "symbol_id": "java:demo.Service#execute()",
+                        "path_kind": "behavior",
+                        "max_depth": "3",
+                    },
                 },
-            },
-        ),
-        _flow_event(
-            6,
-            "tool_end",
-            "tools",
-            "controlled_review",
-            "native-2",
-            detail={"tool_name": "inspect_path", "output": {}},
-        ),
-    ])
-
+            ),
+            _flow_event(
+                6,
+                "tool_end",
+                "tools",
+                "controlled_review",
+                "native-2",
+                detail={"tool_name": "query_relations", "output": {}},
+            ),
+        ]
+    )
     view = build_trace_view(report)
     owned = [
         view["steps"][step_id]
@@ -801,90 +576,72 @@ def test_controlled_trace_does_not_merge_same_query_from_two_subtasks():
 
 def test_controlled_tool_fallback_uses_artifact_preview_and_hash():
     report = _controlled_review_report_fixture()
-    report.events.extend([
-        _flow_event(
-            3,
-            "tool_start",
-            "tools",
-            "controlled_review",
-            "native-tool",
-            detail={
-                "tool_name": "inspect_path",
-                "input": {
-                    "symbol_id": "java:demo.Service#execute()",
-                    "path_kind": "behavior",
-                    "max_depth": "3",
+    report.events.extend(
+        [
+            _flow_event(
+                3,
+                "tool_start",
+                "tools",
+                "controlled_review",
+                "native-tool",
+                detail={
+                    "tool_name": "query_relations",
+                    "input": {
+                        "symbol_id": "java:demo.Service#execute()",
+                        "path_kind": "behavior",
+                        "max_depth": "3",
+                    },
                 },
-            },
-        ),
-        _flow_event(
-            4,
-            "tool_end",
-            "tools",
-            "controlled_review",
-            "native-tool",
-            detail={"tool_name": "inspect_path", "output": {}},
-        ),
-    ])
+            ),
+            _flow_event(
+                4,
+                "tool_end",
+                "tools",
+                "controlled_review",
+                "native-tool",
+                detail={"tool_name": "query_relations", "output": {}},
+            ),
+        ]
+    )
     report.artifacts["artifact-fallback"] = TraceArtifactMeta(
         artifact_id="artifact-fallback",
         payload_hash="hash-fallback",
         preview={"schema_version": 2, "outcome": "found", "coverage": "complete"},
     )
     report.events[-1].detail["output"] = {}
-    report.events[1].detail["output"]["tool_trace_records"][0][
-        "artifact_id"
-    ] = "artifact-fallback"
-
+    report.events[1].detail["output"]["tool_trace_records"][0]["artifact_id"] = (
+        "artifact-fallback"
+    )
     view = build_trace_view(report)
     fallback = next(
-        view["steps"][step_id]
-        for section in view["controlled_sections"]
-        for step_id in section["tool_step_ids"]
-        if step_id.startswith("controlled:tool:")
+        (
+            view["steps"][step_id]
+            for section in view["controlled_sections"]
+            for step_id in section["tool_step_ids"]
+            if step_id.startswith("application-tool-record:")
+        )
     )
     assert fallback["output"]["outcome"] == "found"
     assert fallback["artifact_id"] == "artifact-fallback"
     assert fallback["payload_hash"] == "hash-fallback"
 
 
-def test_controlled_failed_trace_keeps_all_reviewer_panels_visible():
-    report = _controlled_review_report_fixture()
-    report.events[1].detail["output"] = {}
-
-    view = build_trace_view(report)
-    sections = {
-        section["key"]: section for section in view["controlled_sections"]
-    }
-    assert {
-        "controlled_threat_model",
-        "controlled_behavior",
-        "controlled_maintainability",
-    } <= sections.keys()
-    for section_key in (
-        "controlled_threat_model",
-        "controlled_behavior",
-        "controlled_maintainability",
-    ):
-        step = view["steps"][sections[section_key]["step_ids"][0]]
-        assert step["status"] == "missing"
-        assert step["code_name"] == "direct_triage"
-
-
 def test_trace_normalization_stores_identical_raw_payload_once_and_events_only_reference_it():
-    raw = json.dumps({
-        "schema_version": 2,
-        "outcome": "found",
-        "coverage": "complete",
-        "source_scope": "MAIN",
-        "subject_symbol_id": "java:A#m()",
-        "symbols": [{"id": "java:A#m()", "source_set": "MAIN"}],
-        "relationships": [],
-        "unresolved_relationships": [],
-        "unresolved_count": 0,
-        "limitations": [],
-        "private_diagnostic": "RAW_SENTINEL_123",
-    })
+    raw = json.dumps(
+        {
+            "schema_version": 2,
+            "outcome": "found",
+            "coverage": "complete",
+            "source_scope": "MAIN",
+            "subject_symbol_id": "java:A#m()",
+            "symbols": [{"id": "java:A#m()", "source_set": "MAIN"}],
+            "relationships": [],
+            "unresolved_relationships": [],
+            "unresolved_count": 0,
+            "limitations": [],
+            "private_diagnostic": "RAW_SENTINEL_123",
+        }
+    )
     artifacts = {}
     for task_id, call_id in (("task-1", "call-1"), ("task-2", "call-2")):
         artifact = EvidenceArtifact.build(
@@ -892,7 +649,7 @@ def test_trace_normalization_stores_identical_raw_payload_once_and_events_only_r
             reviewer="behavior",
             revision="rev",
             source_kind=EvidenceSourceKind.TOOL_CALL,
-            tool="inspect_change_impact",
+            tool="query_relations",
             arguments={"symbol_id": "java:A#m()"},
             payload=raw,
             availability=ArtifactAvailability.AVAILABLE,
@@ -901,7 +658,7 @@ def test_trace_normalization_stores_identical_raw_payload_once_and_events_only_r
         )
         artifacts[artifact.id] = artifact
     projected = project_tool_payload(
-        "inspect_change_impact", raw, ProjectionAudience.REVIEWER
+        "query_relations", raw, ProjectionAudience.REVIEWER
     ).content
     target_artifact_id = list(artifacts)[1]
     report = TraceReport(
@@ -909,51 +666,75 @@ def test_trace_normalization_stores_identical_raw_payload_once_and_events_only_r
         timestamp="2026-08-24T00:00:00",
         events=[
             _flow_event(
-                1, "node_end", "discover_behavior", "discover_behavior", "node-1",
-                detail={"output": {"tool_trace_records": [{
-                    "call_id": "call-1",
-                    "artifact_id": target_artifact_id,
-                    "tool": "inspect_change_impact",
-                    "arguments": {"symbol_id": "java:A#m()"},
-                    "status": "complete",
-                    "duration_ms": 3.0,
-                    "output": raw,
-                    "resolved_output": raw,
-                }]}, "input": {}},
+                1,
+                "node_end",
+                "controlled_review",
+                "controlled_review",
+                "node-1",
+                detail={
+                    "output": {
+                        "tool_trace_records": [
+                            {
+                                "call_id": "call-1",
+                                "artifact_id": target_artifact_id,
+                                "tool": "query_relations",
+                                "arguments": {"symbol_id": "java:A#m()"},
+                                "status": "complete",
+                                "duration_ms": 3.0,
+                                "output": raw,
+                                "resolved_output": raw,
+                            }
+                        ]
+                    },
+                    "input": {},
+                },
             ),
             _flow_event(
-                2, "tool_start", "discover_behavior", "discover_behavior", "tool-1",
+                2,
+                "tool_start",
+                "controlled_review",
+                "controlled_review",
+                "tool-1",
                 detail={
-                    "tool_name": "inspect_change_impact",
+                    "tool_name": "query_relations",
                     "input": {"symbol_id": "java:A#m()"},
                 },
             ),
             _flow_event(
-                3, "tool_end", "discover_behavior", "discover_behavior", "tool-1",
-                detail={
-                    "tool_name": "inspect_change_impact",
-                    "output": projected,
-                },
+                3,
+                "tool_end",
+                "controlled_review",
+                "controlled_review",
+                "tool-1",
+                detail={"tool_name": "query_relations", "output": projected},
             ),
             _flow_event(
-                4, "llm_start", "model", "discover_behavior/model", "llm-1",
-                detail={"messages": [{
-                    "role": "tool",
-                    "name": "inspect_change_impact",
-                    "tool_call_id": "native-call",
-                    "content": projected,
-                }]},
+                4,
+                "llm_start",
+                "model",
+                "controlled_review/model",
+                "llm-1",
+                detail={
+                    "messages": [
+                        {
+                            "role": "tool",
+                            "name": "query_relations",
+                            "tool_call_id": "native-call",
+                            "content": projected,
+                        }
+                    ]
+                },
             ),
         ],
     )
-
     normalize_trace_report(report, artifacts)
-
     assert len(report.payload_store) == 1
     assert len(report.artifacts) == 2
     assert all(
-        meta.payload_hash in report.payload_store
-        for meta in report.artifacts.values()
+        (
+            meta.payload_hash in report.payload_store
+            for meta in report.artifacts.values()
+        )
     )
     serialized_events = json.dumps(
         [event.model_dump(mode="json") for event in report.events]
@@ -975,9 +756,11 @@ def test_trace_normalization_stores_identical_raw_payload_once_and_events_only_r
     assert "payload_store" in html
     view = build_trace_view(report)
     behavior = next(
-        section
-        for section in view["reviewer_sections"]
-        if section["key"] == "behavior"
+        (
+            section
+            for section in view["controlled_sections"]
+            if section["key"] == "controlled_behavior"
+        )
     )
     tool_steps = [view["steps"][item] for item in behavior["tool_step_ids"]]
     assert len(tool_steps) == 1
@@ -985,18 +768,20 @@ def test_trace_normalization_stores_identical_raw_payload_once_and_events_only_r
 
 
 def test_trace_normalization_uses_parent_run_to_disambiguate_same_payload_tasks():
-    raw = json.dumps({
-        "schema_version": 2,
-        "outcome": "found",
-        "coverage": "complete",
-        "source_scope": "MAIN",
-        "subject_symbol_id": "java:A#m()",
-        "symbols": [{"id": "java:A#m()", "source_set": "MAIN"}],
-        "relationships": [],
-        "unresolved_relationships": [],
-        "unresolved_count": 0,
-        "limitations": [],
-    })
+    raw = json.dumps(
+        {
+            "schema_version": 2,
+            "outcome": "found",
+            "coverage": "complete",
+            "source_scope": "MAIN",
+            "subject_symbol_id": "java:A#m()",
+            "symbols": [{"id": "java:A#m()", "source_set": "MAIN"}],
+            "relationships": [],
+            "unresolved_relationships": [],
+            "unresolved_count": 0,
+            "limitations": [],
+        }
+    )
     artifacts = {}
     ids = []
     for task_id in ("task-a", "task-b"):
@@ -1022,46 +807,50 @@ def test_trace_normalization_uses_parent_run_to_disambiguate_same_payload_tasks(
             2 + offset * 3,
             "tool_start",
             "inspect_structure",
-            "discover_behavior/tools",
+            "controlled_review/tools",
             f"native-{offset}",
             detail={
                 "tool_name": "inspect_structure",
                 "input": {"symbol_id": "java:A#m()"},
             },
         ).model_copy(update={"parent_ids": [wrapper]})
-        events.extend([
-            _flow_event(
-                1 + offset * 3,
-                "node_end",
-                "discover_behavior",
-                "discover_behavior",
-                wrapper,
-                detail={"output": {"tool_trace_records": [{
-                    "call_id": f"call-task-{'a' if offset == 0 else 'b'}",
-                    "artifact_id": artifact_id,
-                    "tool": "inspect_structure",
-                    "arguments": {"symbol_id": "java:A#m()"},
-                    "status": "complete",
-                }]}},
-            ),
-            start,
-            _flow_event(
-                3 + offset * 3,
-                "tool_end",
-                "inspect_structure",
-                "discover_behavior/tools",
-                f"native-{offset}",
-                detail={"tool_name": "inspect_structure", "output": raw},
-            ),
-        ])
+        events.extend(
+            [
+                _flow_event(
+                    1 + offset * 3,
+                    "node_end",
+                    "controlled_review",
+                    "controlled_review",
+                    wrapper,
+                    detail={
+                        "output": {
+                            "tool_trace_records": [
+                                {
+                                    "call_id": f"call-task-{('a' if offset == 0 else 'b')}",
+                                    "artifact_id": artifact_id,
+                                    "tool": "inspect_structure",
+                                    "arguments": {"symbol_id": "java:A#m()"},
+                                    "status": "complete",
+                                }
+                            ]
+                        }
+                    },
+                ),
+                start,
+                _flow_event(
+                    3 + offset * 3,
+                    "tool_end",
+                    "inspect_structure",
+                    "controlled_review/tools",
+                    f"native-{offset}",
+                    detail={"tool_name": "inspect_structure", "output": raw},
+                ),
+            ]
+        )
     report = TraceReport(
-        run_id="same-payload-tasks",
-        timestamp="2026-08-24T00:00:00",
-        events=events,
+        run_id="same-payload-tasks", timestamp="2026-08-24T00:00:00", events=events
     )
-
     normalize_trace_report(report, artifacts)
-
     tool_ends = [event for event in report.events if event.event_type == "tool_end"]
     assert [event.detail["artifact_id"] for event in tool_ends] == ids
 
@@ -1070,61 +859,88 @@ def test_trace_normalization_preserves_subtask_owner_for_active_react():
     report = TraceReport(
         run_id="subtask-owner",
         timestamp="2026-08-24T00:00:00",
-        events=[_flow_event(
-            1,
-            "node_end",
-            "controlled_review",
-            "controlled_review",
-            "controlled-node",
-            detail={"output": {"tool_trace_records": [{
-                "call_id": "call-subtask",
-                "subtask_id": "subtask-behavior-task-a-1",
-                "artifact_id": "",
-                "tool": "query_relations",
-                "arguments": {
-                    "subject_symbol_id": "java:A#run()",
-                    "relation": "callees",
+        events=[
+            _flow_event(
+                1,
+                "node_end",
+                "controlled_review",
+                "controlled_review",
+                "controlled-node",
+                detail={
+                    "output": {
+                        "tool_trace_records": [
+                            {
+                                "call_id": "call-subtask",
+                                "subtask_id": "subtask-behavior-task-a-1",
+                                "artifact_id": "",
+                                "tool": "query_relations",
+                                "arguments": {
+                                    "subject_symbol_id": "java:A#run()",
+                                    "relation": "callees",
+                                },
+                                "status": "complete",
+                                "duration_ms": 1.0,
+                            }
+                        ]
+                    }
                 },
-                "status": "complete",
-                "duration_ms": 1.0,
-            }]}},
-        )],
+            )
+        ],
     )
-
     normalize_trace_report(report, {})
-
     refs = report.events[0].detail["state_write"]["tool_trace_records"]
     assert refs[0]["subtask_id"] == "subtask-behavior-task-a-1"
 
 
 def test_trace_preview_reuses_runtime_focused_reviewer_projection():
-    raw = json.dumps({
-        "schema_version": 2,
-        "outcome": "found",
-        "coverage": "complete",
-        "source_scope": "MAIN",
-        "subject_symbol_id": "java:A#m()",
-        "symbols": [
-            {"id": "java:A#m()", "kind": "METHOD", "file": "src/A.java",
-             "startLine": 1, "endLine": 20, "source_set": "MAIN"},
-            {"id": "java:B#listener()", "kind": "METHOD", "file": "src/B.java",
-             "startLine": 1, "endLine": 3, "source_set": "MAIN"},
-        ],
-        "relationships": [
-            {"sourceId": "java:A#m()", "targetId": "java:B#listener()",
-             "kind": "CALLS", "file": "src/A.java", "line": 10,
-             "source_set": "MAIN", "resolution": "RESOLVED"},
-        ],
-        "unresolved_relationships": [],
-        "unresolved_count": 0,
-        "limitations": [],
-    }, ensure_ascii=False)
+    raw = json.dumps(
+        {
+            "schema_version": 2,
+            "outcome": "found",
+            "coverage": "complete",
+            "source_scope": "MAIN",
+            "subject_symbol_id": "java:A#m()",
+            "symbols": [
+                {
+                    "id": "java:A#m()",
+                    "kind": "METHOD",
+                    "file": "src/A.java",
+                    "startLine": 1,
+                    "endLine": 20,
+                    "source_set": "MAIN",
+                },
+                {
+                    "id": "java:B#listener()",
+                    "kind": "METHOD",
+                    "file": "src/B.java",
+                    "startLine": 1,
+                    "endLine": 3,
+                    "source_set": "MAIN",
+                },
+            ],
+            "relationships": [
+                {
+                    "sourceId": "java:A#m()",
+                    "targetId": "java:B#listener()",
+                    "kind": "CALLS",
+                    "file": "src/A.java",
+                    "line": 10,
+                    "source_set": "MAIN",
+                    "resolution": "RESOLVED",
+                }
+            ],
+            "unresolved_relationships": [],
+            "unresolved_count": 0,
+            "limitations": [],
+        },
+        ensure_ascii=False,
+    )
     artifact = EvidenceArtifact.build(
         task_id="task-1",
         reviewer="behavior",
         revision="rev",
         source_kind=EvidenceSourceKind.TOOL_CALL,
-        tool="inspect_path",
+        tool="query_relations",
         arguments={"symbol_id": "java:A#m()", "path_kind": "behavior"},
         payload=raw,
         availability=ArtifactAvailability.AVAILABLE,
@@ -1137,19 +953,13 @@ def test_trace_preview_reuses_runtime_focused_reviewer_projection():
         changed_symbol_ids=("java:A#m()",),
     )
     report = TraceReport(
-        run_id="focused-preview",
-        timestamp="2026-08-24T00:00:00",
-        events=[],
+        run_id="focused-preview", timestamp="2026-08-24T00:00:00", events=[]
     )
-
     normalize_trace_report(
-        report,
-        {artifact.id: artifact},
-        focus_by_task={"task-1": focus},
+        report, {artifact.id: artifact}, focus_by_task={"task-1": focus}
     )
-
     expected = project_tool_payload(
-        "inspect_path",
+        "query_relations",
         raw,
         ProjectionAudience.REVIEWER,
         arguments=artifact.arguments,
@@ -1220,15 +1030,11 @@ def test_trace_view_summarizes_judge_and_causal_merge_results():
             },
         ),
     ]
-
     view = build_trace_view(
         TraceReport(
-            run_id="decision-run",
-            timestamp="2026-08-22T00:00:00",
-            events=events,
+            run_id="decision-run", timestamp="2026-08-22T00:00:00", events=events
         )
     )
-
     assert view["decision_summary"]["judge"] == {
         "candidate_count": 3,
         "keep_count": 1,
@@ -1248,110 +1054,20 @@ def test_trace_view_summarizes_judge_and_causal_merge_results():
 
 def test_trace_view_main_stages_resolve_without_copying_state_values():
     view = build_trace_view(_flow_report_fixture())
-
+    assert all((stage["step_id"] in view["steps"] for stage in view["main_stages"]))
+    assert "group:review_council" not in view["steps"]
+    assert {
+        "diff_summary",
+        "task_symbol_contexts",
+        "candidate_facts",
+        "final_issues",
+    } <= set(view["state_writes"])
     assert all(
-        stage["step_id"] in view["steps"]
-        for stage in view["main_stages"]
-    )
-    assert view["steps"]["group:review_council"]["kind"] == "group"
-    assert {"diff_summary", "task_symbol_contexts", "candidate_facts", "final_issues"} <= set(
-        view["state_writes"]
-    )
-    assert all(
-        "value" not in write
-        for writes in view["state_writes"].values()
-        for write in writes
-    )
-
-
-def test_trace_view_renders_phase5_task_chain_and_direct_discoverers():
-    events = []
-    sequence = 0
-
-    def node(name: str, output: dict) -> None:
-        nonlocal sequence
-        sequence += 1
-        run_id = f"{name}-run"
-        events.append(_flow_event(sequence, "node_start", name, name, run_id))
-        sequence += 1
-        events.append(
-            _flow_event(
-                sequence,
-                "node_end",
-                name,
-                name,
-                run_id,
-                detail={"output": output},
-            )
+        (
+            "value" not in write
+            for writes in view["state_writes"].values()
+            for write in writes
         )
-
-    node(
-        "classify_mode",
-        {
-            "review_mode": "large",
-            "review_route": {
-                "initial_mode": "large",
-                "effective_mode": "large",
-                "selected_node": "diff_task_builder",
-                "fallback": False,
-                "metrics": {"file_count": 16, "hunk_count": 20, "diff_chars": 70000},
-            },
-        },
-    )
-    node("diff_task_builder", {"review_tasks": [{"id": "task-1"}]})
-    node("task_selection", {"task_selection": {"selected_task_ids": ["task-1"]}})
-    node("plan", {"task_plans": {}})
-    node("review_plan", {"review_assignments": {"tasks": []}})
-    node("summary", {"diff_summary": "summary"})
-    node("symbol_resolution", {"task_symbol_contexts": {"task-1": {}}})
-    for reviewer in (
-        "discover_threat_model",
-        "discover_behavior",
-        "discover_maintainability",
-    ):
-        node(reviewer, {"raw_candidate_issues": []})
-    node("council_coordinator", {"council_trace": []})
-    node("evidence_verifier", {"candidate_facts": {}, "candidate_relations": {}})
-    node("council_judge", {"final_issues": [], "council_stats": {}})
-
-    view = build_trace_view(
-        TraceReport(
-            run_id="phase5-run",
-            timestamp="2026-07-14T00:00:00",
-            events=events,
-        )
-    )
-
-    assert [stage["code_name"] for stage in view["main_stages"]] == [
-        "classify_mode",
-        "diff_task_builder",
-        "task_route",
-        "task_selection",
-        "plan",
-        "review_plan",
-        "summary",
-        "symbol_resolution",
-        "review_council",
-        "council_coordinator",
-        "evidence_verifier",
-        "council_judge",
-    ]
-    assert view["routing"] == {
-        "initial_mode": "large",
-        "effective_mode": "large",
-        "selected_node": "diff_task_builder",
-        "fallback": False,
-        "metrics": {"file_count": 16, "hunk_count": 20, "diff_chars": 70000},
-    }
-    assert all(section["step_ids"] for section in view["reviewer_sections"])
-    assert all(
-        section["tool_call_count"] == 0
-        and section["tool_step_ids"] == []
-        for section in view["reviewer_sections"]
-    )
-    assert "coordination_steps" not in view
-    assert {"review_tasks", "task_selection", "candidate_relations"} <= set(
-        view["state_writes"]
     )
 
 
@@ -1368,25 +1084,34 @@ def test_trace_view_renders_direct_review_as_task_route_branch():
             "route",
             detail={"output": {"task_routes": {"task-a": {"route": "direct"}}}},
         ),
-        _flow_event(5, "node_start", "direct_task_review", "direct_task_review", "direct"),
-        _flow_event(6, "node_end", "direct_task_review", "direct_task_review", "direct"),
+        _flow_event(
+            5, "node_start", "direct_task_review", "direct_task_review", "direct"
+        ),
+        _flow_event(
+            6, "node_end", "direct_task_review", "direct_task_review", "direct"
+        ),
     ]
-
     view = build_trace_view(
-        TraceReport(run_id="direct-branch", timestamp="2026-08-24T00:00:00", events=events)
+        TraceReport(
+            run_id="direct-branch", timestamp="2026-08-24T00:00:00", events=events
+        )
     )
-
-    assert "direct_task_review" not in [
-        stage["code_name"] for stage in view["main_stages"]
-    ]
+    assert "direct_task_review" in [stage["code_name"] for stage in view["main_stages"]]
     route_stage = next(
-        stage for stage in view["main_stages"] if stage["code_name"] == "task_route"
+        (stage for stage in view["main_stages"] if stage["code_name"] == "task_route")
     )
-    assert route_stage["branch"]["title"] == "Direct 分支审查"
-    assert route_stage["branch"]["step_id"] == "node:direct"
+    assert "branch" not in route_stage
+    assert (
+        next(
+            stage
+            for stage in view["main_stages"]
+            if stage["code_name"] == "direct_task_review"
+        )["step_id"]
+        == "node:direct"
+    )
 
 
-def test_trace_view_infers_medium_file_route_from_pre_structured_trace():
+def test_trace_view_infers_normal_file_route_from_pre_structured_trace():
     events = [
         _flow_event(1, "node_start", "classify_mode", "classify_mode", "classify"),
         _flow_event(
@@ -1395,7 +1120,7 @@ def test_trace_view_infers_medium_file_route_from_pre_structured_trace():
             "classify_mode",
             "classify_mode",
             "classify",
-            detail={"output": {"review_mode": "medium"}},
+            detail={"output": {"review_mode": "normal"}},
         ),
         _flow_event(3, "node_start", "file_task_builder", "file_task_builder", "file"),
         _flow_event(
@@ -1409,13 +1134,10 @@ def test_trace_view_infers_medium_file_route_from_pre_structured_trace():
     ]
     view = build_trace_view(
         TraceReport(
-            run_id="legacy-medium-route",
-            timestamp="2026-07-29T00:00:00",
-            events=events,
+            run_id="normal-route", timestamp="2026-07-29T00:00:00", events=events
         )
     )
-
-    assert view["routing"]["initial_mode"] == "medium"
+    assert view["routing"]["initial_mode"] == "normal"
     assert view["routing"]["selected_node"] == "file_task_builder"
     assert [stage["code_name"] for stage in view["main_stages"][:2]] == [
         "classify_mode",
@@ -1426,11 +1148,7 @@ def test_trace_view_infers_medium_file_route_from_pre_structured_trace():
 def test_trace_view_shows_discovery_only_terminal_and_skips_judge():
     events = [
         _flow_event(
-            1,
-            "node_start",
-            "discovery_collector",
-            "discovery_collector",
-            "collector",
+            1, "node_start", "discovery_collector", "discovery_collector", "collector"
         ),
         _flow_event(
             2,
@@ -1443,24 +1161,19 @@ def test_trace_view_shows_discovery_only_terminal_and_skips_judge():
     ]
     view = build_trace_view(
         TraceReport(
-            run_id="discovery-only",
-            timestamp="2026-07-29T00:00:00",
-            events=events,
+            run_id="discovery-only", timestamp="2026-07-29T00:00:00", events=events
         )
     )
-
     assert any(
-        stage["code_name"] == "discovery_collector"
-        and stage["status"] == "complete"
-        for stage in view["main_stages"]
+        (
+            stage["code_name"] == "discovery_collector"
+            and stage["status"] == "complete"
+            for stage in view["main_stages"]
+        )
     )
-    judge = next(
-        stage
-        for stage in view["main_stages"]
-        if stage["code_name"] == "council_judge"
+    assert not any(
+        stage["code_name"] == "council_judge" for stage in view["main_stages"]
     )
-    assert judge["status"] == "skipped"
-    assert "discovery_only" in judge["summary"]
 
 
 def test_trace_view_indexes_state_writes_from_hidden_discover_nodes():
@@ -1471,15 +1184,15 @@ def test_trace_view_indexes_state_writes_from_hidden_discover_nodes():
             _flow_event(
                 1,
                 "node_start",
-                "discover_behavior",
-                "discover_behavior",
+                "controlled_review",
+                "controlled_review",
                 "discover-behavior-run",
             ),
             _flow_event(
                 2,
                 "node_end",
-                "discover_behavior",
-                "discover_behavior",
+                "controlled_review",
+                "controlled_review",
                 "discover-behavior-run",
                 detail={
                     "output": {
@@ -1490,12 +1203,10 @@ def test_trace_view_indexes_state_writes_from_hidden_discover_nodes():
             ),
         ],
     )
-
     view = build_trace_view(report)
-
     assert "raw_candidate_issues" in view["state_writes"]
     candidate_write = view["state_writes"]["raw_candidate_issues"][0]
-    assert candidate_write["node_path"] == "discover_behavior"
+    assert candidate_write["node_path"] == "controlled_review"
     assert candidate_write["step_id"] in view["steps"]
 
 
@@ -1504,40 +1215,17 @@ def test_trace_view_reports_missing_and_unassociated_events():
         run_id="incomplete-run",
         timestamp="2026-07-09T00:00:00",
         events=[
-            _flow_event(
-                1,
-                "node_start",
-                "summary",
-                "summary",
-                "missing-end-run",
-            ),
-            _flow_event(
-                2,
-                "llm_start",
-                "unknown",
-                "unknown",
-                "unassociated-run",
-            ),
-            _flow_event(
-                3,
-                "llm_end",
-                "unknown",
-                "unknown",
-                "unassociated-run",
-            ),
+            _flow_event(1, "node_start", "summary", "summary", "missing-end-run"),
+            _flow_event(2, "llm_start", "unknown", "unknown", "unassociated-run"),
+            _flow_event(3, "llm_end", "unknown", "unknown", "unassociated-run"),
         ],
     )
-
     view = build_trace_view(report)
-
     assert view["integrity"]["missing_end_count"] == 1
     assert view["integrity"]["unassociated_count"] == 2
     assert view["integrity"]["status"] == "incomplete"
-    assert all(
-        stage["step_id"] in view["steps"]
-        for stage in view["main_stages"]
-    )
-    assert view["steps"]["placeholder:council_judge"]["status"] == "missing"
+    assert all((stage["step_id"] in view["steps"] for stage in view["main_stages"]))
+    assert not any(key.startswith("placeholder:") for key in view["steps"])
 
 
 def test_trace_view_treats_tool_error_as_a_completed_failed_call():
@@ -1549,7 +1237,7 @@ def test_trace_view_treats_tool_error_as_a_completed_failed_call():
                 1,
                 "tool_start",
                 "review",
-                "discover_behavior/review",
+                "controlled_review/review",
                 "tool-run",
                 detail={
                     "tool_name": "inspect_structure",
@@ -1560,7 +1248,7 @@ def test_trace_view_treats_tool_error_as_a_completed_failed_call():
                 2,
                 "tool_error",
                 "review",
-                "discover_behavior/review",
+                "controlled_review/review",
                 "tool-run",
                 detail={
                     "tool_name": "inspect_structure",
@@ -1572,16 +1260,10 @@ def test_trace_view_treats_tool_error_as_a_completed_failed_call():
             ),
         ],
     )
-
     view = build_trace_view(report)
-    behavior = next(
-        section
-        for section in view["reviewer_sections"]
-        if section["key"] == "behavior"
-    )
-    tool_step = view["steps"][behavior["tool_step_ids"][0]]
-
-    assert behavior["tool_call_count"] == 1
+    tool_steps = [step for step in view["steps"].values() if step["kind"] == "tool"]
+    assert len(tool_steps) == 1
+    tool_step = tool_steps[0]
     assert tool_step["status"] == "failed"
     assert tool_step["start_sequence"] == 1
     assert tool_step["end_sequence"] == 2
@@ -1596,21 +1278,21 @@ def test_trace_view_builds_reviewer_tool_steps_from_node_output_without_native_e
             _flow_event(
                 1,
                 "node_start",
-                "discover_behavior",
-                "discover_behavior",
+                "controlled_review",
+                "controlled_review",
                 "discover-run",
             ),
             _flow_event(
                 2,
                 "node_end",
-                "discover_behavior",
-                "discover_behavior",
+                "controlled_review",
+                "controlled_review",
                 "discover-run",
                 detail={
                     "output": {
                         "tool_trace_records": [
                             {
-                                "tool": "inspect_change_impact",
+                                "tool": "query_relations",
                                 "arguments": {"symbol_id": "java:demo.OrderService"},
                                 "output": '{"schema_version":2,"outcome":"found","coverage":"complete"}',
                                 "call_id": "app-call-1",
@@ -1625,17 +1307,17 @@ def test_trace_view_builds_reviewer_tool_steps_from_node_output_without_native_e
             ),
         ],
     )
-
     view = build_trace_view(report)
     behavior = next(
-        section
-        for section in view["reviewer_sections"]
-        if section["key"] == "behavior"
+        (
+            section
+            for section in view["controlled_sections"]
+            if section["key"] == "controlled_behavior"
+        )
     )
     tool_step = view["steps"][behavior["tool_step_ids"][0]]
-
     assert behavior["tool_call_count"] == 1
-    assert tool_step["code_name"] == "inspect_change_impact"
+    assert tool_step["code_name"] == "query_relations"
     assert tool_step["input"] == {"symbol_id": "java:demo.OrderService"}
     assert tool_step["output"] == {
         "schema_version": 2,
@@ -1654,22 +1336,22 @@ def test_trace_view_keeps_each_reviewer_tool_record_including_reuse():
             _flow_event(
                 1,
                 "node_start",
-                "discover_behavior",
-                "discover_behavior",
+                "controlled_review",
+                "controlled_review",
                 "discover-run",
             ),
             _flow_event(
                 2,
                 "node_end",
-                "discover_behavior",
-                "discover_behavior",
+                "controlled_review",
+                "controlled_review",
                 "discover-run",
                 detail={
                     "output": {
                         "tool_trace_records": [
                             {
                                 "call_id": "call-1",
-                                "tool": "inspect_change_impact",
+                                "tool": "query_relations",
                                 "arguments": {"symbol_id": "java:demo.Service"},
                                 "output": '{"schema_version":2,"outcome":"found","coverage":"complete"}',
                                 "duration_ms": 4.0,
@@ -1679,7 +1361,7 @@ def test_trace_view_keeps_each_reviewer_tool_record_including_reuse():
                             },
                             {
                                 "call_id": "call-2",
-                                "tool": "inspect_change_impact",
+                                "tool": "query_relations",
                                 "arguments": {"symbol_id": "java:demo.Service"},
                                 "output": "reuse marker",
                                 "duration_ms": 0.1,
@@ -1694,17 +1376,15 @@ def test_trace_view_keeps_each_reviewer_tool_record_including_reuse():
             ),
         ],
     )
-
     view = build_trace_view(report)
     behavior = next(
-        section
-        for section in view["reviewer_sections"]
-        if section["key"] == "behavior"
+        (
+            section
+            for section in view["controlled_sections"]
+            if section["key"] == "controlled_behavior"
+        )
     )
-    tool_steps = [
-        view["steps"][step_id] for step_id in behavior["tool_step_ids"]
-    ]
-
+    tool_steps = [view["steps"][step_id] for step_id in behavior["tool_step_ids"]]
     assert behavior["tool_call_count"] == 2
     assert [step["status"] for step in tool_steps] == ["complete", "reused"]
     assert tool_steps[1]["reuse_key"] == "impact:service"
@@ -1720,31 +1400,28 @@ def test_trace_view_explains_task_patch_reuse_and_normalizes_missing_output():
             _flow_event(
                 1,
                 "node_end",
-                "discover_behavior",
-                "discover_behavior",
+                "controlled_review",
+                "controlled_review",
                 "discover-run",
                 detail={
                     "output": {
-                        "tool_trace_records": [{
-                            "call_id": "patch-call",
-                            "tool": "get_file_content",
-                            "arguments": {"symbol_id": "java:demo.New#m()"},
-                            "status": "reused",
-                            "duration_ms": 0.0,
-                            "reused_from_call_id": "task_patch",
-                        }],
+                        "tool_trace_records": [
+                            {
+                                "call_id": "patch-call",
+                                "tool": "read_symbol",
+                                "arguments": {"symbol_id": "java:demo.New#m()"},
+                                "status": "reused",
+                                "duration_ms": 0.0,
+                                "reused_from_call_id": "task_patch",
+                            }
+                        ]
                     }
                 },
-            ),
+            )
         ],
     )
-
     view = build_trace_view(report)
-    step = next(
-        item for item in view["steps"].values()
-        if item["kind"] == "tool"
-    )
-
+    step = next((item for item in view["steps"].values() if item["kind"] == "tool"))
     assert step["summary"] == "复用当前 task patch（未执行 Gateway）"
     assert step["output"] == {
         "status": "reused",
@@ -1759,21 +1436,27 @@ def test_trace_view_keeps_legacy_native_tool_output_without_artifact_index():
         timestamp="2026-08-24T00:00:00",
         events=[
             _flow_event(
-                1, "tool_start", "get_file_content", "discover_behavior/tools",
-                "legacy-tool", detail={"input": {"symbol_id": "java:A#run()"}},
+                1,
+                "tool_start",
+                "read_symbol",
+                "controlled_review/tools",
+                "legacy-tool",
+                detail={"input": {"symbol_id": "java:A#run()"}},
             ),
             _flow_event(
-                2, "tool_end", "get_file_content", "discover_behavior/tools",
-                "legacy-tool", detail={"output": "class A {}"},
+                2,
+                "tool_end",
+                "read_symbol",
+                "controlled_review/tools",
+                "legacy-tool",
+                detail={"output": "class A {}"},
             ),
         ],
     )
-
     view = build_trace_view(report)
     tool_step = next(
-        step for step in view["steps"].values() if step["kind"] == "tool"
+        (step for step in view["steps"].values() if step["kind"] == "tool")
     )
-
     assert tool_step["output"] == {"content": "class A {}"}
 
 
@@ -1799,7 +1482,7 @@ def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
                     "output": {
                         "tool_trace_records": [
                             {
-                                "tool": "inspect_path",
+                                "tool": "query_relations",
                                 "arguments": {"symbol_id": "java:demo.Service"},
                                 "output": '{"schema_version":2,"outcome":"found","coverage":"complete"}',
                                 "call_id": "evidence-call-1",
@@ -1815,10 +1498,8 @@ def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
                                 "event": "evidence_tool_reused",
                                 "detail": json.dumps(
                                     {
-                                        "tool": "inspect_path",
-                                        "arguments": {
-                                            "symbol_id": "java:demo.Service"
-                                        },
+                                        "tool": "query_relations",
+                                        "arguments": {"symbol_id": "java:demo.Service"},
                                         "evidence_id": "evidence-1",
                                         "reuse_key": "security:service",
                                         "reused_from_call_id": "evidence-call-1",
@@ -1832,15 +1513,12 @@ def test_trace_view_shows_evidence_tool_reuse_as_a_separate_step():
             ),
         ],
     )
-
     view = build_trace_view(report)
     tool_steps = [
         step
         for step in view["steps"].values()
-        if step["kind"] == "tool"
-        and step["node_path"].startswith("evidence_verifier/")
+        if step["kind"] == "tool" and step["node_path"].startswith("evidence_verifier/")
     ]
-
     assert [step["status"] for step in tool_steps] == ["complete", "reused"]
     assert tool_steps[0]["duration_ms"] == 4.5
     assert tool_steps[0]["pair_id"] == "evidence-call-1"
@@ -1897,14 +1575,14 @@ def test_trace_view_exposes_evidence_batch_phase_metrics():
             ),
         ],
     )
-
     view = build_trace_view(report)
     step = next(
-        item
-        for item in view["steps"].values()
-        if item["code_name"] == "evidence_verifier"
+        (
+            item
+            for item in view["steps"].values()
+            if item["code_name"] == "evidence_verifier"
+        )
     )
-
     assert step["metrics"] == metrics
     assert "68 次 LLM" in step["summary"]
     assert "32.000s" in step["summary"]
@@ -1956,17 +1634,19 @@ def test_trace_view_evidence_summary_renders_replay_and_chain_recipe():
             ),
         ],
     )
-
     view = build_trace_view(report)
     step = next(
-        item
-        for item in view["steps"].values()
-        if item["code_name"] == "evidence_verifier"
+        (
+            item
+            for item in view["steps"].values()
+            if item["code_name"] == "evidence_verifier"
+        )
     )
-
     assert step["metrics"] == metrics
     assert "5 个请求" in step["summary"]
-    assert "8 条事实(verified 4 / unverified 1 / failed 1 / recipe 2)" in step["summary"]
+    assert (
+        "8 条事实(verified 4 / unverified 1 / failed 1 / recipe 2)" in step["summary"]
+    )
     assert "链 2 / 配方 1" in step["summary"]
     assert "3 次 LLM" in step["summary"]
     assert "2.100s" in step["summary"]
@@ -1974,30 +1654,26 @@ def test_trace_view_evidence_summary_renders_replay_and_chain_recipe():
 
 def test_dashboard_payload_keeps_raw_report_and_adds_flow_view():
     report = _flow_report_fixture()
-
     payload = _extract_trace_payload(render_dashboard(report))
-
     assert payload["events"] == report.model_dump(mode="json")["events"]
-    assert payload["view"]["reviewer_sections"][0]["step_ids"]
+    assert payload["view"]["main_stages"]
     assert payload["view"]["integrity"]["event_count"] == len(report.events)
 
 
 class TestTraceSerialization:
     def test_preserves_long_nested_values(self):
+
         @dataclass
         class Payload:
             body: str
 
         value = {"payload": Payload(body="x" * 5000), "items": (1, 2)}
-
         serialized = serialize_trace_value(value)
-
         assert serialized["payload"]["body"] == "x" * 5000
         assert serialized["items"] == [1, 2]
 
     def test_messages_accept_direct_tuple_message_list(self):
         messages = [("system", "system text"), ("human", "user text")]
-
         assert serialize_messages(messages) == [
             {"role": "system", "content": "system text"},
             {"role": "human", "content": "user text"},
@@ -2005,20 +1681,19 @@ class TestTraceSerialization:
 
     def test_messages_flatten_single_batch(self):
         messages = [[("system", "system text"), ("human", "user text")]]
-
         result = serialize_messages(messages)
-
         assert [item["role"] for item in result] == ["system", "human"]
         assert result[1]["content"] == "user text"
 
     def test_llm_response_keeps_tool_calls_when_content_empty(self):
+
         class FakeAIMessage:
             type = "ai"
             content = ""
             tool_calls = [
                 {
                     "id": "call-1",
-                    "name": "get_file_content",
+                    "name": "read_symbol",
                     "args": {"symbol_id": "java:Foo#run()"},
                 }
             ]
@@ -2032,9 +1707,8 @@ class TestTraceSerialization:
             }
 
         result = serialize_llm_response(FakeAIMessage())
-
         assert result["content"] == ""
-        assert result["tool_calls"][0]["name"] == "get_file_content"
+        assert result["tool_calls"][0]["name"] == "read_symbol"
         assert result["tool_calls"][0]["args"]["symbol_id"] == "java:Foo#run()"
         assert result["additional_kwargs"]["reasoning_content"] == "need source"
 
@@ -2048,7 +1722,13 @@ class TestTokenUsage:
         assert t.model == ""
 
     def test_serialization(self):
-        t = TokenUsage(input_tokens=100, output_tokens=50, total_tokens=150, model="gpt-4", node_name="discover_threat_model")
+        t = TokenUsage(
+            input_tokens=100,
+            output_tokens=50,
+            total_tokens=150,
+            model="gpt-4",
+            node_name="discover_threat_model",
+        )
         d = t.model_dump()
         assert d["input_tokens"] == 100
         assert d["output_tokens"] == 50
@@ -2057,28 +1737,65 @@ class TestTokenUsage:
 
 class TestTraceEvent:
     def test_minimal(self):
-        e = TraceEvent(sequence=1, timestamp_ms=0.0, event_type="node_start", node_name="test", phase="outer_graph", depth=0, summary="test")
+        e = TraceEvent(
+            sequence=1,
+            timestamp_ms=0.0,
+            event_type="node_start",
+            node_name="test",
+            phase="outer_graph",
+            depth=0,
+            summary="test",
+        )
         assert e.detail == {}
         assert e.tokens is None
 
     def test_with_tokens(self):
         t = TokenUsage(total_tokens=42)
-        e = TraceEvent(sequence=1, timestamp_ms=100.0, event_type="llm_end", node_name="test", phase="outer_graph", depth=1, summary="done", tokens=t)
+        e = TraceEvent(
+            sequence=1,
+            timestamp_ms=100.0,
+            event_type="llm_end",
+            node_name="test",
+            phase="outer_graph",
+            depth=1,
+            summary="done",
+            tokens=t,
+        )
         assert e.tokens.total_tokens == 42
 
     def test_detail_default(self):
-        e = TraceEvent(sequence=1, timestamp_ms=0.0, event_type="tool_start", node_name="x", phase="outer_graph", depth=0, summary="")
+        e = TraceEvent(
+            sequence=1,
+            timestamp_ms=0.0,
+            event_type="tool_start",
+            node_name="x",
+            phase="outer_graph",
+            depth=0,
+            summary="",
+        )
         assert e.detail == {}
 
 
 class TestNodeStats:
     def test_basic(self):
-        s = NodeStats(node_name="discover_threat_model", start_ms=10.0, end_ms=30.0, duration_ms=20.0, tool_calls=3)
+        s = NodeStats(
+            node_name="discover_threat_model",
+            start_ms=10.0,
+            end_ms=30.0,
+            duration_ms=20.0,
+            tool_calls=3,
+        )
         assert s.duration_ms == 20.0
         assert s.tokens.total_tokens == 0
 
     def test_with_tokens(self):
-        s = NodeStats(node_name="x", start_ms=0, end_ms=10, duration_ms=10, tokens=TokenUsage(total_tokens=500))
+        s = NodeStats(
+            node_name="x",
+            start_ms=0,
+            end_ms=10,
+            duration_ms=10,
+            tokens=TokenUsage(total_tokens=500),
+        )
         assert s.tokens.total_tokens == 500
 
 
@@ -2094,19 +1811,61 @@ class TestTraceSummary:
 class TestTraceReport:
     def test_full_roundtrip(self):
         events = [
-            TraceEvent(sequence=1, timestamp_ms=10.0, event_type="node_start", node_name="summary", phase="outer_graph", depth=0, summary="输入: diff_text"),
-            TraceEvent(sequence=2, timestamp_ms=20.0, event_type="node_end", node_name="summary", phase="outer_graph", depth=0, summary="输出: diff_summary"),
-            TraceEvent(sequence=3, timestamp_ms=30.0, event_type="llm_start", node_name="summary", phase="outer_graph", depth=0, summary="LLM #1", detail={"model": "deepseek"}),
-            TraceEvent(sequence=4, timestamp_ms=100.0, event_type="llm_end", node_name="summary", phase="outer_graph", depth=0, summary="完成 (150 tokens)", tokens=TokenUsage(input_tokens=100, output_tokens=50, total_tokens=150)),
+            TraceEvent(
+                sequence=1,
+                timestamp_ms=10.0,
+                event_type="node_start",
+                node_name="summary",
+                phase="outer_graph",
+                depth=0,
+                summary="输入: diff_text",
+            ),
+            TraceEvent(
+                sequence=2,
+                timestamp_ms=20.0,
+                event_type="node_end",
+                node_name="summary",
+                phase="outer_graph",
+                depth=0,
+                summary="输出: diff_summary",
+            ),
+            TraceEvent(
+                sequence=3,
+                timestamp_ms=30.0,
+                event_type="llm_start",
+                node_name="summary",
+                phase="outer_graph",
+                depth=0,
+                summary="LLM #1",
+                detail={"model": "deepseek"},
+            ),
+            TraceEvent(
+                sequence=4,
+                timestamp_ms=100.0,
+                event_type="llm_end",
+                node_name="summary",
+                phase="outer_graph",
+                depth=0,
+                summary="完成 (150 tokens)",
+                tokens=TokenUsage(input_tokens=100, output_tokens=50, total_tokens=150),
+            ),
         ]
         summary = TraceSummary(
             total_duration_ms=200.0,
-            total_tokens=TokenUsage(input_tokens=100, output_tokens=50, total_tokens=150),
+            total_tokens=TokenUsage(
+                input_tokens=100, output_tokens=50, total_tokens=150
+            ),
             event_counts={"node_start": 1, "node_end": 1, "llm_start": 1, "llm_end": 1},
-            node_timeline=[NodeStats(node_name="summary", start_ms=10, end_ms=100, duration_ms=90)],
+            node_timeline=[
+                NodeStats(node_name="summary", start_ms=10, end_ms=100, duration_ms=90)
+            ],
         )
-        report = TraceReport(run_id="test-1", timestamp="2026-07-09T00:00:00", events=events, summary=summary)
-
+        report = TraceReport(
+            run_id="test-1",
+            timestamp="2026-07-09T00:00:00",
+            events=events,
+            summary=summary,
+        )
         d = report.model_dump()
         report2 = TraceReport.model_validate(d)
         assert report2.run_id == "test-1"
@@ -2117,15 +1876,23 @@ class TestTraceReport:
 class TestPhaseMapping:
     def test_all_nodes_have_phase(self):
         expected = {
-            "summary", "classify_mode", "file_task_builder",
-            "diff_task_builder", "task_route", "direct_task_review", "task_selection",
-            "plan", "review_plan",
+            "classify_mode",
+            "file_task_builder",
+            "diff_task_builder",
+            "task_route",
+            "direct_task_review",
+            "task_selection",
             "symbol_resolution",
-            "discover_threat_model", "discover_behavior", "discover_maintainability",
             "controlled_review",
-            "discovery_collector", "council_coordinator",
-            "evidence_verifier", "direct_judge", "council_judge", "causal_merge",
-            "prepare", "review", "collect",
+            "discovery_collector",
+            "council_coordinator",
+            "evidence_verifier",
+            "direct_judge",
+            "council_judge",
+            "causal_merge",
+            "prepare",
+            "review",
+            "collect",
         }
         assert set(_NODE_PHASE_MAP.keys()) == expected
 
@@ -2133,7 +1900,7 @@ class TestPhaseMapping:
         assert _phase_for("nonexistent") == "outer_graph"
 
     def test_known_nodes(self):
-        assert _phase_for("discover_threat_model") == "reviewer_subgraph"
+        assert _phase_for("controlled_review") == "reviewer_subgraph"
         assert _phase_for("council_judge") == "judge"
         assert _phase_for("direct_judge") == "judge"
         assert _phase_for("evidence_verifier") == "evidence"
@@ -2148,24 +1915,18 @@ class TestPhaseMapping:
         import codeguard_agent.pipeline.orchestration.graph as graph_module
 
         unmapped_allowlist: dict[str, str] = {
-            # LangGraph 编译图的虚拟起止节点,非业务节点,不产生追踪事件,无需相位
             "__start__": "LangGraph 虚拟起点,不产生节点事件",
             "__end__": "LangGraph 虚拟终点,不产生节点事件",
         }
         node_sets: list[tuple[str, set[str]]] = [
-            (
-                "full",
-                set(graph_module.build_review_graph(enable_summary=True).get_graph().nodes),
-            ),
+            ("full", set(graph_module.build_review_graph().get_graph().nodes)),
             (
                 "discovery_only",
-                set(graph_module.build_review_graph(discovery_only=True).get_graph().nodes),
-            ),
-            (
-                "reviewer_subgraph",
-                set(graph_module.build_reviewer_subgraph(
-                    graph_module.DEFAULT_REVIEWERS[0],
-                ).get_graph().nodes),
+                set(
+                    graph_module.build_review_graph(discovery_only=True)
+                    .get_graph()
+                    .nodes
+                ),
             ),
         ]
         for label, nodes in node_sets:
@@ -2176,20 +1937,12 @@ class TestPhaseMapping:
                 if name not in _NODE_PHASE_MAP and name not in unmapped_allowlist
             }
             assert unmapped == set(), (
-                f"{label} 图存在未映射相位的节点 {sorted(unmapped)}:"
-                "请在 _NODE_PHASE_MAP 补充映射或加入白名单并注明理由"
+                f"{label} 图存在未映射相位的节点 {sorted(unmapped)}:请在 _NODE_PHASE_MAP 补充映射或加入白名单并注明理由"
             )
 
 
 def _chain_event(
-    event_type,
-    *,
-    name,
-    run_id,
-    parent_ids,
-    node_name,
-    data,
-    checkpoint_ns="",
+    event_type, *, name, run_id, parent_ids, node_name, data, checkpoint_ns=""
 ):
     return {
         "event": event_type,
@@ -2211,74 +1964,78 @@ class TestCollectorLineage:
         root = "graph-root"
         for name in (
             "discover_threat_model",
-            "discover_behavior",
+            "controlled_review",
             "discover_maintainability",
         ):
-            collector._handle_event(_chain_event(
-                "on_chain_start",
-                name=name,
-                run_id=f"run-{name}",
-                parent_ids=[root],
-                node_name=name,
-                data={"input": {"diff_text": "full diff"}},
-            ))
-            collector._handle_event(_chain_event(
-                "on_chain_start",
-                name="LangGraph",
-                run_id=f"wrapper-{name}",
-                parent_ids=[root, f"run-{name}"],
-                node_name=name,
-                data={"input": {"diff_text": "full diff"}},
-            ))
-
+            collector._handle_event(
+                _chain_event(
+                    "on_chain_start",
+                    name=name,
+                    run_id=f"run-{name}",
+                    parent_ids=[root],
+                    node_name=name,
+                    data={"input": {"diff_text": "full diff"}},
+                )
+            )
+            collector._handle_event(
+                _chain_event(
+                    "on_chain_start",
+                    name="LangGraph",
+                    run_id=f"wrapper-{name}",
+                    parent_ids=[root, f"run-{name}"],
+                    node_name=name,
+                    data={"input": {"diff_text": "full diff"}},
+                )
+            )
         starts = [
             event
             for event in collector.finalize().events
             if event.event_type == "node_start"
         ]
-
         assert len(starts) == 3
         assert {event.depth for event in starts} == {0}
         assert {event.node_path for event in starts} == {
             "discover_threat_model",
-            "discover_behavior",
+            "controlled_review",
             "discover_maintainability",
         }
 
     def test_same_named_subgraph_nodes_keep_distinct_reviewer_paths(self):
         collector = _TraceCollector("trace-run")
         root = "graph-root"
-        for reviewer in ("discover_threat_model", "discover_behavior"):
+        for reviewer in ("discover_threat_model", "controlled_review"):
             reviewer_run = f"run-{reviewer}"
-            collector._handle_event(_chain_event(
-                "on_chain_start",
-                name=reviewer,
-                run_id=reviewer_run,
-                parent_ids=[root],
-                node_name=reviewer,
-                data={"input": {}},
-            ))
-            collector._handle_event(_chain_event(
-                "on_chain_start",
-                name="prepare",
-                run_id=f"prepare-{reviewer}",
-                parent_ids=[root, reviewer_run, f"wrapper-{reviewer}"],
-                node_name="prepare",
-                checkpoint_ns=f"{reviewer}:uuid|prepare:uuid",
-                data={"input": {"diff_text": reviewer}},
-            ))
-
+            collector._handle_event(
+                _chain_event(
+                    "on_chain_start",
+                    name=reviewer,
+                    run_id=reviewer_run,
+                    parent_ids=[root],
+                    node_name=reviewer,
+                    data={"input": {}},
+                )
+            )
+            collector._handle_event(
+                _chain_event(
+                    "on_chain_start",
+                    name="prepare",
+                    run_id=f"prepare-{reviewer}",
+                    parent_ids=[root, reviewer_run, f"wrapper-{reviewer}"],
+                    node_name="prepare",
+                    checkpoint_ns=f"{reviewer}:uuid|prepare:uuid",
+                    data={"input": {"diff_text": reviewer}},
+                )
+            )
         prepares = [
             event
             for event in collector.finalize().events
             if event.event_type == "node_start" and event.node_name == "prepare"
         ]
-
         assert len(prepares) == 2
         assert {event.depth for event in prepares} == {1}
         assert {event.node_path for event in prepares} == {
             "discover_threat_model/prepare",
-            "discover_behavior/prepare",
+            "controlled_review/prepare",
         }
         assert len({event.invocation_id for event in prepares}) == 2
 
@@ -2291,10 +2048,7 @@ class TestCollectorLineage:
             parent_ids=["graph-root"],
             node_name="symbol_resolution",
             data={
-                "input": {
-                    "diff_text": "actual diff",
-                    "enabled_tools": ["get_file_content"],
-                }
+                "input": {"diff_text": "actual diff", "enabled_tools": ["read_symbol"]}
             },
         )
         end = _chain_event(
@@ -2307,70 +2061,60 @@ class TestCollectorLineage:
                 "input": start["data"]["input"],
                 "output": {
                     "task_symbol_contexts": {
-                        "task-1": {"symbols": [{"symbol_id": "java:A#m()"}]},
+                        "task-1": {"symbols": [{"symbol_id": "java:A#m()"}]}
                     }
                 },
             },
         )
-
         collector._handle_event(start)
         collector._handle_event(end)
         events = collector.finalize().events
-
         assert events[0].detail["input"]["diff_text"] == "actual diff"
         assert (
-            events[1].detail["output"]["task_symbol_contexts"]["task-1"]
-            ["symbols"][0]["symbol_id"]
+            events[1].detail["output"]["task_symbol_contexts"]["task-1"]["symbols"][0][
+                "symbol_id"
+            ]
             == "java:A#m()"
         )
 
     def test_llm_and_tool_events_attach_to_nearest_node_and_keep_full_data(self):
         collector = _TraceCollector("trace-run")
-        collector._handle_event(_chain_event(
-            "on_chain_start",
-            name="review",
-            run_id="review-run",
-            parent_ids=["root", "discover-run", "subgraph-root"],
-            node_name="review",
-            checkpoint_ns="discover_threat_model:uuid|review:uuid",
-            data={"input": {"user_prompt": "review me"}},
-        ))
-        collector._handle_event({
-            "event": "on_chat_model_start",
-            "name": "ChatOpenAI",
-            "run_id": "llm-run",
-            "parent_ids": [
-                "root",
-                "discover-run",
-                "subgraph-root",
-                "review-run",
-            ],
-            "metadata": {"ls_model_name": "deepseek-v4-pro"},
-            "data": {"input": [("human", "prompt" * 1000)]},
-        })
-        collector._handle_event({
-            "event": "on_tool_start",
-            "name": "get_file_content",
-            "run_id": "tool-run",
-            "parent_ids": [
-                "root",
-                "discover-run",
-                "subgraph-root",
-                "review-run",
-            ],
-            "metadata": {},
-            "data": {
-                "input": {
-            "symbol_id": "java:Foo#run()",
-                    "content": "x" * 5000,
-                }
-            },
-        })
-
+        collector._handle_event(
+            _chain_event(
+                "on_chain_start",
+                name="review",
+                run_id="review-run",
+                parent_ids=["root", "discover-run", "subgraph-root"],
+                node_name="review",
+                checkpoint_ns="discover_threat_model:uuid|review:uuid",
+                data={"input": {"user_prompt": "review me"}},
+            )
+        )
+        collector._handle_event(
+            {
+                "event": "on_chat_model_start",
+                "name": "ChatOpenAI",
+                "run_id": "llm-run",
+                "parent_ids": ["root", "discover-run", "subgraph-root", "review-run"],
+                "metadata": {"ls_model_name": "deepseek-v4-pro"},
+                "data": {"input": [("human", "prompt" * 1000)]},
+            }
+        )
+        collector._handle_event(
+            {
+                "event": "on_tool_start",
+                "name": "read_symbol",
+                "run_id": "tool-run",
+                "parent_ids": ["root", "discover-run", "subgraph-root", "review-run"],
+                "metadata": {},
+                "data": {
+                    "input": {"symbol_id": "java:Foo#run()", "content": "x" * 5000}
+                },
+            }
+        )
         events = collector.finalize().events
-        llm = next(event for event in events if event.event_type == "llm_start")
-        tool = next(event for event in events if event.event_type == "tool_start")
-
+        llm = next((event for event in events if event.event_type == "llm_start"))
+        tool = next((event for event in events if event.event_type == "tool_start"))
         assert llm.node_path == "discover_threat_model/review"
         assert llm.detail["messages"][0]["content"] == "prompt" * 1000
         assert tool.node_path == "discover_threat_model/review"
@@ -2378,156 +2122,147 @@ class TestCollectorLineage:
 
     def test_tool_errors_are_collected_as_visible_outputs(self):
         collector = _TraceCollector("trace-run")
-        collector._handle_event(_chain_event(
-            "on_chain_start",
-            name="review",
-            run_id="review-run",
-            parent_ids=["root", "discover-run", "subgraph-root"],
-            node_name="review",
-            checkpoint_ns="discover_behavior:uuid|review:uuid",
-            data={"input": {"user_prompt": "review me"}},
-        ))
-        collector._handle_event({
-            "event": "on_tool_error",
-            "name": "inspect_structure",
-            "run_id": "tool-run",
-            "parent_ids": ["root", "review-run"],
-            "metadata": {},
-            "data": {"error": RuntimeError("gateway unavailable")},
-        })
-
-        error = next(
-            event
-            for event in collector.finalize().events
-            if event.event_type == "tool_error"
+        collector._handle_event(
+            _chain_event(
+                "on_chain_start",
+                name="review",
+                run_id="review-run",
+                parent_ids=["root", "discover-run", "subgraph-root"],
+                node_name="review",
+                checkpoint_ns="controlled_review:uuid|review:uuid",
+                data={"input": {"user_prompt": "review me"}},
+            )
         )
-
-        assert error.node_path == "discover_behavior/review"
+        collector._handle_event(
+            {
+                "event": "on_tool_error",
+                "name": "inspect_structure",
+                "run_id": "tool-run",
+                "parent_ids": ["root", "review-run"],
+                "metadata": {},
+                "data": {"error": RuntimeError("gateway unavailable")},
+            }
+        )
+        error = next(
+            (
+                event
+                for event in collector.finalize().events
+                if event.event_type == "tool_error"
+            )
+        )
+        assert error.node_path == "controlled_review/review"
         assert error.detail["output"]["type"] == "RuntimeError"
         assert error.detail["output"]["message"] == "gateway unavailable"
 
-    def test_all_reviewers_keep_multiple_tool_inputs_and_outputs_in_dashboard(
-        self,
-    ):
+    def test_all_reviewers_keep_multiple_tool_inputs_and_outputs_in_dashboard(self):
         collector = _TraceCollector("trace-run")
         reviewers = (
             "discover_threat_model",
-            "discover_behavior",
+            "controlled_review",
             "discover_maintainability",
         )
         for reviewer in reviewers:
             reviewer_run = f"{reviewer}-run"
             review_run = f"{reviewer}-review-run"
-            collector._handle_event(_chain_event(
-                "on_chain_start",
-                name=reviewer,
-                run_id=reviewer_run,
-                parent_ids=["root"],
-                node_name=reviewer,
-                data={"input": {}},
-            ))
-            collector._handle_event(_chain_event(
-                "on_chain_start",
-                name="review",
-                run_id=review_run,
-                parent_ids=["root", reviewer_run, "subgraph-root"],
-                node_name="review",
-                checkpoint_ns=f"{reviewer}:uuid|review:uuid",
-                data={"input": {"reviewer": reviewer}},
-            ))
-            for index, tool_name in enumerate(
-                ("get_file_content", "inspect_structure"),
-                start=1,
-            ):
+            collector._handle_event(
+                _chain_event(
+                    "on_chain_start",
+                    name=reviewer,
+                    run_id=reviewer_run,
+                    parent_ids=["root"],
+                    node_name=reviewer,
+                    data={"input": {}},
+                )
+            )
+            collector._handle_event(
+                _chain_event(
+                    "on_chain_start",
+                    name="review",
+                    run_id=review_run,
+                    parent_ids=["root", reviewer_run, "subgraph-root"],
+                    node_name="review",
+                    checkpoint_ns=f"{reviewer}:uuid|review:uuid",
+                    data={"input": {"reviewer": reviewer}},
+                )
+            )
+            for index, tool_name in enumerate(("read_symbol",), start=1):
                 tool_run = f"{reviewer}-tool-{index}"
-                collector._handle_event({
-                    "event": "on_tool_start",
-                    "name": tool_name,
-                    "run_id": tool_run,
-                    "parent_ids": ["root", reviewer_run, review_run],
-                    "metadata": {},
-                    "data": {
-                        "input": {
-                            "reviewer": reviewer,
-                            "call": index,
-                        }
-                    },
-                })
+                collector._handle_event(
+                    {
+                        "event": "on_tool_start",
+                        "name": tool_name,
+                        "run_id": tool_run,
+                        "parent_ids": ["root", reviewer_run, review_run],
+                        "metadata": {},
+                        "data": {"input": {"reviewer": reviewer, "call": index}},
+                    }
+                )
                 terminal_event = (
                     {
                         "event": "on_tool_end",
-                        "data": {
-                            "output": {
-                                "reviewer": reviewer,
-                                "result": index,
-                            }
-                        },
+                        "data": {"output": {"reviewer": reviewer, "result": index}},
                     }
                     if index == 1
                     else {
                         "event": "on_tool_error",
                         "data": {
-                            "error": RuntimeError(
-                                f"{reviewer} gateway unavailable"
-                            )
+                            "error": RuntimeError(f"{reviewer} gateway unavailable")
                         },
                     }
                 )
-                collector._handle_event({
-                    **terminal_event,
-                    "name": tool_name,
-                    "run_id": tool_run,
-                    "parent_ids": ["root", reviewer_run, review_run],
-                    "metadata": {},
-                })
-            collector._handle_event(_chain_event(
-                "on_chain_end",
-                name="review",
-                run_id=review_run,
-                parent_ids=["root", reviewer_run, "subgraph-root"],
-                node_name="review",
-                checkpoint_ns=f"{reviewer}:uuid|review:uuid",
-                data={"output": {}},
-            ))
-            collector._handle_event(_chain_event(
-                "on_chain_end",
-                name=reviewer,
-                run_id=reviewer_run,
-                parent_ids=["root"],
-                node_name=reviewer,
-                data={"output": {}},
-            ))
-
+                collector._handle_event(
+                    {
+                        **terminal_event,
+                        "name": tool_name,
+                        "run_id": tool_run,
+                        "parent_ids": ["root", reviewer_run, review_run],
+                        "metadata": {},
+                    }
+                )
+            collector._handle_event(
+                _chain_event(
+                    "on_chain_end",
+                    name="review",
+                    run_id=review_run,
+                    parent_ids=["root", reviewer_run, "subgraph-root"],
+                    node_name="review",
+                    checkpoint_ns=f"{reviewer}:uuid|review:uuid",
+                    data={"output": {}},
+                )
+            )
+            collector._handle_event(
+                _chain_event(
+                    "on_chain_end",
+                    name=reviewer,
+                    run_id=reviewer_run,
+                    parent_ids=["root"],
+                    node_name=reviewer,
+                    data={"output": {}},
+                )
+            )
         report = collector.finalize()
         payload = _extract_trace_payload(render_dashboard(report))
         view = payload["view"]
-        events_by_sequence = {
-            event["sequence"]: event for event in payload["events"]
-        }
-
+        events_by_sequence = {event["sequence"]: event for event in payload["events"]}
         for section in view["reviewer_sections"]:
             assert section["tool_call_count"] == 2
             tool_steps = [
-                view["steps"][step_id]
-                for step_id in section["tool_step_ids"]
+                view["steps"][step_id] for step_id in section["tool_step_ids"]
             ]
             assert [step["code_name"] for step in tool_steps] == [
-                "get_file_content",
+                "read_symbol",
                 "inspect_structure",
             ]
-            assert [step["status"] for step in tool_steps] == [
-                "complete",
-                "failed",
+            assert [step["status"] for step in tool_steps] == ["complete", "failed"]
+            first_input = events_by_sequence[tool_steps[0]["start_sequence"]]["detail"][
+                "input"
             ]
-            first_input = events_by_sequence[
-                tool_steps[0]["start_sequence"]
-            ]["detail"]["input"]
-            first_output = events_by_sequence[
-                tool_steps[0]["end_sequence"]
-            ]["detail"]["output"]
-            failed_output = events_by_sequence[
-                tool_steps[1]["end_sequence"]
-            ]["detail"]["output"]
+            first_output = events_by_sequence[tool_steps[0]["end_sequence"]]["detail"][
+                "output"
+            ]
+            failed_output = events_by_sequence[tool_steps[1]["end_sequence"]]["detail"][
+                "output"
+            ]
             assert first_input["call"] == 1
             assert first_output["result"] == 1
             assert failed_output["type"] == "RuntimeError"
@@ -2558,27 +2293,18 @@ class _FakeGraph:
             "parent_ids": [],
             "tags": ["graph:root"],
             "metadata": {},
-            "data": {
-                "output": {
-                    "final_issues": [],
-                    "review_summary": "done",
-                }
-            },
+            "data": {"output": {"final_issues": [], "review_summary": "done"}},
         }
 
     def invoke(self, initial_state, *, config):
         self.invoke_calls += 1
-        raise AssertionError(
-            "normal tracing must not invoke graph a second time"
-        )
+        raise AssertionError("normal tracing must not invoke graph a second time")
 
 
 def test_run_with_tracing_returns_root_output_without_second_execution():
     graph = _FakeGraph()
     collector = _TraceCollector("trace-run")
-
     result = collector.run_with_tracing(graph, {"diff_text": "diff"}, {})
-
     assert result["review_summary"] == "done"
     assert graph.stream_calls == 1
     assert graph.invoke_calls == 0
@@ -2586,9 +2312,7 @@ def test_run_with_tracing_returns_root_output_without_second_execution():
 
 class TestDashboard:
     def test_json_embedding_preserves_script_like_source(self):
-        dangerous = (
-            "</script><script>window.pwned=true</script>\u2028\u2029"
-        )
+        dangerous = "</script><script>window.pwned=true</script>\u2028\u2029"
         report = TraceReport(
             run_id="safe-json",
             timestamp="2026-07-09T00:00:00",
@@ -2605,17 +2329,12 @@ class TestDashboard:
                 )
             ],
         )
-
         html = render_dashboard(report)
         match = re.search(
-            (
-                r'<script id="trace-data" type="application/json">'
-                r"(.*?)</script>"
-            ),
+            '<script id="trace-data" type="application/json">(.*?)</script>',
             html,
             re.DOTALL,
         )
-
         assert match is not None
         payload = match.group(1)
         assert "</script><script>" not in payload
@@ -2624,7 +2343,6 @@ class TestDashboard:
 
     def test_template_renders_generic_node_and_raw_details(self):
         template = _dashboard_template()
-
         assert "节点输入" in template
         assert "节点输出" in template
         assert "原始 JSON" in template
@@ -2632,7 +2350,6 @@ class TestDashboard:
 
     def test_uses_narrative_layout_and_stable_step_identity(self):
         template = _dashboard_template()
-
         assert 'id="trace-outline"' in template
         assert 'id="trace-story"' in template
         assert 'id="trace-inspector"' in template
@@ -2643,7 +2360,6 @@ class TestDashboard:
 
     def test_reviewer_cards_render_tool_counts_inputs_and_outputs(self):
         template = _dashboard_template()
-
         assert "tool_call_count" in template
         assert "renderToolPayloads" in template
         assert "工具入参" in template
@@ -2652,7 +2368,6 @@ class TestDashboard:
 
     def test_trace_layout_shows_main_duration_and_collapses_reviewer_tools(self):
         template = _dashboard_template()
-
         assert "min-width:max-content" not in template
         assert "grid-template-columns:repeat(auto-fit" in template
         assert "main-duration" in template
@@ -2666,7 +2381,6 @@ class TestDashboard:
 
     def test_preserves_reading_position_for_local_updates(self):
         template = _dashboard_template()
-
         assert "captureReadingPosition" in template
         assert "restoreReadingPosition" in template
         assert "renderPreservingReadingPosition" in template
@@ -2677,7 +2391,6 @@ class TestDashboard:
 
     def test_json_details_render_as_collapsed_tree(self):
         template = _dashboard_template()
-
         assert "renderJsonTree" in template
         assert "renderJsonBranch" in template
         assert "json-tree" in template
@@ -2690,10 +2403,28 @@ class TestDashboard:
             run_id="test-dash",
             timestamp="2026-07-09T00:00:00",
             events=[
-                TraceEvent(sequence=1, timestamp_ms=10.0, event_type="node_start", node_name="summary", phase="outer_graph", depth=0, summary="start"),
-                TraceEvent(sequence=2, timestamp_ms=100.0, event_type="node_end", node_name="summary", phase="outer_graph", depth=0, summary="end"),
+                TraceEvent(
+                    sequence=1,
+                    timestamp_ms=10.0,
+                    event_type="node_start",
+                    node_name="summary",
+                    phase="outer_graph",
+                    depth=0,
+                    summary="start",
+                ),
+                TraceEvent(
+                    sequence=2,
+                    timestamp_ms=100.0,
+                    event_type="node_end",
+                    node_name="summary",
+                    phase="outer_graph",
+                    depth=0,
+                    summary="end",
+                ),
             ],
-            summary=TraceSummary(total_duration_ms=90.0, event_counts={"node_start": 1, "node_end": 1}),
+            summary=TraceSummary(
+                total_duration_ms=90.0, event_counts={"node_start": 1, "node_end": 1}
+            ),
         )
         html = render_dashboard(report)
         assert "__TRACE_DATA__" not in html
@@ -2709,9 +2440,7 @@ class TestDashboard:
             events=[],
             summary=TraceSummary(),
         )
-
         html = render_dashboard(report)
-
         assert "TRACE." not in html
         assert "DATA.payload_store" in html
 
@@ -2731,31 +2460,19 @@ class TestDashboard:
             assert "</html>" in content
 
     def test_render_dashboard_file_includes_timestamp(self, tmp_path):
-        report = TraceReport(
-            run_id="abc12345",
-            timestamp="2026-07-09T20:30:45",
-        )
-
-        path = render_dashboard_file(
-            report,
-            str(tmp_path),
-            report.run_id,
-        )
-
+        report = TraceReport(run_id="abc12345", timestamp="2026-07-09T20:30:45")
+        path = render_dashboard_file(report, str(tmp_path), report.run_id)
         assert path.name == "trace-20260709-203045-abc12345.html"
 
     def test_template_displays_report_timestamp(self):
         template = _dashboard_template()
-
         assert "生成时间" in template
         assert "DATA.timestamp" in template
 
 
 class TestCliTraceConfig:
     def test_review_uses_trace_setting_when_cli_flag_is_omitted(
-        self,
-        monkeypatch,
-        caplog,
+        self, monkeypatch, caplog
     ):
         from codeguard_agent import cli
         from codeguard_agent.config import Settings
@@ -2786,19 +2503,18 @@ class TestCliTraceConfig:
                 trace_enabled=False,
             ),
         )
-        monkeypatch.setattr(cli, "collect_diff", lambda repo, base: "diff --git a/Foo.java b/Foo.java\n+x\n")
+        monkeypatch.setattr(
+            cli,
+            "collect_diff",
+            lambda repo, base: "diff --git a/Foo.java b/Foo.java\n+x\n",
+        )
         monkeypatch.setattr(cli, "build_llm", lambda settings, temperature=None: None)
         monkeypatch.setattr(cli, "PipelineOrchestrator", FakeOrchestrator)
-
         assert cli.main(["review", "--repo", "."]) == 0
-
         assert observed["trace_enabled"] is False
         assert "coordinator → evidence_verifier → council_judge" in caplog.text
 
-    def test_review_trace_flag_overrides_environment_setting(
-        self,
-        monkeypatch,
-    ):
+    def test_review_trace_flag_overrides_environment_setting(self, monkeypatch):
         from codeguard_agent import cli
         from codeguard_agent.config import Settings
         from codeguard_agent.models.schemas import ReviewResult
@@ -2827,21 +2543,19 @@ class TestCliTraceConfig:
                 trace_enabled=False,
             ),
         )
-        monkeypatch.setattr(cli, "collect_diff", lambda repo, base: "diff --git a/Foo.java b/Foo.java\n+x\n")
+        monkeypatch.setattr(
+            cli,
+            "collect_diff",
+            lambda repo, base: "diff --git a/Foo.java b/Foo.java\n+x\n",
+        )
         monkeypatch.setattr(cli, "build_llm", lambda settings, temperature=None: None)
         monkeypatch.setattr(cli, "PipelineOrchestrator", FakeOrchestrator)
-
         assert cli.main(["review", "--repo", ".", "--trace"]) == 0
-
         assert observed["trace_enabled"] is True
 
 
 class TestEndToEnd:
-    def test_orchestrator_passes_trace_max_llm_content(
-        self,
-        monkeypatch,
-        tmp_path,
-    ):
+    def test_orchestrator_passes_trace_max_llm_content(self, monkeypatch, tmp_path):
         from codeguard_agent.pipeline.orchestration.orchestrator import (
             PipelineOrchestrator,
         )
@@ -2849,11 +2563,7 @@ class TestEndToEnd:
         observed = {}
 
         class FakeCollector:
-            def __init__(
-                self,
-                run_id,
-                max_llm_content=0,
-            ):
+            def __init__(self, run_id, max_llm_content=0):
                 observed["max_llm_content"] = max_llm_content
 
             def run_with_tracing(self, graph, initial, config):
@@ -2863,25 +2573,19 @@ class TestEndToEnd:
                 return TraceReport(run_id="fake", timestamp="now")
 
         monkeypatch.setattr(
-            "codeguard_agent.observability.collector._TraceCollector",
-            FakeCollector,
+            "codeguard_agent.observability.collector._TraceCollector", FakeCollector
         )
         monkeypatch.setattr(
-            (
-                "codeguard_agent.observability.dashboard."
-                "render_dashboard_file"
-            ),
+            "codeguard_agent.observability.dashboard.render_dashboard_file",
             lambda *args, **kwargs: tmp_path / "trace.html",
         )
-
-        PipelineOrchestrator(enable_summary=False).run(
+        PipelineOrchestrator().run(
             None,
             "diff --git a/Foo.java b/Foo.java\n-old\n+new\n",
             trace_enabled=True,
             trace_dir=str(tmp_path),
             trace_max_llm_content=1234,
         )
-
         assert observed["max_llm_content"] == 1234
 
     def test_mock_review_with_trace(self):
@@ -2891,22 +2595,27 @@ class TestEndToEnd:
         """
         from codeguard_agent.config import Settings
         from codeguard_agent.llm.client import build_llm
-        from codeguard_agent.pipeline.orchestration.orchestrator import PipelineOrchestrator
+        from codeguard_agent.pipeline.orchestration.orchestrator import (
+            PipelineOrchestrator,
+        )
 
         settings = Settings(
-            provider="mock", model="", api_key="", api_base_url="",
-            max_retries=1, structured_method="function_calling", disable_thinking=False,
+            provider="mock",
+            model="",
+            api_key="",
+            api_base_url="",
+            max_retries=1,
+            structured_method="function_calling",
+            disable_thinking=False,
         )
         llm = build_llm(settings)
-        diff_text = "diff --git a/Foo.java b/Foo.java\n@@ -10,6 +10,8 @@\n+    String password = \"hardcoded123\";\n+    Statement stmt = conn.createStatement();\n"
-
+        diff_text = 'diff --git a/Foo.java b/Foo.java\n@@ -10,6 +10,8 @@\n+    String password = "hardcoded123";\n+    Statement stmt = conn.createStatement();\n'
         with tempfile.TemporaryDirectory() as d:
-            orch = PipelineOrchestrator(enable_summary=False)
+            orch = PipelineOrchestrator()
             r_no_trace = orch.run(llm, diff_text, trace_enabled=False)
             r_trace = orch.run(llm, diff_text, trace_enabled=True, trace_dir=d)
             assert r_no_trace.summary == r_trace.summary
             assert len(r_no_trace.issues) == len(r_trace.issues)
-
             html_files = list(Path(d).glob("trace-*.html"))
             assert len(html_files) == 1
             content = html_files[0].read_text(encoding="utf-8")
@@ -2914,12 +2623,8 @@ class TestEndToEnd:
             assert '"events":' in content
             assert '"node_start"' in content
             assert "</html>" in content
-
             match = re.search(
-                (
-                    r'<script id="trace-data" type="application/json">'
-                    r"(.*?)</script>"
-                ),
+                '<script id="trace-data" type="application/json">(.*?)</script>',
                 content,
                 re.DOTALL,
             )
@@ -2927,23 +2632,20 @@ class TestEndToEnd:
             report_data = json.loads(match.group(1))
             assert report_data["events"]
             assert report_data["view"]["main_stages"]
-            assert len(report_data["view"]["reviewer_sections"]) == 3
+            assert report_data["view"]["reviewer_sections"] == []
+            assert len(report_data["view"]["controlled_sections"]) == 1
             assert "integrity" in report_data["view"]
             assert 'id="trace-story"' in content
             assert "_prototype_trace_flow" not in content
             assert any(
-                event["event_type"] == "node_start"
-                and "input" in event["detail"]
-                for event in report_data["events"]
+                (
+                    event["event_type"] == "node_start" and "input" in event["detail"]
+                    for event in report_data["events"]
+                )
             )
-            assert all(
-                event["depth"] >= 0
-                for event in report_data["events"]
-            )
+            assert all((event["depth"] >= 0 for event in report_data["events"]))
             invocation_ids = {
                 item["invocation_id"]
                 for item in report_data["summary"]["node_timeline"]
             }
-            assert len(invocation_ids) == len(
-                report_data["summary"]["node_timeline"]
-            )
+            assert len(invocation_ids) == len(report_data["summary"]["node_timeline"])

@@ -57,15 +57,18 @@ class ReviewTask(BaseModel):
     @property
     def resolution_lines(self) -> list[int]:
         """返回可用于当前 revision 符号解析的行，不改变 changed_lines 语义。"""
-        return list(dict.fromkeys([
-            *self.changed_lines,
-            *(anchor.anchor_line for anchor in self.deletion_anchors),
-        ]))
+        return list(
+            dict.fromkeys(
+                [
+                    *self.changed_lines,
+                    *(anchor.anchor_line for anchor in self.deletion_anchors),
+                ]
+            )
+        )
 
 
 class ReviewMode(str, Enum):
-    SMALL = "small"
-    MEDIUM = "medium"
+    NORMAL = "normal"
     LARGE = "large"
 
 
@@ -76,11 +79,8 @@ class DiffMetrics(BaseModel):
 
 
 class ReviewRouteThresholds(BaseModel):
-    small_max_files: StrictInt = Field(default=3, ge=0)
-    small_max_hunks: StrictInt = Field(default=5, ge=0)
-    small_max_diff_chars: StrictInt = Field(default=8000, ge=0)
-    medium_max_files: StrictInt = Field(default=15, ge=0)
-    medium_max_diff_chars: StrictInt = Field(default=60000, ge=0)
+    normal_max_files: StrictInt = Field(default=15, ge=0)
+    normal_max_diff_chars: StrictInt = Field(default=60000, ge=0)
 
 
 class ReviewRoute(BaseModel):
@@ -101,11 +101,8 @@ class ReviewBudget(BaseModel):
     max_tasks_to_review: StrictInt | None = Field(default=100, gt=0)
     max_tasks_per_file: StrictInt | None = Field(default=10, gt=0)
     max_context_chars_per_task: StrictInt | None = Field(default=4000, gt=0)
-    small_max_files: StrictInt = Field(default=3, ge=0)
-    small_max_hunks: StrictInt = Field(default=5, ge=0)
-    small_max_diff_chars: StrictInt = Field(default=8000, ge=0)
-    medium_max_files: StrictInt = Field(default=15, ge=0)
-    medium_max_diff_chars: StrictInt = Field(default=60000, ge=0)
+    normal_max_files: StrictInt = Field(default=15, ge=0)
+    normal_max_diff_chars: StrictInt = Field(default=60000, ge=0)
 
 
 class SkippedTask(BaseModel):

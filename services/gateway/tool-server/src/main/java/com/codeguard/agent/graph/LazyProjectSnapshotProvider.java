@@ -87,7 +87,7 @@ final class LazyProjectSnapshotProvider implements ProjectSnapshotProvider, Sour
 
     /**
      * 源码读取的快速路径：只定位并解析 symbol 所在文件，不等待全项目轻量索引。
-     * 失败时返回带诊断的空快照，由 GetFileContentTool 按原有 symbol_not_found 合同处理。
+     * 失败时返回带诊断的空快照，由 SymbolSourceReader 按原有 symbol_not_found 合同处理。
      */
     @Override
     public ProjectSnapshot loadSource(String input) throws Exception {
@@ -110,7 +110,7 @@ final class LazyProjectSnapshotProvider implements ProjectSnapshotProvider, Sour
             // ordinary java:* symbols stay on the source-only fast path.
             if (source.sources().isEmpty()
                     && !SourceSnapshotBuilder.symbolId(input).startsWith("java:")) {
-                return load("get_file_content", input);
+                return load("read_symbol", input);
             }
             return source;
         } catch (TimeoutException exception) {

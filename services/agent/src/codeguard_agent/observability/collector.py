@@ -24,19 +24,13 @@ from codeguard_agent.observability.serialization import (
 logger = logging.getLogger("codeguard.observability")
 
 _NODE_PHASE_MAP: dict[str, str] = {
-    "summary": "outer_graph",
     "classify_mode": "task_routing",
     "file_task_builder": "task_routing",
     "diff_task_builder": "task_routing",
     "task_route": "task_routing",
     "direct_task_review": "task_routing",
     "task_selection": "task_routing",
-    "plan": "task_routing",
-    "review_plan": "task_routing",
     "symbol_resolution": "outer_graph",
-    "discover_threat_model": "reviewer_subgraph",
-    "discover_behavior": "reviewer_subgraph",
-    "discover_maintainability": "reviewer_subgraph",
     "controlled_review": "reviewer_subgraph",
     "discovery_collector": "outer_graph",
     "council_coordinator": "outer_graph",
@@ -92,9 +86,7 @@ class _TraceCollector:
         config: dict,
     ) -> dict:
         """同步执行异步事件流并返回图最终 State。"""
-        return asyncio.run(
-            self._collect_and_return(graph, initial_state, config)
-        )
+        return asyncio.run(self._collect_and_return(graph, initial_state, config))
 
     def finalize(self) -> TraceReport:
         """按节点实例聚合时间线、调用次数和 token。"""
@@ -104,9 +96,7 @@ class _TraceCollector:
             key=lambda item: item.start_ms,
         ):
             end_ms = (
-                node_run.end_ms
-                if node_run.end_ms is not None
-                else node_run.start_ms
+                node_run.end_ms if node_run.end_ms is not None else node_run.start_ms
             )
             tokens = self._tokens_by_run.get(
                 node_run.run_id,
@@ -114,25 +104,25 @@ class _TraceCollector:
                     node_name=node_run.node_path or node_run.node_name,
                 ),
             )
-            node_timeline.append(NodeStats(
-                node_name=node_run.node_name,
-                start_ms=node_run.start_ms,
-                end_ms=end_ms,
-                duration_ms=end_ms - node_run.start_ms,
-                tool_calls=self._tool_counts.get(node_run.run_id, 0),
-                tokens=tokens,
-                run_id=node_run.run_id,
-                parent_run_id=node_run.parent_run_id,
-                node_path=node_run.node_path,
-                depth=node_run.depth,
-                invocation_id=node_run.run_id,
-            ))
+            node_timeline.append(
+                NodeStats(
+                    node_name=node_run.node_name,
+                    start_ms=node_run.start_ms,
+                    end_ms=end_ms,
+                    duration_ms=end_ms - node_run.start_ms,
+                    tool_calls=self._tool_counts.get(node_run.run_id, 0),
+                    tokens=tokens,
+                    run_id=node_run.run_id,
+                    parent_run_id=node_run.parent_run_id,
+                    node_path=node_run.node_path,
+                    depth=node_run.depth,
+                    invocation_id=node_run.run_id,
+                )
+            )
 
         event_counts: dict[str, int] = {}
         for event in self._events:
-            event_counts[event.event_type] = (
-                event_counts.get(event.event_type, 0) + 1
-            )
+            event_counts[event.event_type] = event_counts.get(event.event_type, 0) + 1
 
         total_tokens = TokenUsage(node_name="total")
         for usage in self._tokens_by_path.values():
@@ -182,8 +172,7 @@ class _TraceCollector:
 
             if (
                 event.get("event") == "on_chain_end"
-                and _event_id(event.get("run_id"))
-                == self._root_graph_run_id
+                and _event_id(event.get("run_id")) == self._root_graph_run_id
             ):
                 output = (event.get("data") or {}).get("output")
                 if isinstance(output, dict):
@@ -197,10 +186,7 @@ class _TraceCollector:
         event_type = event.get("event", "")
         if event_type == "on_chain_start" and self._is_real_node_event(event):
             self._on_node_start(event)
-        elif (
-            event_type == "on_chain_end"
-            and self._is_real_node_event(event)
-        ):
+        elif event_type == "on_chain_end" and self._is_real_node_event(event):
             self._on_node_end(event)
         elif event_type == "on_chat_model_start":
             self._on_llm_start(event)
@@ -244,11 +230,7 @@ class _TraceCollector:
         self._node_runs[run_id] = node_run
 
         input_value = serialize_trace_value(data.get("input"))
-        input_keys = (
-            list(input_value.keys())
-            if isinstance(input_value, dict)
-            else []
-        )
+        input_keys = list(input_value.keys()) if isinstance(input_value, dict) else []
         self._add_event(
             event_type="node_start",
             node_name=node_name,
@@ -291,9 +273,7 @@ class _TraceCollector:
         input_value = serialize_trace_value(data.get("input"))
         output_value = serialize_trace_value(data.get("output"))
         output_keys = (
-            list(output_value.keys())
-            if isinstance(output_value, dict)
-            else []
+            list(output_value.keys()) if isinstance(output_value, dict) else []
         )
         self._add_event(
             event_type="node_end",
@@ -338,9 +318,7 @@ class _TraceCollector:
         node_path = owner.node_path if owner is not None else "unknown"
         self._llm_counts[owner_id] = self._llm_counts.get(owner_id, 0) + 1
         call_number = self._llm_counts[owner_id]
-        model_name = str(
-            metadata.get("ls_model_name") or event.get("name") or ""
-        )
+        model_name = str(metadata.get("ls_model_name") or event.get("name") or "")
         self._add_event(
             event_type="llm_start",
             node_name=node_name,
@@ -368,9 +346,7 @@ class _TraceCollector:
         owner_id = owner.run_id if owner is not None else ""
         node_name = owner.node_name if owner is not None else "unknown"
         node_path = owner.node_path if owner is not None else "unknown"
-        model_name = str(
-            metadata.get("ls_model_name") or event.get("name") or ""
-        )
+        model_name = str(metadata.get("ls_model_name") or event.get("name") or "")
         usage = _token_usage_from(
             output,
             model_name=model_name,
@@ -406,9 +382,7 @@ class _TraceCollector:
         owner_id = owner.run_id if owner is not None else ""
         node_name = owner.node_name if owner is not None else "unknown"
         node_path = owner.node_path if owner is not None else "unknown"
-        self._tool_counts[owner_id] = (
-            self._tool_counts.get(owner_id, 0) + 1
-        )
+        self._tool_counts[owner_id] = self._tool_counts.get(owner_id, 0) + 1
         tool_name = str(event.get("name") or "")
         self._add_event(
             event_type="tool_start",
@@ -534,22 +508,24 @@ class _TraceCollector:
     ) -> None:
         self._seq += 1
         parent_ids = _parent_ids(raw_event)
-        self._events.append(TraceEvent(
-            sequence=self._seq,
-            timestamp_ms=self._elapsed_ms(),
-            event_type=event_type,
-            node_name=node_name,
-            phase=phase,
-            depth=depth,
-            summary=summary,
-            detail=detail,
-            tokens=tokens,
-            run_id=_event_id(raw_event.get("run_id")),
-            parent_ids=parent_ids,
-            parent_run_id=parent_ids[-1] if parent_ids else "",
-            node_path=node_path,
-            invocation_id=invocation_id,
-        ))
+        self._events.append(
+            TraceEvent(
+                sequence=self._seq,
+                timestamp_ms=self._elapsed_ms(),
+                event_type=event_type,
+                node_name=node_name,
+                phase=phase,
+                depth=depth,
+                summary=summary,
+                detail=detail,
+                tokens=tokens,
+                run_id=_event_id(raw_event.get("run_id")),
+                parent_ids=parent_ids,
+                parent_run_id=parent_ids[-1] if parent_ids else "",
+                node_path=node_path,
+                invocation_id=invocation_id,
+            )
+        )
 
     def _elapsed_ms(self) -> float:
         return (time.time() - self._start) * 1000
@@ -569,13 +545,13 @@ def _checkpoint_node_path(
 ) -> str:
     """父 run 缺失时从 LangGraph checkpoint namespace 恢复审查员路径。"""
     namespace = str(metadata.get("langgraph_checkpoint_ns") or "")
-    names = [
-        segment.split(":", 1)[0]
-        for segment in namespace.split("|")
-        if segment
-    ]
+    names = [segment.split(":", 1)[0] for segment in namespace.split("|") if segment]
     reviewer = next(
-        (name for name in names if name.startswith("discover_")),
+        (
+            name
+            for name in names
+            if name == "controlled_review" or name.startswith("discover_")
+        ),
         "",
     )
     if reviewer and reviewer != node_name:

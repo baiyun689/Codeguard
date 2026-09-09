@@ -18,3 +18,33 @@ def test_deepseek_uses_thinking_disabled_object():
 
 def test_empty_base_url_defaults_to_deepseek_format():
     assert _disable_thinking_body("") == {"thinking": {"type": "disabled"}}
+
+
+def test_provider_has_explicit_timeout_without_nested_sdk_retries(monkeypatch):
+    import langchain_openai
+    from codeguard_agent.config import Settings
+    from codeguard_agent.llm.client import build_llm
+
+    monkeypatch.setattr(langchain_openai, "ChatOpenAI", lambda **kwargs: kwargs)
+    options = build_llm(Settings(
+        provider="openai", model="test", api_key="test", api_base_url="",
+        max_retries=3, structured_method="function_calling", disable_thinking=False,
+        llm_timeout_seconds=17,
+    ))
+    assert options["timeout"] == 17
+    assert options["max_retries"] == 0
+    assert options["disable_streaming"] is True
+
+
+def test_single_attempt_does_not_sleep_after_failure(monkeypatch):
+    import pytest
+    from types import SimpleNamespace
+    from codeguard_agent.llm import client
+
+    sleeps = []
+    monkeypatch.setattr(client.time, "sleep", sleeps.append)
+    def fail(_messages):
+        raise TimeoutError("request timed out")
+    with pytest.raises(RuntimeError):
+        client.invoke_with_retry(SimpleNamespace(invoke=fail), [], max_retries=1)
+    assert sleeps == []

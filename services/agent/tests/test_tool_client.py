@@ -4,10 +4,8 @@
 """
 
 from __future__ import annotations
-
 import json
 import httpx
-
 from codeguard_agent.tools.tool_client import (
     ToolClient,
     ToolResponse,
@@ -18,35 +16,33 @@ from codeguard_agent.tools.tool_client import (
 
 def _mock_client(handler) -> ToolClient:
     client = ToolClient("http://toolserver", "sess-1", token="test-token")
-    # 替换内部 httpx.Client 为带 MockTransport 的实例(绕过真实网络)。
-    client._client = httpx.Client(transport=httpx.MockTransport(handler))  # noqa: SLF001
+    client._client = httpx.Client(transport=httpx.MockTransport(handler))
     return client
 
 
 def test_成功信封_映射为_result():
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["X-Session-Id"] == "sess-1"
         assert request.headers["X-Codeguard-Tool-Token"] == "test-token"
-        assert request.url.path == "/api/v1/tools/get_file_content"
+        assert request.url.path == "/api/v1/tools/read_symbol"
         assert json.loads(json.loads(request.content)["query"]) == {
             "symbol_id": "java:demo.Service#run()"
         }
         return httpx.Response(200, json={"success": True, "result": "文件内容"})
 
-    resp = _mock_client(handler).get_file_content("java:demo.Service#run()")
+    resp = _mock_client(handler).read_symbol("java:demo.Service#run()")
     assert resp.success is True
     assert resp.result == "文件内容"
     assert resp.as_tool_output() == "文件内容"
 
 
 def test_resolve_change_context_发送结构化变更():
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/tools/resolve_change_context"
         query = json.loads(json.loads(request.content)["query"])
-        assert query["changes"][0] == {
-            "file": "src/A.java",
-            "lines": [3, 4],
-        }
+        assert query["changes"][0] == {"file": "src/A.java", "lines": [3, 4]}
         return httpx.Response(200, json={"success": True, "result": "{}"})
 
     response = _mock_client(handler).resolve_change_context(
@@ -55,109 +51,32 @@ def test_resolve_change_context_发送结构化变更():
     assert response.success is True
 
 
-def test_inspect_change_impact_使用稳定符号():
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v1/tools/inspect_change_impact"
-        assert json.loads(request.content)["query"] == "java:demo.Service#run()"
-        return httpx.Response(200, json={"success": True, "result": "{}"})
-
-    response = _mock_client(handler).inspect_change_impact(
-        "java:demo.Service#run()"
-    )
-    assert response.success is True
-
-
-def test_inspect_path_发送结构化_kind和深度():
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v1/tools/inspect_path"
-        query = json.loads(json.loads(request.content)["query"])
-        assert query == {
-            "symbol_id": "java:demo.Service#run()",
-            "path_kind": "behavior",
-            "max_depth": 2,
-        }
-        return httpx.Response(200, json={"success": True, "result": "{}"})
-
-    response = _mock_client(handler).inspect_path(
-        "java:demo.Service#run()", "behavior", 2
-    )
-    assert response.success is True
-
-
-def test_增量图查询发送_limit和cursor():
-    def handler(request: httpx.Request) -> httpx.Response:
-        query = json.loads(json.loads(request.content)["query"])
-        assert query == {
-            "symbol_id": "java:demo.Service#run()",
-            "path_kind": "behavior",
-            "max_depth": 2,
-            "limit": 10,
-            "cursor": "10",
-        }
-        return httpx.Response(200, json={"success": True, "result": "{}"})
-
-    response = _mock_client(handler).inspect_path(
-        "java:demo.Service#run()", "behavior", 2, limit=10, cursor="10"
-    )
-    assert response.success is True
-
-
-def test_影响面可选深度和续取保持旧纯字符串兼容():
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert json.loads(json.loads(request.content)["query"]) == {
-            "symbol_id": "java:demo.Service#run()",
-            "max_depth": 1,
-            "limit": 5,
-            "cursor": 0,
-        }
-        return httpx.Response(200, json={"success": True, "result": "{}"})
-
-    response = _mock_client(handler).inspect_change_impact(
-        "java:demo.Service#run()", max_depth=1, limit=5, cursor=0
-    )
-    assert response.success is True
-
-
-def test_graph_tool_发送前还原_html实体编码的_symbol_id():
-    def handler(request: httpx.Request) -> httpx.Response:
-        query = json.loads(json.loads(request.content)["query"])
-        assert query["symbol_id"] == "java:demo.Retry#run(java.util.List<T>)"
-        return httpx.Response(200, json={"success": True, "result": "{}"})
-
-    response = _mock_client(handler).inspect_path(
-        "java:demo.Retry#run(java.util.List&lt;T&gt;)", "behavior"
-    )
-    assert response.success is True
-
-
-def test_inspect_path_非法_kind在客户端_fail_closed():
-    client = _mock_client(lambda _request: httpx.Response(500))
-    response = client.inspect_path("java:demo.Service#run()", "other")
-    assert response.success is False
-    assert response.error == "invalid_path_kind"
-
-
 def test_失败信封_映射为_error_并加前缀():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"success": False, "error": "文件不在审查范围内"})
 
-    resp = _mock_client(handler).get_file_content("java:Other#run()")
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"success": False, "error": "文件不在审查范围内"}
+        )
+
+    resp = _mock_client(handler).read_symbol("java:Other#run()")
     assert resp.success is False
     assert resp.as_tool_output() == "Error: 文件不在审查范围内"
 
 
 def test_网络异常_收敛为失败信封_不抛出():
+
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused")
 
-    resp = _mock_client(handler).get_file_content("java:App#run()")
+    resp = _mock_client(handler).read_symbol("java:App#run()")
     assert resp.success is False
     assert resp.as_tool_output().startswith("Error:")
 
 
 def test_创建会话失败_抛出_runtimeerror(monkeypatch):
+
     class _FakeResp:
-        def raise_for_status(self):  # noqa: D401
+        def raise_for_status(self):
             return None
 
         def json(self):
@@ -191,14 +110,14 @@ def test_销毁会话_即使删除失败也关闭本地连接():
         raise httpx.ConnectError("server gone")
 
     client = _mock_client(handler)
-    orig_close = client._client.close  # noqa: SLF001
+    orig_close = client._client.close
 
     def _close():
         closed["v"] = True
         orig_close()
 
-    client._client.close = _close  # noqa: SLF001
-    destroy_tool_session(client)  # 不应抛出
+    client._client.close = _close
+    destroy_tool_session(client)
     assert closed["v"] is True
 
 

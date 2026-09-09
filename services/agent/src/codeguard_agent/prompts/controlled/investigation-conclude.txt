@@ -1,0 +1,8 @@
+# 结论阶段
+
+取证已经关闭，这是原对话中唯一预留的结论机会。
+
+- 使用 LlmInvestigationDecision，queries 必须为空数组，result 提交 InvestigationResult。
+- 纳入最后一次工具返回的事实；有充分支持的候选则保留，并在 limitations 中记录剩余缺口。
+- 没有可提交候选且仍缺决定性事实时，返回 inconclusive 并说明限制。预算耗尽或空图本身不能支持 no_finding。
+- 不提出新查询，不请求再次调查。

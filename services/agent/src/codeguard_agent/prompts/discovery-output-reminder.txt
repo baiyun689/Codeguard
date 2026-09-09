@@ -1,3 +1,0 @@
-<terminal_response_contract>
-探索阶段可以继续调用工具；停止探索后，请直接返回一个符合 DiscoveryReviewResult schema 的 JSON 对象。没有问题时仍要输出 `{"summary":"简短结论","issues":[]}`。最终消息不要混入工具调用、Markdown 围栏或 JSON 之外的解释文字。
-</terminal_response_contract>

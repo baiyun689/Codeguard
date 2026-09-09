@@ -6,12 +6,10 @@ summary? → symbol_resolution → review_council → council_judge → END。
 """
 
 from __future__ import annotations
-
 import hashlib
 import logging
 from typing import Any
 import uuid
-
 from codeguard_agent.models.schemas import ReviewResult
 from codeguard_agent.models.tasks import ReviewBudget
 from codeguard_agent.observability.models import DegradationReport
@@ -21,18 +19,12 @@ from codeguard_agent.pipeline.orchestration.graph import (
     DEFAULT_RECURSION_LIMIT,
     build_review_graph,
 )
-from codeguard_agent.pipeline.execution.engines import (
-    REACT_DEGRADED_RECURSION_EVENT,
-    REACT_SYNTHESIS_FALLBACK_EVENTS,
-)
 
 logger = logging.getLogger("codeguard")
 
 
 def resolve_evidence_revision(
-    evidence_revision: str,
-    tool_client,
-    diff_text: str,
+    evidence_revision: str, tool_client, diff_text: str
 ) -> str:
     """计算本次审查的有效证据 revision(证据账本内容寻址的锚)。
 
@@ -64,13 +56,10 @@ def _create_checkpointer(backend: str, db_path: str):
         return MemorySaver()
     if backend == "sqlite":
         try:
-            from langgraph.checkpoint.sqlite import (  # type: ignore[import-not-found]
-                SqliteSaver,
-            )
+            from langgraph.checkpoint.sqlite import SqliteSaver  # type: ignore[import-not-found]
         except ImportError:
             logger.warning(
-                "checkpoint 后端设为 sqlite 但 langgraph-checkpoint-sqlite 未安装;"
-                "降级为不启用 checkpoint。安装: pip install langgraph-checkpoint-sqlite"
+                "checkpoint 后端设为 sqlite 但 langgraph-checkpoint-sqlite 未安装;降级为不启用 checkpoint。安装: pip install langgraph-checkpoint-sqlite"
             )
             return None
         logger.info("checkpoint 后端:sqlite(%s)", db_path)
@@ -87,49 +76,31 @@ class PipelineOrchestrator:
 
     def __init__(
         self,
-        enable_summary: bool = True,
         review_budget: ReviewBudget | None = None,
         recursion_limit: int = DEFAULT_RECURSION_LIMIT,
         checkpoint_backend: str = "",
         checkpoint_db: str = "codeguard_checkpoints.db",
-        react_recursion_limit: int = 48,
         discovery_mode: str = "controlled",
-        controlled_initial_tool_budget: int = 12,
-        controlled_delta_tool_budget: int = 4,
         controlled_max_path_depth: int = 3,
-        controlled_max_seeds_per_change_unit: int = 8,
-        controlled_max_seeds_per_reviewer: int = 8,
-        controlled_max_seeds_per_task: int = 24,
-        controlled_max_knowledge_topics: int = 4,
         controlled_execute_concurrency: int = 3,
-        controlled_execution_mode: str = "subtask_react",
-        controlled_subtask_max_tool_calls: int = 20,
-        controlled_subtask_max_rounds: int = 12,
+        controlled_subtask_max_tool_calls: int = 8,
+        controlled_subtask_max_rounds: int = 6,
         controlled_subtask_timeout_seconds: int = 120,
-        controlled_task_max_tool_calls: int = 96,
-        controlled_max_subtasks_per_reviewer: int = 8,
-        controlled_max_subtasks_per_task: int = 24,
+        controlled_task_max_tool_calls: int = 32,
+        controlled_max_subtasks_per_task: int = 8,
     ) -> None:
-        self._enable_summary = enable_summary
-        self._review_budget = review_budget if review_budget is not None else ReviewBudget()
+        self._review_budget = (
+            review_budget if review_budget is not None else ReviewBudget()
+        )
         self._recursion_limit = recursion_limit
         self._checkpointer = _create_checkpointer(checkpoint_backend, checkpoint_db)
-        self._react_recursion_limit = react_recursion_limit
         self._discovery_mode = discovery_mode
-        self._controlled_initial_tool_budget = controlled_initial_tool_budget
-        self._controlled_delta_tool_budget = controlled_delta_tool_budget
         self._controlled_max_path_depth = controlled_max_path_depth
-        self._controlled_max_seeds_per_change_unit = controlled_max_seeds_per_change_unit
-        self._controlled_max_seeds_per_reviewer = controlled_max_seeds_per_reviewer
-        self._controlled_max_seeds_per_task = controlled_max_seeds_per_task
-        self._controlled_max_knowledge_topics = controlled_max_knowledge_topics
         self._controlled_execute_concurrency = controlled_execute_concurrency
-        self._controlled_execution_mode = controlled_execution_mode
         self._controlled_subtask_max_tool_calls = controlled_subtask_max_tool_calls
         self._controlled_subtask_max_rounds = controlled_subtask_max_rounds
         self._controlled_subtask_timeout_seconds = controlled_subtask_timeout_seconds
         self._controlled_task_max_tool_calls = controlled_task_max_tool_calls
-        self._controlled_max_subtasks_per_reviewer = controlled_max_subtasks_per_reviewer
         self._controlled_max_subtasks_per_task = controlled_max_subtasks_per_task
 
     def run(
@@ -143,7 +114,6 @@ class PipelineOrchestrator:
         tool_client=None,
         enabled_tools: list[str] | None = None,
         enabled_evidence_tools: list[str] | None = None,
-        allow_direct_fallback: bool = True,
         evidence_mode: str = "full",
         trace_enabled: bool = False,
         trace_dir: str = "trace",
@@ -157,7 +127,7 @@ class PipelineOrchestrator:
 
         fp_verify_llm:裁决模型(异源千问 temperature=0);None 时回退到主 llm。
         发现执行方式由 ``discovery_mode`` 决定：``controlled`` 使用
-        DirectTriage→GraphPlan→bounded subtask React，``react`` 在有
+        变更分组→有界源码准备→bounded ReAct，``react`` 在有
         tool_client 时使用历史 ReAct 兼容路径，``direct`` 明确关闭工具发现。
         enabled_tools:暴露给审查员的工具白名单(评测 profile 控制);None=全开(CLI 默认)。
         enabled_evidence_tools:EvidenceAgent 的独立白名单；None 时沿用 enabled_tools。
@@ -168,37 +138,23 @@ class PipelineOrchestrator:
         """
         if not diff_text.strip():
             return ReviewResult(summary="没有检测到代码变更,无需审查。")
-
         _run_id = thread_id or str(uuid.uuid4())
-        # ``direct`` is an explicit no-tool baseline.  Enforce that boundary
-        # at the orchestration seam as well as in the CLI so API/eval callers
-        # cannot accidentally re-enable ReAct by passing a tool client.
         effective_tool_client = (
             None if self._discovery_mode == "direct" else tool_client
         )
-
         graph = build_review_graph(
-            enable_summary=self._enable_summary,
             checkpointer=self._checkpointer,
             llm=llm,
             fp_verify_llm=fp_verify_llm,
             tool_client=effective_tool_client,
             evidence_mode=evidence_mode,
             discovery_mode=self._discovery_mode,
-            controlled_initial_tool_budget=self._controlled_initial_tool_budget,
-            controlled_delta_tool_budget=self._controlled_delta_tool_budget,
             controlled_max_path_depth=self._controlled_max_path_depth,
-            controlled_max_seeds_per_change_unit=self._controlled_max_seeds_per_change_unit,
-            controlled_max_seeds_per_reviewer=self._controlled_max_seeds_per_reviewer,
-            controlled_max_seeds_per_task=self._controlled_max_seeds_per_task,
-            controlled_max_knowledge_topics=self._controlled_max_knowledge_topics,
             controlled_execute_concurrency=self._controlled_execute_concurrency,
-            controlled_execution_mode=self._controlled_execution_mode,
             controlled_subtask_max_tool_calls=self._controlled_subtask_max_tool_calls,
             controlled_subtask_max_rounds=self._controlled_subtask_max_rounds,
             controlled_subtask_timeout_seconds=self._controlled_subtask_timeout_seconds,
             controlled_task_max_tool_calls=self._controlled_task_max_tool_calls,
-            controlled_max_subtasks_per_reviewer=self._controlled_max_subtasks_per_reviewer,
             controlled_max_subtasks_per_task=self._controlled_max_subtasks_per_task,
         )
         initial: ReviewState = {
@@ -209,25 +165,8 @@ class PipelineOrchestrator:
             "enabled_tools": enabled_tools,
             "max_retries": max_retries,
             "structured_method": structured_method,
-            "react_recursion_limit": self._react_recursion_limit,
-            "allow_direct_fallback": allow_direct_fallback,
             "review_budget": self._review_budget,
-            "discovery_mode": self._discovery_mode,
-            "controlled_initial_tool_budget": self._controlled_initial_tool_budget,
-            "controlled_delta_tool_budget": self._controlled_delta_tool_budget,
             "controlled_max_path_depth": self._controlled_max_path_depth,
-            "controlled_max_seeds_per_change_unit": self._controlled_max_seeds_per_change_unit,
-            "controlled_max_seeds_per_reviewer": self._controlled_max_seeds_per_reviewer,
-            "controlled_max_seeds_per_task": self._controlled_max_seeds_per_task,
-            "controlled_max_knowledge_topics": self._controlled_max_knowledge_topics,
-            "controlled_execute_concurrency": self._controlled_execute_concurrency,
-            "controlled_execution_mode": self._controlled_execution_mode,
-            "controlled_subtask_max_tool_calls": self._controlled_subtask_max_tool_calls,
-            "controlled_subtask_max_rounds": self._controlled_subtask_max_rounds,
-            "controlled_subtask_timeout_seconds": self._controlled_subtask_timeout_seconds,
-            "controlled_task_max_tool_calls": self._controlled_task_max_tool_calls,
-            "controlled_max_subtasks_per_reviewer": self._controlled_max_subtasks_per_reviewer,
-            "controlled_max_subtasks_per_task": self._controlled_max_subtasks_per_task,
         }
         if enabled_evidence_tools is not None:
             initial["enabled_evidence_tools"] = enabled_evidence_tools
@@ -239,10 +178,7 @@ class PipelineOrchestrator:
             from codeguard_agent.observability.collector import _TraceCollector
             from codeguard_agent.observability.dashboard import render_dashboard_file
 
-            tracer = _TraceCollector(
-                _run_id,
-                max_llm_content=trace_max_llm_content,
-            )
+            tracer = _TraceCollector(_run_id, max_llm_content=trace_max_llm_content)
             try:
                 final_state = tracer.run_with_tracing(graph, initial, invoke_config)
             except Exception:
@@ -263,7 +199,7 @@ class PipelineOrchestrator:
                                 task.id
                             ),
                         )
-                        for task in (final_state.get("review_tasks") or [])
+                        for task in final_state.get("review_tasks") or []
                     }
                     normalize_trace_report(
                         report,
@@ -275,9 +211,6 @@ class PipelineOrchestrator:
                     logger.warning("追踪报告生成失败", exc_info=True)
         else:
             final_state = graph.invoke(initial, config=invoke_config)
-
-        # 侧信道：把工具上下文交给评测层（不进入 ReviewResult 对外接口）。
-        # Evidence Ledger 后从最终 Artifact 集派生工具画像,不再读 gathered_context。
         if trace_sink is not None:
             trace_sink.extend(
                 _artifact_tool_profile(final_state.get("evidence_artifacts") or {})
@@ -293,7 +226,6 @@ class PipelineOrchestrator:
             metadata_sink["symbol_resolution_diagnostics"] = dict(
                 final_state.get("symbol_resolution_diagnostics") or {}
             )
-
         return ReviewResult(
             summary=final_state.get("summary", ""),
             issues=list(final_state.get("final_issues") or []),
@@ -304,14 +236,14 @@ def _artifact_tool_profile(artifacts: dict) -> list:
     """从最终 Artifact 集派生评测工具画像(源文档 §10.7)。
 
     只含 TOOL_CALL 且首次真实执行(EXECUTED)的 Artifact:reused 不重复计算
-    实际调用,patch/context 不计 tool_calls。条目形状对齐 GatheredContext
+    实际调用,patch/context 不计 tool_calls。条目包含工具使用画像
     (tool/args/content/status),供 eval 的 tools_used/symbols_read/tool_calls
     与严格工具降级检测读取。
     """
     from codeguard_agent.models.evidence import EvidenceCaptureMode, EvidenceSourceKind
-    from codeguard_agent.pipeline.execution.engines import GatheredContext
+    from types import SimpleNamespace
 
-    items: list[GatheredContext] = []
+    items: list[SimpleNamespace] = []
     seen: set[tuple[str, str]] = set()
     for artifact in artifacts.values():
         if (
@@ -321,10 +253,10 @@ def _artifact_tool_profile(artifacts: dict) -> list:
             continue
         key = (artifact.tool, _summarize_artifact_args(artifact.arguments))
         if key in seen:
-            continue  # 跨任务重复调用按规范化 (tool, args) 去重
+            continue
         seen.add(key)
         items.append(
-            GatheredContext(
+            SimpleNamespace(
                 tool=artifact.tool,
                 args=key[1],
                 content=artifact.payload,
@@ -344,27 +276,21 @@ def _inject_degradation(report: Any, final_state: dict) -> None:
     """从 final_state 的 council_trace 和 council_stats 提取降级数据注入 TraceReport。"""
     council_trace = final_state.get("council_trace") or []
     report.degradation = DegradationReport(
-        react_degraded_recursion=sum(
-            t.event == REACT_DEGRADED_RECURSION_EVENT for t in council_trace
-        ),
-        react_synthesis_fallback=sum(
-            t.event in REACT_SYNTHESIS_FALLBACK_EVENTS
-            for t in council_trace
-        ),
-        direct_tier_tasks=sum(
-            t.event == "tier_direct" for t in council_trace
-        ),
-        discoverer_failed=sum(
-            t.event == "discover_failed" for t in council_trace
-        ),
+        direct_tier_tasks=sum((t.event == "tier_direct" for t in council_trace)),
+        discoverer_failed=sum((t.event == "discover_failed" for t in council_trace)),
         task_review_failed=sum(
-            t.event == "task_review_failed" for t in council_trace
+            (t.event == "task_review_failed" for t in council_trace)
         ),
         judge_synthesis_failed=sum(
-            t.event == "severity_resolved" and "severity_evidence_incomplete" in str(t.detail)
-            for t in council_trace
-        ) or (
+            (
+                t.event == "severity_resolved"
+                and "severity_evidence_incomplete" in str(t.detail)
+                for t in council_trace
+            )
+        )
+        or (
             final_state.get("council_stats")
-            and getattr(final_state["council_stats"], "judge_synthesis_failed_count", 0) or 0
+            and getattr(final_state["council_stats"], "judge_synthesis_failed_count", 0)
+            or 0
         ),
     )

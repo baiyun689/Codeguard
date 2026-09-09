@@ -10,10 +10,8 @@
 """
 
 from __future__ import annotations
-
 import json
 from typing import Any
-
 from evals.schema import ToolUsage
 
 
@@ -44,12 +42,8 @@ def summarize_tool_usage(trace: list[Any]) -> ToolUsage:
         {
             _symbol_from_args(getattr(t, "args", ""))
             for t in trace
-            if getattr(t, "tool", "") == "get_file_content"
+            if getattr(t, "tool", "") == "read_symbol"
         }
         - {""}
     )
-    return ToolUsage(
-        tool_calls=len(trace),
-        tools_used=tools,
-        symbols_read=symbols,
-    )
+    return ToolUsage(tool_calls=len(trace), tools_used=tools, symbols_read=symbols)

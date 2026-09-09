@@ -8,11 +8,9 @@
 """
 
 from __future__ import annotations
-
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-
 import yaml
 
 _PROFILES_FILE = Path(__file__).resolve().parent / "profiles.yaml"
@@ -23,24 +21,25 @@ class Profile:
     """一个被测目标的配置。"""
 
     name: str
-    mode: str = "pipeline"          # 当前仅 pipeline(基线 single 已移除)
-    tools: list[str] = field(default_factory=list)  # 启用的工具名,如 ["get_file_content"]
-    model: str | None = None        # 可选模型覆盖;None 表示沿用全局 Settings 的模型
-    fp_verify: bool = False         # 是否启用误报过滤第二段的独立 LLM 复核(对照的独立变量)
-    # 旧 supervisor 智能调度开关已退役。字段暂留兼容历史 profile,ADR-032 默认路径忽略它。
-    enable_supervisor: bool = False
-    orchestration: str = "adr-032"
+    mode: str = "pipeline"
+    tools: list[str] = field(default_factory=list)
+    model: str | None = None
+    fp_verify: bool = False
+    orchestration: str = "change-review"
     execution: str = "pipeline"
     evidence_tools: list[str] | None = None
     strict_tools: bool = False
-    evidence_mode: str = "full"  # "off" = 无证据链消融档(DirectJudge 直接终审)
-    # 可选发现执行模式；未指定时沿用 CODEGUARD_DISCOVERY_MODE。
+    evidence_mode: str = "full"
     discovery_mode: str | None = None
 
     @property
     def wants_tools(self) -> bool:
         """该 profile 是否意图启用工具(pipeline + 非空工具集才有意义)。"""
-        return self.execution == "pipeline" and self.mode == "pipeline" and bool(self.tools)
+        return (
+            self.execution == "pipeline"
+            and self.mode == "pipeline"
+            and bool(self.tools)
+        )
 
 
 def load_profiles(path: Path | None = None) -> dict[str, Profile]:
@@ -58,14 +57,11 @@ def load_profiles(path: Path | None = None) -> dict[str, Profile]:
             tools=list(cfg.get("tools") or []),
             model=cfg.get("model"),
             fp_verify=bool(cfg.get("fp_verify", False)),
-            enable_supervisor=bool(cfg.get("enable_supervisor", False)),
-            orchestration=cfg.get("orchestration", "adr-032"),
+            orchestration=cfg.get("orchestration", "change-review"),
             execution=cfg.get("execution", "pipeline"),
-            evidence_tools=(
-                list(cfg.get("evidence_tools") or [])
-                if "evidence_tools" in cfg
-                else None
-            ),
+            evidence_tools=list(cfg.get("evidence_tools") or [])
+            if "evidence_tools" in cfg
+            else None,
             strict_tools=bool(cfg.get("strict_tools", False)),
             evidence_mode=cfg.get("evidence_mode", "full"),
             discovery_mode=cfg.get("discovery_mode"),
@@ -92,10 +88,10 @@ def resolve_profile(
             raise KeyError(f"未知 profile {name!r};可选:{avail}")
         return profiles[name]
     return Profile(
-        name=f"adhoc-{mode}{'-tools' if tools else ''}",
+        name=f"adhoc-{mode}{('-tools' if tools else '')}",
         mode=mode,
-        tools=["get_file_content"] if tools else [],
-        fp_verify=False,  # ad-hoc 档默认不开复核;要对照复核请用具名 profile
+        tools=["read_symbol"] if tools else [],
+        fp_verify=False,
     )
 
 

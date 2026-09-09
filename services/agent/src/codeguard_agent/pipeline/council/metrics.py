@@ -8,10 +8,8 @@
 """
 
 from __future__ import annotations
-
 from collections.abc import Mapping, Sequence
 from typing import Any
-
 from codeguard_agent.models.council import (
     CandidateIssue,
     CouncilRunStats,
@@ -26,10 +24,6 @@ from codeguard_agent.models.evidence import (
 )
 from codeguard_agent.models.schemas import Severity
 from codeguard_agent.pipeline.evidence.planner import DossierAssembly
-from codeguard_agent.pipeline.execution.engines import (
-    REACT_DEGRADED_RECURSION_EVENT,
-    REACT_SYNTHESIS_FALLBACK_EVENTS,
-)
 
 
 def _ratio(numerator: int, denominator: int) -> float | None:
@@ -37,7 +31,7 @@ def _ratio(numerator: int, denominator: int) -> float | None:
 
 
 def _count_event(trace: Sequence[CouncilTrace], event: str) -> int:
-    return sum(item.event == event for item in trace)
+    return sum((item.event == event for item in trace))
 
 
 def compute_council_run_stats(
@@ -56,24 +50,22 @@ def compute_council_run_stats(
     by_agent: dict[str, int] = {}
     for candidate in candidates:
         by_agent[candidate.source_agent] = by_agent.get(candidate.source_agent, 0) + 1
-
-    # ── Evidence Ledger:Artifact 账本 ──
     artifact_items = list((artifacts or {}).values())
     patch_count = sum(
-        item.source_kind is EvidenceSourceKind.TASK_PATCH for item in artifact_items
+        (item.source_kind is EvidenceSourceKind.TASK_PATCH for item in artifact_items)
     )
     context_count = sum(
-        item.source_kind is EvidenceSourceKind.SYMBOL_CONTEXT
-        for item in artifact_items
+        (
+            item.source_kind is EvidenceSourceKind.SYMBOL_CONTEXT
+            for item in artifact_items
+        )
     )
     tool_count = sum(
-        item.source_kind is EvidenceSourceKind.TOOL_CALL for item in artifact_items
+        (item.source_kind is EvidenceSourceKind.TOOL_CALL for item in artifact_items)
     )
     reused_count = sum(
-        item.capture_mode is EvidenceCaptureMode.REUSED for item in artifact_items
+        (item.capture_mode is EvidenceCaptureMode.REUSED for item in artifact_items)
     )
-
-    # ── 候选证据画像与引用统计 ──
     patch_only = 0
     context_backed = 0
     tool_backed = 0
@@ -100,40 +92,32 @@ def compute_council_run_stats(
                 refs_limited += 1
         refs_selected += len(verification.evidence_gaps or [])
         refs_invalid += len(verification.invalid_references or [])
-
-    # ── 重放与 Judge 批调用(trace 事件) ──
     replay_requested = _count_event(council_trace, "evidence_replay_requested")
     replay_valid = _count_event(council_trace, "evidence_replay_valid")
     replay_limited = _count_event(council_trace, "evidence_replay_limited")
     replay_failed = sum(
-        _count_event(council_trace, event)
-        for event in (
-            "evidence_replay_failed",
-            "evidence_replay_unavailable",
-            "evidence_replay_invalid",
+        (
+            _count_event(council_trace, event)
+            for event in (
+                "evidence_replay_failed",
+                "evidence_replay_unavailable",
+                "evidence_replay_invalid",
+            )
         )
     )
     judge_batch_calls = _count_event(council_trace, "evidence_judge_batch_started")
-
-    # ── 裁决 ──
     severity_defaulted = sum(
-        verdict.reason_code == "verification_failed" for verdict in verdicts
+        (verdict.reason_code == "verification_failed" for verdict in verdicts)
     )
     judge_no_support_drop = sum(
-        verdict.reason_code == "insufficient_evidence" for verdict in verdicts
+        (verdict.reason_code == "insufficient_evidence" for verdict in verdicts)
     )
     final_issue_count = len(final_candidate_ids)
     final_issue_supported = sum(
-        verdict.candidate_id in final_ids and verdict.supported
-        for verdict in verdicts
-    )
-    # ── 降级指标:从 council_trace 事件中计数 ──
-    react_degraded_recursion_count = _count_event(
-        council_trace, REACT_DEGRADED_RECURSION_EVENT
-    )
-    react_synthesis_fallback_count = sum(
-        _count_event(council_trace, event)
-        for event in REACT_SYNTHESIS_FALLBACK_EVENTS
+        (
+            verdict.candidate_id in final_ids and verdict.supported
+            for verdict in verdicts
+        )
     )
     direct_tier_task_count = _count_event(council_trace, "tier_direct")
     discoverer_failed_count = _count_event(council_trace, "discover_failed")
@@ -143,10 +127,13 @@ def compute_council_run_stats(
         candidate_count_by_agent=by_agent,
         truncated_candidates=truncated_candidates,
         verdict_count=len(verdicts),
-        removed_by_judge=sum(verdict.action == "drop" for verdict in verdicts),
+        removed_by_judge=sum((verdict.action == "drop" for verdict in verdicts)),
         critical_candidate_count=sum(
-            verdict.action == "keep" and verdict.resolved_severity is Severity.CRITICAL
-            for verdict in verdicts
+            (
+                verdict.action == "keep"
+                and verdict.resolved_severity is Severity.CRITICAL
+                for verdict in verdicts
+            )
         ),
         final_issue_count=final_issue_count,
         final_issue_supported_count=final_issue_supported,
@@ -165,13 +152,17 @@ def compute_council_run_stats(
         limited_reference_count=refs_limited,
         invalid_reference_count=refs_invalid,
         evidence_gap_count=sum(
-            len(verification.evidence_gaps or [])
-            for verification in (verifications or {}).values()
+            (
+                len(verification.evidence_gaps or [])
+                for verification in (verifications or {}).values()
+            )
         ),
         graph_indeterminate_count=sum(
-            gap.reason == "graph_indeterminate"
-            for verification in (verifications or {}).values()
-            for gap in verification.evidence_gaps or []
+            (
+                gap.reason == "graph_indeterminate"
+                for verification in (verifications or {}).values()
+                for gap in verification.evidence_gaps or []
+            )
         ),
         replay_requested_count=replay_requested,
         replay_valid_count=replay_valid,
@@ -180,11 +171,12 @@ def compute_council_run_stats(
         judge_batch_call_count=judge_batch_calls,
         judge_failed_candidate_count=severity_defaulted,
         judge_no_support_drop_count=judge_no_support_drop,
-        react_degraded_recursion_count=react_degraded_recursion_count,
-        react_synthesis_fallback_count=react_synthesis_fallback_count,
         direct_tier_task_count=direct_tier_task_count,
         discoverer_failed_count=discoverer_failed_count,
         task_review_failed_count=task_review_failed_count,
+        investigation_incomplete_count=_count_event(
+            council_trace, "investigation_incomplete"
+        ),
         judge_synthesis_failed_count=severity_defaulted,
     )
 

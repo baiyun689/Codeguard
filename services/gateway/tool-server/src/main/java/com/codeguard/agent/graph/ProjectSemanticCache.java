@@ -5,6 +5,7 @@ import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.NameExpr;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
@@ -111,6 +112,14 @@ final class ProjectSemanticCache {
             for (MethodCallExpr call : unit.findAll(MethodCallExpr.class)) {
                 add(mutable, "METHOD|" + call.getNameAsString() + "|"
                         + call.getArguments().size(), file);
+            }
+            for (ObjectCreationExpr call : unit.findAll(ObjectCreationExpr.class)) {
+                add(mutable, "CONSTRUCTOR|" + call.getType().getNameAsString() + "|"
+                        + call.getArguments().size(), file);
+            }
+            for (var method : unit.findAll(com.github.javaparser.ast.body.MethodDeclaration.class)) {
+                add(mutable, "OVERRIDE|" + method.getNameAsString() + "|"
+                        + method.getParameters().size(), file);
             }
             for (NameExpr name : unit.findAll(NameExpr.class)) {
                 add(mutable, "FIELD|" + name.getNameAsString(), file);

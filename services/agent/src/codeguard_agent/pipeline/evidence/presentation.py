@@ -6,12 +6,10 @@ Evidence Ledger 的 Txx/Cxx/Fxxx 只属于内部协议。最终 Issue 需要能�
 """
 
 from __future__ import annotations
-
 import json
 import re
 from collections.abc import Mapping
 from typing import Any, Literal
-
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.evidence import (
     CandidateVerification,
@@ -22,25 +20,23 @@ from codeguard_agent.models.evidence import (
 from codeguard_agent.models.schemas import EvidenceLocation
 from codeguard_agent.models.tasks import TaskSymbolContext
 
-
-_GRAPH_TOOLS = frozenset({"query_relations", "inspect_path", "inspect_change_impact", "inspect_structure"})
+_GRAPH_TOOLS = frozenset({"query_relations"})
 _INTERNAL_EVIDENCE_RE = re.compile(
-    r"(?:\[\s*证据编号\s*(?:P|C|T|F)\d+\s*\]|\b(?:P|C|T|F)\d{2,3}\b)",
+    "(?:\\[\\s*证据编号\\s*(?:P|C|T|F)\\d+\\s*\\]|\\b(?:P|C|T|F)\\d{2,3}\\b)",
     flags=re.IGNORECASE,
 )
 _HEADER_RE = {
-    "symbol": re.compile(r"(?m)^\s*symbol_id:\s*(\S+)\s*$"),
-    "file": re.compile(r"(?m)^\s*file:\s*(.+?)\s*$"),
-    "lines": re.compile(r"(?m)^\s*lines:\s*(\d+)\s*-\s*(\d+)\s*$"),
+    "symbol": re.compile("(?m)^\\s*symbol_id:\\s*(\\S+)\\s*$"),
+    "file": re.compile("(?m)^\\s*file:\\s*(.+?)\\s*$"),
+    "lines": re.compile("(?m)^\\s*lines:\\s*(\\d+)\\s*-\\s*(\\d+)\\s*$"),
 }
 
 
 def scrub_user_text(value: str) -> str:
     """移除可能从 LLM 或工具回显中泄漏的内部账本编号。"""
-
     cleaned = _INTERNAL_EVIDENCE_RE.sub("", str(value or ""))
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-    cleaned = re.sub(r"\s+([，。；：])", r"\1", cleaned)
+    cleaned = re.sub("[ \\t]{2,}", " ", cleaned)
+    cleaned = re.sub("\\s+([，。；：])", "\\1", cleaned)
     return cleaned.strip()
 
 
@@ -52,7 +48,6 @@ def enrich_candidate_for_issue(
     artifacts: Mapping[str, EvidenceArtifact] | None = None,
 ) -> CandidateIssue:
     """为最终 Issue 绑定确定性的根因摘要和来源位置。"""
-
     locations = _collect_locations(
         candidate,
         symbol_context=symbol_context,
@@ -87,14 +82,11 @@ def _collect_locations(
         symbol.symbol_id
         for symbol in (symbol_context.symbols if symbol_context is not None else ())
     }
-
     changed = _changed_location(candidate, symbol_context=symbol_context)
     if changed is not None:
         locations.append(changed)
-
     if verification is None:
         return _dedupe_locations(locations)
-
     for evidence in verification.valid_evidence:
         if evidence.validation_status not in {
             EvidenceValidationStatus.VALID,
@@ -111,14 +103,16 @@ def _collect_locations(
             if location is not None and location.symbol:
                 locations.append(location.model_copy(update={"kind": "changed_code"}))
             continue
-        if artifact.tool in {"get_file_content", "read_symbol"}:
+        if artifact.tool in {"read_symbol", "read_symbol"}:
             location = _source_tool_location(artifact.payload, artifact.arguments)
             if location is not None:
                 kind = (
                     "changed_code"
                     if location.symbol in changed_symbol_ids
-                    or _same_file(location.file, candidate.file)
-                    and _symbol_is_changed(location.symbol, changed_symbol_ids)
+                    or (
+                        _same_file(location.file, candidate.file)
+                        and _symbol_is_changed(location.symbol, changed_symbol_ids)
+                    )
                     else "root_cause"
                 )
                 locations.append(location.model_copy(update={"kind": kind}))
@@ -132,14 +126,11 @@ def _collect_locations(
                     changed_symbol_ids=changed_symbol_ids,
                 )
             )
-
     return _dedupe_locations(locations)
 
 
 def _changed_location(
-    candidate: CandidateIssue,
-    *,
-    symbol_context: TaskSymbolContext | None,
+    candidate: CandidateIssue, *, symbol_context: TaskSymbolContext | None
 ) -> EvidenceLocation | None:
     if not candidate.file or candidate.line <= 0:
         return None
@@ -172,13 +163,16 @@ def _symbol_context_location(payload: str) -> EvidenceLocation | None:
 
 
 def _source_tool_location(
-    payload: str,
-    arguments: Mapping[str, Any],
+    payload: str, arguments: Mapping[str, Any]
 ) -> EvidenceLocation | None:
     symbol_match = _HEADER_RE["symbol"].search(payload)
     file_match = _HEADER_RE["file"].search(payload)
     lines_match = _HEADER_RE["lines"].search(payload)
-    symbol_id = symbol_match.group(1).strip() if symbol_match else str(arguments.get("symbol_id", ""))
+    symbol_id = (
+        symbol_match.group(1).strip()
+        if symbol_match
+        else str(arguments.get("symbol_id", ""))
+    )
     file = file_match.group(1).strip() if file_match else ""
     if not file:
         return None
@@ -214,8 +208,9 @@ def _graph_locations(
         symbol_id = str(item.get("id") or item.get("symbol_id") or "").strip()
         if location is not None and symbol_id:
             symbols[symbol_id] = location
-
-    subject = str(arguments.get("symbol_id") or value.get("subject_symbol_id") or "").strip()
+    subject = str(
+        arguments.get("symbol_id") or value.get("subject_symbol_id") or ""
+    ).strip()
     result: list[EvidenceLocation] = []
     for relation in value.get("relationships") or ():
         if not isinstance(relation, Mapping):
@@ -239,8 +234,6 @@ def _graph_locations(
             selected = target
             selected_id = target_id
         if selected_id in changed_symbol_ids:
-            # Keep a same-file related endpoint only when it is not the exact
-            # changed symbol; the changed location already covers that fact.
             continue
         result.append(
             selected.model_copy(
@@ -259,8 +252,12 @@ def _location_from_mapping(
     symbol_id = str(value.get("id") or value.get("symbol_id") or "").strip()
     if not file or not symbol_id:
         return None
-    start = _int_value(value.get("startLine", value.get("start_line", value.get("line", 0))))
-    end = _int_value(value.get("endLine", value.get("end_line", value.get("line", start))))
+    start = _int_value(
+        value.get("startLine", value.get("start_line", value.get("line", 0)))
+    )
+    end = _int_value(
+        value.get("endLine", value.get("end_line", value.get("line", start)))
+    )
     return EvidenceLocation(
         file=file.replace("\\", "/"),
         symbol=_display_symbol(symbol_id, str(value.get("signature") or "")),
@@ -281,13 +278,18 @@ def _display_symbol(symbol_id: str, signature: str = "") -> str:
 
 def _symbol_is_changed(symbol: str, changed_symbol_ids: set[str]) -> bool:
     return any(
-        symbol == _display_symbol(item) or symbol == item
-        for item in changed_symbol_ids
+        (
+            symbol == _display_symbol(item) or symbol == item
+            for item in changed_symbol_ids
+        )
     )
 
 
 def _same_file(left: str, right: str) -> bool:
-    return left.replace("\\", "/").strip().lower() == right.replace("\\", "/").strip().lower()
+    return (
+        left.replace("\\", "/").strip().lower()
+        == right.replace("\\", "/").strip().lower()
+    )
 
 
 def _int_value(value: Any) -> int:
@@ -304,15 +306,22 @@ def _dedupe_locations(locations: list[EvidenceLocation]) -> list[EvidenceLocatio
         if not item.file:
             continue
         key = (
-            item.file.lower(), item.symbol, item.start_line, item.end_line,
-            item.kind, item.relation,
+            item.file.lower(),
+            item.symbol,
+            item.start_line,
+            item.end_line,
+            item.kind,
+            item.relation,
         )
         unique.setdefault(key, item)
     return sorted(
         unique.values(),
         key=lambda item: (
-            order.get(item.kind, 9), item.file.lower(), item.start_line,
-            item.symbol, item.relation,
+            order.get(item.kind, 9),
+            item.file.lower(),
+            item.start_line,
+            item.symbol,
+            item.relation,
         ),
     )[:4]
 
@@ -330,7 +339,6 @@ def _format_location(location: EvidenceLocation) -> str:
 
 def format_evidence_location(location: EvidenceLocation) -> str:
     """统一渲染最终报告中的来源位置,供 CLI/Markdown/评测共同使用。"""
-
     value = _format_location(location)
     if location.relation:
         value += f"（{location.relation}）"
@@ -338,19 +346,17 @@ def format_evidence_location(location: EvidenceLocation) -> str:
 
 
 def _root_cause_text(
-    candidate: CandidateIssue,
-    locations: list[EvidenceLocation],
+    candidate: CandidateIssue, locations: list[EvidenceLocation]
 ) -> str:
     mechanism = scrub_user_text(
         candidate.evidence_observation or candidate.mechanism or candidate.claim
     )
     sources = [
-        item for item in locations
-        if item.kind in {"root_cause", "related_path"}
+        item for item in locations if item.kind in {"root_cause", "related_path"}
     ]
     if not sources:
         return mechanism
-    source_text = "；".join(format_evidence_location(item) for item in sources[:2])
+    source_text = "；".join((format_evidence_location(item) for item in sources[:2]))
     if mechanism:
         return f"{mechanism}（来源：{source_text}）"
     return f"相关源码位于 {source_text}。"

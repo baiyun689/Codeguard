@@ -9,15 +9,12 @@
 """
 
 from __future__ import annotations
-
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Literal, Any
 from uuid import uuid4
-
 from pydantic import ValidationError
-
 from codeguard_agent.models.evidence import (
     ArtifactAvailability,
     CandidateVerification,
@@ -37,16 +34,8 @@ from codeguard_agent.pipeline.evidence.graph_response import validate_graph_payl
 from codeguard_agent.pipeline.evidence.planner import CandidateDossier
 
 logger = logging.getLogger("codeguard")
-
-_GRAPH_TOOLS = ("query_relations", "inspect_change_impact", "inspect_path", "inspect_structure")
-_DISCOVERY_TOOLS = (
-    "read_symbol",
-    "query_relations",
-    "get_file_content",
-    "inspect_change_impact",
-    "inspect_path",
-    "inspect_structure",
-)
+_GRAPH_TOOLS = ("query_relations",)
+_DISCOVERY_TOOLS = ("read_symbol", "query_relations", "read_symbol")
 
 
 @dataclass(frozen=True)
@@ -68,25 +57,23 @@ def _replay_allowed(tool: str, enabled_replay_tools: list[str] | None) -> bool:
 
 
 def _execute_replay(
-    tool_client: Any,
-    tool: str,
-    arguments: dict[str, str],
+    tool_client: Any, tool: str, arguments: dict[str, str]
 ) -> tuple[str, str]:
     """异常重放:执行一次 Gateway 调用,返回 (raw, limitation)。失败不抛。"""
     try:
         response = getattr(tool_client, tool)(**dict(arguments))
-    except Exception as exc:  # noqa: BLE001 单次工具异常收敛为不足证据
-        return "", f"replay_tool_error:{exc}"
+    except Exception as exc:
+        return ("", f"replay_tool_error:{exc}")
     success = bool(getattr(response, "success", True))
     raw = getattr(response, "result", None)
     if raw is None and hasattr(response, "as_tool_output"):
         raw = response.as_tool_output()
     text = str(raw or "")
     if not success:
-        return text, "replay_tool_failed"
+        return (text, "replay_tool_failed")
     if not text.strip():
-        return "", "replay_tool_empty"
-    return text, ""
+        return ("", "replay_tool_empty")
+    return (text, "")
 
 
 def _health_tool_artifact(
@@ -129,7 +116,6 @@ def _health_tool_artifact(
         )
         replay_cache[artifact.id] = result
         return result
-
     if not needs_replay:
         if not artifact.payload.strip():
             needs_replay = True
@@ -138,16 +124,17 @@ def _health_tool_artifact(
             graph = validate_graph_payload(
                 artifact.payload,
                 tool=artifact.tool,
-                expected_subject=str(artifact.arguments.get("symbol_id", "")),
+                expected_subject=str(
+                    artifact.arguments.get("subject_symbol_id")
+                    or artifact.arguments.get("symbol_id", "")
+                ),
             )
             if graph.replayable:
                 needs_replay = True
                 limitations.extend(graph.limitations)
             else:
                 result = _ArtifactHealth(
-                    graph.status,
-                    artifact.payload,
-                    graph.limitations,
+                    graph.status, artifact.payload, graph.limitations
                 )
                 replay_cache[artifact.id] = result
                 return result
@@ -159,12 +146,17 @@ def _health_tool_artifact(
             )
             replay_cache[artifact.id] = result
             return result
-
     batch.trace.append(
-        ("evidence_replay_requested", _stable_json({
-            "artifact_id": artifact.id, "tool": artifact.tool,
-            "arguments": artifact.arguments,
-        }))
+        (
+            "evidence_replay_requested",
+            _stable_json(
+                {
+                    "artifact_id": artifact.id,
+                    "tool": artifact.tool,
+                    "arguments": artifact.arguments,
+                }
+            ),
+        )
     )
     if not _replay_allowed(artifact.tool, enabled_replay_tools):
         limitations.append("replay_not_enabled")
@@ -174,11 +166,18 @@ def _health_tool_artifact(
             artifact.payload,
             tuple(dict.fromkeys(limitations)),
         )
-        batch.trace.append(("evidence_replay_unavailable", _stable_json({
-            "artifact_id": artifact.id,
-            "tool": artifact.tool,
-            "limitations": list(result.limitations),
-        })))
+        batch.trace.append(
+            (
+                "evidence_replay_unavailable",
+                _stable_json(
+                    {
+                        "artifact_id": artifact.id,
+                        "tool": artifact.tool,
+                        "limitations": list(result.limitations),
+                    }
+                ),
+            )
+        )
         replay_cache[artifact.id] = result
         return result
     raw, limitation = _execute_replay(tool_client, artifact.tool, artifact.arguments)
@@ -190,58 +189,62 @@ def _health_tool_artifact(
         source_kind=EvidenceSourceKind.TOOL_CALL,
         tool=artifact.tool,
         arguments=artifact.arguments,
-        payload=(raw if raw else _stable_json({
-            "error": limitation or "replay_empty",
-        })),
-        availability=(
-            ArtifactAvailability.AVAILABLE
-            if not limitation
-            else ArtifactAvailability.FAILED
-        ),
+        payload=raw if raw else _stable_json({"error": limitation or "replay_empty"}),
+        availability=ArtifactAvailability.AVAILABLE
+        if not limitation
+        else ArtifactAvailability.FAILED,
         capture_mode=EvidenceCaptureMode.EXECUTED,
         call_id=f"evidence-replay-{uuid4()}",
         replayed_from_artifact_id=artifact.id,
     )
     batch.replayed_artifacts[replayed_artifact.id] = replayed_artifact
-    if raw and not limitation:
+    if raw and (not limitation):
         if artifact.tool in _GRAPH_TOOLS:
             graph = validate_graph_payload(
                 raw,
                 tool=artifact.tool,
-                expected_subject=str(artifact.arguments.get("symbol_id", "")),
+                expected_subject=str(
+                    artifact.arguments.get("subject_symbol_id")
+                    or artifact.arguments.get("symbol_id", "")
+                ),
             )
             result = _ArtifactHealth(
-                graph.status,
-                raw,
-                graph.limitations,
-                replayed_artifact.id,
+                graph.status, raw, graph.limitations, replayed_artifact.id
             )
         else:
             result = _ArtifactHealth(
-                EvidenceValidationStatus.VALID,
-                raw,
-                artifact_id=replayed_artifact.id,
+                EvidenceValidationStatus.VALID, raw, artifact_id=replayed_artifact.id
             )
         event = f"evidence_replay_{result.status.value}"
-        batch.trace.append((event, _stable_json({
-            "artifact_id": replayed_artifact.id,
-            "call_id": replayed_artifact.call_id,
-            "replayed_from_artifact_id": artifact.id,
-            "tool": artifact.tool,
-            "limitations": list(result.limitations),
-        })))
+        batch.trace.append(
+            (
+                event,
+                _stable_json(
+                    {
+                        "artifact_id": replayed_artifact.id,
+                        "call_id": replayed_artifact.call_id,
+                        "replayed_from_artifact_id": artifact.id,
+                        "tool": artifact.tool,
+                        "limitations": list(result.limitations),
+                    }
+                ),
+            )
+        )
         replay_cache[artifact.id] = result
         return result
     batch.trace.append(
-        ("evidence_replay_failed", _stable_json({
-            "artifact_id": (
-                replayed_artifact.id
+        (
+            "evidence_replay_failed",
+            _stable_json(
+                {
+                    "artifact_id": replayed_artifact.id,
+                    "call_id": replayed_artifact.call_id,
+                    "replayed_from_artifact_id": artifact.id,
+                    "tool": artifact.tool,
+                    "limitation": limitation or "replay_empty",
+                }
             ),
-            "call_id": replayed_artifact.call_id,
-            "replayed_from_artifact_id": artifact.id,
-            "tool": artifact.tool,
-            "limitation": limitation or "replay_empty",
-        }))
+        )
     )
     limitations.append(limitation or "replay_failed")
     result = _ArtifactHealth(
@@ -271,13 +274,13 @@ def _verify_candidate(
     invalid_references: list[EvidenceRefError] = []
     source_kinds: set[EvidenceSourceKind] = set()
     patch_valid = False
-
     for ref in candidate.evidence_refs:
         artifact = artifacts.get(ref.artifact_id)
         if artifact is None:
             invalid_references.append(
                 EvidenceRefError(
-                    alias="", reason=EvidenceRefErrorReason.ARTIFACT_UNAVAILABLE,
+                    alias="",
+                    reason=EvidenceRefErrorReason.ARTIFACT_UNAVAILABLE,
                     detail=ref.artifact_id,
                 )
             )
@@ -285,7 +288,8 @@ def _verify_candidate(
         if artifact.task_id != candidate.task_id:
             invalid_references.append(
                 EvidenceRefError(
-                    alias="", reason=EvidenceRefErrorReason.CROSS_TASK_REFERENCE,
+                    alias="",
+                    reason=EvidenceRefErrorReason.CROSS_TASK_REFERENCE,
                     detail=f"artifact 属于 task {artifact.task_id}",
                 )
             )
@@ -297,7 +301,8 @@ def _verify_candidate(
             ):
                 invalid_references.append(
                     EvidenceRefError(
-                        alias="", reason=EvidenceRefErrorReason.ARTIFACT_UNAVAILABLE,
+                        alias="",
+                        reason=EvidenceRefErrorReason.ARTIFACT_UNAVAILABLE,
                         detail="patch payload 摘要不一致",
                     )
                 )
@@ -329,9 +334,12 @@ def _verify_candidate(
                 continue
             try:
                 symbol = ResolvedSymbol.model_validate_json(artifact.payload)
-                symbol_argument = artifact.arguments.get("symbol_id", "")
-                same_file = symbol.file.replace("\\", "/").lower() == (
-                    dossier.task.file.replace("\\", "/").lower()
+                symbol_argument = artifact.arguments.get(
+                    "subject_symbol_id"
+                ) or artifact.arguments.get("symbol_id", "")
+                same_file = (
+                    symbol.file.replace("\\", "/").lower()
+                    == dossier.task.file.replace("\\", "/").lower()
                 )
                 deletion_anchor_lines = {
                     anchor.anchor_line for anchor in dossier.task.deletion_anchors
@@ -342,10 +350,16 @@ def _verify_candidate(
                     else dossier.task.resolution_lines
                 )
                 overlaps_change = any(
-                    symbol.start_line <= line <= symbol.end_line
-                    for line in scope_lines
+                    (
+                        symbol.start_line <= line <= symbol.end_line
+                        for line in scope_lines
+                    )
                 )
-                if symbol_argument != symbol.symbol_id or not same_file or not overlaps_change:
+                if (
+                    symbol_argument != symbol.symbol_id
+                    or not same_file
+                    or (not overlaps_change)
+                ):
                     raise ValueError("symbol_scope_mismatch")
             except (ValueError, ValidationError) as exc:
                 invalid_references.append(
@@ -375,16 +389,19 @@ def _verify_candidate(
                 )
             )
             continue
-        # TOOL_CALL
         health = _health_tool_artifact(
-            artifact, revision=revision, tool_client=tool_client,
-            enabled_replay_tools=enabled_replay_tools, batch=batch,
+            artifact,
+            revision=revision,
+            tool_client=tool_client,
+            enabled_replay_tools=enabled_replay_tools,
+            batch=batch,
             replay_cache=replay_cache,
         )
         if health.status is EvidenceValidationStatus.INVALID:
             invalid_references.append(
                 EvidenceRefError(
-                    alias="", reason=EvidenceRefErrorReason.ARTIFACT_UNAVAILABLE,
+                    alias="",
+                    reason=EvidenceRefErrorReason.ARTIFACT_UNAVAILABLE,
                     detail="; ".join(health.limitations),
                 )
             )
@@ -396,11 +413,9 @@ def _verify_candidate(
                     tool=artifact.tool,
                     arguments=dict(artifact.arguments),
                     declared_role=ref.declared_role,
-                    reason=(
-                        health.limitations[0]
-                        if health.limitations
-                        else "evidence_unavailable"
-                    ),
+                    reason=health.limitations[0]
+                    if health.limitations
+                    else "evidence_unavailable",
                     limitations=health.limitations,
                 )
             )
@@ -418,13 +433,19 @@ def _verify_candidate(
                 limitations=health.limitations,
             )
         )
-
+    grounding: Literal["grounded", "partially_grounded", "ungrounded"]
     if not patch_valid:
         grounding = "ungrounded"
         rejection = "patch_artifact_missing_or_corrupt"
-    elif invalid_references or evidence_gaps or any(
-        item.validation_status is EvidenceValidationStatus.LIMITED
-        for item in valid_evidence
+    elif (
+        invalid_references
+        or evidence_gaps
+        or any(
+            (
+                item.validation_status is EvidenceValidationStatus.LIMITED
+                for item in valid_evidence
+            )
+        )
     ):
         grounding = "partially_grounded"
         rejection = ""
@@ -438,18 +459,23 @@ def _verify_candidate(
         valid_evidence=valid_evidence,
         evidence_gaps=evidence_gaps,
         invalid_references=invalid_references,
-        grounding_status=grounding,  # type: ignore[arg-type]
+        grounding_status=grounding,
         eligible_for_judge=eligible,
         rejection_reason=rejection,
     )
     batch.trace.append(
-        ("candidate_verification_completed", _stable_json({
-            "candidate_id": candidate.id,
-            "grounding": verification.grounding_status,
-            "eligible": eligible,
-            "rejection_reason": rejection,
-            "evidence_gaps": len(evidence_gaps),
-        }))
+        (
+            "candidate_verification_completed",
+            _stable_json(
+                {
+                    "candidate_id": candidate.id,
+                    "grounding": verification.grounding_status,
+                    "eligible": eligible,
+                    "rejection_reason": rejection,
+                    "evidence_gaps": len(evidence_gaps),
+                }
+            ),
+        )
     )
     return verification
 
@@ -480,24 +506,26 @@ def verify_evidence(
             batch=batch,
             replay_cache=replay_cache,
         )
-
     replay_requested = sum(
-        1 for event, _detail in batch.trace if event == "evidence_replay_requested"
+        (1 for event, _detail in batch.trace if event == "evidence_replay_requested")
     )
     replay_valid = sum(
-        1 for event, _detail in batch.trace if event == "evidence_replay_valid"
+        (1 for event, _detail in batch.trace if event == "evidence_replay_valid")
     )
     replay_limited = sum(
-        1 for event, _detail in batch.trace if event == "evidence_replay_limited"
+        (1 for event, _detail in batch.trace if event == "evidence_replay_limited")
     )
     replay_failed = sum(
-        1
-        for event, _detail in batch.trace
-        if event in {
-            "evidence_replay_failed",
-            "evidence_replay_unavailable",
-            "evidence_replay_invalid",
-        }
+        (
+            1
+            for event, _detail in batch.trace
+            if event
+            in {
+                "evidence_replay_failed",
+                "evidence_replay_unavailable",
+                "evidence_replay_invalid",
+            }
+        )
     )
     ref_stats = {"selected": 0, "valid": 0, "limited": 0, "invalid": 0}
     for verification in batch.candidates.values():
@@ -521,35 +549,44 @@ def verify_evidence(
         else:
             source_counts["tool"] += 1
     batch.trace.append(
-        ("evidence_verification_metrics", _stable_json({
-            "candidates": len(dossiers),
-            "artifacts_patch": source_counts["patch"],
-            "artifacts_context": source_counts["context"],
-            "artifacts_tool": source_counts["tool"],
-            "refs_selected": ref_stats["selected"],
-            "refs_valid": ref_stats["valid"],
-            "refs_limited": ref_stats["limited"],
-            "refs_invalid": ref_stats["invalid"],
-            "replay_requested": replay_requested,
-            "replay_valid": replay_valid,
-            "replay_limited": replay_limited,
-            "replay_failed": replay_failed,
-            "graph_indeterminate": sum(
-                gap.reason == "graph_indeterminate"
-                for verification in batch.candidates.values()
-                for gap in verification.evidence_gaps
+        (
+            "evidence_verification_metrics",
+            _stable_json(
+                {
+                    "candidates": len(dossiers),
+                    "artifacts_patch": source_counts["patch"],
+                    "artifacts_context": source_counts["context"],
+                    "artifacts_tool": source_counts["tool"],
+                    "refs_selected": ref_stats["selected"],
+                    "refs_valid": ref_stats["valid"],
+                    "refs_limited": ref_stats["limited"],
+                    "refs_invalid": ref_stats["invalid"],
+                    "replay_requested": replay_requested,
+                    "replay_valid": replay_valid,
+                    "replay_limited": replay_limited,
+                    "replay_failed": replay_failed,
+                    "graph_indeterminate": sum(
+                        (
+                            gap.reason == "graph_indeterminate"
+                            for verification in batch.candidates.values()
+                            for gap in verification.evidence_gaps
+                        )
+                    ),
+                    "evidence_gaps": sum(
+                        (
+                            len(verification.evidence_gaps)
+                            for verification in batch.candidates.values()
+                        )
+                    ),
+                    "judge_eligible": sum(
+                        (v.eligible_for_judge for v in batch.candidates.values())
+                    ),
+                    "judge_rejected": sum(
+                        (not v.eligible_for_judge for v in batch.candidates.values())
+                    ),
+                }
             ),
-            "evidence_gaps": sum(
-                len(verification.evidence_gaps)
-                for verification in batch.candidates.values()
-            ),
-            "judge_eligible": sum(
-                v.eligible_for_judge for v in batch.candidates.values()
-            ),
-            "judge_rejected": sum(
-                not v.eligible_for_judge for v in batch.candidates.values()
-            ),
-        }))
+        )
     )
     return batch
 

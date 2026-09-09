@@ -7,10 +7,6 @@ import com.codeguard.agent.graph.ProjectSnapshot;
 import com.codeguard.agent.graph.ProjectSnapshotManager;
 import com.codeguard.agent.graph.ProjectSnapshotProvider;
 import com.codeguard.agent.graph.SourceSnapshotProvider;
-import com.codeguard.agent.tools.GetFileContentTool;
-import com.codeguard.agent.tools.InspectChangeImpactTool;
-import com.codeguard.agent.tools.InspectPathTool;
-import com.codeguard.agent.tools.InspectStructureTool;
 import com.codeguard.agent.tools.QueryRelationsTool;
 import com.codeguard.agent.tools.ReadSymbolTool;
 import com.codeguard.agent.tools.ResolveChangeContextTool;
@@ -72,22 +68,18 @@ public final class ToolSessionManager {
             this.projectKey = ProjectKey.of(repoRoot, revision);
             this.snapshotManager = snapshotManager;
             // Do not start the project-wide index merely by creating a session. The
-            // source-only get_file_content path can now complete without any index build;
+            // source-only read_symbol path can now complete without any index build;
             // callers that explicitly request the legacy snapshot still trigger it here.
             this.snapshot = null;
             this.snapshotProvider = snapshotManager.lazyProvider(projectKey);
 
             this.registry = new ToolRegistry();
             // 加工具 = 在这里 register 一个实现即可,无需改协议(扩展接缝 design.md D2)。
-            this.registry.register(new GetFileContentTool((SourceSnapshotProvider) snapshotProvider));
             // Stable controlled-review capabilities.  The historical tools
             // below remain registered for an explicit compatibility mode.
             this.registry.register(new ReadSymbolTool(snapshotProvider));
             this.registry.register(new QueryRelationsTool(snapshotProvider));
             this.registry.register(new ResolveChangeContextTool(snapshotProvider));
-            this.registry.register(new InspectPathTool(snapshotProvider));
-            this.registry.register(new InspectChangeImpactTool(snapshotProvider));
-            this.registry.register(new InspectStructureTool(snapshotProvider));
         }
 
         public String getId() {

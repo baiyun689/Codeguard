@@ -5,9 +5,7 @@
 """
 
 from __future__ import annotations
-
 import json
-
 from codeguard_agent.models.evidence import (
     ArtifactAvailability,
     EvidenceCaptureMode,
@@ -20,17 +18,12 @@ from codeguard_agent.models.tasks import (
     SymbolResolutionStatus,
     TaskSymbolContext,
 )
-from codeguard_agent.pipeline.execution.engines import (
-    DirectEngine,
-    ToolAgentEngine,
-    _gathered_context_from_records,
-)
+from codeguard_agent.pipeline.execution.engines import DirectEngine
 from codeguard_agent.pipeline.evidence.ledger import (
     EvidenceCatalogBuilder,
     capture_tool_records,
     render_evidence_catalog,
 )
-from codeguard_agent.pipeline.reviewers.reviewers import build_reviewer_user_prompt
 from codeguard_agent.pipeline.execution.discovery import (
     COMPLETE_PATCH_RESULT,
     REPEATED_TOOL_RESULT,
@@ -70,7 +63,7 @@ def _fact(source: str, content: str, truncated: bool = False) -> ResolvedSymbol:
 
 def _record(
     *,
-    tool: str = "get_file_content",
+    tool: str = "read_symbol",
     arguments: dict | None = None,
     output: str = "REAL CONTENT",
     status: str = "complete",
@@ -85,7 +78,7 @@ def _record(
         output=output,
         duration_ms=1.0,
         status=status,
-        reuse_key="get_file_content:{}",
+        reuse_key="read_symbol:{}",
         reused_from_call_id=reused_from_call_id,
         resolved_output=resolved_output,
     )
@@ -102,9 +95,6 @@ class _Builder:
 
     def append(self, catalog, records):
         return self._builder.append_tool_records(catalog, records)
-
-
-# ── build_initial:P01/Cxx ──────────────────────────────────────────────
 
 
 def test_初始目录_注册_patch_为_P01():
@@ -140,29 +130,30 @@ def test_初始目录_空_bundle_仅_patch():
 
 
 def test_初始目录_截断事实保持可用并带限制声明():
-    bundle = _bundle(_fact("resolve_change_context", "symbol A"), truncated=True).model_copy(
-        update={"limitations": ("symbol_context_truncated",)}
-    )
+    bundle = _bundle(
+        _fact("resolve_change_context", "symbol A"), truncated=True
+    ).model_copy(update={"limitations": ("symbol_context_truncated",)})
     catalog = _Builder().build(bundle)
     art = catalog.artifacts[catalog.alias_to_artifact_id["C01"]]
     assert art.availability is ArtifactAvailability.AVAILABLE
     assert art.limitations == ("symbol_context_truncated",)
 
 
-# ── append_tool_records:Txx ────────────────────────────────────────────
-
-
 def test_追加工具记录_按首次出现顺序生成_Txx():
     catalog = _Builder().build()
     records = [
-        _record(tool="inspect_change_impact", arguments={"symbol_id": "A"}, output="edges A"),
-        _record(tool="get_file_content", output="code B"),
+        _record(
+            tool="query_relations",
+            arguments={"subject_symbol_id": "A", "relation": "callees"},
+            output="edges A",
+        ),
+        _record(tool="read_symbol", output="code B"),
     ]
     catalog = _Builder().append(catalog, records)
     assert catalog.tool_aliases() == ["T01", "T02"]
     t1 = catalog.artifacts[catalog.alias_to_artifact_id["T01"]]
     assert t1.source_kind is EvidenceSourceKind.TOOL_CALL
-    assert t1.tool == "inspect_change_impact"
+    assert t1.tool == "query_relations"
     assert t1.payload == "edges A"
     assert t1.capture_mode is EvidenceCaptureMode.EXECUTED
     assert t1.call_id == "call-1"
@@ -173,7 +164,9 @@ def test_追加工具记录_短标记复用_与_complete_patch_不建新artifact
     records = [
         _record(call_id="call-1"),
         _record(
-            call_id="call-2", output=REPEATED_TOOL_RESULT, status="reused",
+            call_id="call-2",
+            output=REPEATED_TOOL_RESULT,
+            status="reused",
             resolved_output="REAL CONTENT",
         ),
         _record(call_id="call-3", output=COMPLETE_PATCH_RESULT, status="reused"),
@@ -181,9 +174,11 @@ def test_追加工具记录_短标记复用_与_complete_patch_不建新artifact
     ]
     catalog = _Builder().append(catalog, records)
     assert catalog.tool_aliases() == ["T01", "T02"]
-    assert [a.payload for a in catalog.artifacts.values() if a.source_kind is EvidenceSourceKind.TOOL_CALL] == [
-        "REAL CONTENT", "REAL CONTENT",
-    ]
+    assert [
+        a.payload
+        for a in catalog.artifacts.values()
+        if a.source_kind is EvidenceSourceKind.TOOL_CALL
+    ] == ["REAL CONTENT", "REAL CONTENT"]
     assert "call-3" not in {a.call_id for a in catalog.artifacts.values()}
 
 
@@ -224,8 +219,7 @@ def test_追加工具记录_失败状态映射():
 
 def test_追加工具记录_无法识别状态映射为_invalid():
     catalog = _Builder().append(
-        _Builder().build(),
-        [_record(call_id="invalid", status="unexpected")],
+        _Builder().build(), [_record(call_id="invalid", status="unexpected")]
     )
     artifact = catalog.artifacts[catalog.alias_to_artifact_id["T01"]]
     assert artifact.availability is ArtifactAvailability.INVALID
@@ -249,61 +243,69 @@ def test_capture_tool_records_只向_state_暴露引用不暴露原始输出():
             reused_from_call_id="task_patch",
         ),
     ]
-
     batch = capture_tool_records(catalog, records)
-
     assert len(batch.trace_refs) == 3
     assert batch.trace_refs[0].artifact_id
     assert batch.trace_refs[1].artifact_id == batch.trace_refs[0].artifact_id
-    assert batch.trace_refs[1].reused_from_artifact_id == batch.trace_refs[0].artifact_id
+    assert (
+        batch.trace_refs[1].reused_from_artifact_id == batch.trace_refs[0].artifact_id
+    )
     assert batch.trace_refs[2].artifact_id == catalog.alias_to_artifact_id["P01"]
     assert "output" not in batch.trace_refs[0].model_dump()
     artifact = batch.catalog.artifacts[batch.trace_refs[0].artifact_id]
     assert artifact.payload == "SECRET RAW PAYLOAD"
 
 
-# ── reused 解析到首次真实 payload ──────────────────────────────────────
-
-
 class _FakeDelegate:
     def __init__(self):
         self.calls = 0
 
-    def get_file_content(self, _path):
+    def read_symbol(self, _path, **kwargs):
         self.calls += 1
         return ToolResponse(success=True, result="REAL CONTENT")
 
-    def inspect_change_impact(self, _symbol_id):
+    def query_relations(self, _symbol_id):
         self.calls += 1
-        return ToolResponse(success=True, result=json.dumps({
-            "schema_version": 2,
-            "outcome": "found",
-            "coverage": "complete",
-            "source_scope": "MAIN",
-            "subject_symbol_id": "java:A#m()",
-            "symbols": [{
-                "id": "java:A#m()", "kind": "method", "source_set": "MAIN",
-            }],
-            "relationships": [{
-                "sourceId": "java:B#call()", "targetId": "java:A#m()",
-                "kind": "calls", "file": "B.java", "line": 1,
-                "source_set": "MAIN", "resolution": "RESOLVED",
-                "verbose_diagnostic": "must stay out of reviewer context",
-            }],
-            "unresolved_relationships": [],
-            "unresolved_count": 0,
-            "limitations": [],
-            "snapshot_main_coverage": "partial",
-        }, ensure_ascii=False))
+        return ToolResponse(
+            success=True,
+            result=json.dumps(
+                {
+                    "schema_version": 2,
+                    "outcome": "found",
+                    "coverage": "complete",
+                    "source_scope": "MAIN",
+                    "subject_symbol_id": "java:A#m()",
+                    "symbols": [
+                        {"id": "java:A#m()", "kind": "method", "source_set": "MAIN"}
+                    ],
+                    "relationships": [
+                        {
+                            "sourceId": "java:B#call()",
+                            "targetId": "java:A#m()",
+                            "kind": "calls",
+                            "file": "B.java",
+                            "line": 1,
+                            "source_set": "MAIN",
+                            "resolution": "RESOLVED",
+                            "verbose_diagnostic": "must stay out of reviewer context",
+                        }
+                    ],
+                    "unresolved_relationships": [],
+                    "unresolved_count": 0,
+                    "limitations": [],
+                    "snapshot_main_coverage": "partial",
+                },
+                ensure_ascii=False,
+            ),
+        )
 
 
 def test_共享协调器_跨任务复用_返回真实内容且记录指向首次调用():
     coordinator = DiscoveryToolCoordinator()
     client_a = CoordinatedDiscoveryToolClient(_FakeDelegate(), coordinator)
     client_b = CoordinatedDiscoveryToolClient(_FakeDelegate(), coordinator)
-    resp_a = client_a.get_file_content("java:A#run()")
-    resp_b = client_b.get_file_content("java:A#run()")
-    # 首发与跨任务复用都回显当前 task 的编号；复用命中仍返回真实内容。
+    resp_a = client_a.read_symbol("java:A#run()")
+    resp_b = client_b.read_symbol("java:A#run()")
     assert resp_a.result == "REAL CONTENT\n\n[证据编号 T01]"
     assert resp_b.result == "REAL CONTENT\n\n[证据编号 T01]"
     record_a = client_a.trace_records[-1]
@@ -314,45 +316,11 @@ def test_共享协调器_跨任务复用_返回真实内容且记录指向首次
     assert record_b.reused_from_call_id == record_a.call_id
 
 
-def test_图谱工具给_reviewer_摘要但记录保留原始响应():
-    client = CoordinatedDiscoveryToolClient(
-        _FakeDelegate(), DiscoveryToolCoordinator()
-    )
-
-    response = client.inspect_change_impact("java:A#m()")
-
-    reviewer_payload = json.loads(response.result.split("\n\n[证据编号", 1)[0])
-    record = client.trace_records[-1]
-    raw_payload = json.loads(record.resolved_output)
-    assert reviewer_payload["outcome"] == "found"
-    assert "snapshot_main_coverage" not in reviewer_payload
-    assert "verbose_diagnostic" not in reviewer_payload["relationships"][0]
-    assert raw_payload["snapshot_main_coverage"] == "partial"
-    assert raw_payload["relationships"][0]["verbose_diagnostic"].startswith("must")
-
-
-def test_无目录降级上下文_图谱记录仍只暴露摘要():
-    raw = _FakeDelegate().inspect_change_impact("java:A#m()").result
-    contexts = _gathered_context_from_records([
-        _record(
-            tool="inspect_change_impact",
-            arguments={"symbol_id": "java:A#m()"},
-            output=raw,
-            resolved_output=raw,
-        )
-    ])
-
-    assert len(contexts) == 1
-    payload = json.loads(contexts[0].content)
-    assert payload["outcome"] == "found"
-    assert "snapshot_main_coverage" not in payload
-
-
 def test_同一客户端二次调用_返回短标记_但_record_解析真实payload():
     coordinator = DiscoveryToolCoordinator()
     client = CoordinatedDiscoveryToolClient(_FakeDelegate(), coordinator)
-    first = client.get_file_content("java:A#run()")
-    second = client.get_file_content("java:A#run()")
+    first = client.read_symbol("java:A#run()")
+    second = client.read_symbol("java:A#run()")
     assert first.result == "REAL CONTENT\n\n[证据编号 T01]"
     assert second.result == REPEATED_TOOL_RESULT
     record = client.trace_records[-1]
@@ -366,29 +334,12 @@ def test_complete_patch_短标记记录_解析目标为_patch():
         DiscoveryToolCoordinator(),
         complete_patch_symbol_ids={"java:New#m()"},
     )
-    resp = client.get_file_content("java:New#m()")
+    resp = client.read_symbol("java:New#m()")
     assert resp.result == COMPLETE_PATCH_RESULT
     assert "P01" not in (resp.result or "")
     record = client.trace_records[-1]
     assert record.reused_from_call_id == "task_patch"
     assert record.resolved_output == ""
-
-
-def test_gathered_context_复用记录携带真实payload():
-    record = _record(output=REPEATED_TOOL_RESULT, status="reused", resolved_output="REAL CONTENT")
-    gathered = _gathered_context_from_records([record])
-    assert [g.content for g in gathered] == ["REAL CONTENT"]
-
-
-# ── 目录经提示词与引擎贯通 ─────────────────────────────────────────────
-
-
-def test_用户提示词_带目录时只渲染外部_evidence_id():
-    bundle = _bundle(_fact("resolve_change_context", "symbol A"))
-    catalog = _Builder().build(bundle)
-    prompt = build_reviewer_user_prompt(task=_task(), symbol_context=bundle, catalog=catalog)
-    assert 'evidence_id="P01"' not in prompt
-    assert 'evidence_id="C01"' in prompt
 
 
 def test_llm_catalog_hides_internal_patch_alias():
@@ -399,11 +350,7 @@ def test_llm_catalog_hides_internal_patch_alias():
 
 
 def test_绑定器_role为枚举成员时不抛():
-    # str-Enum 成员在 3.11+ 下 str() 返回限定名,绑定器必须取 .value(回归)。
-    from codeguard_agent.models.schemas import (
-        DiscoveredIssue,
-        EvidenceRefSelection,
-    )
+    from codeguard_agent.models.schemas import DiscoveredIssue, EvidenceRefSelection
     from codeguard_agent.pipeline.evidence.ledger import bind_discovered_issue
 
     catalog = _Builder().build(_bundle(_fact("resolve_change_context", "symbol A")))
@@ -417,21 +364,17 @@ def test_绑定器_role为枚举成员时不抛():
         ],
     )
     candidate = bind_discovered_issue(
-        issue, task=_task(), reviewer="threat_model",
-        catalog=catalog, candidate_index=1,
+        issue, task=_task(), reviewer="threat_model", catalog=catalog, candidate_index=1
     )
     assert candidate.evidence_ref_errors == []
     assert [ref.declared_role for ref in candidate.evidence_refs] == [
-        EvidenceRole.MECHANISM,  # 自动 patch
+        EvidenceRole.MECHANISM,
         EvidenceRole.REACHABILITY,
     ]
 
 
 def test_绑定器保留失败工具引用供_verifier_重放():
-    from codeguard_agent.models.schemas import (
-        DiscoveredIssue,
-        EvidenceRefSelection,
-    )
+    from codeguard_agent.models.schemas import DiscoveredIssue, EvidenceRefSelection
     from codeguard_agent.pipeline.evidence.ledger import bind_discovered_issue
 
     catalog = _Builder().append(
@@ -447,22 +390,13 @@ def test_绑定器保留失败工具引用供_verifier_重放():
             EvidenceRefSelection(alias="T01", role=EvidenceRole.REACHABILITY)
         ],
     )
-
     candidate = bind_discovered_issue(
-        issue,
-        task=_task(),
-        reviewer="threat_model",
-        catalog=catalog,
-        candidate_index=1,
+        issue, task=_task(), reviewer="threat_model", catalog=catalog, candidate_index=1
     )
-
     assert candidate.evidence_ref_errors == []
-    assert candidate.evidence_refs[-1].artifact_id == catalog.alias_to_artifact_id["T01"]
-
-
-def test_用户提示词_无目录时不含_evidence_id():
-    prompt = build_reviewer_user_prompt(task=_task())
-    assert "evidence_id=" not in prompt
+    assert (
+        candidate.evidence_refs[-1].artifact_id == catalog.alias_to_artifact_id["T01"]
+    )
 
 
 class _FakeStructured:
@@ -481,11 +415,6 @@ class _FakeLLM:
         return _FakeStructured(self._result)
 
 
-class _SuccessfulAgentEngine(ToolAgentEngine):
-    def _run_agent(self, llm, system_prompt, user_prompt, *, result_schema):  # noqa: ARG002
-        return {"messages": []}
-
-
 def test_直连引擎_透传目录():
     catalog = _Builder().build()
     outcome = DirectEngine().review(
@@ -498,39 +427,3 @@ def test_直连引擎_透传目录():
         evidence_catalog=catalog,
     )
     assert outcome.evidence_catalog is catalog
-
-
-def test_react_正常路径_目录追加工具记录():
-    records = [_record(tool="inspect_change_impact", arguments={"symbol_id": "A"}, output="edges A")]
-    client = type("Client", (), {"trace_records": records})()
-    engine = _SuccessfulAgentEngine(tool_client=client)
-    catalog = _Builder().build()
-    outcome = engine.review(
-        _FakeLLM(ReviewResult(summary="x")),
-        system_prompt="s",
-        user_prompt="u",
-        reviewer_name="logic",
-        max_retries=1,
-        structured_method="function_calling",
-        evidence_catalog=catalog,
-    )
-    assert outcome.evidence_catalog is not None
-    assert outcome.evidence_catalog.tool_aliases() == ["T01"]
-    t1 = outcome.evidence_catalog.artifacts[outcome.evidence_catalog.alias_to_artifact_id["T01"]]
-    assert t1.payload == "edges A"
-    assert outcome.evidence_catalog.patch_alias() == "P01"
-
-
-def test_react_无目录输入时_结果目录为空():
-    records = [_record()]
-    client = type("Client", (), {"trace_records": records})()
-    engine = _SuccessfulAgentEngine(tool_client=client)
-    outcome = engine.review(
-        _FakeLLM(ReviewResult(summary="x")),
-        system_prompt="s",
-        user_prompt="u",
-        reviewer_name="logic",
-        max_retries=1,
-        structured_method="function_calling",
-    )
-    assert outcome.evidence_catalog is None

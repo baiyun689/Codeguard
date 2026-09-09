@@ -1,117 +1,40 @@
-# 被测目标 profile 清单(评测的"被测系统"维度)。
-#
-# 一个 profile = mode(pipeline) + 启用工具集 + 可选模型覆盖 + 是否开误报复核(fp_verify)。
-# 加一个工具 / 换一种编排 / 开关误报复核 = 在此加一行,数据集与指标零改动(见 design.md D3)。
-# 用法:python -m evals.runner --profile pipeline-file
-# 不指定 --profile 时,用 --tools 合成 ad-hoc profile(管线 + 工具开/关)。
-
+# Current bounded reviewer and explicit comparison profiles. Historical engines were removed.
 profiles:
-  # 消融 1:同一模型单次只看 diff，不经过 Council/图谱/证据链。
   eval-direct-diff:
     mode: pipeline
     execution: direct
     orchestration: direct-diff
     discovery_mode: direct
     tools: []
-
-  # 消融 2:三路 Council，只看 diff/预取上下文，不开放项目工具。
-  eval-council-diff:
-    mode: pipeline
-    execution: pipeline
-    orchestration: adr-032
-    discovery_mode: react
-    tools: []
-
-  # 消融 3:发现者使用项目图谱，EvidenceAgent 不发起补证工具调用。
-  eval-council-codegraph:
-    mode: pipeline
-    execution: pipeline
-    orchestration: adr-032
-    discovery_mode: react
-    tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
-    evidence_tools: []
-    strict_tools: true
-
-  # 完整档:发现与举证共享项目语义图。
   eval-codeguard-full:
     mode: pipeline
     execution: pipeline
-    orchestration: adr-032
-    discovery_mode: react
-    tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
-    evidence_tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
-    strict_tools: true
-
-  # 受控 Plan-and-Execute：统一 DirectTriage → GraphPlan → 有界子任务 React，
-  # 仅在 GraphPlan 明确声明时调用工具；预算由 CODEGUARD_CONTROLLED_* 配置。
-  eval-controlled-codegraph:
-    mode: pipeline
-    execution: pipeline
-    orchestration: plan-and-execute
+    orchestration: change-review
     discovery_mode: controlled
     tools: [read_symbol, query_relations]
     evidence_tools: []
     strict_tools: true
-
-  # 消融 5:证据链整链关闭——Council + 发现者工具照跑,候选由 DirectJudge
-  # 直接终审(无取证/门控/证据综合)。与 eval-codeguard-full 仅差 evidence_mode
-  # 这一个变量,用于量化证据链本体的净收益。
-  # 注意:off 必须加引号——YAML 1.1 会把裸 off 解析成布尔 False。
-  eval-council-noevidence:
+  eval-controlled-codegraph:
     mode: pipeline
     execution: pipeline
-    orchestration: adr-032
-    discovery_mode: react
-    tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
+    orchestration: change-review
+    discovery_mode: controlled
+    tools: [read_symbol, query_relations]
+    evidence_tools: []
+    strict_tools: true
+  eval-source-only:
+    mode: pipeline
+    execution: pipeline
+    orchestration: change-review
+    discovery_mode: controlled
+    tools: [read_symbol]
+    evidence_tools: []
+    strict_tools: true
+  eval-no-evidence:
+    mode: pipeline
+    execution: pipeline
+    orchestration: change-review
+    discovery_mode: controlled
+    tools: [read_symbol, query_relations]
     evidence_mode: "off"
     strict_tools: true
-
-  # 管线但不开工具:并行三审查员直连(无工具对照基准)。
-  pipeline-notools:
-    mode: pipeline
-    orchestration: adr-032
-    discovery_mode: react
-    tools: []
-
-  # ADR-032 smoke:默认 ReviewCouncil 编排的零工具轻量冒烟档。
-  # 用于确认 summary? → symbol_resolution → review_council → judge 可执行。
-  adr-032-smoke:
-    mode: pipeline
-    orchestration: adr-032
-    discovery_mode: react
-    tools: []
-
-  # 管线 + 误报复核:在 pipeline-notools 基础上打开误报过滤第二段的独立异源 LLM 复核。
-  # 与 pipeline-notools 仅差 fp_verify 这一个变量,用于量化"独立复核员"对 Precision/误报率的净增益
-  # (复核只删不增,需同时盯 Recall 是否被误删拖低)。需配 CODEGUARD_JUDGE_* 异源模型。
-  pipeline-fpverify:
-    mode: pipeline
-    orchestration: adr-032
-    discovery_mode: react
-    tools: []
-    fp_verify: true
-
-  # 管线 + 源码片段工具:审查员走 ReAct,可调 get_file_content 读 diff 之外的已解析 symbol。
-  # 与 pipeline-notools 仅差"是否开工具"这一个变量,用于量化局部源码读取能力的工具增益。
-  pipeline-file:
-    mode: pipeline
-    orchestration: adr-032
-    discovery_mode: react
-    tools: [get_file_content]
-
-  # 管线 + 项目语义图:三路角色工具共享完整 Java AST/符号图，只按 symbol_id 查询局部事实。
-  pipeline-codegraph:
-    mode: pipeline
-    orchestration: adr-032
-    discovery_mode: react
-    tools: [get_file_content, inspect_structure, inspect_change_impact, inspect_path]
-
-  # —— 扩展占位(零成本预留,框架无需改动)——
-  # 后续逐个加重型工具时,在此追加 profile 即可:
-  # pipeline-ast:    { mode: pipeline, tools: [get_file_content, get_method_definition] }
-  # pipeline-graph:  { mode: pipeline, tools: [get_file_content, get_call_graph] }
-  # pipeline-rag:    { mode: pipeline, tools: [get_file_content, semantic_search] }
-  #
-  # 将来引入规则引擎检测器(后续独立 change)时,亦表现为新增 profile:
-  # rules-only:      { mode: pipeline, tools: [] }      # 仅规则检测
-  # rules+llm:       { mode: pipeline, tools: [get_file_content] }  # 规则 + LLM 并联

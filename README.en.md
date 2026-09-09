@@ -9,7 +9,7 @@ Codeguard combines a Python Agent with a Java Gateway for controlled review orch
 ## Features
 
 - Security, behavioral, and maintainability review.
-- Task-scoped Plan-and-Execute controlled workflow.
+- Change-driven bounded ReAct with one unified reviewer.
 - Java AST, symbol, and call-graph fact tools.
 - Evidence Ledger, deterministic verification, and batched adjudication.
 - Multi-provider routing, rate limiting, circuit breaking, retries, and fallback.
@@ -35,10 +35,10 @@ GitHub pull_request webhook
         |
         v
 Python Agent
-  PR size routing (small/medium/large) -> diff tasks -> task DirectGate
-  -> Full-task PlanUnits -> knowledge routing -> SymbolResolution
-  -> controlled review: DirectTriage -> GraphPlan -> bounded Execute
-  -> EvidenceAssessment -> optional one Delta step
+  PR size routing (normal/large) -> diff tasks -> task DirectGate
+  -> SymbolResolution -> deterministic changed-declaration groups -> source preparation
+  -> controlled review: one bounded reviewer per change group
+  -> InvestigationResult (runtime-bound evidence references)
   -> deterministic candidate location -> evidence verification -> batched verdict
   LLM calls routed through LLM Proxy or direct to provider
         |
@@ -48,11 +48,70 @@ GitHub Check Run, annotations, and pull request comments
 
 The Python Agent owns review reasoning and orchestration. The Java Gateway is three independent services: LLM Proxy handles multi-provider routing and resilience (protocol forwarding, no semantic judgment), Tool Server collects deterministic code facts with file-access guardrails, and CI Webhook manages GitHub event ingestion and review job scheduling.
 
-For Full tasks, OCR-style PlanUnits route knowledge topics and concrete objectives. The default controlled workflow always runs the three fixed review dimensions—threat modeling, behavior, and maintainability. DirectTriage proposes candidates; GraphPlan selects exact tools and symbols from the resolved task context; Execute uses bounded budgets; EvidenceAssessment may request at most one Delta step. Plan does not select tools or make verdicts, and the bounded review stages keep task-scoped tool results isolated.
+The default `controlled` path groups actual changed declarations (at most four per group), prepares bounded source pages, then lets the same reviewer read, query and produce candidates. It bypasses knowledge Plan, Summary, DirectTriage and model GraphPlan. The old multi-reviewer, planner, triage, summary and fixed-step execution paths have been removed; `direct` remains the tool-free baseline.
 
-Before stable candidate IDs are created, Full and Direct findings pass through the same location guardrail. The system accepts only a unique, verbatim one-to-five-line snippet from added task lines. Invalid locations are relocated in bounded LLM batches and deterministically verified again; unresolved findings remain file-level with `line=0`, so a location failure does not erase a valid concern or create a misplaced GitHub inline comment.
+Each group has six exploration decisions and eight tool attempts, including preparation, plus at most one reserved conclusion. The task budget is 32 attempts. Source reads use at most half the allowance; source plus one-hop relation prefetch uses at most six attempts with the default budget, leaving at least two for dynamic investigation. Relation pages request up to six results and bounded endpoint excerpts, without automatically following cursors. Unqueried relations and page coverage remain explicit. Preparation shares the investigation deadline, while empty prefetched frontiers do not count as model looping. Source and graph tools admit only observed canonical IDs; member directories provide navigation without an additional full-class read. Tool payloads enter the evidence ledger unchanged.
 
-The three review dimensions collect raw candidates by ID only. After fan-in, the coordinator builds connected candidate blocks from full Git paths and local positions, and runs conservative structured-LLM deduplication with at most eight parallel calls. A group removes duplicates only when it has high confidence and satisfies the same-root-cause, same-impact, and single-fix criteria; invalid, low-confidence, or failed results preserve every candidate.
+The model interface contains assessment and queries/result, without historical triage metadata or observation receipts. A result can contain up to eight independent findings, each with at most three real observations. Patch-only findings need no arbitrary tool citation; runtime binds the patch automatically. Locations use verbatim added snippets or current-revision deletion anchors, with a file-level fallback and no extra location model call in the controlled path.
+
+Unresolved questions, missing symbols and truncation remain incomplete even when other findings survive. Deterministic evidence verification establishes provenance and scope; the final Judge assesses the claim. This does not guarantee semantic correctness or exhaustive graph coverage. See [architecture and five-case validation](services/agent/ARCHITECTURE.md) for actual results and limitations.
+
+### Agent workflow
+
+`NORMAL` uses file tasks when the diff has at most 15 files and 60,000 characters. Exceeding either threshold selects `LARGE` and hunk tasks. Hunk count is reported but does not create another tier.
+
+This diagram follows the actual outer LangGraph nodes. Direct and Full are task categories: Direct tasks are processed first, followed by selected Full tasks. Nodes with no matching tasks return without a model call.
+
+```mermaid
+flowchart TD
+    Diff[Diff] --> Classify[classify_mode]
+    Classify -->|NORMAL| File[file_task_builder]
+    Classify -->|LARGE| Hunk[diff_task_builder]
+    File --> Route[task_route · DirectGate]
+    Hunk --> Route
+    Route --> Direct[direct_task_review]
+    Direct --> Select[task_selection · Full tasks]
+    Select --> Symbols[symbol_resolution]
+    Symbols --> Review[controlled_review]
+    Review --> Coordinator[council_coordinator]
+    Coordinator --> Verify[evidence_verifier]
+    Verify --> Judge[council_judge]
+    Judge --> Merge[causal_merge]
+    Merge --> Result[ReviewResult]
+```
+
+| Node | Responsibility |
+|---|---|
+| `classify_mode` | Select file or hunk granularity from diff size, without an LLM. |
+| `file_task_builder` / `diff_task_builder` | Build file / hunk tasks with changed lines and deletion anchors. |
+| `task_route` | Deterministically route low-risk documentation/comment tasks to Direct and the remainder to Full. |
+| `direct_task_review` | Review, locate and adjudicate only Direct tasks; retain their results separately. |
+| `task_selection` | Select Full tasks and record large-diff coverage limits. |
+| `symbol_resolution` | Resolve changed locations to real symbol IDs through the Gateway. |
+| `controlled_review` | Group changed declarations, prefetch context, run bounded ReAct, locate candidates and bind evidence. |
+| `council_coordinator` | Aggregate and consolidate candidates for verification. |
+| `evidence_verifier` | Validate evidence integrity, revision, scope and graph contracts without an LLM; replay only recoverable failures. |
+| `council_judge` | Adjudicate candidate support and severity in batches; no further tool investigation. |
+| `causal_merge` | Analyze root causes, conservatively merge survivors and append Direct results. |
+
+Inside `controlled_review`, deterministic grouping and bounded source/one-hop prefetch precede the same reviewer's query/result loop. Candidate location and evidence binding are runtime steps, not additional model planning nodes.
+
+```mermaid
+flowchart LR
+    Groups[Changed declarations] --> Context[Bounded source and one-hop prefetch]
+    Context --> Decide[Reviewer decision]
+    Decide -->|queries| Tools[read_symbol / query_relations]
+    Tools -->|Observations and remaining budget| Decide
+    Decide -->|result| Candidate[Location and evidence binding]
+```
+
+The model sees two tools: `read_symbol` for paginated source and `query_relations` for callers, callees, field readers/writers, implementations and overrides. `resolve_change_context` is runtime-only. Returned IDs permit further investigation; incomplete static analysis and exhausted budgets remain explicit limitations.
+
+### Review prompts
+
+The main prompt, [change-review.txt](services/agent/src/codeguard_agent/prompts/controlled/change-review.txt), is organized into role and objective, input and evidence boundaries, review decisions, tool use, termination conditions, and the output contract.
+
+Supporting files in the [controlled prompt directory](services/agent/src/codeguard_agent/prompts/controlled) cover task scope, budget notices, exploration/conclusion phases, and error feedback. The bound schema defines structured fields; runtime code enforces budgets, timeouts, and termination. Splitting prompts into files adds no workflow nodes or model calls.
 
 ## Quick Start with Docker Compose
 
@@ -222,9 +281,7 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 
 Set `CODEGUARD_PROVIDER=mock` for a zero-cost pipeline smoke test. Configure `CODEGUARD_TOOL_SERVER_URL=http://localhost:9090` when the local Agent should use a separately running Gateway for repository context tools.
 
-With the Tool Server enabled, each review asynchronously builds an immutable Java `ProjectSnapshot` for the exact revision. It retains all source text, complete JavaParser ASTs, a symbol index, and a Spring-aware semantic graph. SymbolResolution deterministically maps changed lines in Full tasks to typed, grounded `symbol_id` values; the three fixed review dimensions query bounded facts through `inspect_structure`, `inspect_change_impact`, and `inspect_path(path_kind=behavior|security)` according to GraphPlan, while evidence verification reuses the same snapshot. Graph results use schema v2 `found`, `not_found`, and `indeterminate` outcomes with query-level coverage.
-
-EvidenceAssessment analyzes the local facts for each planned WorkItem and may request one bounded Delta step when a deterministic proof gap remains. When the local HTML Trace is enabled, each review dimension's DirectTriage, GraphPlan, Execute, assessment, tool input, output, duration, reuse, and failure appears as an independent step.
+The Tool Server builds a revision-scoped Java snapshot with ASTs, a symbol index, and lazily resolved semantic relationships. The Agent reads bounded source pages and typed call/field/override relationships. Source pages expose real member IDs; optional @Override annotations are not required to resolve inherited method relationships. Interface calls remain distinct from concrete implementation calls. Tool facts enter the Evidence Ledger and are visible in Trace alongside investigation outcomes and token usage. Internal LLM calls are non-streaming; request timeouts and a cooperative investigation deadline prevent new requests after expiry.
 
 ## Configuration
 
@@ -312,7 +369,7 @@ Container build:
 docker build -t codeguard:local .
 ```
 
-Real quality evaluation currently uses 15 selected real Java repositories in `selected-20-v2`; each case's `expected` file is the formal ground truth, while hunk-level diagnostics are auxiliary. Evidence metadata in the expected cases is retained only for compatibility. The Codeguard report's `root_cause` and `evidence_locations` remain available to the optional case-level semantic judge, but evidence is not scored as a separate evaluation dimension. Profiles cover direct review, graph-backed evidence, and the controlled Plan-and-Execute workflow. Recall, Precision, F1, and stability must be read from the corresponding evaluation reports rather than treated as fixed product claims. See [`services/agent/evals/README.md`](services/agent/evals/README.md).
+Real quality evaluation currently uses 15 selected real Java repositories in `selected-20-v2`; each case's `expected` file is the formal ground truth, while hunk-level diagnostics are auxiliary. Evidence metadata in the expected cases is retained only for compatibility. The Codeguard report's `root_cause` and `evidence_locations` remain available to the optional case-level semantic judge, but evidence is not scored as a separate evaluation dimension. Profiles cover direct review, graph-backed evidence, and the change-driven bounded ReAct workflow. Recall, Precision, F1, and stability must be read from the corresponding evaluation reports rather than treated as fixed product claims. See [`services/agent/evals/README.md`](services/agent/evals/README.md).
 
 ## Contributing
 

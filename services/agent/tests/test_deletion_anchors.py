@@ -1,56 +1,32 @@
 from __future__ import annotations
-
 import json
-
 from codeguard_agent.models.schemas import DiscoveredIssue
 from codeguard_agent.models.tasks import SymbolResolutionStatus
 from codeguard_agent.pipeline.location import locate_issues
 from codeguard_agent.pipeline.evidence.projection import graph_projection_focus
-from codeguard_agent.pipeline.controlled.triage import build_triage_user_prompt
 from codeguard_agent.pipeline.symbols.resolver import resolve_task_symbols
 from codeguard_agent.pipeline.tasks.task_builder import build_file_tasks
 from codeguard_agent.tools.tool_client import ToolResponse
 
-
-_DELETION_ONLY_DIFF = """diff --git a/src/A.java b/src/A.java
-index 1111111..2222222 100644
---- a/src/A.java
-+++ b/src/A.java
-@@ -10,7 +10,4 @@ class A {
-     void run() {
--        if (blocked(value)) {
--            return;
--        }
-         execute(value);
-     }
- }
-"""
-
-_DELETED_FILE_DIFF = """diff --git a/src/Removed.java b/src/Removed.java
-deleted file mode 100644
-index 1111111..0000000
---- a/src/Removed.java
-+++ /dev/null
-@@ -1,2 +0,0 @@
--void run() {
--    dangerous();
-"""
+_DELETION_ONLY_DIFF = "diff --git a/src/A.java b/src/A.java\nindex 1111111..2222222 100644\n--- a/src/A.java\n+++ b/src/A.java\n@@ -10,7 +10,4 @@ class A {\n     void run() {\n-        if (blocked(value)) {\n-            return;\n-        }\n         execute(value);\n     }\n }\n"
+_DELETED_FILE_DIFF = "diff --git a/src/Removed.java b/src/Removed.java\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/src/Removed.java\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-void run() {\n-    dangerous();\n"
 
 
 def test_file_task_preserves_deleted_text_and_current_anchor() -> None:
     task = build_file_tasks(_DELETION_ONLY_DIFF)[0]
-
     assert task.changed_lines == []
     assert len(task.deletion_anchors) == 1
     anchor = task.deletion_anchors[0]
     assert anchor.anchor_line == 11
     assert anchor.anchor_kind == "next_surviving"
-    assert anchor.deleted_snippet == "        if (blocked(value)) {\n            return;\n        }"
+    assert (
+        anchor.deleted_snippet
+        == "        if (blocked(value)) {\n            return;\n        }"
+    )
 
 
 def test_deleted_file_fallback_keeps_patch_for_file_level_review() -> None:
     task = build_file_tasks(_DELETED_FILE_DIFF)[0]
-
     assert task.file == "src/Removed.java"
     assert task.changed_lines == []
     assert task.deletion_anchors == []
@@ -91,9 +67,7 @@ class _GraphClient:
 def test_deletion_anchor_is_sent_to_symbol_resolution() -> None:
     task = build_file_tasks(_DELETION_ONLY_DIFF)[0]
     client = _GraphClient()
-
     result = resolve_task_symbols([task], tool_client=client)
-
     assert client.changes == [{"file": "src/A.java", "lines": [11]}]
     assert result.contexts[task.id].status is SymbolResolutionStatus.RESOLVED
     assert result.contexts[task.id].symbols[0].symbol_id == "java:A#run()"
@@ -109,11 +83,9 @@ def test_deletion_anchor_is_a_valid_deterministic_location() -> None:
         message="删除提前返回守卫后，受限输入会继续执行。",
         suggestion="恢复守卫。",
     )
-
     result = locate_issues(
         [issue], task, llm=None, structured_method="function_calling", max_retries=1
     )
-
     assert result.issues[0].line == 11
     assert result.records[0].status == "deletion_anchor"
     assert result.records[0].reason == "reported_deletion_anchor"
@@ -121,18 +93,6 @@ def test_deletion_anchor_is_a_valid_deterministic_location() -> None:
 
 def test_graph_projection_preserves_new_side_changed_line_semantics() -> None:
     task = build_file_tasks(_DELETION_ONLY_DIFF)[0]
-
     focus = graph_projection_focus(task)
-
     assert focus.changed_lines == ()
     assert focus.deletion_anchor_lines == (11,)
-
-
-def test_controlled_triage_exposes_deletion_anchor_to_direct_review() -> None:
-    task = build_file_tasks(_DELETION_ONLY_DIFF)[0]
-
-    prompt = build_triage_user_prompt(task=task, symbol_context=None)
-
-    assert "<deletion_anchors>" in prompt
-    assert 'line="11"' in prompt
-    assert "blocked(value)" in prompt

@@ -1,0 +1,4 @@
+<investigation_budget phase="{{phase}}" exploration_decisions_left="{{rounds_left}}" tool_calls_left="{{tools_left}}">
+尚未在决策引用中登记的观察编号：{{pending_observations}}。这是导航提示，不要求逐项确认已读。
+{{phase_instruction}}
+</investigation_budget>

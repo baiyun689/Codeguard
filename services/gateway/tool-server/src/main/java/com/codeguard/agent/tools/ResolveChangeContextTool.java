@@ -173,6 +173,7 @@ public final class ResolveChangeContextTool implements AgentTool {
                     .filter(edge -> file.equals(edge.file()) && changedLines.contains(edge.line()))
                     .limit(MAX_REFERENCES_PER_CONTEXT + 1L)
                     .forEach(edge -> snapshot.graph().node(edge.targetId()).ifPresent(target -> {
+                        if (target.sourceSet() != owner.sourceSet()) return;
                         if (result.size() >= MAX_REFERENCES_PER_CONTEXT) {
                             return;
                         }

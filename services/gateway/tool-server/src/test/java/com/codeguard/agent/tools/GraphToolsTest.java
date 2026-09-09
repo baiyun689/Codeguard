@@ -23,26 +23,225 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class GraphToolsTest {
 
     @Test
-    void behaviorPathReturnsDownstreamCalls(@TempDir Path repo) throws Exception {
+    void lazyChangeContextResolvesDirectTargetsOnlyOnChangedLines(@TempDir Path repo) throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("A.java"), """
+                package demo;
+                class A {
+                    void run(B b) {
+                        b.open();
+                        b.other();
+                    }
+                }
+                """);
+        Files.writeString(root.resolve("B.java"),
+                "package demo; class B { void open() {} void other() {} }");
+        var provider = new ProjectSnapshotManager().lazyProvider(ProjectKey.of(repo, "changed-targets"));
+        var result = new ResolveChangeContextTool(provider).execute("""
+                {"changes":[{"file":"src/main/java/demo/A.java","lines":[4]}]}
+                """, new AgentContext(repo));
+        assertTrue(result.isSuccess(), result.getError());
+        JsonNode refs = GraphToolSupport.JSON.readTree(result.getResult()).path("contexts").get(0).path("references");
+        assertTrue(refs.toString().contains("java:demo.B#open()"), result.getResult());
+        assertFalse(refs.toString().contains("#other()"), result.getResult());
+        for (JsonNode ref : refs) {
+            assertEquals(4, ref.path("line").asInt());
+            assertEquals("resolved", ref.path("resolution").asText());
+        }
+    }
+
+    @Test
+    void callerExcerptCoversTheCallsiteAndExcludesTestSources(@TempDir Path repo) throws Exception {
+        Path main = repo.resolve("src/main/java/demo");
+        Path test = repo.resolve("src/test/java/demo");
+        Files.createDirectories(main);
+        Files.createDirectories(test);
+        Files.writeString(main.resolve("Service.java"), """
+                package demo;
+                class Service { void save() {} }
+                """);
+        Files.writeString(main.resolve("Caller.java"), "package demo;\nclass Caller {\n void run(Service s) {\n"
+                + " // padding\n".repeat(60) + " s.save();\n }\n}\n");
+        Files.writeString(test.resolve("TestCaller.java"),
+                "package demo; class TestCaller { void run(Service s) { s.save(); } }");
+        var provider = new ProjectSnapshotManager().lazyProvider(ProjectKey.of(repo, "caller-source"));
+        var result = new QueryRelationsTool(provider).execute("""
+                {"subject_symbol_id":"java:demo.Service#save()","relation":"callers"}
+                """, new AgentContext(repo));
+        assertTrue(result.isSuccess(), result.getError());
+        JsonNode page = GraphToolSupport.JSON.readTree(result.getResult());
+        boolean found = false;
+        for (JsonNode symbol : page.path("symbols")) {
+            assertFalse(symbol.path("file").asText().contains("src/test/"));
+            if (symbol.has("source_excerpt")) {
+                found = true;
+                assertEquals("java:demo.Caller#run(Service)", symbol.path("id").asText());
+                assertTrue(symbol.path("source_excerpt").path("text").asText().contains("s.save();"));
+                assertTrue(symbol.path("source_excerpt").path("truncated").asBoolean());
+            }
+        }
+        assertTrue(found);
+    }
+
+    @Test
+    void relationEndpointsIncludeBoundedSourceFromTheReturnedPage(@TempDir Path repo) throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("Service.java"), "package demo;\nclass Service {\n"
+                + " void run() { a(); b(); c(); d(); }\n"
+                + " void a() {\n" + "  int v = 0;\n".repeat(40) + " }\n"
+                + " void b() {}\n void c() {}\n void d() {}\n}\n");
+        var provider = new ProjectSnapshotManager().lazyProvider(ProjectKey.of(repo, "endpoint-source"));
+        var tool = new QueryRelationsTool(provider);
+        var context = new AgentContext(repo);
+        var result = tool.execute("""
+                {"subject_symbol_id":"java:demo.Service#run()","relation":"callees","limit":1}
+                """, context);
+        assertTrue(result.isSuccess(), result.getError());
+        JsonNode page = GraphToolSupport.JSON.readTree(result.getResult());
+        String target = page.path("relationships").get(0).path("targetId").asText();
+        int snippets = 0;
+        for (JsonNode symbol : page.path("symbols")) {
+            if (symbol.has("source_excerpt")) {
+                snippets++;
+                assertEquals(target, symbol.path("id").asText());
+                JsonNode excerpt = symbol.path("source_excerpt");
+                assertTrue(excerpt.path("text").asText().contains("void a()"));
+                assertTrue(excerpt.path("text").asText().length() <= 1000);
+                assertTrue(excerpt.path("truncated").asBoolean());
+                assertTrue(excerpt.path("end_line").asInt() - excerpt.path("start_line").asInt() < 24);
+                assertEquals(excerpt.path("end_line").asInt() + 1, excerpt.path("next_cursor").asInt());
+            }
+        }
+        assertEquals(1, snippets);
+        var all = GraphToolSupport.JSON.readTree(tool.execute("""
+                {"subject_symbol_id":"java:demo.Service#run()","relation":"callees"}
+                """, context).getResult());
+        int count = 0;
+        for (JsonNode symbol : all.path("symbols")) {
+            if (symbol.has("source_excerpt")) count++;
+        }
+        assertEquals(3, count);
+        assertEquals(1, all.path("omitted_source_excerpt_count").asInt());
+        var noContext = GraphToolSupport.JSON.readTree(tool.execute("""
+                {"subject_symbol_id":"java:demo.Service#run()","relation":"callees","include_context":false}
+                """, context).getResult());
+        for (JsonNode symbol : noContext.path("symbols")) assertFalse(symbol.has("source_excerpt"));
+    }
+
+    @Test
+    void largeTypeReturnsBoundedSourceAndNavigableMembers(@TempDir Path repo) throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("State.java"), "package demo;\nclass State {\n int value;\n"
+                + " // padding\n".repeat(260) + " int read() { return value; }\n}\n");
+        var provider = new ProjectSnapshotManager().lazyProvider(ProjectKey.of(repo, "member-pages"));
+        var tool = new ReadSymbolTool(provider);
+        var context = new AgentContext(repo);
+        var first = tool.execute("{\"symbol_id\":\"java:demo.State\"}", context);
+        assertTrue(first.isSuccess(), first.getError());
+        assertTrue(first.getResult().contains("truncated: true"));
+        String directory = first.getResult().lines().filter(line -> line.startsWith("members: "))
+                .findFirst().orElseThrow().substring("members: ".length());
+        JsonNode members = GraphToolSupport.JSON.readTree(directory);
+        String fieldId = members.get(0).path("id").asText();
+        assertEquals("FIELD", members.get(0).path("kind").asText());
+        assertTrue(tool.execute("{\"symbol_id\":\"" + fieldId + "\"}", context)
+                .getResult().contains("int value;"));
+        int cursor = Integer.parseInt(first.getResult().lines()
+                .filter(line -> line.startsWith("next_cursor: ")).findFirst().orElseThrow()
+                .substring("next_cursor: ".length()));
+        var next = tool.execute("{\"symbol_id\":\"java:demo.State\",\"cursor\":" + cursor + "}", context);
+        assertTrue(next.isSuccess(), next.getError());
+        assertTrue(next.getResult().contains("java:demo.State#read()"));
+        assertTrue(next.getResult().contains("truncated: true"));
+        assertFalse(next.getResult().contains("next_cursor:"));
+    }
+
+    @Test
+    void lazyInterfaceNavigationPreservesDispatchFactsAcrossFiles(@TempDir Path repo) throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("Policy.java"), "package demo; interface Policy { boolean retry(); }");
+        Files.writeString(root.resolve("Impl.java"),
+                "package demo; class Impl implements Policy { public boolean retry() { return true; } }");
+        Files.writeString(root.resolve("Consumer.java"),
+                "package demo; class Consumer { boolean run(Policy p) { return p.retry(); } }");
+        var provider = new ProjectSnapshotManager().lazyProvider(ProjectKey.of(repo, "interface-chain"));
+        var tool = new QueryRelationsTool(provider);
+        var context = new AgentContext(repo);
+        var override = tool.execute("{\"subject_symbol_id\":\"java:demo.Impl#retry()\",\"relation\":\"overrides\"}", context);
+        assertTrue(override.isSuccess(), override.getError());
+        assertTrue(GraphToolSupport.JSON.readTree(override.getResult()).path("relationships")
+                .toString().contains("java:demo.Policy#retry()"), override.getResult());
+        var callers = tool.execute("{\"subject_symbol_id\":\"java:demo.Policy#retry()\",\"relation\":\"callers\"}", context);
+        assertTrue(callers.isSuccess(), callers.getError());
+        String edges = GraphToolSupport.JSON.readTree(callers.getResult()).path("relationships").toString();
+        assertTrue(edges.contains("Consumer#run(Policy)"), edges);
+        assertFalse(edges.contains("Impl#retry"), "Interface dispatch must not invent a direct implementation call");
+        var implementations = tool.execute("{\"subject_symbol_id\":\"java:demo.Policy#retry()\",\"relation\":\"overrides\"}", context);
+        assertTrue(GraphToolSupport.JSON.readTree(implementations.getResult()).path("relationships")
+                .toString().contains("java:demo.Impl#retry()"), implementations.getResult());
+    }
+
+    @Test
+    void lazyRelationQueryFindsIncomingAndOutgoingCalls(@TempDir Path repo) throws Exception {
         Path root = repo.resolve("src/main/java/demo");
         Files.createDirectories(root);
         Files.writeString(root.resolve("Service.java"), """
                 package demo;
-                class Service { void run() { helper(); } void helper() {} }
+                class Service {
+                    void execute() { open(1); }
+                    void open(int state) { helper(); }
+                    void helper() {}
+                }
                 """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "behavior-path"));
-        AgentContext context = new AgentContext(repo);
-
-        ToolResult result = new InspectPathTool(snapshot)
-                .execute("{\"symbol_id\":\"java:demo.Service#run()\",\"path_kind\":\"behavior\"}", context);
-        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
-
-        assertTrue(result.isSuccess(), result.getError());
-        assertEquals("behavior", payload.path("path_kind").asText(), result.getResult());
-        assertTrue(payload.path("relationships").toString().contains("helper()"), result.getResult());
-        assertTrue(payload.path("outcome").asText().equals("found"), result.getResult());
+        var provider = new ProjectSnapshotManager().lazyProvider(ProjectKey.of(repo, "lazy-relations"));
+        var tool = new QueryRelationsTool(provider);
+        for (String relation : new String[]{"callers", "callees"}) {
+            ToolResult result = tool.execute("""
+                    {"subject_symbol_id":"java:demo.Service#open(int)","relation":"%s"}
+                    """.formatted(relation), new AgentContext(repo));
+            assertTrue(result.isSuccess(), result.getError());
+            JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
+            assertEquals("found", payload.path("outcome").asText(), result.getResult());
+            assertTrue(payload.path("relationships").toString().contains(
+                    relation.equals("callers") ? "execute()" : "helper()"), result.getResult());
+        }
     }
+
+    @Test
+    void lazyFieldRelationsRequireAFieldAndReturnItsReadersAndWriters(@TempDir Path repo)
+            throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("State.java"), """
+                package demo;
+                class State {
+                    int value;
+                    int read() { return value; }
+                    void write() { value = 1; }
+                }
+                """);
+        var provider = new ProjectSnapshotManager().lazyProvider(ProjectKey.of(repo, "lazy-fields"));
+        var tool = new QueryRelationsTool(provider);
+        for (String relation : new String[]{"field_readers", "field_writers"}) {
+            ToolResult result = tool.execute("""
+                    {"subject_symbol_id":"java:demo.State#value","relation":"%s"}
+                    """.formatted(relation), new AgentContext(repo));
+            assertTrue(result.isSuccess(), result.getError());
+            assertEquals("found", GraphToolSupport.JSON.readTree(result.getResult())
+                    .path("outcome").asText(), result.getResult());
+        }
+        ToolResult wrongSubject = tool.execute("""
+                {"subject_symbol_id":"java:demo.State#read()","relation":"field_writers"}
+                """, new AgentContext(repo));
+        assertFalse(wrongSubject.isSuccess());
+        assertTrue(wrongSubject.getError().startsWith("invalid_relation_subject:"));
+    }
+
+
 
     @Test
     void unifiedRelationQuerySupportsTypedCalleesAndContinuation(@TempDir Path repo)
@@ -72,59 +271,16 @@ class GraphToolsTest {
                 first.getResult());
     }
 
-    @Test
-    void pathRejectsUnknownKind(@TempDir Path repo) throws Exception {
-        Files.writeString(repo.resolve("Service.java"), "class Service { void run() {} }");
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "invalid-path-kind"));
-        AgentContext context = new AgentContext(repo);
 
-        ToolResult result = new InspectPathTool(snapshot)
-                .execute("{\"symbol_id\":\"java:Service#run()\",\"path_kind\":\"other\"}", context);
 
-        assertFalse(result.isSuccess());
-        assertEquals("invalid_path_kind", result.getError());
-    }
 
-    @Test
-    void resolvesChangedLineAndUsesSymbolForImpactQuery(@TempDir Path repo) throws Exception {
-        Path root = repo.resolve("src/main/java/demo");
-        Files.createDirectories(root);
-        Files.writeString(root.resolve("Service.java"), """
-                package demo;
-                class Service { void run() {} }
-                """);
-        Files.writeString(root.resolve("Caller.java"), """
-                package demo;
-                class Caller { void call(Service service) { service.run(); } }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "rev"));
-        AgentContext context = new AgentContext(repo);
-
-        ToolResult resolved = new ResolveChangeContextTool(snapshot).execute(
-                """
-                {"changes":[{"file":"src/main/java/demo/Service.java","lines":[2]}]}
-                """, context);
-        assertTrue(resolved.isSuccess(), resolved.getError());
-        assertTrue(resolved.getResult().contains("\"symbol_id\":\"java:demo.Service#run()\""),
-                resolved.getResult());
-        assertTrue(resolved.getResult().contains("\"references\":["), resolved.getResult());
-
-        ToolResult impact = new InspectChangeImpactTool(snapshot)
-                .execute("java:demo.Service#run()", context);
-        assertTrue(impact.isSuccess(), impact.getError());
-        assertTrue(impact.getResult().contains("Caller.java"), impact.getResult());
-        assertTrue(impact.getResult().contains("\"schema_version\":2"), impact.getResult());
-        assertTrue(impact.getResult().contains("\"outcome\":\"found\""), impact.getResult());
-    }
 
     @Test
     void fileReaderRejectsUnresolvedSymbol(@TempDir Path repo) throws Exception {
         Files.writeString(repo.resolve("Known.java"), "class Known {}");
         CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
                 .getOrBuild(ProjectKey.of(repo, "rev"));
-        GetFileContentTool tool = new GetFileContentTool(snapshot);
+        SymbolSourceReader tool = new SymbolSourceReader(snapshot);
         AgentContext context = new AgentContext(repo);
 
         ToolResult missing = tool.execute("GuessedController.java", context);
@@ -133,413 +289,35 @@ class GraphToolsTest {
         assertEquals("缺少 symbol_id", missing.getError());
     }
 
-    @Test
-    void testOnlyCallerIsExcludedFromMainCanonicalResult(@TempDir Path repo) throws Exception {
-        Path mainRoot = repo.resolve("src/main/java/demo");
-        Path testRoot = repo.resolve("src/test/java/demo");
-        Files.createDirectories(mainRoot);
-        Files.createDirectories(testRoot);
-        Files.writeString(mainRoot.resolve("Service.java"), """
-                package demo;
-                class Service { void run() {} }
-                """);
-        Files.writeString(testRoot.resolve("ServiceTest.java"), """
-                package demo;
-                class ServiceTest { void verifies(Service service) { service.run(); } }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "test-caller"));
-        AgentContext context =
-                new AgentContext(repo);
 
-        ToolResult impact = new InspectChangeImpactTool(snapshot)
-                .execute("java:demo.Service#run()", context);
-        JsonNode payload = GraphToolSupport.JSON.readTree(impact.getResult());
 
-        assertTrue(impact.isSuccess(), impact.getError());
-        assertTrue(payload.path("relationships").isEmpty(), impact.getResult());
-        assertFalse(payload.has("main_symbols"), impact.getResult());
-        assertFalse(payload.has("test_symbols"), impact.getResult());
-        assertFalse(payload.has("generated_symbols"), impact.getResult());
-        assertFalse(payload.has("main_relationships"), impact.getResult());
-        assertFalse(payload.has("test_relationships"), impact.getResult());
-        assertFalse(payload.has("generated_relationships"), impact.getResult());
-        assertTrue(payload.path("outcome").asText().equals("not_found"), impact.getResult());
-        assertTrue(payload.path("coverage").asText().equals("complete"), impact.getResult());
-        assertTrue(payload.path("source_scope").asText().equals("MAIN"), impact.getResult());
-    }
 
-    @Test
-    void testSubjectUsesTestRelationshipsAsPrimaryEvidence(@TempDir Path repo)
-            throws Exception {
-        Path testRoot = repo.resolve("src/test/java/demo");
-        Files.createDirectories(testRoot);
-        Files.writeString(testRoot.resolve("ServiceTest.java"), """
-                package demo;
-                class ServiceTest {
-                    void helper() {}
-                    void verifies() { helper(); }
-                }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "test-subject"));
-        AgentContext context =
-                new AgentContext(repo);
 
-        ToolResult impact = new InspectChangeImpactTool(snapshot)
-                .execute("java:demo.ServiceTest#helper()", context);
-        JsonNode payload = GraphToolSupport.JSON.readTree(impact.getResult());
 
-        assertTrue(payload.path("outcome").asText().equals("found"), impact.getResult());
-        assertTrue(payload.path("source_scope").asText().equals("TEST"), impact.getResult());
-        assertFalse(payload.path("relationships").isEmpty(), impact.getResult());
-        assertTrue(payload.path("relationships").get(0)
-                .path("source_set").asText().equals("TEST"), impact.getResult());
-        assertFalse(payload.has("test_relationships"), impact.getResult());
-    }
 
-    @Test
-    void fieldSymbolReturnsReadWriteReferences(@TempDir Path repo) throws Exception {
-        Path root = repo.resolve("src/main/java/demo");
-        Files.createDirectories(root);
-        Files.writeString(root.resolve("State.java"), """
-                package demo;
-                class State {
-                    int counter;
-                    void reset() { counter = 0; }
-                    int read() { return counter; }
-                }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "field-rev"));
-        AgentContext context = new AgentContext(repo);
 
-        ToolResult impact = new InspectChangeImpactTool(snapshot)
-                .execute("java:demo.State#counter", context);
-        assertTrue(impact.isSuccess(), impact.getError());
-        assertTrue(impact.getResult().contains("\"kind\":\"READS_FIELD\"")
-                        && impact.getResult().contains("\"kind\":\"WRITES_FIELD\""),
-                impact.getResult());
-        assertTrue(impact.getResult().contains("reset()"), impact.getResult());
-        assertTrue(impact.getResult().contains("read()"), impact.getResult());
-    }
 
-    @Test
-    void typeSymbolReturnsExtendsAndImplements(@TempDir Path repo) throws Exception {
-        Path root = repo.resolve("src/main/java/demo");
-        Files.createDirectories(root);
-        Files.writeString(root.resolve("Base.java"), """
-                package demo;
-                interface Base { void run(); }
-                """);
-        Files.writeString(root.resolve("Impl.java"), """
-                package demo;
-                class Impl implements Base { public void run() {} }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "type-rev"));
-        AgentContext context = new AgentContext(repo);
 
-        ToolResult impact = new InspectChangeImpactTool(snapshot)
-                .execute("java:demo.Base", context);
-        assertTrue(impact.isSuccess(), impact.getError());
-        assertTrue(impact.getResult().contains("\"kind\":\"IMPLEMENTS\""), impact.getResult());
-        assertTrue(impact.getResult().contains("Impl.java"), impact.getResult());
-    }
 
-    @Test
-    void fieldSymbolSecurityPathReturnsReadersWritersAndSensitiveType(
-            @TempDir Path repo
-    ) throws Exception {
-        Path root = repo.resolve("src/main/java/demo");
-        Files.createDirectories(root);
-        Files.writeString(root.resolve("State.java"), """
-                package demo;
-                import java.util.concurrent.ExecutorService;
-                class State {
-                    ExecutorService executor;
-                    void init() { executor = java.util.concurrent.Executors.newFixedThreadPool(1); }
-                    void run() { executor.execute(() -> {}); }
-                }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "field-sec"));
-        AgentContext context = new AgentContext(repo);
 
-        ToolResult impact = new InspectPathTool(snapshot)
-                .execute("{\"symbol_id\":\"java:demo.State#executor\",\"path_kind\":\"security\"}", context);
 
-        assertTrue(impact.isSuccess(), impact.getError());
-        assertTrue(impact.getResult().contains("\"kind\":\"READS_FIELD\"")
-                        && impact.getResult().contains("\"kind\":\"WRITES_FIELD\""),
-                impact.getResult());
-        assertTrue(impact.getResult().contains("field_type_sensitive"), impact.getResult());
-        assertTrue(impact.getResult().contains("ExecutorService"), impact.getResult());
-    }
 
-    @Test
-    void typeSymbolSecurityPathReturnsInternalSensitiveCallsAndInheritors(
-            @TempDir Path repo
-    ) throws Exception {
-        Path root = repo.resolve("src/main/java/demo");
-        Files.createDirectories(root);
-        Files.writeString(root.resolve("Base.java"), """
-                package demo;
-                class Base {
-                    void run() { Runtime.getRuntime().exec("ls"); }
-                }
-                """);
-        Files.writeString(root.resolve("Impl.java"), """
-                package demo;
-                class Impl extends Base { }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "type-sec"));
-        AgentContext context = new AgentContext(repo);
 
-        ToolResult impact = new InspectPathTool(snapshot)
-                .execute("{\"symbol_id\":\"java:demo.Base\",\"path_kind\":\"security\"}", context);
 
-        assertTrue(impact.isSuccess(), impact.getError());
-        assertTrue(impact.getResult().contains("\"kind\":\"EXTENDS\""), impact.getResult());
-        assertTrue(impact.getResult().contains("\"kind\":\"CALLS\""), impact.getResult());
-        assertTrue(impact.getResult().contains("exec"), impact.getResult());
-    }
 
-    @Test
-    void missingSubjectProducesIndeterminateQuery(@TempDir Path repo) throws Exception {
-        Files.writeString(repo.resolve("Partial.java"), """
-                class Partial {
-                    void run() { unknownTarget.execute(); }
-                }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "partial"));
-        AgentContext context = new AgentContext(repo);
 
-        ToolResult impact = new InspectChangeImpactTool(snapshot)
-                .execute("java:Partial#missing()", context);
-        ToolResult contextResult = new ResolveChangeContextTool(snapshot).execute(
-                """
-                {"changes":[{"file":"Partial.java","lines":[2]}]}
-                """, context);
 
-        assertTrue(impact.isSuccess(), impact.getError());
-        assertTrue(impact.getResult().contains("\"outcome\":\"indeterminate\""), impact.getResult());
-        assertTrue(impact.getResult().contains("\"coverage\":\"partial\""), impact.getResult());
-        assertTrue(contextResult.getResult().contains("\"outcome\":\"found\""),
-                contextResult.getResult());
-    }
 
-    @Test
-    void truncatedGraphResultIsPartialAndInsufficientForConfirmation(
-            @TempDir Path repo
-    ) throws Exception {
-        StringBuilder source = new StringBuilder("""
-                class LargeCaller {
-                    void target() {}
-                """);
-        for (int index = 0; index < 201; index++) {
-            source.append("    void caller").append(index).append("() { target(); }\n");
-        }
-        source.append("}\n");
-        Files.writeString(repo.resolve("LargeCaller.java"), source);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "bounded"));
-        AgentContext context = new AgentContext(repo);
 
-        ToolResult result = new InspectChangeImpactTool(snapshot)
-                .execute("java:LargeCaller#target()", context);
 
-        assertTrue(result.getResult().contains("\"outcome\":\"found\""), result.getResult());
-        assertTrue(result.getResult().contains("\"coverage\":\"partial\""), result.getResult());
-        assertTrue(result.getResult().contains("result_truncated"), result.getResult());
-    }
 
-    @Test
-    void unrelatedUnresolvedEdgeDoesNotPoisonResolvedQuery(@TempDir Path repo)
-            throws Exception {
-        Path root = repo.resolve("src/main/java/demo");
-        Files.createDirectories(root);
-        Files.writeString(root.resolve("Service.java"), """
-                package demo;
-                class Service { void run() {} }
-                """);
-        Files.writeString(root.resolve("Caller.java"), """
-                package demo;
-                class Caller { void call(Service service) { service.run(); } }
-                """);
-        Files.writeString(root.resolve("Unrelated.java"), """
-                package demo;
-                class Unrelated { void broken() { missing.call(); } }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "query-coverage"));
-        AgentContext context = new AgentContext(repo);
 
-        ToolResult result = new InspectChangeImpactTool(snapshot)
-                .execute("java:demo.Service#run()", context);
-        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
 
-        assertTrue(payload.path("outcome").asText().equals("found"), result.getResult());
-        assertTrue(payload.path("coverage").asText().equals("complete"), result.getResult());
-        assertTrue(payload.path("snapshot_main_coverage").asText().equals("partial"),
-                result.getResult());
-    }
 
-    @Test
-    void mixedRelationsKeepResolvedFactsAndReportPartialCoverage(@TempDir Path repo)
-            throws Exception {
-        Files.writeString(repo.resolve("Mixed.java"), """
-                class Mixed {
-                    void run() throws Exception {
-                        Runtime.getRuntime().exec("ls");
-                        missing.execute();
-                    }
-                }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "mixed-relations"));
-        AgentContext context = new AgentContext(repo);
 
-        ToolResult result = new InspectPathTool(snapshot)
-                .execute("{\"symbol_id\":\"java:Mixed#run()\",\"path_kind\":\"security\"}", context);
-        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
 
-        assertTrue(payload.path("outcome").asText().equals("found"), result.getResult());
-        assertTrue(payload.path("coverage").asText().equals("partial"), result.getResult());
-        assertFalse(payload.path("relationships").isEmpty(), result.getResult());
-        assertFalse(payload.path("unresolved_relationships").isEmpty(), result.getResult());
-        assertTrue(payload.path("unresolved_count").asInt() > 0, result.getResult());
-    }
 
-    @Test
-    void ordinaryUnresolvedCallIsAggregatedAsSecurityCoverageGap(@TempDir Path repo)
-            throws Exception {
-        Files.writeString(repo.resolve("Ordinary.java"), """
-                class Ordinary {
-                    void run() { missing.refresh(); }
-                }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "ordinary-unresolved-security"));
-        AgentContext context = new AgentContext(repo);
 
-        ToolResult result = new InspectPathTool(snapshot)
-                .execute("{\"symbol_id\":\"java:Ordinary#run()\",\"path_kind\":\"security\"}", context);
-        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
-
-        assertEquals("indeterminate", payload.path("outcome").asText(), result.getResult());
-        assertEquals("partial", payload.path("coverage").asText(), result.getResult());
-        assertEquals(1, payload.path("unresolved_count").asInt(), result.getResult());
-        assertTrue(payload.path("unresolved_relationships").isEmpty(), result.getResult());
-        assertTrue(result.getResult().contains("unresolved_relationships_suppressed:1"),
-                result.getResult());
-    }
-
-    @Test
-    void sensitiveUnresolvedCallStillLimitsSecurityQuery(@TempDir Path repo)
-            throws Exception {
-        Files.writeString(repo.resolve("Sensitive.java"), """
-                class Sensitive {
-                    void run() { missing.execute(); }
-                }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "sensitive-unresolved-security"));
-        AgentContext context = new AgentContext(repo);
-
-        ToolResult result = new InspectPathTool(snapshot)
-                .execute("{\"symbol_id\":\"java:Sensitive#run()\",\"path_kind\":\"security\"}", context);
-        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
-
-        assertEquals("indeterminate", payload.path("outcome").asText(), result.getResult());
-        assertEquals("partial", payload.path("coverage").asText(), result.getResult());
-        assertEquals(1, payload.path("unresolved_count").asInt(), result.getResult());
-        assertFalse(payload.path("unresolved_relationships").isEmpty(), result.getResult());
-    }
-
-    @Test
-    void resolvedCallChainStillFindsNestedSensitiveSink(@TempDir Path repo)
-            throws Exception {
-        Files.writeString(repo.resolve("ResolvedChain.java"), """
-                class ResolvedChain {
-                    void run() throws Exception { helper(); }
-                    void helper() throws Exception { Runtime.getRuntime().exec("ls"); }
-                }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "resolved-security-chain"));
-        AgentContext context = new AgentContext(repo);
-
-        ToolResult result = new InspectPathTool(snapshot)
-                .execute("{\"symbol_id\":\"java:ResolvedChain#run()\",\"path_kind\":\"security\"}", context);
-        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
-
-        assertEquals("found", payload.path("outcome").asText(), result.getResult());
-        assertFalse(payload.path("relationships").isEmpty(), result.getResult());
-        assertTrue(result.getResult().contains("exec"), result.getResult());
-    }
-
-    @Test
-    void resolvedSecurityTraversalHonorsThreeLayerBoundary(@TempDir Path repo)
-            throws Exception {
-        Files.writeString(repo.resolve("DepthBoundary.java"), """
-                class DepthBoundary {
-                    void within() throws Exception { withinOne(); }
-                    void withinOne() throws Exception { withinTwo(); }
-                    void withinTwo() throws Exception { Runtime.getRuntime().exec("ls"); }
-
-                    void beyond() throws Exception { beyondOne(); }
-                    void beyondOne() throws Exception { beyondTwo(); }
-                    void beyondTwo() throws Exception { beyondThree(); }
-                    void beyondThree() throws Exception { Runtime.getRuntime().exec("ls"); }
-                }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "security-depth-boundary"));
-        AgentContext context = new AgentContext(repo);
-
-        ToolResult within = new InspectPathTool(snapshot)
-                .execute("{\"symbol_id\":\"java:DepthBoundary#within()\",\"path_kind\":\"security\"}", context);
-        ToolResult beyond = new InspectPathTool(snapshot)
-                .execute("{\"symbol_id\":\"java:DepthBoundary#beyond()\",\"path_kind\":\"security\"}", context);
-
-        assertTrue(within.getResult().contains("\"outcome\":\"found\""),
-                within.getResult());
-        assertTrue(within.getResult().contains("exec"), within.getResult());
-        assertTrue(beyond.getResult().contains("\"outcome\":\"not_found\""),
-                beyond.getResult());
-        assertFalse(beyond.getResult().contains("exec"), beyond.getResult());
-    }
-
-    @Test
-    void potentialUnresolvedCallerPreventsConfirmedAbsence(@TempDir Path repo)
-            throws Exception {
-        Files.writeString(repo.resolve("Service.java"), """
-                class Service { void run() {} }
-                """);
-        Files.writeString(repo.resolve("ExternalCaller.java"), """
-                class ExternalCaller {
-                    void call(MissingService service) { service.run(); }
-                }
-                """);
-        CompletableFuture<ProjectSnapshot> snapshot = new ProjectSnapshotManager()
-                .getOrBuild(ProjectKey.of(repo, "potential-caller"));
-        AgentContext context = new AgentContext(repo);
-
-        ToolResult result = new InspectChangeImpactTool(snapshot)
-                .execute("java:Service#run()", context);
-        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
-
-        assertTrue(payload.path("outcome").asText().equals("indeterminate"),
-                result.getResult());
-        assertTrue(payload.path("coverage").asText().equals("partial"),
-                result.getResult());
-        assertTrue(payload.path("relationships").isEmpty(), result.getResult());
-        assertFalse(payload.path("unresolved_relationships").isEmpty(),
-                result.getResult());
-    }
 
     @Test
     void lazyProviderBuildsIndexWithoutSemanticEdgesAndExpandsRequestedPath(
@@ -696,71 +474,7 @@ class GraphToolsTest {
         assertSame(first, second);
     }
 
-    @Test
-    void lazyProviderExpandsMultiArgumentMethodUsingResolvedSymbolId(@TempDir Path repo)
-            throws Exception {
-        Files.writeString(repo.resolve("Service.java"), """
-                class Service {
-                    void run(String value, int count) { helper(); }
-                    void helper() {}
-                }
-                """);
 
-        ProjectSnapshotManager manager = new ProjectSnapshotManager();
-        var provider = manager.lazyProvider(ProjectKey.of(repo, "lazy-multi-arg"));
-        String query = "{\"symbol_id\":\"java:Service#run(String, int)\","
-                + "\"path_kind\":\"behavior\"}";
-        ProjectSnapshot expanded = provider.load("inspect_path", query);
 
-        assertTrue(expanded.graph().outgoing(
-                        "java:Service#run(String, int)", GraphEdgeKind.CALLS).stream()
-                .anyMatch(edge -> edge.targetId().contains("helper()")),
-                expanded.graph().edges().toString());
 
-        ToolResult result = new InspectPathTool(provider).execute(
-                "{\"symbol_id\":\"java:Service#run(String,int)\","
-                        + "\"path_kind\":\"behavior\"}",
-                new AgentContext(repo));
-        assertTrue(result.isSuccess(), result.getError());
-        assertTrue(result.getResult().contains("helper()"), result.getResult());
-    }
-
-    @Test
-    void lazyStructureResolvesOverrideAgainstProjectIndex(@TempDir Path repo)
-            throws Exception {
-        Path root = repo.resolve("src/main/java/demo");
-        Files.createDirectories(root);
-        // The child file sorts before the parent file. Lazy expansion parses
-        // the child independently, so override resolution must consult the
-        // complete declaration index instead of file-local nodes.
-        Files.writeString(root.resolve("AChild.java"), """
-                package demo;
-                public class AChild extends ZParent {
-                    @Override
-                    public void run() {}
-                }
-                """);
-        Files.writeString(root.resolve("ZParent.java"), """
-                package demo;
-                public class ZParent {
-                    public void run() {}
-                }
-                """);
-
-        ProjectSnapshotManager manager = new ProjectSnapshotManager();
-        var provider = manager.lazyProvider(ProjectKey.of(repo, "lazy-override-index"));
-        ToolResult result = new InspectStructureTool(provider).execute(
-                "java:demo.AChild#run()", new AgentContext(repo));
-        JsonNode payload = GraphToolSupport.JSON.readTree(result.getResult());
-
-        assertTrue(result.isSuccess(), result.getError());
-        assertTrue(payload.path("relationships").toString().contains(
-                "java:demo.ZParent#run()"), result.getResult());
-        assertTrue(payload.path("relationships").toString().contains(
-                "\"kind\":\"OVERRIDES\""), result.getResult());
-        assertTrue(payload.path("relationships").toString().contains(
-                "\"resolution\":\"RESOLVED\""), result.getResult());
-        assertTrue(payload.path("symbols").toString().contains(
-                "java:demo.ZParent#run()"), result.getResult());
-    }
 }

@@ -5,11 +5,8 @@ ToolClient/编排器/评测 runner 的 revision 贯通(源文档 §4.3/§5.1)。
 """
 
 from __future__ import annotations
-
 import hashlib
-
 import httpx
-
 from codeguard_agent.models.evidence import (
     ArtifactAvailability,
     EvidenceArtifact,
@@ -18,9 +15,10 @@ from codeguard_agent.models.evidence import (
     compute_artifact_id,
     merge_evidence_artifacts,
 )
-from codeguard_agent.pipeline.orchestration.orchestrator import resolve_evidence_revision
+from codeguard_agent.pipeline.orchestration.orchestrator import (
+    resolve_evidence_revision,
+)
 from codeguard_agent.tools.tool_client import ToolClient, create_tool_session
-
 from evals.runner import case_evidence_revision
 from evals.schema import CaseProvenance, EvalCase
 
@@ -34,7 +32,7 @@ def _artifact(**overrides) -> EvidenceArtifact:
         reviewer="threat_model",
         revision=REV,
         source_kind=EvidenceSourceKind.TOOL_CALL,
-        tool="get_file_content",
+        tool="read_symbol",
         arguments={"symbol_id": "java:A#run()"},
         payload="public void run() {\n    exec(cmd);\n}\n",
         availability=ArtifactAvailability.AVAILABLE,
@@ -46,12 +44,20 @@ def _artifact(**overrides) -> EvidenceArtifact:
 
 def test_内容寻址_相同输入稳定():
     a = compute_artifact_id(
-        REV, TASK, EvidenceSourceKind.TOOL_CALL, "get_file_content",
-        {"symbol_id": "java:A#run()"}, "payload",
+        REV,
+        TASK,
+        EvidenceSourceKind.TOOL_CALL,
+        "read_symbol",
+        {"symbol_id": "java:A#run()"},
+        "payload",
     )
     b = compute_artifact_id(
-        REV, TASK, EvidenceSourceKind.TOOL_CALL, "get_file_content",
-        {"symbol_id": "java:A#run()"}, "payload",
+        REV,
+        TASK,
+        EvidenceSourceKind.TOOL_CALL,
+        "read_symbol",
+        {"symbol_id": "java:A#run()"},
+        "payload",
     )
     assert a == b
     assert a.startswith("ev-")
@@ -78,13 +84,17 @@ def test_内容寻址_task_或_工具_变化换ID():
         REV, "task-2", EvidenceSourceKind.TOOL_CALL, "inspect_structure", {}, "p"
     )
     assert base != compute_artifact_id(
-        REV, TASK, EvidenceSourceKind.TOOL_CALL, "get_file_content", {}, "p"
+        REV, TASK, EvidenceSourceKind.TOOL_CALL, "read_symbol", {}, "p"
     )
 
 
 def test_内容寻址_参数键序无关():
-    a = compute_artifact_id(REV, TASK, EvidenceSourceKind.TOOL_CALL, "t", {"a": "1", "b": "2"}, "p")
-    b = compute_artifact_id(REV, TASK, EvidenceSourceKind.TOOL_CALL, "t", {"b": "2", "a": "1"}, "p")
+    a = compute_artifact_id(
+        REV, TASK, EvidenceSourceKind.TOOL_CALL, "t", {"a": "1", "b": "2"}, "p"
+    )
+    b = compute_artifact_id(
+        REV, TASK, EvidenceSourceKind.TOOL_CALL, "t", {"b": "2", "a": "1"}, "p"
+    )
     assert a == b
 
 
@@ -99,11 +109,7 @@ def test_build_与_内容寻址一致():
 
 def test_replay来源参与寻址_避免与原artifact碰撞():
     original = _artifact(payload="same response")
-    replay = _artifact(
-        payload="same response",
-        replayed_from_artifact_id=original.id,
-    )
-
+    replay = _artifact(payload="same response", replayed_from_artifact_id=original.id)
     assert replay.id != original.id
     assert replay.replayed_from_artifact_id == original.id
 
@@ -115,7 +121,6 @@ def test_merge_reducer_合并左右字典():
     assert set(merged) == {a.id, b.id}
     assert merge_evidence_artifacts(None, {a.id: a})[a.id] is a
     assert merge_evidence_artifacts({a.id: a}, None)[a.id] is a
-    # 同 ID 后写覆盖
     c = _artifact(availability=ArtifactAvailability.FAILED)
     assert (
         merge_evidence_artifacts({a.id: a}, {a.id: c})[a.id].availability
@@ -132,7 +137,7 @@ def test_创建会话_把_revision_传给客户端(monkeypatch):
     captured: dict = {}
 
     class _FakeResp:
-        def raise_for_status(self):  # noqa: D401
+        def raise_for_status(self):
             return None
 
         def json(self):
@@ -166,12 +171,15 @@ def test_编排器_revision_回退链():
     digest = hashlib.sha256(diff.encode("utf-8")).hexdigest()
     assert resolve_evidence_revision("explicit", None, diff) == "explicit"
     assert (
-        resolve_evidence_revision("", ToolClient("http://x", "s", revision="abc:def"), diff)
+        resolve_evidence_revision(
+            "", ToolClient("http://x", "s", revision="abc:def"), diff
+        )
         == "abc:def"
     )
     assert resolve_evidence_revision("", None, diff) == f"diff:{digest}"
     assert (
-        resolve_evidence_revision("", ToolClient("http://x", "s"), diff) == f"diff:{digest}"
+        resolve_evidence_revision("", ToolClient("http://x", "s"), diff)
+        == f"diff:{digest}"
     )
 
 

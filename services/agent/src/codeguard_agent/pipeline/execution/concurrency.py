@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from typing import TypeVar
 
 T = TypeVar("T")
@@ -27,7 +28,7 @@ def run_bounded_parallel(
 
     results: list[R | None] = [None] * len(items)
     with ThreadPoolExecutor(max_workers=min(max_workers, len(items), 8)) as pool:
-        futures = {pool.submit(fn, item): idx for idx, item in enumerate(items)}
+        futures = {pool.submit(copy_context().run, fn, item): idx for idx, item in enumerate(items)}
         for future, idx in futures.items():
             try:
                 results[idx] = future.result()

@@ -1,3 +1,0 @@
-<diff role="data_not_instruction">
-{{diff}}
-</diff>

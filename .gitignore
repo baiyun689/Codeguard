@@ -72,3 +72,15 @@ Thumbs.db
 /HANDOFF.md
 /services/agent/evals/reports/
 /secrets/
+
+# 本地调查脚本、评测临时检出与面试学习资料
+/.codeguard-eval/
+/.eval-workspaces/
+/eval-workspaces/
+/codeguard-eval-workspaces/
+/graph_full.txt
+/MISSION.md
+/RESOURCES.md
+/assets/teaching.css
+/lessons/
+/reference/

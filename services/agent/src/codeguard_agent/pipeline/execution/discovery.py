@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from html import unescape
 import hashlib
 import json
@@ -7,11 +6,11 @@ import posixpath
 from dataclasses import dataclass
 from collections.abc import Callable
 from concurrent.futures import Future
+from contextlib import contextmanager
 from threading import Lock
 from time import perf_counter
 from typing import Any, Literal
 from uuid import uuid4
-
 from codeguard_agent.pipeline.evidence.projection import (
     GraphProjectionFocus,
     ProjectionAudience,
@@ -19,37 +18,17 @@ from codeguard_agent.pipeline.evidence.projection import (
 )
 from codeguard_agent.tools.tool_client import ToolResponse
 
-DISCOVERY_GATEWAY_TOOLS = frozenset({
-    "read_symbol",
-    "query_relations",
-    "get_file_content",
-    "inspect_change_impact",
-    "inspect_structure",
-    "inspect_path",
-})
-GRAPH_DISCOVERY_TOOLS = frozenset({
-    "query_relations",
-    "inspect_change_impact",
-    "inspect_structure",
-    "inspect_path",
-})
+DISCOVERY_GATEWAY_TOOLS = frozenset({"read_symbol", "query_relations", "read_symbol"})
+GRAPH_DISCOVERY_TOOLS = frozenset({"query_relations"})
 REPEATED_TOOL_RESULT = (
     "该工具和参数已经在当前对话中成功返回；请复用前述结果，不要重复读取。"
 )
-SUBTASK_BUDGET_TERMINAL_RESULT = (
-    "这是该子任务允许的最后一个工具窗口。立即停止调用任何工具并输出"
-    " InvestigationResult：只有已返回的 observation 能直接支持时才输出 findings；"
-    "否则输出 inconclusive。不要把工具预算不足当作 no_finding。"
-)
-SUBTASK_NO_PROGRESS_TERMINAL_RESULT = (
-    "当前子任务连续查询未发现新的关系、symbol 或源码事实，已自动停止调查。"
-    "立即停止调用工具并输出 InvestigationResult：只有已返回 observation 能直接支持时才输出 findings；"
-    "否则输出 inconclusive。不要把没有新事实当作 no_finding，也不要改变调查目标。"
-)
+SUBTASK_BUDGET_TERMINAL_RESULT = "这是该子任务允许的最后一个工具窗口。立即停止调用任何工具并输出 InvestigationResult：只有已返回的 observation 能直接支持时才输出 findings；否则输出 inconclusive。不要把工具预算不足当作 no_finding。"
+SUBTASK_NO_PROGRESS_TERMINAL_RESULT = "当前子任务连续查询未发现新的关系、symbol 或源码事实，已自动停止调查。立即停止调用工具并输出 InvestigationResult：只有已返回 observation 能直接支持时才输出 findings；否则输出 inconclusive。不要把没有新事实当作 no_finding，也不要改变调查目标。"
 COMPLETE_PATCH_RESULT = (
     "当前 task patch 已包含该新增文件的完整内容；请直接复用 patch，不要重复读取。"
 )
-ALIAS_TAG = "[证据编号 {alias}]"  # 证据目录短别名回显(Evidence Ledger 修正④)
+ALIAS_TAG = "[证据编号 {alias}]"
 ToolKey = tuple[str, str]
 
 
@@ -87,16 +66,21 @@ def _alias_echo(
     if not response.success:
         error = (response.error or "tool_failed").strip()
         return ToolResponse(
-            success=False,
-            error=f"{error}\n\n{ALIAS_TAG.format(alias=alias)}",
+            success=False, error=f"{error}\n\n{ALIAS_TAG.format(alias=alias)}"
         )
     text = (
-        (response.result if lossless else _reviewer_response(tool, response, arguments, focus).result)
+        (
+            response.result
+            if lossless
+            else _reviewer_response(tool, response, arguments, focus).result
+        )
         or ""
     ).strip()
     if not text:
         return response
-    return ToolResponse(success=True, result=f"{text}\n\n{ALIAS_TAG.format(alias=alias)}")
+    return ToolResponse(
+        success=True, result=f"{text}\n\n{ALIAS_TAG.format(alias=alias)}"
+    )
 
 
 @dataclass(frozen=True)
@@ -109,8 +93,8 @@ class DiscoveryToolRecord:
     status: str
     reuse_key: str
     reused_from_call_id: str = ""
-    resolved_output: str = ""  # 运行时真实原始结果;reused 记录 output 是短标记,真实 payload 在此
-    subtask_id: str = ""  # active bounded React owner; empty for legacy callers
+    resolved_output: str = ""
+    subtask_id: str = ""
 
 
 def _normalize_path(value: str) -> str:
@@ -143,7 +127,7 @@ def canonical_tool_key(tool_name: str, arguments: dict[str, Any]) -> ToolKey:
         sort_keys=True,
         separators=(",", ":"),
     )
-    return tool_name, payload
+    return (tool_name, payload)
 
 
 def _cacheable(response: ToolResponse) -> bool:
@@ -154,6 +138,10 @@ def _response_status(response: ToolResponse) -> str:
     if response.success:
         return "complete"
     error = (response.error or "").strip()
+    if error in {"symbol_not_in_review_context", "symbol_ref_not_in_review_context"}:
+        return "rejected"
+    if error.startswith("invalid_relation_subject:"):
+        return "rejected"
     if error.startswith("unconfirmed_path:"):
         return "rejected"
     if error.startswith("文件不存在:"):
@@ -163,7 +151,6 @@ def _response_status(response: ToolResponse) -> str:
 
 def _progress_scope(tool_name: str, arguments: dict[str, Any]) -> str:
     """Return the logical frontier on which a tool response can make progress."""
-
     if tool_name == "query_relations":
         return "query_relations:" + json.dumps(
             {
@@ -174,38 +161,24 @@ def _progress_scope(tool_name: str, arguments: dict[str, Any]) -> str:
             sort_keys=True,
             separators=(",", ":"),
         )
-    if tool_name in {"read_symbol", "get_file_content"}:
+    if tool_name in {"read_symbol", "read_symbol"}:
         return f"{tool_name}:{arguments.get('symbol_id', '')}"
-    if tool_name == "inspect_path":
-        return (
-            "inspect_path:"
-            f"{arguments.get('symbol_id', '')}:"
-            f"{arguments.get('path_kind', '')}"
-        )
-    if tool_name in {"inspect_change_impact", "inspect_structure"}:
+    if tool_name in {*()}:
         return f"{tool_name}:{arguments.get('symbol_id', '')}"
     return tool_name
 
 
 def _progress_tokens(
-    tool_name: str,
-    arguments: dict[str, Any],
-    response: ToolResponse,
+    tool_name: str, arguments: dict[str, Any], response: ToolResponse
 ) -> tuple[str, ...]:
     """Extract stable facts from a response, ignoring pagination metadata."""
-
     scope = _progress_scope(tool_name, arguments)
     if not response.success:
         return ()
     text = (response.result or "").strip()
     if not text:
         return ()
-    if tool_name in {
-        "query_relations",
-        "inspect_path",
-        "inspect_change_impact",
-        "inspect_structure",
-    }:
+    if tool_name in {"query_relations"}:
         try:
             payload = json.loads(text)
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -218,21 +191,16 @@ def _progress_tokens(
                     continue
                 for value in values:
                     facts.append(
-                        f"{scope}:{field}:" + json.dumps(
+                        f"{scope}:{field}:"
+                        + json.dumps(
                             value,
                             ensure_ascii=False,
                             sort_keys=True,
                             separators=(",", ":"),
                         )
                     )
-            # An empty page is a lack of progress, not a newly discovered
-            # fact.  Returning no tokens lets the caller increment the
-            # no-progress streak on the very first empty response.
             return tuple(facts)
-    if tool_name in {"read_symbol", "get_file_content"}:
-        # Source responses include a changing range/continuation header.  It
-        # is navigation metadata, not a new code fact, so compare the source
-        # fragment itself.  Reaching the end cursor likewise adds no fact.
+    if tool_name in {"read_symbol", "read_symbol"}:
         if "end_of_symbol: true" in text:
             return ()
         _, separator, fragment = text.partition("\n\n")
@@ -247,18 +215,17 @@ def _progress_tokens(
 
 def _append_terminal_notice(response: ToolResponse, reason: str) -> ToolResponse:
     """Append a human-readable stop notice without changing captured evidence."""
-
     if reason != "no_progress":
         return response
     if response.success:
         return ToolResponse(
             success=True,
-            result=(response.result or "") + "\n\n" + SUBTASK_NO_PROGRESS_TERMINAL_RESULT,
+            result=(response.result or "")
+            + "\n\n"
+            + SUBTASK_NO_PROGRESS_TERMINAL_RESULT,
         )
     return ToolResponse(
-        success=False,
-        result=SUBTASK_NO_PROGRESS_TERMINAL_RESULT,
-        error=response.error,
+        success=False, result=SUBTASK_NO_PROGRESS_TERMINAL_RESULT, error=response.error
     )
 
 
@@ -280,38 +247,30 @@ class DiscoveryToolCoordinator:
                 return ""
             return entry[0].as_tool_output()
 
-    def execute(
-        self,
-        key: ToolKey,
-        call: Callable[[], ToolResponse],
-    ) -> ToolResponse:
+    def execute(self, key: ToolKey, call: Callable[[], ToolResponse]) -> ToolResponse:
         response, _, _ = self.execute_with_trace(key, call)
         return response
 
     def execute_with_trace(
-        self,
-        key: ToolKey,
-        call: Callable[[], ToolResponse],
+        self, key: ToolKey, call: Callable[[], ToolResponse]
     ) -> tuple[ToolResponse, bool, str]:
         with self._lock:
             cached = self._completed.get(key)
             if cached is not None:
-                return cached[0], True, cached[1]
+                return (cached[0], True, cached[1])
             future = self._in_flight.get(key)
             leader = future is None
             if future is None:
                 future = Future()
                 self._in_flight[key] = future
                 first_call_id = f"discovery-tool-{uuid4()}"
-
         if not leader:
             response, first_call_id = future.result()
-            return response, True, first_call_id
-
+            return (response, True, first_call_id)
         try:
             try:
                 response = call()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 response = ToolResponse(success=False, error=str(exc))
             with self._lock:
                 if _cacheable(response):
@@ -319,7 +278,7 @@ class DiscoveryToolCoordinator:
             future.set_result((response, first_call_id))
             with self._lock:
                 self._in_flight.pop(key, None)
-            return response, False, first_call_id
+            return (response, False, first_call_id)
         except BaseException as exc:
             future.set_exception(exc)
             with self._lock:
@@ -336,6 +295,7 @@ class CoordinatedDiscoveryToolClient:
         complete_patch_symbol_ids: set[str] | frozenset[str] = frozenset(),
         projection_focus: GraphProjectionFocus | None = None,
         lossless_payload: bool = False,
+        canonical_symbol_ids: bool = False,
         max_tool_calls: int | None = None,
         max_path_depth: int = 3,
         allowed_path_kind: Literal["behavior", "security"] | None = None,
@@ -355,11 +315,9 @@ class CoordinatedDiscoveryToolClient:
         self._observation_aliases: dict[str, str] = {}
         self._first_call_ids: dict[ToolKey, str] = {}
         self._alias_counter = 0
-        # 源码工具现在只接受 symbol_id。完整新增文件的 shortcut 仍由调用方
-        # 显式传入对应的 resolved symbol IDs，避免根据 LLM 提供的路径猜测。
         self._complete_patch_keys = {
             canonical_tool_key(tool_name, {"symbol_id": unescape(symbol_id)})
-            for tool_name in ("get_file_content", "read_symbol")
+            for tool_name in ("read_symbol", "read_symbol")
             for symbol_id in complete_patch_symbol_ids
         }
         self._projection_focus = projection_focus
@@ -373,6 +331,9 @@ class CoordinatedDiscoveryToolClient:
         self._max_no_progress_calls = max(0, int(max_no_progress_calls))
         self._observed_progress: dict[str, set[str]] = {}
         self._no_progress_streaks: dict[str, int] = {}
+        self._blocked_frontiers: set[str] = set()
+        self._consecutive_no_progress = 0
+        self._preparing_context = False
         self._no_progress_exhausted = False
         self._termination_reason = ""
         self._subtask_id = str(subtask_id or "")
@@ -387,56 +348,62 @@ class CoordinatedDiscoveryToolClient:
                 "allowed_direction must be 'downstream', 'upstream', or None"
             )
         self._allowed_direction = allowed_direction
-        self._allowed_relations = frozenset(str(item) for item in allowed_relations)
+        self._allowed_relations = frozenset((str(item) for item in allowed_relations))
         initial_ids = {
             unescape(symbol_id).strip()
             for symbol_id in initial_symbol_ids
             if symbol_id.strip()
         }
-        # ``symbol_catalog_ids`` is retained for API compatibility with the
-        # legacy executor, but it must not pre-seed aliases in a bounded
-        # subtask.  Only the explicit frontier is addressable as Sxx; every
-        # other symbol has to be returned by an actual graph response before
-        # it receives an Rxx alias and becomes readable.
         catalog_ids = initial_ids
         self._initial_allowed_symbol_ids = set(initial_ids)
         self._raw_by_symbol_alias: dict[str, str] = {
             f"S{index:02d}": symbol_id
             for index, symbol_id in enumerate(sorted(catalog_ids), start=1)
-            if symbol_id
+            if symbol_id and (not canonical_symbol_ids)
         }
         self._symbol_alias_by_raw = {
             raw: alias for alias, raw in self._raw_by_symbol_alias.items()
         }
         self._alias_mode = bool(self._raw_by_symbol_alias)
-        # Sxx and Rxx are separate namespaces; a dynamic result always starts
-        # at R01 even when the initial catalog contains many Sxx symbols.
         self._next_symbol_alias = 1
-        # In a real reviewer run, source reads are limited to symbols exposed by
-        # SymbolResolution or returned by an earlier graph query.  A missing
-        # focus is retained for small, isolated clients/tests that do not have a
-        # task context; production reviewer clients always carry one.
         focus_ids = {
             unescape(symbol_id).strip()
             for symbol_id in (
                 projection_focus.changed_symbol_ids
-                if projection_focus is not None else ()
+                if projection_focus is not None
+                else ()
             )
             if symbol_id.strip()
         }
         self._allowed_symbol_ids: set[str] | None = (
             (
                 self._initial_allowed_symbol_ids
-                if self._alias_mode
+                if self._alias_mode or canonical_symbol_ids
                 else focus_ids | initial_ids
             )
-            if (projection_focus is not None or initial_ids)
+            if projection_focus is not None or initial_ids
             else None
         )
 
     @property
     def projection_focus(self) -> GraphProjectionFocus | None:
         return self._projection_focus
+
+    def _unknown_symbol_response(self) -> ToolResponse:
+        from pathlib import Path
+
+        with self._lock:
+            known = sorted(self._allowed_symbol_ids or ())
+            visible = [self._symbol_alias_by_raw.get(raw, raw) for raw in known[:12]]
+        guidance = (
+            Path(__file__).resolve().parents[2]
+            / "prompts/controlled/unknown-symbol.txt"
+        ).read_text(encoding="utf-8")
+        return ToolResponse(
+            success=False,
+            error="symbol_not_in_review_context",
+            result=f"{guidance}\nknown_symbols: {json.dumps(visible, ensure_ascii=False)}\nknown_symbols_omitted: {max(0, len(known) - 12)}",
+        )
 
     @property
     def lossless_payload(self) -> bool:
@@ -456,22 +423,44 @@ class CoordinatedDiscoveryToolClient:
         with self._lock:
             if self._alias_mode:
                 raw = self._raw_by_symbol_alias.get(value)
-                if raw is None or raw not in self._allowed_symbol_ids:
+                if raw is None or raw not in (self._allowed_symbol_ids or set()):
                     return None
                 return raw
         return value
 
     def _alias_payload(self, tool: str, response: ToolResponse) -> ToolResponse:
-        if not self._alias_mode or not response.success or not response.result:
+        if not self._alias_mode or not response.success or (not response.result):
             return response
         text = response.result
         try:
             payload = json.loads(text)
         except (TypeError, ValueError, json.JSONDecodeError):
-            if tool in {"get_file_content", "read_symbol"}:
+            if tool in {"read_symbol", "read_symbol"}:
+                header, separator, source = text.partition("\n\n")
                 with self._lock:
                     for raw, alias in self._symbol_alias_by_raw.items():
-                        text = text.replace(f"symbol_id: {raw}", f"symbol_id: {alias}")
+                        header = header.replace(
+                            f"symbol_id: {raw}", f"symbol_id: {alias}"
+                        )
+                        header = header.replace(
+                            f"owner_id: {raw}", f"owner_id: {alias}"
+                        )
+                    lines = []
+                    for line in header.splitlines():
+                        if line.startswith("members: "):
+                            try:
+                                members = json.loads(line.removeprefix("members: "))
+                                for member in members:
+                                    member["id"] = self._symbol_alias_by_raw.get(
+                                        member.get("id"), member.get("id")
+                                    )
+                                line = "members: " + json.dumps(
+                                    members, ensure_ascii=False
+                                )
+                            except (ValueError, TypeError, AttributeError):
+                                pass
+                        lines.append(line)
+                    text = "\n".join(lines) + separator + source
             return ToolResponse(success=True, result=text)
         if not isinstance(payload, dict):
             return response
@@ -484,32 +473,37 @@ class CoordinatedDiscoveryToolClient:
             if isinstance(value, list):
                 return [replace(item, key) for item in value]
             if isinstance(value, str) and key in {
-                "id", "symbol_id", "owner_id", "sourceId", "targetId",
-                "source_id", "target_id", "subject_symbol_id",
+                "id",
+                "symbol_id",
+                "owner_id",
+                "sourceId",
+                "targetId",
+                "source_id",
+                "target_id",
+                "subject_symbol_id",
             }:
                 return aliases.get(value, value)
             return value
 
         try:
-            return ToolResponse(success=True, result=json.dumps(
-                replace(payload), ensure_ascii=False, separators=(",", ":")
-            ))
+            return ToolResponse(
+                success=True,
+                result=json.dumps(
+                    replace(payload), ensure_ascii=False, separators=(",", ":")
+                ),
+            )
         except (TypeError, ValueError):
             return response
 
     def _visible_response(
-        self,
-        tool: str,
-        response: ToolResponse,
-        arguments: dict[str, Any] | None = None,
+        self, tool: str, response: ToolResponse, arguments: dict[str, Any] | None = None
     ) -> ToolResponse:
         if response.success and self._lossless_payload:
             return self._alias_payload(tool, response)
         if not response.success:
             return response
         return self._alias_payload(
-            tool,
-            _reviewer_response(tool, response, arguments, self._projection_focus),
+            tool, _reviewer_response(tool, response, arguments, self._projection_focus)
         )
 
     def _invoke(
@@ -520,6 +514,22 @@ class CoordinatedDiscoveryToolClient:
     ) -> ToolResponse:
         key = canonical_tool_key(tool_name, arguments)
         started = perf_counter()
+        scope = _progress_scope(tool_name, arguments)
+        with self._lock:
+            blocked = scope in self._blocked_frontiers and (not self._closed)
+        if blocked:
+            terminal = self._note_progress(
+                tool_name, arguments, ToolResponse(success=True), progressed=False
+            )
+            response = ToolResponse(
+                success=False,
+                error="frontier_exhausted",
+                result=SUBTASK_NO_PROGRESS_TERMINAL_RESULT
+                if terminal
+                else "该 symbol/relation 已连续无新事实；不要换参数重查。可读取已知相关源码或改查相关关系；事实足够则收口。",
+            )
+            self._record(tool_name, arguments, response, started, "rejected")
+            return response
         budget_exceeded = False
         with self._lock:
             if self._closed:
@@ -529,7 +539,10 @@ class CoordinatedDiscoveryToolClient:
                     if self._no_progress_exhausted
                     else "subtask_execution_closed"
                 )
-            elif self._max_tool_calls is not None and self._tool_calls >= self._max_tool_calls:
+            elif (
+                self._max_tool_calls is not None
+                and self._tool_calls >= self._max_tool_calls
+            ):
                 budget_exceeded = True
                 close_error = "subtask_tool_budget_exceeded"
                 self._budget_exhausted = True
@@ -546,28 +559,18 @@ class CoordinatedDiscoveryToolClient:
                 if future is None:
                     future = Future()
                     self._in_flight[key] = future
-
         if budget_exceeded:
             response = ToolResponse(
                 success=False,
                 error=close_error or "subtask_tool_budget_exceeded",
-                result=(
-                    SUBTASK_BUDGET_TERMINAL_RESULT
-                    if close_error == "subtask_tool_budget_exceeded"
-                    else SUBTASK_NO_PROGRESS_TERMINAL_RESULT
-                    if close_error == "subtask_no_progress"
-                    else None
-                ),
+                result=SUBTASK_BUDGET_TERMINAL_RESULT
+                if close_error == "subtask_tool_budget_exceeded"
+                else SUBTASK_NO_PROGRESS_TERMINAL_RESULT
+                if close_error == "subtask_no_progress"
+                else None,
             )
-            self._record(
-                tool_name,
-                arguments,
-                response,
-                started,
-                "rejected",
-            )
+            self._record(tool_name, arguments, response, started, "rejected")
             return response
-
         if already_seen:
             response = ToolResponse(success=True, result=REPEATED_TOOL_RESULT)
             self._record(
@@ -580,13 +583,12 @@ class CoordinatedDiscoveryToolClient:
             )
             terminal_reason = (
                 "no_progress"
-                if self._note_progress(
-                    tool_name, arguments, response, progressed=False
-                )
+                if self._note_progress(tool_name, arguments, response, progressed=False)
                 else ""
             )
-            return _append_terminal_notice(response, terminal_reason)
-
+            return _append_terminal_notice(
+                self._repeat_view(tool_name, key, response), terminal_reason
+            )
         if not leader:
             assert future is not None
             response = future.result()
@@ -607,7 +609,9 @@ class CoordinatedDiscoveryToolClient:
                     )
                     else ""
                 )
-                return _append_terminal_notice(repeated, terminal_reason)
+                return _append_terminal_notice(
+                    self._repeat_view(tool_name, key, repeated), terminal_reason
+                )
             record_call_id = self._record(tool_name, arguments, response, started)
             visible = _alias_echo(
                 tool_name,
@@ -623,7 +627,6 @@ class CoordinatedDiscoveryToolClient:
                 else ""
             )
             return _append_terminal_notice(visible, terminal_reason)
-
         try:
             assert future is not None
             response, coordinator_reused, first_call_id = (
@@ -640,8 +643,8 @@ class CoordinatedDiscoveryToolClient:
                 response,
                 started,
                 "reused" if coordinator_reused else None,
-                call_id=(None if coordinator_reused else first_call_id),
-                reused_from_call_id=(first_call_id if coordinator_reused else ""),
+                call_id=None if coordinator_reused else first_call_id,
+                reused_from_call_id=first_call_id if coordinator_reused else "",
             )
             future.set_result(response)
             with self._lock:
@@ -661,11 +664,61 @@ class CoordinatedDiscoveryToolClient:
             )
             return _append_terminal_notice(visible, terminal_reason)
         except BaseException as exc:
-            if future is not None and not future.done():
+            if future is not None and (not future.done()):
                 future.set_exception(exc)
             with self._lock:
                 self._in_flight.pop(key, None)
             raise
+
+    def _repeat_view(
+        self, tool_name: str, key: ToolKey, response: ToolResponse
+    ) -> ToolResponse:
+        """Explain the exact reused page without creating a new evidence item."""
+        if not self._subtask_id:
+            return response
+        local_ids = {
+            record.call_id
+            for record in self.trace_records
+            if record.reuse_key == f"{key[0]}:{key[1]}"
+        }
+        observation = next(
+            (
+                alias
+                for alias, call_id in self.observation_aliases.items()
+                if call_id in local_ids
+            ),
+            "",
+        )
+        raw = (
+            self._alias_payload(
+                tool_name, ToolResponse(True, self._coordinator.first_payload_for(key))
+            ).result
+            or ""
+        )
+        header = (
+            raw.partition("\n\n")[0]
+            if tool_name in {"read_symbol", "read_symbol"}
+            else ""
+        )
+        metadata = "\n".join(
+            (
+                line
+                for line in header.splitlines()
+                if line.startswith(
+                    ("symbol_id: ", "kind: ", "owner_id: ", "lines: ", "next_cursor: ")
+                )
+            )
+        )
+        from pathlib import Path
+
+        template = (
+            Path(__file__).resolve().parents[2]
+            / "prompts/controlled/repeated-query.txt"
+        ).read_text(encoding="utf-8")
+        return ToolResponse(
+            success=True,
+            result=f"{response.result}\n{observation}\n{metadata}\n{template}",
+        )
 
     def _remember_graph_symbols(
         self,
@@ -683,11 +736,57 @@ class CoordinatedDiscoveryToolClient:
         source-read capability, and relationship endpoints without a resolved
         symbol remain fail-closed.
         """
-        if tool_name not in GRAPH_DISCOVERY_TOOLS or not response.success:
+        if not response.success:
+            return
+        if tool_name in {"read_symbol", "read_symbol"}:
+            header = (response.result or "").partition("\n\n")[0]
+            owner = next(
+                (
+                    line.removeprefix("owner_id: ").strip()
+                    for line in header.splitlines()
+                    if line.startswith("owner_id: ")
+                ),
+                "",
+            )
+            metadata_ids = {owner} if owner else set()
+            for line in header.splitlines():
+                if line.startswith("members: "):
+                    try:
+                        members = json.loads(line.removeprefix("members: "))
+                        if isinstance(members, list):
+                            metadata_ids.update(
+                                (
+                                    item["id"]
+                                    for item in members[:64]
+                                    if isinstance(item, dict)
+                                    and isinstance(item.get("id"), str)
+                                    and item["id"]
+                                    and (
+                                        item.get("kind")
+                                        in {"FIELD", "METHOD", "CONSTRUCTOR", "TYPE"}
+                                    )
+                                )
+                            )
+                    except (ValueError, TypeError):
+                        pass
+            if metadata_ids and self._allowed_symbol_ids is not None:
+                with self._lock:
+                    for symbol_id in sorted(metadata_ids):
+                        self._allowed_symbol_ids.add(symbol_id)
+                        if (
+                            self._alias_mode
+                            and symbol_id not in self._symbol_alias_by_raw
+                        ):
+                            alias = f"R{self._next_symbol_alias:02d}"
+                            self._next_symbol_alias += 1
+                            self._raw_by_symbol_alias[alias] = symbol_id
+                            self._symbol_alias_by_raw[symbol_id] = alias
+            return
+        if tool_name not in GRAPH_DISCOVERY_TOOLS:
             return
         visible_response = (
             response
-            if self._alias_mode and self._lossless_payload
+            if self._lossless_payload
             else _reviewer_response(
                 tool_name, response, arguments, self._projection_focus
             )
@@ -709,13 +808,8 @@ class CoordinatedDiscoveryToolClient:
         if not ids or self._allowed_symbol_ids is None:
             return
         with self._lock:
-            # ``_alias_payload`` may already have rewritten known endpoints to
-            # local Sxx/Rxx presentation aliases.  Never treat those aliases
-            # as graph symbols: resolving them here prevents a second query
-            # from creating R02 -> R01 (or poisoning the source-read allowlist).
             raw_ids = {
-                self._raw_by_symbol_alias.get(symbol_id, symbol_id)
-                for symbol_id in ids
+                self._raw_by_symbol_alias.get(symbol_id, symbol_id) for symbol_id in ids
             }
             self._allowed_symbol_ids.update(raw_ids)
             if not self._alias_mode:
@@ -744,9 +838,7 @@ class CoordinatedDiscoveryToolClient:
         effective_status = status or _response_status(response)
         with self._lock:
             effective_call_id = call_id or f"discovery-tool-{uuid4()}"
-            first_call_id = (
-                reused_from_call_id or self._first_call_ids.get(key, "")
-            )
+            first_call_id = reused_from_call_id or self._first_call_ids.get(key, "")
             if not first_call_id and effective_status != "reused":
                 self._first_call_ids[key] = effective_call_id
             record = DiscoveryToolRecord(
@@ -755,23 +847,17 @@ class CoordinatedDiscoveryToolClient:
                 tool=tool_name,
                 arguments=canonical_arguments,
                 output=response.as_tool_output(),
-                duration_ms=(
-                    0.0
-                    if effective_status == "reused"
-                    else (perf_counter() - started) * 1000
-                ),
+                duration_ms=0.0
+                if effective_status == "reused"
+                else (perf_counter() - started) * 1000,
                 status=effective_status,
                 reuse_key=f"{key[0]}:{key[1]}",
-                reused_from_call_id=(
-                    first_call_id
-                    if effective_status == "reused"
-                    else ""
-                ),
-                resolved_output=(
-                    self._coordinator.first_payload_for(key)
-                    if effective_status == "reused"
-                    else response.as_tool_output()
-                ),
+                reused_from_call_id=first_call_id
+                if effective_status == "reused"
+                else "",
+                resolved_output=self._coordinator.first_payload_for(key)
+                if effective_status == "reused"
+                else response.as_tool_output(),
             )
             self._records.append(record)
             return effective_call_id
@@ -789,14 +875,12 @@ class CoordinatedDiscoveryToolClient:
     @property
     def budget_exhausted(self) -> bool:
         """Whether a tool call was rejected by this subtask's hard budget."""
-
         with self._lock:
             return self._budget_exhausted
 
     @property
     def no_progress_exhausted(self) -> bool:
         """Whether repeated tool probes stopped this subtask at the same frontier."""
-
         with self._lock:
             return self._no_progress_exhausted
 
@@ -812,7 +896,6 @@ class CoordinatedDiscoveryToolClient:
 
     def close(self) -> None:
         """Prevent late React turns from issuing new Gateway calls after timeout."""
-
         with self._lock:
             self._closed = True
 
@@ -830,31 +913,56 @@ class CoordinatedDiscoveryToolClient:
         tool calls are closed; the last real response remains available to the
         React final structured-output turn.
         """
-
         scope = _progress_scope(tool_name, arguments)
         if progressed is None:
-            # A failed Gateway/network call is not an observation frontier.
-            # Leave it visible as a failure so strict evaluation can diagnose
-            # infrastructure problems instead of relabeling them as a normal
-            # no-progress termination.
             if not response.success:
                 with self._lock:
                     self._no_progress_streaks[scope] = 0
                 return False
             tokens = _progress_tokens(tool_name, arguments, response)
+            if self._subtask_id and tool_name == "query_relations":
+                try:
+                    page = json.loads(response.result or "")
+                    if (
+                        isinstance(page, dict)
+                        and page.get("schema_version") == 2
+                        and (page.get("outcome") == "not_found")
+                        and (page.get("coverage") == "complete")
+                        and (not page.get("relationships"))
+                        and (not page.get("unresolved_relationships"))
+                        and (not page.get("next_cursor"))
+                    ):
+                        with self._lock:
+                            self._blocked_frontiers.add(scope)
+                        tokens = ()
+                except (ValueError, TypeError):
+                    pass
             with self._lock:
                 observed = self._observed_progress.setdefault(scope, set())
-                progressed = any(token not in observed for token in tokens)
+                progressed = any((token not in observed for token in tokens))
                 observed.update(tokens)
         with self._lock:
             if progressed:
                 self._no_progress_streaks[scope] = 0
+                self._consecutive_no_progress = 0
                 return False
+            self._consecutive_no_progress += 1
             streak = self._no_progress_streaks.get(scope, 0) + 1
             self._no_progress_streaks[scope] = streak
             if (
                 self._max_no_progress_calls > 0
                 and streak >= self._max_no_progress_calls
+            ):
+                self._blocked_frontiers.add(scope)
+                if not self._subtask_id:
+                    self._no_progress_exhausted = True
+                    self._termination_reason = "no_progress"
+                    self._closed = True
+                    return True
+            if (
+                self._max_no_progress_calls > 0
+                and self._consecutive_no_progress >= self._max_no_progress_calls * 2
+                and (not self._preparing_context)
             ):
                 self._no_progress_exhausted = True
                 self._termination_reason = "no_progress"
@@ -875,73 +983,19 @@ class CoordinatedDiscoveryToolClient:
                 self._observation_aliases[alias] = call_id
             return alias
 
-    def get_file_content(
-        self,
-        symbol_id: str,
-        *,
-        start_line: int | None = None,
-        end_line: int | None = None,
-        cursor: str | None = None,
-    ) -> ToolResponse:
-        raw_symbol_id = self._resolve_symbol_ref(symbol_id)
-        # Cache and evidence keys always use the canonical raw symbol.  Sxx/Rxx
-        # aliases are presentation-only and are local to a subtask.
-        arguments: dict[str, Any] = {"symbol_id": raw_symbol_id}
-        if raw_symbol_id is None:
-            return self._invoke(
-                "get_file_content",
-                {"symbol_id": unescape(symbol_id).strip()},
-                lambda: ToolResponse(
-                    success=False,
-                    error=(
-                        "symbol_not_in_review_context"
-                        if self._allowed_symbol_ids is not None
-                        else "symbol_ref_not_in_review_context"
-                    ),
-                ),
-            )
-        symbol_id = raw_symbol_id
-        if start_line is not None:
-            arguments["start_line"] = start_line
-        if end_line is not None:
-            arguments["end_line"] = end_line
-        if cursor is not None:
-            arguments["cursor"] = cursor
-        if (
-            self._allowed_symbol_ids is not None
-            and symbol_id not in self._allowed_symbol_ids
-        ):
-            return self._invoke(
-                "get_file_content",
-                arguments,
-                lambda: ToolResponse(
-                    success=False,
-                    error="symbol_not_in_review_context",
-                ),
-            )
-        key = canonical_tool_key("get_file_content", arguments)
-        if key in self._complete_patch_keys:
-            response = ToolResponse(success=True, result=COMPLETE_PATCH_RESULT)
-            self._record(
-                "get_file_content",
-                arguments,
-                response,
-                perf_counter(),
-                "reused",
-                reused_from_call_id="task_patch",
-            )
-            # Patch is bound internally as P01; never expose that implementation
-            # alias to the reviewer.  The LLM-facing contract only allows Cxx/Txx.
-            return response
-        return self._invoke(
-            "get_file_content",
-            arguments,
-            lambda: self._delegate.get_file_content(symbol_id)
-            if not any(value is not None for value in (start_line, end_line, cursor))
-            else self._delegate.get_file_content(
-                symbol_id, start_line=start_line, end_line=end_line, cursor=cursor
-            ),
-        )
+    @contextmanager
+    def context_preparation(self):
+        """Charge prefetch normally, but do not count it as model no-progress.
+
+        Empty frontiers still close locally. Budget and timeout closure remain.
+        """
+        self._preparing_context = True
+        try:
+            yield
+        finally:
+            self._preparing_context = False
+            with self._lock:
+                self._consecutive_no_progress = 0
 
     def read_symbol(
         self,
@@ -962,10 +1016,7 @@ class CoordinatedDiscoveryToolClient:
             return self._invoke(
                 "read_symbol",
                 {"symbol_id": raw_symbol_id},
-                lambda: ToolResponse(
-                    success=False,
-                    error="symbol_not_in_review_context",
-                ),
+                self._unknown_symbol_response,
             )
         arguments: dict[str, Any] = {"symbol_id": raw_symbol_id}
         if start_line is not None:
@@ -990,10 +1041,7 @@ class CoordinatedDiscoveryToolClient:
             "read_symbol",
             arguments,
             lambda: self._delegate.read_symbol(
-                raw_symbol_id,
-                start_line=start_line,
-                end_line=end_line,
-                cursor=cursor,
+                raw_symbol_id, start_line=start_line, end_line=end_line, cursor=cursor
             ),
         )
 
@@ -1012,11 +1060,6 @@ class CoordinatedDiscoveryToolClient:
         raw_symbol_id = self._resolve_symbol_ref(subject_symbol_id)
         if raw_symbol_id is None:
             return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
-        # In a focused client raw IDs are accepted only when they belong to
-        # the initial change context or were returned by an earlier graph
-        # response.  Alias mode already enforces this in ``_resolve_symbol_ref``;
-        # this guard closes the no-alias path as well, otherwise a model could
-        # bypass the subtask scope by sending an arbitrary Gateway symbol ID.
         if (
             self._allowed_symbol_ids is not None
             and raw_symbol_id not in self._allowed_symbol_ids
@@ -1024,24 +1067,20 @@ class CoordinatedDiscoveryToolClient:
             return self._invoke(
                 "query_relations",
                 {"subject_symbol_id": raw_symbol_id, "relation": relation},
-                lambda: ToolResponse(
-                    success=False,
-                    error="symbol_not_in_review_context",
-                ),
+                self._unknown_symbol_response,
             )
-        # Compatible tool-calling models occasionally emit an exploratory
-        # limit/depth outside the Gateway contract.  Clamp those values at
-        # the Python boundary so a harmless over-request cannot consume a
-        # budget slot as an infrastructure failure; the effective values are
-        # also what enters the canonical cache/evidence key.
         try:
             depth = max(1, min(3, int(depth)))
             limit = max(1, min(200, int(limit)))
         except (TypeError, ValueError):
             return ToolResponse(success=False, error="invalid_relation_page")
         if relation not in {
-            "callers", "callees", "field_readers", "field_writers",
-            "implementations", "overrides",
+            "callers",
+            "callees",
+            "field_readers",
+            "field_writers",
+            "implementations",
+            "overrides",
         }:
             return ToolResponse(success=False, error="unsupported_relation")
         if self._allowed_relations and relation not in self._allowed_relations:
@@ -1049,9 +1088,7 @@ class CoordinatedDiscoveryToolClient:
         if (
             self._allowed_direction == "downstream"
             and relation == "callers"
-        ) or (
-            self._allowed_direction == "upstream"
-            and relation == "callees"
+            or (self._allowed_direction == "upstream" and relation == "callees")
         ):
             return ToolResponse(success=False, error="relation_direction_not_allowed")
         arguments: dict[str, Any] = {
@@ -1075,107 +1112,5 @@ class CoordinatedDiscoveryToolClient:
                 cursor=cursor,
                 include_callsite=include_callsite,
                 include_context=include_context,
-            ),
-        )
-
-    def inspect_path(
-        self,
-        symbol_id: str,
-        path_kind: str,
-        max_depth: int = 3,
-        *,
-        limit: int | None = None,
-        cursor: str | None = None,
-    ) -> ToolResponse:
-        raw_symbol_id = self._resolve_symbol_ref(symbol_id)
-        if raw_symbol_id is None:
-            return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
-        symbol_id = raw_symbol_id
-        if path_kind not in {"behavior", "security"}:
-            return ToolResponse(success=False, error="invalid_path_kind")
-        if (
-            self._allowed_path_kind is not None
-            and path_kind != self._allowed_path_kind
-        ):
-            return ToolResponse(success=False, error="path_kind_not_allowed")
-        if (
-            not isinstance(max_depth, int)
-            or isinstance(max_depth, bool)
-            or not 1 <= max_depth <= self._max_path_depth
-        ):
-            return ToolResponse(success=False, error="invalid_max_depth")
-        arguments: dict[str, Any] = {
-            "symbol_id": symbol_id,
-            "path_kind": path_kind,
-            "max_depth": max_depth,
-        }
-        if limit is not None:
-            arguments["limit"] = limit
-        if cursor is not None:
-            arguments["cursor"] = cursor
-        return self._invoke(
-            "inspect_path",
-            arguments,
-            lambda: self._delegate.inspect_path(symbol_id, path_kind, max_depth)
-            if limit is None and cursor is None
-            else self._delegate.inspect_path(
-                symbol_id, path_kind, max_depth, limit=limit, cursor=cursor
-            ),
-        )
-
-    def inspect_change_impact(
-        self,
-        symbol_id: str,
-        *,
-        max_depth: int | None = None,
-        limit: int | None = None,
-        cursor: str | None = None,
-    ) -> ToolResponse:
-        requested_ref = unescape(symbol_id)
-        raw_symbol_id = self._resolve_symbol_ref(requested_ref)
-        if raw_symbol_id is None:
-            return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
-        symbol_id = raw_symbol_id
-        arguments: dict[str, Any] = {"symbol_id": raw_symbol_id}
-        if max_depth is not None:
-            arguments["max_depth"] = max_depth
-        if limit is not None:
-            arguments["limit"] = limit
-        if cursor is not None:
-            arguments["cursor"] = cursor
-        return self._invoke(
-            "inspect_change_impact",
-            arguments,
-            lambda: self._delegate.inspect_change_impact(symbol_id)
-            if not any(value is not None for value in (max_depth, limit, cursor))
-            else self._delegate.inspect_change_impact(
-                symbol_id, max_depth=max_depth, limit=limit, cursor=cursor
-            ),
-        )
-
-    def inspect_structure(
-        self,
-        symbol_id: str,
-        *,
-        limit: int | None = None,
-        cursor: str | None = None,
-    ) -> ToolResponse:
-        requested_ref = unescape(symbol_id)
-        raw_symbol_id = self._resolve_symbol_ref(requested_ref)
-        if raw_symbol_id is None:
-            return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
-        symbol_id = raw_symbol_id
-        arguments: dict[str, Any] = {"symbol_id": raw_symbol_id}
-        if limit is not None:
-            arguments["limit"] = limit
-        if cursor is not None:
-            arguments["cursor"] = cursor
-        return self._invoke(
-            "inspect_structure",
-            arguments,
-            lambda: self._delegate.inspect_structure(symbol_id)
-            if limit is None and cursor is None
-            else self._delegate.inspect_structure(
-                symbol_id, limit=limit, cursor=cursor
             ),
         )

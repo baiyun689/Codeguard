@@ -376,11 +376,8 @@ function renderMainFlow(){
     ' · '+Number(metrics.file_count||0)+' 文件 / '+Number(metrics.hunk_count||0)+
     ' hunks / '+Number(metrics.diff_chars||0)+' 字符'+
     (Object.keys(thresholds).length?
-      ' · S≤'+Number(thresholds.small_max_files||0)+'文件/'+
-      Number(thresholds.small_max_hunks||0)+'hunks/'+
-      Number(thresholds.small_max_diff_chars||0)+'字符'+
-      ' · M≤'+Number(thresholds.medium_max_files||0)+'文件/'+
-      Number(thresholds.medium_max_diff_chars||0)+'字符':"")+
+      ' · NORMAL≤'+Number(thresholds.normal_max_files||0)+'文件/'+
+      Number(thresholds.normal_max_diff_chars||0)+'字符':"")+
     (routing.fallback?' · <b>已降级</b> '+esc(routing.fallback_reason||"")+
       (routing.fallback_exception_type?
         ' ('+esc(routing.fallback_exception_type)+')':""):"")+

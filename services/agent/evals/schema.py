@@ -10,23 +10,12 @@
 """
 
 from __future__ import annotations
-
 import logging
 from typing import Literal
-
 from pydantic import BaseModel, Field, field_validator
-
 from codeguard_agent.models.schemas import Issue, Severity
 
 logger = logging.getLogger("codeguard.evals")
-
-# 能力标签:一条用例"审准它至少需要哪类上下文",对应工具背后的地面真值来源分层。
-#   diff-only  仅看 diff 即可判定
-#   file       需读取改动文件之外的已解析 symbol(get_file_content)
-#   repo-map   需先定位"diff 调用的符号定义在哪个跨文件"再细读(图谱导航 + get_file_content)
-#   ast        需单文件结构/方法签名(未来 get_method_definition)
-#   call-graph 需跨文件调用/影响关系(未来 get_call_graph / get_related_files)
-#   rag        需按语义检索项目别处实现(未来 semantic_search)
 VALID_CAPABILITIES = (
     "diff-only",
     "file",
@@ -80,19 +69,18 @@ class ExpectedIssue(BaseModel):
     cwe: str = Field(default="", description="可选 CWE 编号")
     risk_tag: str = Field(default="", description="可选缺陷分类标签")
     evidence_anchors: list[str] = Field(
-        default_factory=list,
-        description="历史证据标注；当前评测不参与命中判定",
+        default_factory=list, description="历史证据标注；当前评测不参与命中判定"
     )
     evidence_scope: Literal["local", "cross_file"] = Field(
-        default="local",
-        description="历史证据范围标注；当前评测不参与命中判定",
+        default="local", description="历史证据范围标注；当前评测不参与命中判定"
     )
     mechanism: str = Field(default="", description="受控评测中问题的机制主张")
-    reachability: str = Field(default="", description="受控评测中 source 到 sink 的可达性主张")
+    reachability: str = Field(
+        default="", description="受控评测中 source 到 sink 的可达性主张"
+    )
     impact: str = Field(default="", description="受控评测中可观察的影响主张")
     required_graph_facts: list[dict[str, str]] = Field(
-        default_factory=list,
-        description="图谱必要性评测要求验证的关系/状态事实",
+        default_factory=list, description="图谱必要性评测要求验证的关系/状态事实"
     )
 
 
@@ -110,7 +98,9 @@ class Distractor(BaseModel):
     type_keywords: list[str] = Field(
         description="审查器若误报此处大概率会用的关键词,命中其一 + 文件/行号对上即判为'中诱饵'"
     )
-    note: str = Field(default="", description="为什么这是诱饵而非真问题(给人看,造数据时务必写清)")
+    note: str = Field(
+        default="", description="为什么这是诱饵而非真问题(给人看,造数据时务必写清)"
+    )
 
 
 class EvalCase(BaseModel):
@@ -124,8 +114,7 @@ class EvalCase(BaseModel):
     category: str = Field(description="类别,如 'SQL注入' / 'clean'")
     dimension: str = Field(
         default="security",
-        description="审查维度:security / logic / quality(clean 样本随便标)。"
-        "阶段 2 起按维度拆分 recall,衡量各领域审查员的价值。",
+        description="审查维度:security / logic / quality(clean 样本随便标)。阶段 2 起按维度拆分 recall,衡量各领域审查员的价值。",
     )
     language: str = Field(default="java", description="代码语言")
     description: str = Field(default="", description="这条用例考的是什么")
@@ -136,8 +125,7 @@ class EvalCase(BaseModel):
     )
     difficulty: str = Field(default="standard", description="难度或能力场景标签")
     evidence_required: bool = Field(
-        default=False,
-        description="历史兼容字段；当前评测忽略",
+        default=False, description="历史兼容字段；当前评测忽略"
     )
     provenance: CaseProvenance = Field(default_factory=CaseProvenance)
     diff: str = Field(description="unified diff 文本,喂给审查管线的输入")
@@ -146,22 +134,18 @@ class EvalCase(BaseModel):
     )
     repo_path: str = Field(
         default="",
-        description="repo-backed 用例的仓库根路径(指向干净基线快照 repo/ 目录;runner 会应用 diff 后再供工具读取);"
-        "空表示纯内联合成用例(磁盘无对应文件,工具读不到)。",
+        description="repo-backed 用例的仓库根路径(指向干净基线快照 repo/ 目录;runner 会应用 diff 后再供工具读取);空表示纯内联合成用例(磁盘无对应文件,工具读不到)。",
     )
     capability: list[str] = Field(
         default_factory=lambda: ["diff-only"],
-        description="能力标签:审准本用例至少需要哪类上下文(见 VALID_CAPABILITIES)。"
-        "仅用于评测归类与切片,绝不改变审查链路行为。缺省为 ['diff-only']。",
+        description="能力标签:审准本用例至少需要哪类上下文(见 VALID_CAPABILITIES)。仅用于评测归类与切片,绝不改变审查链路行为。缺省为 ['diff-only']。",
     )
     distractors: list[Distractor] = Field(
         default_factory=list,
-        description="诱饵清单:看着像漏洞、实则无害的点。报告踩中即归类为'中诱饵'误报,"
-        "用来量复杂用例下的克制力。缺省为空(老用例向后兼容)。",
+        description="诱饵清单:看着像漏洞、实则无害的点。报告踩中即归类为'中诱饵'误报,用来量复杂用例下的克制力。缺省为空(老用例向后兼容)。",
     )
     graph_evaluation: dict[str, object] = Field(
-        default_factory=dict,
-        description="受控图谱必要性评测元数据,不进入产品审查结果",
+        default_factory=dict, description="受控图谱必要性评测元数据,不进入产品审查结果"
     )
 
     @field_validator("capability", mode="before")
@@ -176,7 +160,11 @@ class EvalCase(BaseModel):
         for raw in value:
             tag = str(raw).strip().lower()
             if tag not in VALID_CAPABILITIES:
-                logger.warning("忽略非法能力标签 %r(合法取值:%s)", raw, ", ".join(VALID_CAPABILITIES))
+                logger.warning(
+                    "忽略非法能力标签 %r(合法取值:%s)",
+                    raw,
+                    ", ".join(VALID_CAPABILITIES),
+                )
                 continue
             if tag not in seen:
                 seen.append(tag)
@@ -226,7 +214,9 @@ class JudgeScore(BaseModel):
 
     semantic_match: bool = Field(description="语义上是否真的命中了这条标准答案")
     message_quality: int = Field(ge=1, le=5, description="问题描述质量 1~5")
-    suggestion_quality: int = Field(ge=1, le=5, description="修复建议质量 1~5(无建议给 1)")
+    suggestion_quality: int = Field(
+        ge=1, le=5, description="修复建议质量 1~5(无建议给 1)"
+    )
     comment: str = Field(default="", description="评审简评")
 
 
@@ -241,9 +231,12 @@ class ToolUsage(BaseModel):
     """
 
     tool_calls: int = Field(default=0, description="去重后取得有效上下文的工具调用条数")
-    tools_used: list[str] = Field(default_factory=list, description="用到的工具名(去重排序)")
+    tools_used: list[str] = Field(
+        default_factory=list, description="用到的工具名(去重排序)"
+    )
     symbols_read: list[str] = Field(
-        default_factory=list, description="经 get_file_content 读取的稳定 symbol_id(去重排序)"
+        default_factory=list,
+        description="经 get_file_content 读取的稳定 symbol_id(去重排序)",
     )
 
 
@@ -252,7 +245,9 @@ class CouncilTraceStats(BaseModel):
 
     candidate_count: int = 0
     candidate_count_by_agent: dict[str, int] = Field(default_factory=dict)
-    truncated_candidates: int = Field(default=0, description="发现阶段因候选上限被截断的数量")
+    truncated_candidates: int = Field(
+        default=0, description="发现阶段因候选上限被截断的数量"
+    )
     verdict_count: int = Field(default=0, description="Judge 产生的候选裁决数")
     removed_by_judge: int = Field(default=0, description="Judge 候选裁决为 drop 的数量")
     no_support_candidate_count: int = 0
@@ -277,7 +272,9 @@ class CouncilTraceStats(BaseModel):
     )
     critical_candidate_count: int = 0
     severity_transitions: dict[str, int] = Field(default_factory=dict)
-    final_issue_count: int = Field(default=0, description="最终 Issue 对应的 survivor 候选数")
+    final_issue_count: int = Field(
+        default=0, description="最终 Issue 对应的 survivor 候选数"
+    )
     final_issue_fact_covered_count: int = Field(
         default=0, description="survivor 中至少有关联非 insufficient 关系的数量"
     )
@@ -290,26 +287,19 @@ class CouncilTraceStats(BaseModel):
     average_evidence_tool_calls: float = Field(
         default=0.0, description="实际新证据工具调用数/候选数；无候选时为 0.0"
     )
-    # ── 降级指标 ──
-    react_degraded_recursion_count: int = Field(
-        default=0, description="ReAct 撞递归上限降级 DirectEngine 的次数"
-    )
-    react_synthesis_fallback_count: int = Field(
-        default=0, description="ReAct 结构化收口 fallback 的次数"
-    )
     direct_tier_task_count: int = Field(
         default=0, description="路由为 tier=direct（不使用 ReAct）的 task 数"
     )
     discoverer_failed_count: int = Field(
         default=0, description="完全失败（异常跳过）的发现者调用次数"
     )
+    investigation_incomplete_count: int = Field(default=0, ge=0)
     task_review_failed_count: int = Field(
         default=0, description="per-task 审查调用返回 None 的次数"
     )
     judge_synthesis_failed_count: int = Field(
         default=0, description="CouncilJudge LLM synthesis 失败使用默认 severity 的次数"
     )
-    # ── Evidence Ledger 统计(与 CouncilRunStats 镜像) ──
     final_issue_supported_count: int = Field(
         default=0, description="survivor 中 Judge keep 且引用 ≥1 支持事实的数量"
     )
@@ -318,24 +308,48 @@ class CouncilTraceStats(BaseModel):
     )
     artifact_count: int = Field(default=0, description="运行时捕获的 Artifact 总数")
     patch_artifact_count: int = Field(default=0, description="patch Artifact 数(P01)")
-    context_artifact_count: int = Field(default=0, description="预取上下文 Artifact 数(Cxx)")
+    context_artifact_count: int = Field(
+        default=0, description="预取上下文 Artifact 数(Cxx)"
+    )
     tool_artifact_count: int = Field(default=0, description="工具 Artifact 数(Txx)")
-    reused_artifact_count: int = Field(default=0, description="跨任务复用捕获的 Artifact 数")
-    candidate_patch_only_count: int = Field(default=0, description="仅 patch 证据的候选数")
-    candidate_context_backed_count: int = Field(default=0, description="patch+context 的候选数")
-    candidate_tool_backed_count: int = Field(default=0, description="引用工具事实的候选数")
+    reused_artifact_count: int = Field(
+        default=0, description="跨任务复用捕获的 Artifact 数"
+    )
+    candidate_patch_only_count: int = Field(
+        default=0, description="仅 patch 证据的候选数"
+    )
+    candidate_context_backed_count: int = Field(
+        default=0, description="patch+context 的候选数"
+    )
+    candidate_tool_backed_count: int = Field(
+        default=0, description="引用工具事实的候选数"
+    )
     candidate_ungrounded_count: int = Field(default=0, description="ungrounded 候选数")
-    selected_reference_count: int = Field(default=0, description="候选引用总数(含自动 patch)")
+    selected_reference_count: int = Field(
+        default=0, description="候选引用总数(含自动 patch)"
+    )
     valid_reference_count: int = Field(default=0, description="验证为 valid 的引用数")
-    limited_reference_count: int = Field(default=0, description="验证为 limited 的引用数")
+    limited_reference_count: int = Field(
+        default=0, description="验证为 limited 的引用数"
+    )
     invalid_reference_count: int = Field(default=0, description="无效引用数")
-    replay_requested_count: int = Field(default=0, description="进入重放队列的 Artifact 数")
-    replay_valid_count: int = Field(default=0, description="重放后 valid 的 Artifact 数")
-    replay_limited_count: int = Field(default=0, description="重放后 limited 的 Artifact 数")
+    replay_requested_count: int = Field(
+        default=0, description="进入重放队列的 Artifact 数"
+    )
+    replay_valid_count: int = Field(
+        default=0, description="重放后 valid 的 Artifact 数"
+    )
+    replay_limited_count: int = Field(
+        default=0, description="重放后 limited 的 Artifact 数"
+    )
     replay_failed_count: int = Field(default=0, description="重放失败的 Artifact 数")
     evidence_gap_count: int = Field(default=0, description="证据缺口数")
-    graph_indeterminate_count: int = Field(default=0, description="图谱无法得出事实的查询数")
-    judge_batch_call_count: int = Field(default=0, description="批量 Judge LLM 调用次数")
+    graph_indeterminate_count: int = Field(
+        default=0, description="图谱无法得出事实的查询数"
+    )
+    judge_batch_call_count: int = Field(
+        default=0, description="批量 Judge LLM 调用次数"
+    )
     judge_failed_candidate_count: int = Field(
         default=0, description="Judge 失败/合同违约 fail-closed 的候选数"
     )
@@ -351,18 +365,15 @@ class MatchOutcome(BaseModel):
     is_clean: bool
     true_positives: int = Field(default=0, description="命中的标准答案数")
     false_negatives: int = Field(default=0, description="漏掉的标准答案数")
-    false_positives: int = Field(default=0, description="报了但对不上任何标准答案的数量")
-    evidence_checked: int = Field(
-        default=0,
-        description="历史兼容字段；当前评测不填充",
+    false_positives: int = Field(
+        default=0, description="报了但对不上任何标准答案的数量"
     )
+    evidence_checked: int = Field(default=0, description="历史兼容字段；当前评测不填充")
     evidence_backed_hits: int = Field(
-        default=0,
-        description="历史兼容字段；当前评测不填充",
+        default=0, description="历史兼容字段；当前评测不填充"
     )
     evidence_missing_hits: int = Field(
-        default=0,
-        description="历史兼容字段；当前评测不填充",
+        default=0, description="历史兼容字段；当前评测不填充"
     )
     expected_total: int = Field(default=0, description="该用例标准答案总数")
     reported_total: int = Field(default=0, description="该用例报告问题总数")
@@ -372,61 +383,63 @@ class MatchOutcome(BaseModel):
         description="原始最终报告；人工盲审和无 LLM 重评分的事实来源",
     )
     matched_expected_by_report: dict[int, str] = Field(
-        default_factory=dict,
-        description="报告序号到稳定标答 ID 的一对一配对",
+        default_factory=dict, description="报告序号到稳定标答 ID 的一对一配对"
     )
     unmatched_report_indices: list[int] = Field(
         default_factory=list,
         description="尚未命中原始标答、需要池化或人工裁决的报告序号",
     )
     gold_issue_ids: list[str] = Field(
-        default_factory=list,
-        description="本轮评分使用的原始与补充标答 ID",
+        default_factory=list, description="本轮评分使用的原始与补充标答 ID"
     )
     detected_issue_ids: list[str] = Field(
         default_factory=list,
         description="本轮实际命中的标答 ID；稳定性统计不使用多轮并集冒充单轮结果",
     )
     novel_valid_count: int = Field(default=0, description="人工确认的额外真实问题数")
-    duplicate_report_count: int = Field(default=0, description="同一根因的重复最终报告数")
+    duplicate_report_count: int = Field(
+        default=0, description="同一根因的重复最终报告数"
+    )
     invalid_report_count: int = Field(default=0, description="人工确认的错误报告数")
     out_of_scope_count: int = Field(default=0, description="与本次变更无关的报告数")
     localization_hits: int = Field(default=0, description="命中项里行号也对上的数量")
     localization_checked: int = Field(
-        default=0,
-        description="命中且标答提供人工校验行号的数量",
+        default=0, description="命中且标答提供人工校验行号的数量"
     )
-    severity_hits: int = Field(default=0, description="命中项里级别也对上的数量(仅标了 severity 的)")
+    severity_hits: int = Field(
+        default=0, description="命中项里级别也对上的数量(仅标了 severity 的)"
+    )
     severity_checked: int = Field(default=0, description="参与级别校验的命中项数量")
     severity_detail: list[dict[str, str]] = Field(
         default_factory=list,
         description="逐项级别诊断:每个参与校验的命中项的 期望级别 vs 报告级别,便于定位是哪几条判错",
     )
-    judge_scores: list[JudgeScore] = Field(default_factory=list, description="LLM 质量打分明细(旧路径,暂留)")
-
-    # ---- 过度上报诊断:把误报拆成"被诱饵骗"和"凭空乱报"----
+    judge_scores: list[JudgeScore] = Field(
+        default_factory=list, description="LLM 质量打分明细(旧路径,暂留)"
+    )
     distractor_total: int = Field(default=0, description="该用例埋的诱饵总数")
     distractor_hits: int = Field(
-        default=0, description="误报里命中诱饵的数量(被骗);其余 FP 即'凭空乱报'= FP - distractor_hits"
+        default=0,
+        description="误报里命中诱饵的数量(被骗);其余 FP 即'凭空乱报'= FP - distractor_hits",
     )
-
-    # ---- severity 分层 TP/FN:量"抓大漏小"(主=CRITICAL,次=WARNING/INFO;None 不计分层)----
     tp_primary: int = Field(default=0, description="命中的主项(CRITICAL)标准答案数")
     fn_primary: int = Field(default=0, description="漏掉的主项标准答案数")
-    tp_secondary: int = Field(default=0, description="命中的次项(WARNING/INFO)标准答案数")
-    fn_secondary: int = Field(default=0, description="漏掉的次项标准答案数")
-
-    # ---- 规则尺交叉校验(仅当本用例用了 LLM 裁判时才有对比意义)----
-    primary_judge: str = Field(
-        default="rule",
-        description="本用例主判由谁出:rule=纯规则;llm=LLM 裁判语义配对",
+    tp_secondary: int = Field(
+        default=0, description="命中的次项(WARNING/INFO)标准答案数"
     )
-    rule_true_positives: int = Field(default=0, description="规则尺判出的 TP(交叉校验用)")
-    rule_false_positives: int = Field(default=0, description="规则尺判出的 FP(交叉校验用)")
-    rule_false_negatives: int = Field(default=0, description="规则尺判出的 FN(交叉校验用)")
-
-    # ---- 工具使用画像(可观测性,不参与判分)----
-    # 仅工具档且本条确有工具调用时非空;无工具/mock/未调工具为 None(报告/归档据此跳过)。
+    fn_secondary: int = Field(default=0, description="漏掉的次项标准答案数")
+    primary_judge: str = Field(
+        default="rule", description="本用例主判由谁出:rule=纯规则;llm=LLM 裁判语义配对"
+    )
+    rule_true_positives: int = Field(
+        default=0, description="规则尺判出的 TP(交叉校验用)"
+    )
+    rule_false_positives: int = Field(
+        default=0, description="规则尺判出的 FP(交叉校验用)"
+    )
+    rule_false_negatives: int = Field(
+        default=0, description="规则尺判出的 FN(交叉校验用)"
+    )
     tool_usage: ToolUsage | None = Field(
         default=None, description="审查员实际工具调用画像;无工具活动为 None"
     )
@@ -442,7 +455,9 @@ class CaseMetrics(BaseModel):
     category: str
     is_clean: bool
     runs: int
-    detection_rate: float = Field(description="vuln:平均检出率 TP/expected;clean:恒为 1")
+    detection_rate: float = Field(
+        description="vuln:平均检出率 TP/expected;clean:恒为 1"
+    )
     avg_false_positives: float = Field(description="平均误报数")
     recall_mean: float = 0.0
     recall_std: float = 0.0
@@ -455,47 +470,40 @@ class AggregateMetrics(BaseModel):
     num_cases: int
     num_vuln_cases: int
     num_clean_cases: int
-
     precision: float = Field(description="报出的问题里真问题占比 TP/(TP+FP)")
     recall: float = Field(description="标准答案被检出占比 TP/(TP+FN)")
     f1: float = Field(description="precision 与 recall 的调和平均")
-
-    false_positives_on_clean: float = Field(description="干净样本上平均每条 diff 误报几个")
+    false_positives_on_clean: float = Field(
+        description="干净样本上平均每条 diff 误报几个"
+    )
     localization_accuracy: float = Field(description="命中项里行号也对上的比例")
     localization_checked: int = Field(
-        default=0,
-        description="参与定位准确率计算的命中项数量；0 表示该指标不适用",
+        default=0, description="参与定位准确率计算的命中项数量；0 表示该指标不适用"
     )
     severity_accuracy: float = Field(description="命中项里级别也对上的比例")
     evidence_coverage: float = Field(
-        default=0.0,
-        description="历史兼容字段；当前评测不计算",
+        default=0.0, description="历史兼容字段；当前评测不计算"
     )
-    evidence_checked: int = Field(
-        default=0,
-        description="历史兼容字段；当前评测不计算",
-    )
+    evidence_checked: int = Field(default=0, description="历史兼容字段；当前评测不计算")
     evidence_missing_hits: int = Field(
-        default=0,
-        description="历史兼容字段；当前评测不计算",
+        default=0, description="历史兼容字段；当前评测不计算"
     )
-
     recall_std: float = Field(default=0.0, description="recall 在多次跑测间的标准差")
-    precision_std: float = Field(default=0.0, description="precision 在多次跑测间的标准差")
-
+    precision_std: float = Field(
+        default=0.0, description="precision 在多次跑测间的标准差"
+    )
     avg_judge_message_quality: float | None = Field(
         default=None, description="LLM-as-judge:命中项 message 平均分(未启用为 None)"
     )
     avg_judge_suggestion_quality: float | None = Field(
         default=None, description="LLM-as-judge:命中项 suggestion 平均分(未启用为 None)"
     )
-
-    # ---- 行为诊断指标族(eval-complex-behavior,全部加法;不适用时为 None → 报告渲染 "—")----
     distractor_hit_rate: float | None = Field(
         default=None, description="诱饵命中率 = Σ中诱饵 / Σ诱饵总数;无诱饵用例时 None"
     )
     vuln_noise_per_case: float = Field(
-        default=0.0, description="vuln 噪音/条 = vuln 用例 FP 总数 / vuln 用例数(脏代码上的噪音,区别于 clean 误报率)"
+        default=0.0,
+        description="vuln 噪音/条 = vuln 用例 FP 总数 / vuln 用例数(脏代码上的噪音,区别于 clean 误报率)",
     )
     report_inflation: float = Field(
         default=0.0, description="报告膨胀比 = vuln 用例上 报告数/标答数 的均值"
@@ -510,7 +518,8 @@ class AggregateMetrics(BaseModel):
         default=None, description="复杂用例(标答>1)子集上的级别准确率;无此类命中时 None"
     )
     judge_rule_agreement: float | None = Field(
-        default=None, description="裁判↔规则一致率 = 两尺判定全等的 LLM 主判用例数 / LLM 主判用例数;无 LLM 主判时 None"
+        default=None,
+        description="裁判↔规则一致率 = 两尺判定全等的 LLM 主判用例数 / LLM 主判用例数;无 LLM 主判时 None",
     )
 
 

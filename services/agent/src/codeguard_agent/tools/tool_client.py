@@ -8,12 +8,10 @@
 """
 
 from __future__ import annotations
-
 import json
 import logging
 from dataclasses import dataclass
 from html import unescape
-
 import httpx
 
 logger = logging.getLogger("codeguard")
@@ -31,11 +29,6 @@ class ToolResponse:
         """转成给 LLM Agent 看的字符串:成功给 result,失败显式标注 Error 让 Agent 能感知并调整。"""
         if self.success:
             return self.result or ""
-        # A bounded subtask must be able to close its investigation after the
-        # last permitted call.  CoordinatedDiscoveryToolClient attaches a
-        # short terminal instruction in ``result`` for that case while
-        # retaining the machine-readable ``error`` value for tracing/tests.
-        # Other failures keep the historical one-line representation.
         if self.result:
             return f"Error: {self.error or 'unknown error'}\n{self.result}"
         return f"Error: {self.error or 'unknown error'}"
@@ -89,31 +82,9 @@ class ToolClient:
                 result=data.get("result"),
                 error=data.get("error"),
             )
-        except Exception as exc:  # noqa: BLE001 网络/服务异常统一收敛成失败信封,不让单次工具失败炸掉 Agent
+        except Exception as exc:
             logger.warning("工具调用 %s 失败: %s", name, exc)
             return ToolResponse(success=False, error=str(exc))
-
-    def get_file_content(
-        self,
-        symbol_id: str,
-        *,
-        start_line: int | None = None,
-        end_line: int | None = None,
-        cursor: str | None = None,
-    ) -> ToolResponse:
-        """读取一个已由图谱解析出的 symbol 源码片段。
-
-        源码工具不再接受任意文件路径；Gateway 会根据 snapshot 中的稳定
-        ``symbol_id`` 解析方法、类型或字段的声明范围，并施加大小护栏。
-        """
-        query: dict[str, object] = {"symbol_id": unescape(symbol_id)}
-        if start_line is not None:
-            query["start_line"] = start_line
-        if end_line is not None:
-            query["end_line"] = end_line
-        if cursor is not None:
-            query["cursor"] = cursor
-        return self._post_tool("get_file_content", {"query": json.dumps(query, ensure_ascii=False)})
 
     def read_symbol(
         self,
@@ -131,7 +102,9 @@ class ToolClient:
             query["end_line"] = end_line
         if cursor is not None:
             query["cursor"] = cursor
-        return self._post_tool("read_symbol", {"query": json.dumps(query, ensure_ascii=False)})
+        return self._post_tool(
+            "read_symbol", {"query": json.dumps(query, ensure_ascii=False)}
+        )
 
     def query_relations(
         self,
@@ -155,81 +128,15 @@ class ToolClient:
         }
         if cursor is not None:
             query["cursor"] = cursor
-        return self._post_tool("query_relations", {"query": json.dumps(query, ensure_ascii=False)})
+        return self._post_tool(
+            "query_relations", {"query": json.dumps(query, ensure_ascii=False)}
+        )
 
     def resolve_change_context(self, changes: list[dict]) -> ToolResponse:
         """批量把变更文件/行解析为稳定图谱符号。"""
         return self._post_tool(
             "resolve_change_context",
             {"query": json.dumps({"changes": changes}, ensure_ascii=False)},
-        )
-
-    def inspect_change_impact(
-        self,
-        symbol_id: str,
-        *,
-        max_depth: int | None = None,
-        limit: int | None = None,
-        cursor: str | None = None,
-    ) -> ToolResponse:
-        query: dict[str, object] = {"symbol_id": unescape(symbol_id)}
-        if max_depth is not None:
-            query["max_depth"] = max_depth
-        if limit is not None:
-            query["limit"] = limit
-        if cursor is not None:
-            query["cursor"] = cursor
-        payload = unescape(symbol_id) if not any(
-            value is not None for value in (max_depth, limit, cursor)
-        ) else json.dumps(query, ensure_ascii=False)
-        return self._post_tool("inspect_change_impact", {"query": payload})
-
-    def inspect_structure(
-        self,
-        symbol_id: str,
-        *,
-        limit: int | None = None,
-        cursor: str | None = None,
-    ) -> ToolResponse:
-        query: dict[str, object] = {"symbol_id": unescape(symbol_id)}
-        if limit is not None:
-            query["limit"] = limit
-        if cursor is not None:
-            query["cursor"] = cursor
-        payload = unescape(symbol_id) if not any(
-            value is not None for value in (limit, cursor)
-        ) else json.dumps(query, ensure_ascii=False)
-        return self._post_tool("inspect_structure", {"query": payload})
-
-    def inspect_path(
-        self,
-        symbol_id: str,
-        path_kind: str,
-        max_depth: int = 3,
-        *,
-        limit: int | None = None,
-        cursor: str | None = None,
-    ) -> ToolResponse:
-        """查询有界下游行为或安全路径。"""
-        symbol_id = unescape(symbol_id)
-        if path_kind not in {"behavior", "security"}:
-            return ToolResponse(success=False, error="invalid_path_kind")
-        if not isinstance(max_depth, int) or isinstance(max_depth, bool) or not 1 <= max_depth <= 3:
-            return ToolResponse(success=False, error="invalid_max_depth")
-        return self._post_tool(
-            "inspect_path",
-            {
-                "query": json.dumps(
-                    {
-                        "symbol_id": symbol_id,
-                        "path_kind": path_kind,
-                    "max_depth": max_depth,
-                    **({"limit": limit} if limit is not None else {}),
-                    **({"cursor": cursor} if cursor is not None else {}),
-                    },
-                    ensure_ascii=False,
-                )
-            },
         )
 
     def delete_session(self) -> None:
@@ -257,10 +164,7 @@ def create_tool_session(
     if not token:
         raise RuntimeError("CODEGUARD_TOOL_SERVER_TOKEN 未配置")
     normalized = base_url.rstrip("/")
-    payload = {
-        "repo_path": repo_path,
-        "revision": revision,
-    }
+    payload = {"repo_path": repo_path, "revision": revision}
     with httpx.Client(timeout=timeout) as client:
         resp = client.post(
             f"{normalized}/api/v1/tools/session",
@@ -269,20 +173,21 @@ def create_tool_session(
         )
         resp.raise_for_status()
         data = resp.json()
-
     if not data.get("success"):
         raise RuntimeError(f"创建工具会话失败: {data.get('error', 'unknown error')}")
     session_id = data.get("session_id")
     if not session_id:
         raise RuntimeError("创建工具会话失败:返回缺少 session_id")
-    return ToolClient(normalized, str(session_id), timeout=timeout, revision=revision, token=token)
+    return ToolClient(
+        normalized, str(session_id), timeout=timeout, revision=revision, token=token
+    )
 
 
 def destroy_tool_session(client: ToolClient) -> None:
     """销毁服务端会话,并关闭本地 HTTP 连接(无论销毁是否成功都关闭本地连接)。"""
     try:
         client.delete_session()
-    except Exception as exc:  # noqa: BLE001 销毁失败不致命:会话本就有 TTL 会自动回收
+    except Exception as exc:
         logger.warning("销毁工具会话失败(将由服务端 TTL 兜底回收): %s", exc)
     finally:
         client.close()

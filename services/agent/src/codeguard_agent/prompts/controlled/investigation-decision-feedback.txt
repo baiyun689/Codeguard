@@ -1,0 +1,4 @@
+<decision_rejected reason="{{reason}}">
+本轮决策未被接受：没有执行查询，也没有接受结论，已消耗一次探索决策预算。
+请按上方原因修正，保留已有有效事实。仅在确实缺少可查询事实时继续取证；否则提交结果，无法得出结论则返回 inconclusive。
+</decision_rejected>

@@ -13,6 +13,7 @@ import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.AssignExpr;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.NameExpr;
@@ -157,8 +158,8 @@ final class ProjectSnapshotBuilder {
 
     /**
      * 对一个工具查询按需解析关系。返回新的不可变快照，原始轻量索引不会被修改，因而
-     * 同一个 revision 的并发 reviewer 不会互相污染。get_file_content 和
-     * resolve_change_context 不需要语义边，直接复用索引。
+     * 同一个 revision 的并发 reviewer 不会互相污染。源码读取直接复用索引；
+     * 变更上下文只解析请求文件中变更行的直接关系，不遍历调用图。
      */
     static ProjectSnapshot expand(ProjectSnapshot index, String toolName, String input)
             throws Exception {
@@ -171,8 +172,11 @@ final class ProjectSnapshotBuilder {
             String input,
             ProjectSemanticCache semanticCache
     ) throws Exception {
-        if (toolName.equals("get_file_content") || toolName.equals("resolve_change_context")) {
+        if (toolName.equals("read_symbol")) {
             return index;
+        }
+        if (toolName.equals("resolve_change_context")) {
+            return expandChangedReferences(index, input, semanticCache);
         }
         String subject = canonicalNodeId(index, subjectId(input));
         if (subject.isBlank()) {
@@ -196,8 +200,12 @@ final class ProjectSnapshotBuilder {
         Set<String> visited = new LinkedHashSet<>();
         Set<String> resolvedFiles = new LinkedHashSet<>();
         List<GraphEdge> discovered = new ArrayList<>();
-        int fileLimit = toolName.equals("inspect_change_impact") ? 64 : 24;
-        boolean reverse = toolName.equals("inspect_change_impact");
+        String relation = toolName.equals("query_relations")
+                ? JSON.readTree(input).path("relation").asText("") : "";
+        boolean reverse = toolName.equals("inspect_change_impact")
+                || Set.of("callers", "field_readers", "field_writers", "implementations")
+                        .contains(relation);
+        int fileLimit = reverse ? 64 : 24;
         for (int depth = 0; depth < maxDepth && !frontier.isEmpty(); depth++) {
             ensureNotInterrupted();
             Set<String> next = new LinkedHashSet<>();
@@ -210,10 +218,16 @@ final class ProjectSnapshotBuilder {
                         ? resolveIncoming(index, current, semanticCache, parserFactory, fileLimit, false)
                         : resolveOutgoing(
                                 index, current, semanticCache, parserFactory, fileLimit, resolvedFiles);
+                if (relation.equals("overrides")) {
+                    edges = new ArrayList<>(edges);
+                    edges.addAll(resolveIncomingOverrides(index, current, semanticCache, parserFactory, fileLimit));
+                }
                 discovered.addAll(edges);
                 edges.stream()
                         .filter(edge -> edge.resolution() == ResolutionStatus.RESOLVED)
-                        .map(reverse ? GraphEdge::sourceId : GraphEdge::targetId)
+                        .map(edge -> relation.equals("overrides")
+                                ? (edge.sourceId().equals(current) ? edge.targetId() : edge.sourceId())
+                                : reverse ? edge.sourceId() : edge.targetId())
                         .map(id -> canonicalNodeId(index, id))
                         .filter(id -> index.graph().node(id).isPresent())
                         .forEach(next::add);
@@ -229,6 +243,45 @@ final class ProjectSnapshotBuilder {
                     toolName.equals("inspect_structure")));
         }
         return withEdges(index, discovered);
+    }
+
+    private static ProjectSnapshot expandChangedReferences(
+            ProjectSnapshot index, String input, ProjectSemanticCache cache
+    ) throws Exception {
+        Map<String, Set<Integer>> changed = new LinkedHashMap<>();
+        for (var change : JSON.readTree(input).path("changes")) {
+            String file = change.path("file").asText("").replace('\\', '/');
+            if (!index.sources().containsKey(file)) continue;
+            Set<Integer> lines = changed.computeIfAbsent(file, ignored -> new LinkedHashSet<>());
+            for (var line : change.path("lines")) {
+                if (line.canConvertToInt() && line.asInt() > 0) lines.add(line.asInt());
+            }
+        }
+        if (changed.isEmpty()) return index;
+        Supplier<JavaParser> factory = cache.parserFactory(semanticParserFactory(index));
+        List<GraphEdge> direct = new ArrayList<>();
+        List<String> diagnostics = new ArrayList<>(index.diagnostics());
+        int files = 0;
+        for (var entry : changed.entrySet()) {
+            ensureNotInterrupted();
+            if (entry.getValue().isEmpty()) continue;
+            if (files++ >= 24) {
+                diagnostics.add(entry.getKey() + ": changed_reference_file_limit");
+                continue;
+            }
+            try {
+                cache.fileEdges(entry.getKey(), () -> resolveFileEdges(index, entry.getKey(), factory))
+                        .stream()
+                        .filter(edge -> entry.getKey().equals(edge.file()) && entry.getValue().contains(edge.line()))
+                        .forEach(direct::add);
+            } catch (InterruptedException interrupted) {
+                throw interrupted;
+            } catch (Exception exception) {
+                diagnostics.add(entry.getKey() + ": changed_reference_resolution_failed");
+            }
+        }
+        ProjectSnapshot expanded = withEdges(index, direct);
+        return new ProjectSnapshot(index.key(), index.sources(), index.astUnits(), expanded.graph(), diagnostics);
     }
 
     private static ProjectSnapshot withEdges(
@@ -289,15 +342,8 @@ final class ProjectSnapshotBuilder {
         if (!value.startsWith("java:")) {
             return value;
         }
-        int separator = value.lastIndexOf('#');
-        if (separator < 0) {
-            return value.replaceAll("\\s+", "");
-        }
-        String owner = value.substring(0, separator).replaceAll("\\s+", "");
-        String signature = value.substring(separator + 1)
-                .replaceAll("\\s+", "")
-                .replaceAll("[A-Za-z_$][\\w$]*\\.", "");
-        return owner + "#" + signature;
+        // Package names distinguish overloads; never erase them to guess identity.
+        return value.replaceAll("\\s+", "");
     }
 
     private static List<Path> scanJavaFiles(Path root, List<String> diagnostics) {
@@ -361,8 +407,8 @@ final class ProjectSnapshotBuilder {
                 String typeId = "java:" + qualifiedTypeName(type, unit, file);
                 symbolIds.put(type, typeId);
                 nodes.add(node(typeId, GraphNodeKind.TYPE, file, type,
-                        type.getNameAsString(), fileId, annotations(type)));
-                edges.add(edge(fileId, typeId, GraphEdgeKind.DECLARES, file, type,
+                        type.getNameAsString(), ownerId(type, symbolIds, file), annotations(type)));
+                edges.add(edge(ownerId(type, symbolIds, file), typeId, GraphEdgeKind.DECLARES, file, type,
                         ResolutionStatus.RESOLVED, "java-ast"));
             }
         });
@@ -420,7 +466,7 @@ final class ProjectSnapshotBuilder {
         // the controlled replan from reading the actual implementation.
         units.forEach((file, unit) -> {
             for (MethodDeclaration method : unit.findAll(MethodDeclaration.class)) {
-                if (!method.getAnnotationByName("Override").isPresent()) {
+                if (method.isStatic() || method.isPrivate()) {
                     continue;
                 }
                 String id = symbolIds.get(method);
@@ -440,6 +486,9 @@ final class ProjectSnapshotBuilder {
                 ResolutionStatus status;
                 try {
                     ResolvedMethodDeclaration resolved = call.resolve();
+                    if (ambiguousSourceOverload(resolved)) {
+                        throw new IllegalStateException("ambiguous_source_overload");
+                    }
                     target = resolvedMethodId(resolved);
                     status = ResolutionStatus.RESOLVED;
                 } catch (Exception exception) {
@@ -449,6 +498,12 @@ final class ProjectSnapshotBuilder {
                 }
                 edges.add(edge(caller, target, GraphEdgeKind.CALLS, file, call, status,
                         "java-symbol-solver"));
+            }
+            for (ObjectCreationExpr call : unit.findAll(ObjectCreationExpr.class)) {
+                String caller = enclosingCallableId(call, symbolIds);
+                if (caller != null) {
+                    edges.add(constructorEdge(caller, call, file));
+                }
             }
             for (ClassOrInterfaceDeclaration type : unit.findAll(ClassOrInterfaceDeclaration.class)) {
                 String source = symbolIds.get(type);
@@ -490,8 +545,8 @@ final class ProjectSnapshotBuilder {
                 String typeId = "java:" + qualifiedTypeNameWithoutResolve(type, unit, file);
                 symbolIds.put(type, typeId);
                 nodes.add(node(typeId, GraphNodeKind.TYPE, file, type,
-                        type.getNameAsString(), fileId, annotations(type)));
-                edges.add(edge(fileId, typeId, GraphEdgeKind.DECLARES, file, type,
+                        type.getNameAsString(), ownerId(type, symbolIds, file), annotations(type)));
+                edges.add(edge(ownerId(type, symbolIds, file), typeId, GraphEdgeKind.DECLARES, file, type,
                         ResolutionStatus.RESOLVED, "java-ast"));
             }
         });
@@ -563,7 +618,8 @@ final class ProjectSnapshotBuilder {
         }
         try {
             JsonNode root = JSON.readTree(value);
-            return root.path("symbol_id").asText(root.path("subject").asText("")).trim();
+            return root.path("subject_symbol_id").asText(
+                    root.path("symbol_id").asText(root.path("subject").asText(""))).trim();
         } catch (Exception ignored) {
             return "";
         }
@@ -572,7 +628,7 @@ final class ProjectSnapshotBuilder {
     private static int maxDepth(String input) {
         try {
             JsonNode root = JSON.readTree(input == null ? "" : input);
-            int depth = root.path("max_depth").asInt(3);
+            int depth = root.path("depth").asInt(root.path("max_depth").asInt(3));
             return Math.max(1, Math.min(3, depth));
         } catch (Exception ignored) {
             return 3;
@@ -647,6 +703,24 @@ final class ProjectSnapshotBuilder {
                 structureOnly));
     }
 
+    private static List<GraphEdge> resolveIncomingOverrides(
+            ProjectSnapshot index, String target, ProjectSemanticCache cache,
+            Supplier<JavaParser> parserFactory, int fileLimit
+    ) throws Exception {
+        String key = "OVERRIDE|" + methodName(target) + "|" + methodArity(target);
+        return cache.incomingEdges("override:" + target + "|" + fileLimit, () -> {
+            List<GraphEdge> result = new ArrayList<>();
+            for (String file : cache.indexedCandidateFiles(index, key).stream().limit(fileLimit).toList()) {
+                ensureNotInterrupted();
+                cache.fileEdges(file, () -> resolveFileEdges(index, file, parserFactory)).stream()
+                        .filter(edge -> edge.kind() == GraphEdgeKind.OVERRIDES)
+                        .filter(edge -> comparableSymbolId(edge.targetId()).equals(comparableSymbolId(target)))
+                        .forEach(result::add);
+            }
+            return result;
+        });
+    }
+
     private static List<GraphEdge> resolveIncomingUncached(
             ProjectSnapshot index,
             String target,
@@ -673,8 +747,11 @@ final class ProjectSnapshotBuilder {
             if (plain == null) {
                 continue;
             }
-            if (targetNode.kind() == GraphNodeKind.METHOD
-                    || targetNode.kind() == GraphNodeKind.CONSTRUCTOR) {
+            if (targetNode.kind() == GraphNodeKind.CONSTRUCTOR) {
+                candidate = plain.findAll(ObjectCreationExpr.class).stream().anyMatch(call ->
+                        call.getType().getNameAsString().equals(methodName.replace("<init>", ""))
+                                && call.getArguments().size() == arity);
+            } else if (targetNode.kind() == GraphNodeKind.METHOD) {
                 candidate = plain.findAll(MethodCallExpr.class).stream().anyMatch(call ->
                         call.getNameAsString().equals(methodName)
                                 && call.getArguments().size() == arity);
@@ -754,6 +831,15 @@ final class ProjectSnapshotBuilder {
         String methodName = methodName(target);
         int arity = methodArity(target);
         List<GraphEdge> result = new ArrayList<>();
+        if (methodName.startsWith("<init>")) {
+            for (ObjectCreationExpr call : unit.findAll(ObjectCreationExpr.class)) {
+                if (!call.getType().getNameAsString().equals(methodName.replace("<init>", ""))
+                        || call.getArguments().size() != arity) continue;
+                String caller = enclosingCallableId(index.graph(), call, file);
+                if (caller != null) result.add(constructorEdge(caller, call, file));
+            }
+            return result;
+        }
         for (MethodCallExpr call : unit.findAll(MethodCallExpr.class)) {
             if (!call.getNameAsString().equals(methodName)
                     || call.getArguments().size() != arity) {
@@ -766,7 +852,11 @@ final class ProjectSnapshotBuilder {
             String targetId;
             ResolutionStatus status;
             try {
-                targetId = resolvedMethodId(call.resolve());
+                ResolvedMethodDeclaration resolved = call.resolve();
+                if (ambiguousSourceOverload(resolved)) {
+                    throw new IllegalStateException("ambiguous_source_overload");
+                }
+                targetId = resolvedMethodId(resolved);
                 status = ResolutionStatus.RESOLVED;
             } catch (Exception exception) {
                 targetId = "unresolved:method:" + methodName + "/" + arity;
@@ -805,11 +895,29 @@ final class ProjectSnapshotBuilder {
             String target
     ) {
         return switch (targetNode.kind()) {
-            case METHOD, CONSTRUCTOR -> "METHOD|" + methodName + "|" + arity;
+            case METHOD -> "METHOD|" + methodName + "|" + arity;
+            case CONSTRUCTOR -> "CONSTRUCTOR|" + methodName.replace("<init>", "") + "|" + arity;
             case FIELD -> "FIELD|" + fieldName;
             case TYPE -> "TYPE|" + typeName(target);
             default -> targetNode.kind() + "|" + target;
         };
+    }
+
+    private static GraphEdge constructorEdge(String caller, ObjectCreationExpr call, String file) {
+        String target;
+        ResolutionStatus status;
+        try {
+            var resolved = call.resolve();
+            var ast = resolved.toAst();
+            String signature = ast.isPresent() && ast.get() instanceof ConstructorDeclaration declaration
+                    ? declaration.getSignature().asString() : resolved.getSignature();
+            target = "java:" + resolved.declaringType().getQualifiedName() + "#<init>" + signature;
+            status = ResolutionStatus.RESOLVED;
+        } catch (Exception exception) {
+            target = "unresolved:method:<init>" + call.getType().getNameAsString() + "/" + call.getArguments().size();
+            status = ResolutionStatus.UNRESOLVED;
+        }
+        return edge(caller, target, GraphEdgeKind.CALLS, file, call, status, "java-symbol-solver");
     }
 
     private static List<GraphEdge> resolveFileEdges(
@@ -954,6 +1062,42 @@ final class ProjectSnapshotBuilder {
                 .orElse(null);
         if (owner == null) {
             return;
+        }
+        // @Override is optional in Java. Resolve actual inherited declarations
+        // rather than using the annotation as the existence test for an edge.
+        try {
+            ResolvedMethodDeclaration implementation = method.resolve();
+            boolean found = false;
+            for (var ancestor : owner.resolve().getAllAncestors()) {
+                if (ancestor.getTypeDeclaration().isEmpty()) {
+                    continue;
+                }
+                for (var inherited : ancestor.getTypeDeclaration().orElseThrow().getDeclaredMethods()) {
+                    String access = inherited.accessSpecifier().name();
+                    if (inherited.isStatic() || access.equals("PRIVATE")
+                            || (!access.equals("PUBLIC") && !access.equals("PROTECTED")
+                            && !inherited.declaringType().getPackageName().equals(
+                                    implementation.declaringType().getPackageName()))
+                            || !inherited.getSignature().equals(implementation.getSignature())) {
+                        continue;
+                    }
+                    String target = resolvedMethodId(inherited);
+                    boolean indexed = nodes.stream().anyMatch(node -> node.id().equals(target));
+                    edges.add(edge(methodId, target, GraphEdgeKind.OVERRIDES, file, method,
+                            indexed ? ResolutionStatus.RESOLVED : ResolutionStatus.UNRESOLVED,
+                            "java-override"));
+                    found = true;
+                }
+            }
+            if (found || method.getAnnotationByName("Override").isEmpty()) {
+                return;
+            }
+        } catch (Exception ignored) {
+            // Preserve explicit unresolved annotation evidence below; a failed
+            // solver must not invent an override for an unannotated method.
+            if (method.getAnnotationByName("Override").isEmpty()) {
+                return;
+            }
         }
         List<ClassOrInterfaceType> parents = new ArrayList<>();
         parents.addAll(owner.getExtendedTypes());
@@ -1157,8 +1301,38 @@ final class ProjectSnapshotBuilder {
     }
 
     private static String resolvedMethodId(ResolvedMethodDeclaration method) {
+        // Both the lightweight index and semantic edges must name the same
+        // source declaration. The resolver's signature qualifies parameter
+        // types and retains type arguments whereas the AST signature does not.
+        // Use the resolved declaration (not the call site's spelling), so
+        // imports, overloads and generic specialization remain unambiguous.
+        var declaration = method.toAst();
+        if (declaration.isPresent() && declaration.get() instanceof MethodDeclaration source) {
+            return "java:" + method.declaringType().getQualifiedName()
+                    + "#" + source.getSignature().asString();
+        }
         return "java:" + method.declaringType().getQualifiedName()
                 + "#" + method.getSignature();
+    }
+
+    private static boolean ambiguousSourceOverload(ResolvedMethodDeclaration method) {
+        var ast = method.toAst();
+        if (ast.isEmpty() || !(ast.get() instanceof MethodDeclaration source)) return false;
+        var owner = source.findAncestor(TypeDeclaration.class);
+        if (owner.isEmpty()) return false;
+        // JavaParser can select either overload when parameter types have the
+        // same simple name in different packages. Do not publish that unstable
+        // choice as a resolved edge. Keep the callsite as an explicit gap.
+        String simple = simpleSignature(source);
+        TypeDeclaration<?> declaration = owner.get();
+        return declaration.getMethodsByName(source.getNameAsString()).stream()
+                .filter(other -> !other.getSignature().equals(source.getSignature()))
+                .anyMatch(other -> simpleSignature(other).equals(simple));
+    }
+
+    private static String simpleSignature(MethodDeclaration method) {
+        return method.getSignature().asString().replaceAll("\\s+", "")
+                .replaceAll("[A-Za-z_$][\\w$]*\\.", "");
     }
 
     private static String enclosingCallableId(Node node, Map<Node, String> ids) {

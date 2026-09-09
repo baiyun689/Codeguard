@@ -1,14 +1,11 @@
 """工具原始响应面向 Reviewer、Judge 与 Trace 的确定性投影。"""
 
 from __future__ import annotations
-
 import json
 from collections.abc import Mapping
 from enum import Enum
 from typing import Any
-
 from pydantic import BaseModel
-
 from codeguard_agent.models.evidence import EvidenceValidationStatus
 from codeguard_agent.pipeline.evidence.graph_response import (
     GraphProjectionFocus,
@@ -16,12 +13,7 @@ from codeguard_agent.pipeline.evidence.graph_response import (
     validate_graph_payload,
 )
 
-GRAPH_TOOLS = frozenset({
-    "query_relations",
-    "inspect_path",
-    "inspect_change_impact",
-    "inspect_structure",
-})
+GRAPH_TOOLS = frozenset({"query_relations"})
 
 
 class ProjectionAudience(str, Enum):
@@ -48,33 +40,30 @@ def project_tool_payload(
     """保留 Evidence 原文，其余消费者只接收各自需要的确定性视图。"""
     if audience is ProjectionAudience.EVIDENCE:
         return PayloadProjection(
-            content=raw_payload,
-            summary=_plain_summary(tool, raw_payload),
+            content=raw_payload, summary=_plain_summary(tool, raw_payload)
         )
     if tool in GRAPH_TOOLS:
         if not _is_projectable_graph_payload(tool, raw_payload, arguments):
-            content = json.dumps({
-                "schema_version": 2,
-                "outcome": "indeterminate",
-                "coverage": "partial",
-                "relationships": [],
-                "unresolved_relationships": [],
-                "unresolved_count": 0,
-                "omitted_count": 0,
-                "omitted_symbol_count": 0,
-                "omitted_unresolved_count": 0,
-                "omitted_path_count": 0,
-                "limitations": ["graph_projection_unavailable"],
-            }, ensure_ascii=False, separators=(",", ":"))
-            return PayloadProjection(
-                content=content,
-                summary="图谱响应无法投影",
+            content = json.dumps(
+                {
+                    "schema_version": 2,
+                    "outcome": "indeterminate",
+                    "coverage": "partial",
+                    "relationships": [],
+                    "unresolved_relationships": [],
+                    "unresolved_count": 0,
+                    "omitted_count": 0,
+                    "omitted_symbol_count": 0,
+                    "omitted_unresolved_count": 0,
+                    "omitted_path_count": 0,
+                    "limitations": ["graph_projection_unavailable"],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
             )
+            return PayloadProjection(content=content, summary="图谱响应无法投影")
         content = summarize_graph(
-            raw_payload,
-            tool=tool,
-            arguments=arguments,
-            focus=focus,
+            raw_payload, tool=tool, arguments=arguments, focus=focus
         )
         return PayloadProjection(
             content=content,
@@ -82,34 +71,38 @@ def project_tool_payload(
             truncated=_graph_projection_truncated(raw_payload, content),
         )
     if audience is ProjectionAudience.TRACE:
-        return PayloadProjection(
-            content="",
-            summary=_plain_summary(tool, raw_payload),
-        )
+        return PayloadProjection(content="", summary=_plain_summary(tool, raw_payload))
     return PayloadProjection(
-        content=raw_payload,
-        summary=_plain_summary(tool, raw_payload),
+        content=raw_payload, summary=_plain_summary(tool, raw_payload)
     )
 
 
-def graph_projection_focus(task: Any, symbol_context: Any = None) -> GraphProjectionFocus:
+def graph_projection_focus(
+    task: Any, symbol_context: Any = None
+) -> GraphProjectionFocus:
     """Build task-only focus facts; tool arguments remain the source of truth."""
-    symbols = getattr(symbol_context, "symbols", ()) if symbol_context is not None else ()
+    symbols = (
+        getattr(symbol_context, "symbols", ()) if symbol_context is not None else ()
+    )
     changed_file = str(getattr(task, "file", "")).replace("\\", "/")
     return GraphProjectionFocus(
         changed_file=changed_file or None,
         changed_lines=tuple(
-            int(line) for line in (getattr(task, "changed_lines", ()) or ())
+            (int(line) for line in getattr(task, "changed_lines", ()) or ())
         ),
         deletion_anchor_lines=tuple(
-            int(anchor.anchor_line)
-            for anchor in (getattr(task, "deletion_anchors", ()) or ())
-            if getattr(anchor, "anchor_line", None)
+            (
+                int(anchor.anchor_line)
+                for anchor in getattr(task, "deletion_anchors", ()) or ()
+                if getattr(anchor, "anchor_line", None)
+            )
         ),
         changed_symbol_ids=tuple(
-            str(getattr(symbol, "symbol_id", ""))
-            for symbol in symbols
-            if getattr(symbol, "symbol_id", "")
+            (
+                str(getattr(symbol, "symbol_id", ""))
+                for symbol in symbols
+                if getattr(symbol, "symbol_id", "")
+            )
         ),
     )
 
@@ -125,11 +118,7 @@ def _graph_summary(raw_payload: str) -> str:
     resolved = len(relationships) if isinstance(relationships, list) else 0
     unresolved = payload.get("unresolved_count")
     unresolved_count = unresolved if isinstance(unresolved, int) else 0
-    return (
-        f"{payload.get('outcome', 'invalid')}/"
-        f"{payload.get('coverage', 'invalid')} · "
-        f"已解析 {resolved} · 未解析 {unresolved_count}"
-    )
+    return f"{payload.get('outcome', 'invalid')}/{payload.get('coverage', 'invalid')} · 已解析 {resolved} · 未解析 {unresolved_count}"
 
 
 def _plain_summary(tool: str, raw_payload: str) -> str:
@@ -144,25 +133,26 @@ def _graph_projection_truncated(raw_payload: str, content: str) -> bool:
         return True
     if not isinstance(raw, dict) or not isinstance(projected, dict):
         return True
-    return any(
-        len(projected.get(key) or []) < len(raw.get(key) or [])
-        for key in (
-            "symbols",
-            "relationships",
-            "unresolved_relationships",
+    return projected.get("omitted_source_excerpt_count", 0) > raw.get(
+        "omitted_source_excerpt_count", 0
+    ) or any(
+        (
+            len(projected.get(key) or []) < len(raw.get(key) or [])
+            for key in ("symbols", "relationships", "unresolved_relationships")
         )
     )
 
 
 def _is_projectable_graph_payload(
-    tool: str,
-    raw_payload: str,
-    arguments: Mapping[str, Any] | None,
+    tool: str, raw_payload: str, arguments: Mapping[str, Any] | None
 ) -> bool:
     validation = validate_graph_payload(
         raw_payload,
         tool=tool,
-        expected_subject=str((arguments or {}).get("symbol_id", "")),
+        expected_subject=str(
+            (arguments or {}).get("subject_symbol_id")
+            or (arguments or {}).get("symbol_id", "")
+        ),
     )
     return validation.status is not EvidenceValidationStatus.INVALID
 

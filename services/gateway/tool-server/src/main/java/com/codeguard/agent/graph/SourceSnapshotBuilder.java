@@ -21,7 +21,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-/** 为 get_file_content 构建目标文件级源码快照，不触发全项目索引。 */
+/** 为 read_symbol 构建目标文件级源码快照，不触发全项目索引。 */
 final class SourceSnapshotBuilder {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final Set<String> EXCLUDED_SEGMENTS =

@@ -56,12 +56,51 @@ _NON_SOURCE_SUFFIXES = (
 
 _DIRECT_DOCUMENT_SUFFIXES = (".md", ".mdx", ".adoc", ".rst", ".txt")
 _DIRECT_DENY_TERMS = (
-    "auth", "permission", "role", "token", "password", "secret", "csrf", "cors",
-    "sql", "jdbc", "query", "transaction", "@transactional", "http", "url", "uri",
-    "api", "controller", "request", "response", "serialize", "deserialize", "json",
-    "yaml", "yml", "xml", "pom.xml", "build.gradle", "dependency", "synchronized",
-    "lock", "thread", "executor", "async", "await", "cache", "kafka", "rabbit",
-    "message", "stream", "file", "path", "upload", "download", "processbuilder",
+    "auth",
+    "permission",
+    "role",
+    "token",
+    "password",
+    "secret",
+    "csrf",
+    "cors",
+    "sql",
+    "jdbc",
+    "query",
+    "transaction",
+    "@transactional",
+    "http",
+    "url",
+    "uri",
+    "api",
+    "controller",
+    "request",
+    "response",
+    "serialize",
+    "deserialize",
+    "json",
+    "yaml",
+    "yml",
+    "xml",
+    "pom.xml",
+    "build.gradle",
+    "dependency",
+    "synchronized",
+    "lock",
+    "thread",
+    "executor",
+    "async",
+    "await",
+    "cache",
+    "kafka",
+    "rabbit",
+    "message",
+    "stream",
+    "file",
+    "path",
+    "upload",
+    "download",
+    "processbuilder",
 )
 
 
@@ -100,7 +139,9 @@ def _changed_content_lines(patch: str) -> list[str]:
 
 def _is_comment_or_blank(line: str) -> bool:
     stripped = line.strip()
-    return not stripped or stripped.startswith(("//", "/*", "*", "*/", "#", "<!--", "-->", ";"))
+    return not stripped or stripped.startswith(
+        ("//", "/*", "*", "*/", "#", "<!--", "-->", ";")
+    )
 
 
 def classify_task_route(task: ReviewTask) -> TaskRoute:
@@ -112,15 +153,23 @@ def classify_task_route(task: ReviewTask) -> TaskRoute:
     patch_lower = task.patch.lower()
     if task.patch.count("\n") > 80:
         return TaskRoute(task_id=task.id, route="full", reason="task_too_large")
-    if any(term in patch_lower or term in normalized_path for term in _DIRECT_DENY_TERMS):
-        return TaskRoute(task_id=task.id, route="full", reason="semantic_or_runtime_change")
+    if any(
+        term in patch_lower or term in normalized_path for term in _DIRECT_DENY_TERMS
+    ):
+        return TaskRoute(
+            task_id=task.id, route="full", reason="semantic_or_runtime_change"
+        )
 
     changed = _changed_content_lines(task.patch)
     if normalized_path.endswith(_DIRECT_DOCUMENT_SUFFIXES):
         return TaskRoute(task_id=task.id, route="direct", reason="documentation_only")
     if changed and all(_is_comment_or_blank(line) for line in changed):
-        return TaskRoute(task_id=task.id, route="direct", reason="comment_or_whitespace_only")
-    return TaskRoute(task_id=task.id, route="full", reason="code_change_requires_full_review")
+        return TaskRoute(
+            task_id=task.id, route="direct", reason="comment_or_whitespace_only"
+        )
+    return TaskRoute(
+        task_id=task.id, route="full", reason="code_change_requires_full_review"
+    )
 
 
 def classify_task_routes(tasks: list[ReviewTask]) -> dict[str, TaskRoute]:
@@ -410,10 +459,7 @@ def build_file_tasks(diff_text: str) -> list[ReviewTask]:
 
 def diff_metrics(diff_text: str) -> DiffMetrics:
     """返回 PR 规模路由使用的稳定、轻量统计。"""
-    file_count = sum(
-        line.startswith("diff --git ")
-        for line in diff_text.splitlines()
-    )
+    file_count = sum(line.startswith("diff --git ") for line in diff_text.splitlines())
     if file_count == 0:
         file_count = len(split_diff_by_file(diff_text))
     return DiffMetrics(
@@ -429,28 +475,17 @@ def classify_diff(diff_text: str, budget: ReviewBudget) -> ReviewMode:
     纯确定性函数：只扫描 diff 文本的文件数/hunk 数/字符数。
     不调 LLM，不读仓库文件，不建 task 对象。
 
-    判定逻辑（字符数主导——核心问题是 diff 能否装进上下文窗口）：
-    - small：文件数、hunk 数、diff 字符数均不超过对应阈值
-    - medium：不超过中型阈值，否则
-    - large：超出中型阈值
+    normal：文件数与 diff 字符数均不超过阈值，按文件构建任务。
+    large：超过任一阈值，按 hunk 构建任务。hunk 数只记录，不参与分档。
     """
     metrics = diff_metrics(diff_text)
     diff_chars = metrics.diff_chars
     file_count = metrics.file_count
-    hunk_count = metrics.hunk_count
-
     if (
-        file_count <= budget.small_max_files
-        and hunk_count <= budget.small_max_hunks
-        and diff_chars <= budget.small_max_diff_chars
+        file_count <= budget.normal_max_files
+        and diff_chars <= budget.normal_max_diff_chars
     ):
-        return ReviewMode.SMALL
-
-    if (
-        file_count <= budget.medium_max_files
-        and diff_chars <= budget.medium_max_diff_chars
-    ):
-        return ReviewMode.MEDIUM
+        return ReviewMode.NORMAL
 
     return ReviewMode.LARGE
 

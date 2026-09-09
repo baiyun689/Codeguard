@@ -1,7 +1,6 @@
 """ReviewCouncil 的 Trace 与统计模型。"""
 
 from __future__ import annotations
-
 from pydantic import BaseModel, Field
 
 
@@ -43,9 +42,8 @@ class CouncilRunStats(BaseModel):
     judge_batch_call_count: int = 0
     judge_failed_candidate_count: int = 0
     judge_no_support_drop_count: int = 0
-    react_degraded_recursion_count: int = 0
-    react_synthesis_fallback_count: int = 0
     direct_tier_task_count: int = 0
     discoverer_failed_count: int = 0
     task_review_failed_count: int = 0
+    investigation_incomplete_count: int = 0
     judge_synthesis_failed_count: int = 0

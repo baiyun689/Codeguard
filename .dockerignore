@@ -23,3 +23,15 @@ services/agent/**/__pycache__
 services/agent/.mypy_cache
 services/agent/.pytest_cache
 services/agent/.ruff_cache
+
+# Local investigation and interview artifacts
+.codeguard-eval
+.eval-workspaces
+eval-workspaces
+codeguard-eval-workspaces
+graph_full.txt
+MISSION.md
+RESOURCES.md
+assets/teaching.css
+lessons
+reference

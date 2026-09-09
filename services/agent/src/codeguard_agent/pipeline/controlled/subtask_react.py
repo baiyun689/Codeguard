@@ -1,19 +1,21 @@
-"""单个 GraphPlan 子任务的有界 React 执行器。
+"""单个变更声明组的有界 React 执行器。
 
-这个执行器和历史 reviewer ReAct 有意不同：它不接收知识库或预构造候选，
-只接收一个调查目标；工具白名单、起始 symbol、轮数和调用数在运行时绑定。
+执行器接收一个行为调查目标和少量已解析导航入口，不接收预构造候选。
+工具白名单、轮数和调用数在运行时绑定，原对话预留一次结果提交机会。
 它只返回 InvestigationResult，候选绑定与最终裁决仍由管线完成。
 """
 
 from __future__ import annotations
-
 import logging
 import json
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from collections.abc import Callable
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Event
+from time import monotonic
 from typing import Any
-
 from codeguard_agent.models.tasks import InvestigationResult, SubtaskInstruction
 from codeguard_agent.pipeline.controlled.llm_contracts import LlmInvestigationResult
 from codeguard_agent.pipeline.execution.discovery import (
@@ -25,10 +27,12 @@ from codeguard_agent.pipeline.execution.discovery import (
 )
 from codeguard_agent.models.evidence import EvidenceValidationStatus
 from codeguard_agent.pipeline.evidence.graph_response import validate_graph_payload
-from codeguard_agent.llm.client import invoke_with_retry
+from codeguard_agent.pipeline.prompting import render_prompt_template
 
 logger = logging.getLogger("codeguard")
-_PROMPT = Path(__file__).resolve().parents[2] / "prompts" / "controlled" / "execute-subtask-react.txt"
+_PROMPT = (
+    Path(__file__).resolve().parents[2] / "prompts" / "controlled" / "change-review.txt"
+)
 
 
 @dataclass
@@ -47,14 +51,25 @@ class SubtaskReactEngine:
         self,
         tool_client: Any,
         *,
-        max_tool_calls: int = 20,
-        max_rounds: int = 12,
+        max_tool_calls: int = 8,
+        max_rounds: int = 6,
         timeout_seconds: int = 120,
+        initial_context: str = "",
+        system_prompt: str = "",
+        prepare_context: Callable[[], str] | None = None,
     ) -> None:
         self._tool_client = tool_client
+        self._initial_context = initial_context
+        self._prepare_context = prepare_context
+        self._system_prompt = system_prompt or _PROMPT.read_text(encoding="utf-8")
         self._max_tool_calls = max(0, max_tool_calls)
         self._max_rounds = max(1, max_rounds)
         self._timeout_seconds = max(1, timeout_seconds)
+        self._round_limit_hit = False
+        self._cancelled = Event()
+        self._deadline: float | None = None
+        self._context_conclusion_used = False
+        self._tool_limit_hit = False
 
     def run(
         self,
@@ -66,22 +81,53 @@ class SubtaskReactEngine:
         structured_method: str,
         max_retries: int,
     ) -> SubtaskReactOutcome:
-        before = len(getattr(self._tool_client, "trace_records", ()))
-        before_tool_calls = int(getattr(self._tool_client, "tool_calls", 0) or 0)
+        return self._run(
+            llm,
+            task=task,
+            symbol_context=symbol_context,
+            instruction=instruction,
+            structured_method=structured_method,
+            max_retries=max_retries,
+        )
+
+    def _run(
+        self,
+        llm: Any,
+        *,
+        task: Any,
+        symbol_context: Any,
+        instruction: SubtaskInstruction,
+        structured_method: str,
+        max_retries: int,
+    ) -> SubtaskReactOutcome:
+        before = 0
+        before_tool_calls = 0
         if llm is None:
             return SubtaskReactOutcome(None, "failed", "llm_unavailable")
-        try:
-            executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="subtask-react")
-            future = executor.submit(
-                self._run_agent,
+        self._deadline = monotonic() + self._timeout_seconds
+        self._cancelled.clear()
+
+        def run_prepared_agent():
+            if self._prepare_context is not None:
+                self._initial_context = self._prepare_context()
+            if self._cancelled.is_set() or monotonic() >= self._deadline:
+                raise TimeoutError("subtask_timeout")
+            return self._run_agent(
                 llm,
                 self._build_user_prompt(task, symbol_context, instruction),
                 instruction,
                 structured_method,
             )
+
+        try:
+            executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="subtask-react"
+            )
+            future = executor.submit(copy_context().run, run_prepared_agent)
             try:
                 raw = future.result(timeout=self._timeout_seconds)
             except TimeoutError:
+                self._cancelled.set()
                 future.cancel()
                 close = getattr(self._tool_client, "close", None)
                 if callable(close):
@@ -89,21 +135,16 @@ class SubtaskReactEngine:
                 records = list(getattr(self._tool_client, "trace_records", ()))[before:]
                 executor.shutdown(wait=False, cancel_futures=True)
                 return SubtaskReactOutcome(
-                    None,
-                    "inconclusive",
-                    "subtask_timeout",
-                    records,
-                    ["subtask_timeout"],
+                    None, "failed", "subtask_timeout", records, ["subtask_timeout"]
                 )
             finally:
                 executor.shutdown(wait=False, cancel_futures=True)
-        except Exception as exc:  # noqa: BLE001 - one subtask cannot abort its task
+        except Exception as exc:
             records = list(getattr(self._tool_client, "trace_records", ()))[before:]
-            # LangGraph raises GraphRecursionError when the provider keeps
-            # issuing tool turns after the bounded investigation has already
-            # reached its useful frontier.  That is an inconclusive evidence
-            # result, not a broken task; the caller must keep the gap visible
-            # without counting it as a hard execution failure.
+            if isinstance(exc, TimeoutError):
+                return SubtaskReactOutcome(
+                    None, "failed", "subtask_timeout", records, ["subtask_timeout"]
+                )
             error_name = type(exc).__name__
             inconclusive = error_name in {
                 "GraphRecursionError",
@@ -114,48 +155,16 @@ class SubtaskReactEngine:
                 getattr(self._tool_client, "no_progress_exhausted", False)
             )
             terminal_hit = budget_hit or no_progress_hit
-            if inconclusive and terminal_hit:
-                finalized = self._finalize_after_budget(
-                    llm,
-                    task=task,
-                    symbol_context=symbol_context,
-                    instruction=instruction,
-                    records=records,
-                    structured_method=structured_method,
-                    max_retries=max_retries,
-                    termination_reason=(
-                        "no_progress" if no_progress_hit else "tool_budget_exceeded"
-                    ),
-                )
-                if finalized is not None and finalized.outcome == "findings":
-                    return SubtaskReactOutcome(
-                        finalized,
-                        "complete",
-                        (
-                            "no_progress_finalized"
-                            if no_progress_hit
-                            else "tool_budget_exceeded_finalized"
-                        ),
-                        records,
-                        [
-                            "subtask_react_findings_after_no_progress"
-                            if no_progress_hit
-                            else "subtask_react_findings_after_budget"
-                        ],
-                    )
             return SubtaskReactOutcome(
                 None,
                 "inconclusive" if inconclusive else "failed",
-                (
-                    "no_progress_detected"
-                    if inconclusive and no_progress_hit
-                    else
-                    "tool_budget_exceeded"
-                    if inconclusive and budget_hit
-                    else "subtask_recursion_limit"
-                    if inconclusive
-                    else error_name
-                ),
+                "no_progress_detected"
+                if inconclusive and no_progress_hit
+                else "tool_budget_exceeded"
+                if inconclusive and budget_hit
+                else "subtask_recursion_limit"
+                if inconclusive
+                else error_name,
                 records,
                 [
                     "subtask_no_progress_terminated"
@@ -168,11 +177,10 @@ class SubtaskReactEngine:
                 ],
             )
         records = list(getattr(self._tool_client, "trace_records", ()))[before:]
-        actual_tool_calls = int(getattr(
-            self._tool_client,
-            "tool_calls",
-            len(records),
-        ) or 0) - before_tool_calls
+        actual_tool_calls = (
+            int(getattr(self._tool_client, "tool_calls", len(records)) or 0)
+            - before_tool_calls
+        )
         if actual_tool_calls > self._max_tool_calls:
             return SubtaskReactOutcome(
                 None,
@@ -183,56 +191,96 @@ class SubtaskReactEngine:
             )
         parsed = self._extract(raw)
         if parsed is not None:
-            contract_error = self._result_contract_error(parsed)
+            contract_error = self._terminal_error(parsed)
             if contract_error:
                 return SubtaskReactOutcome(
-                    None,
-                    "failed",
-                    contract_error,
-                    records,
-                    ["subtask_protocol_failed"],
+                    None, "failed", contract_error, records, ["subtask_protocol_failed"]
                 )
-        # A provider may emit the terminal structured result immediately after
-        # the first rejected call.  Preserve a finding backed by the successful
-        # observations already captured; only ``no_finding`` remains unsafe
-        # after a terminal rejection because the model may not have completed
-        # its negative search.
-        budget_hit = bool(getattr(self._tool_client, "budget_exhausted", False))
+        budget_hit = (
+            bool(getattr(self._tool_client, "budget_exhausted", False))
+            or self._tool_limit_hit
+        )
         no_progress_hit = bool(
             getattr(self._tool_client, "no_progress_exhausted", False)
         )
-        terminal_hit = budget_hit or no_progress_hit
-        if terminal_hit and parsed is not None and parsed.outcome == "findings":
+        terminal_hit = budget_hit or no_progress_hit or self._round_limit_hit
+        terminal_reason = (
+            "no_progress_detected"
+            if no_progress_hit
+            else "tool_budget_exceeded"
+            if budget_hit
+            else "subtask_round_limit"
+        )
+        if self._context_conclusion_used and parsed is None:
+            return SubtaskReactOutcome(
+                None,
+                "failed",
+                "context_conclusion_missing_or_invalid",
+                records,
+                ["subtask_protocol_failed"],
+            )
+        if self._context_conclusion_used and parsed is not None:
+            if parsed.outcome == "no_finding" and any(
+                (self._record_is_usable_source(record) for record in records)
+            ):
+                parsed = parsed.model_copy(
+                    update={"subtask_id": instruction.subtask_id}
+                )
+                return SubtaskReactOutcome(
+                    parsed,
+                    "complete",
+                    f"{terminal_reason}_context_conclusion",
+                    records,
+                    ["subtask_react_context_conclusion"],
+                )
+            if parsed.outcome == "failed":
+                return SubtaskReactOutcome(
+                    parsed,
+                    "failed",
+                    "context_conclusion_failed",
+                    records,
+                    ["subtask_react_failed"],
+                )
+        if terminal_hit and parsed is not None and (parsed.outcome == "findings"):
             if parsed.subtask_id != instruction.subtask_id:
-                parsed = parsed.model_copy(update={"subtask_id": instruction.subtask_id})
+                parsed = parsed.model_copy(
+                    update={"subtask_id": instruction.subtask_id}
+                )
             return SubtaskReactOutcome(
                 parsed,
                 "complete",
-                (
-                    "no_progress_after_findings"
-                    if no_progress_hit
-                    else "tool_budget_exceeded_after_findings"
-                ),
+                f"{terminal_reason}_context_conclusion"
+                if self._context_conclusion_used
+                else "no_progress_after_findings"
+                if no_progress_hit
+                else f"{terminal_reason}_after_findings",
                 records,
                 [
-                    "subtask_react_findings_after_no_progress"
+                    "subtask_react_context_conclusion"
+                    if self._context_conclusion_used
+                    else "subtask_react_findings_after_no_progress"
                     if no_progress_hit
                     else "subtask_react_findings_after_budget"
                 ],
             )
-        # The coordinator records rejected calls without incrementing its
-        # successful-call counter.  Do not let a rejected final query become a
-        # false ``no_finding`` or a normal completed result.
         if terminal_hit:
             return SubtaskReactOutcome(
-                None,
+                parsed
+                if parsed is not None and parsed.outcome == "inconclusive"
+                else None,
                 "inconclusive",
-                "no_progress_detected" if no_progress_hit else "tool_budget_exceeded",
+                f"{terminal_reason}_context_conclusion"
+                if self._context_conclusion_used
+                else terminal_reason,
                 records,
                 [
-                    "subtask_no_progress_terminated"
+                    "subtask_react_context_conclusion"
+                    if self._context_conclusion_used
+                    else "subtask_no_progress_terminated"
                     if no_progress_hit
                     else "subtask_tool_budget_exceeded"
+                    if budget_hit
+                    else "subtask_round_limit"
                 ],
             )
         if parsed is None:
@@ -243,25 +291,13 @@ class SubtaskReactEngine:
                 records,
                 ["subtask_protocol_failed"],
             )
-        if parsed.outcome == "no_finding" and not any(
-            self._record_is_usable_source(record) for record in records
-        ):
-            # A graph-required subtask cannot establish a negative result from
-            # an empty trajectory.  Keep this distinct from protocol failure:
-            # it is an evidence gap that the caller can report or retry at a
-            # higher orchestration layer, never a clean review.
-            return SubtaskReactOutcome(
-                None,
-                "inconclusive",
-                "no_finding_without_observation",
-                records,
-                ["subtask_no_finding_without_observation"],
-            )
         if parsed.subtask_id != instruction.subtask_id:
             parsed = parsed.model_copy(update={"subtask_id": instruction.subtask_id})
         return SubtaskReactOutcome(
             parsed,
-            "complete",
+            parsed.outcome
+            if parsed.outcome in {"inconclusive", "failed"}
+            else "complete",
             records=records,
             events=[f"subtask_react_{parsed.outcome}"],
         )
@@ -270,16 +306,24 @@ class SubtaskReactEngine:
     def _record_is_usable_source(record: DiscoveryToolRecord) -> bool:
         """Return whether a record contains source that can support a negative.
 
-        A graph page can establish a positive relationship, but neither a
-        relationship nor an empty/partial page proves that the investigated
-        behavior is safe.  Requiring a real source read for ``no_finding``
-        keeps the negative terminal state fail-closed without preventing the
-        React from using graph facts to decide what source to read next.
+        A relationship or empty page alone cannot refute a claim. Accept real
+        source reads and complete source excerpts embedded in a validated graph
+        page, without requiring a redundant call to a particular tool name.
         """
-
-        if str(getattr(record, "tool", "")) not in {
-            "read_symbol", "get_file_content"
-        }:
+        if str(getattr(record, "tool", "")) == "query_relations":
+            if not SubtaskReactEngine._record_contains_fact(record):
+                return False
+            payload = json.loads(record.resolved_output or record.output)
+            return any(
+                (
+                    isinstance(symbol.get("source_excerpt"), dict)
+                    and symbol["source_excerpt"].get("truncated") is False
+                    and bool(symbol["source_excerpt"].get("text"))
+                    for symbol in payload.get("symbols", ())
+                    if isinstance(symbol, dict)
+                )
+            )
+        if str(getattr(record, "tool", "")) not in {"read_symbol"}:
             return False
         if not SubtaskReactEngine._record_contains_fact(record):
             return False
@@ -288,12 +332,16 @@ class SubtaskReactEngine:
             or getattr(record, "output", "")
             or ""
         ).strip()
-        return raw not in {
-            COMPLETE_PATCH_RESULT,
-            REPEATED_TOOL_RESULT,
-            SUBTASK_BUDGET_TERMINAL_RESULT,
-            SUBTASK_NO_PROGRESS_TERMINAL_RESULT,
-        } and "end_of_symbol: true" not in raw
+        return (
+            raw
+            not in {
+                COMPLETE_PATCH_RESULT,
+                REPEATED_TOOL_RESULT,
+                SUBTASK_BUDGET_TERMINAL_RESULT,
+                SUBTASK_NO_PROGRESS_TERMINAL_RESULT,
+            }
+            and "end_of_symbol: true" not in raw
+        )
 
     @staticmethod
     def _record_contains_fact(record: DiscoveryToolRecord) -> bool:
@@ -305,9 +353,10 @@ class SubtaskReactEngine:
         when they contain text; graph reads must carry the v2 contract and at
         least one resolved symbol or relationship.
         """
-
         if str(getattr(record, "status", "")) not in {
-            "complete", "reused", "available"
+            "complete",
+            "reused",
+            "available",
         }:
             return False
         raw = str(
@@ -323,12 +372,7 @@ class SubtaskReactEngine:
         }:
             return False
         tool = str(getattr(record, "tool", ""))
-        if tool not in {
-            "query_relations",
-            "inspect_path",
-            "inspect_change_impact",
-            "inspect_structure",
-        }:
+        if tool not in {"query_relations"}:
             return raw not in {"{}", "null", "[]"}
         try:
             payload = json.loads(raw)
@@ -340,166 +384,270 @@ class SubtaskReactEngine:
         expected_subject = ""
         if isinstance(arguments, dict):
             expected_subject = str(
-                arguments.get("subject_symbol_id")
-                or arguments.get("symbol_id")
-                or ""
+                arguments.get("subject_symbol_id") or arguments.get("symbol_id") or ""
             )
         validation = validate_graph_payload(
-            raw,
-            tool=tool,
-            expected_subject=expected_subject,
+            raw, tool=tool, expected_subject=expected_subject
         )
-        # Reuse the canonical graph contract instead of maintaining a second
-        # partial schema here.  LIMITED/UNAVAILABLE/INVALID responses are
-        # valid investigation observations, but they cannot justify a clean
-        # negative terminal state.
         if validation.status is not EvidenceValidationStatus.VALID:
             return False
-        symbols = payload.get("symbols")
+        payload.get("symbols")
         relationships = payload.get("relationships")
-        return bool(
-            isinstance(relationships, list) and relationships
-            or (
-                str(getattr(record, "tool", "")) == "inspect_structure"
-                and isinstance(symbols, list)
-                and symbols
-            )
-        )
+        return bool(isinstance(relationships, list) and relationships or False)
 
-    def _finalize_after_budget(
-        self,
-        llm: Any,
-        *,
-        task: Any,
-        symbol_context: Any,
-        instruction: SubtaskInstruction,
-        records: list[DiscoveryToolRecord],
-        structured_method: str,
-        max_retries: int,
-        termination_reason: str = "tool_budget_exceeded",
-    ) -> InvestigationResult | None:
-        """Close a terminal React using captured facts only.
-
-        Some providers keep emitting tool calls after the gate has rejected a
-        call, which makes LangGraph raise before its structured terminal turn.
-        A single no-tool structured call is a protocol finalizer, not another
-        investigation: it receives only the bounded tool outputs already
-        captured by this subtask and may emit findings only with their local
-        observation IDs.  Negative results are deliberately not accepted here.
-        """
-
-        observations: list[str] = []
-        for record in records:
-            status = str(getattr(record, "status", ""))
-            if status not in {"complete", "reused", "available"}:
-                continue
-            # ``output`` for a reused call is intentionally only a short
-            # marker.  The coordinator keeps the first real payload in
-            # ``resolved_output``; use that payload so a finalizer never
-            # reasons from a cache marker.  The call id is the stable bridge
-            # that the executor later maps to the ledger's Txx alias.
-            output = str(
-                getattr(record, "resolved_output", "")
-                or getattr(record, "output", "")
-                or ""
-            )
-            if not output:
-                continue
-            observations.append(
-                json.dumps(
-                    {
-                        "tool": getattr(record, "tool", ""),
-                        "observation_id": str(
-                            getattr(record, "reused_from_call_id", "")
-                            or getattr(record, "call_id", "")
-                        ),
-                        "output": output[:3500],
-                    },
-                    ensure_ascii=False,
-                )
-            )
-        if not observations:
-            return None
-        reason_text = (
-            "工具调用预算耗尽" if termination_reason == "tool_budget_exceeded"
-            else "连续工具调用没有产生新事实"
-        )
-        user = (
-            self._build_user_prompt(task, symbol_context, instruction)
-            + "\n<captured_observations>\n"
-            + "\n".join(observations[:8])
-            + "\n</captured_observations>\n"
-            f"ReAct 因{reason_text}未正常收口。你现在只能依据上面已捕获的工具输出做一次最终结构化收口；"
-            "不要调用工具，不要输出 no_finding。若这些 observation 不能直接支持完整机制，"
-            "返回 inconclusive；只有能绑定实际 observation_id（原样填写上面 observation_id）"
-            "时才返回 findings。"
-        )
-        system = (
-            _PROMPT.read_text(encoding="utf-8")
-            + "\n\n这是终止后的无工具协议收口，不得补充任何未出现在 captured_observations 的事实。"
-        )
-        try:
-            raw = invoke_with_retry(
-                llm.with_structured_output(
-                    LlmInvestigationResult,
-                    method=structured_method,
-                ),
-                [("system", system), ("human", user)],
-                max_retries=max(1, max_retries),
-            )
-        except Exception:  # noqa: BLE001 - finalizer is best effort
-            return None
-        parsed = self._extract(
-            {"structured_response": raw}
-            if raw is not None and not isinstance(raw, dict)
-            else raw
-        )
-        if parsed is None:
-            return None
-        if self._result_contract_error(parsed):
-            return None
-        if parsed.subtask_id != instruction.subtask_id:
-            parsed = parsed.model_copy(update={"subtask_id": instruction.subtask_id})
-        return parsed
-
-    def _run_agent(self, llm: Any, user_prompt: str, instruction: SubtaskInstruction, method: str) -> Any:
+    def _run_agent(
+        self, llm: Any, user_prompt: str, instruction: SubtaskInstruction, method: str
+    ) -> Any:
         from langchain.agents import create_agent
+        from langchain.agents.middleware import (
+            after_model,
+            before_model,
+            wrap_model_call,
+        )
+        from langchain.agents.middleware.types import ModelResponse
         from langchain.agents.structured_output import ToolStrategy
+        from langchain_core.messages import AIMessage, HumanMessage
+        from langchain_core.utils.function_calling import convert_to_openai_tool
+        from pydantic import ValidationError
         from codeguard_agent.tools.definitions import (
             make_query_relations_tool,
             make_read_symbol_tool,
         )
+        from codeguard_agent.pipeline.controlled.investigation_tools import (
+            require_fact_question,
+        )
+        from codeguard_agent.pipeline.controlled.investigation_decision import (
+            decision_error,
+            decision_messages,
+            decision_schema,
+        )
 
-        # The subtask React path deliberately has only the two canonical
-        # actions.  Legacy inspect_* / get_file_content names remain available
-        # to the planned_steps compatibility executor, never to this dynamic
-        # investigation loop.
         factories = {
             "read_symbol": lambda: make_read_symbol_tool(self._tool_client),
             "query_relations": lambda: make_query_relations_tool(self._tool_client),
         }
-        tools = [factories[name]() for name in instruction.allowed_tools if name in factories]
-        # LangChain's dynamically typed agent graph has provider-dependent
-        # input/output overloads.  Keep the boundary typed as Any here; the
-        # result is immediately validated by _extract/_result_contract_error.
+        tools = [
+            require_fact_question(factories[name]())
+            for name in instruction.allowed_tools
+            if name in factories
+        ]
+        step_schema = decision_schema(tools)
+        step_tool = convert_to_openai_tool(step_schema)
+        consumed_observations: set[str] = set()
+        decision_rejected = False
+        original_decisions: dict[str, Any] = {}
+        feedback_prompt = _PROMPT.with_name(
+            "investigation-decision-feedback.txt"
+        ).read_text(encoding="utf-8")
+        model_calls = 0
+        self._round_limit_hit = False
+        self._tool_limit_hit = False
+        self._context_conclusion_used = False
+        initial_calls = int(getattr(self._tool_client, "tool_calls", 0) or 0)
+        budget_prompt = _PROMPT.with_name("investigation-budget.txt").read_text(
+            encoding="utf-8"
+        )
+
+        def remaining_tools() -> int:
+            spent = (
+                int(getattr(self._tool_client, "tool_calls", 0) or 0) - initial_calls
+            )
+            return max(0, self._max_tool_calls - spent)
+
+        @before_model(can_jump_to=["end"])
+        def stop_closed_investigation(
+            state: Any, runtime: Any
+        ) -> dict[str, Any] | None:
+            nonlocal model_calls
+            if self._cancelled.is_set() or (
+                self._deadline is not None and monotonic() >= self._deadline
+            ):
+                raise TimeoutError("subtask deadline reached")
+            if self._context_conclusion_used:
+                return {"jump_to": "end"}
+            closed = getattr(self._tool_client, "budget_exhausted", False) or getattr(
+                self._tool_client, "no_progress_exhausted", False
+            )
+            self._tool_limit_hit = remaining_tools() == 0
+            self._round_limit_hit = model_calls >= self._max_rounds
+            if closed or self._tool_limit_hit or self._round_limit_hit:
+                self._context_conclusion_used = True
+                close = getattr(self._tool_client, "close", None)
+                if callable(close):
+                    close()
+            else:
+                model_calls += 1
+            return None
+
+        @after_model(can_jump_to=["model"])
+        def retry_rejected_decision(state: Any, runtime: Any) -> dict[str, Any] | None:
+            if decision_rejected:
+                return {"jump_to": "model"}
+            return None
+
+        @wrap_model_call
+        def investigation_budget(request: Any, handler: Any) -> Any:
+            nonlocal consumed_observations, decision_rejected
+            decision_rejected = False
+            known = set(getattr(self._tool_client, "observation_aliases", {}))
+            pending = known - consumed_observations
+            phase = "conclude" if self._context_conclusion_used else "explore"
+            notice = render_prompt_template(
+                budget_prompt,
+                {
+                    "phase": phase,
+                    "phase_instruction": _PROMPT.with_name(
+                        f"investigation-{phase}.txt"
+                    ).read_text(encoding="utf-8"),
+                    "rounds_left": str(
+                        0
+                        if self._context_conclusion_used
+                        else self._max_rounds - model_calls + 1
+                    ),
+                    "tools_left": str(
+                        0 if self._context_conclusion_used else remaining_tools()
+                    ),
+                    "pending_observations": ",".join(sorted(pending)) or "none",
+                },
+            )
+            messages = [
+                *decision_messages(request.messages, original_decisions),
+                HumanMessage(content=notice),
+            ]
+            if not self._context_conclusion_used:
+                model = request.model.bind_tools(
+                    [step_tool],
+                    tool_choice={
+                        "type": "function",
+                        "function": {"name": "LlmInvestigationDecision"},
+                    },
+                    **request.model_settings,
+                )
+                output = model.invoke(
+                    ([request.system_message] if request.system_message else [])
+                    + messages
+                )
+                calls: Any = getattr(output, "tool_calls", ())
+                decision = None
+                error = "expected_one_investigation_decision"
+                if (
+                    len(calls) == 1
+                    and calls[0].get("name") == "LlmInvestigationDecision"
+                ):
+                    try:
+                        decision = step_schema.model_validate(calls[0].get("args"))
+                        error = decision_error(
+                            decision,
+                            aliases=getattr(self._tool_client, "symbol_aliases", {}),
+                            known=known,
+                            pending=pending,
+                        )
+                        if not error and decision.result is not None:
+                            internal_result = self._extract(
+                                {"structured_response": decision.result}
+                            )
+                            error = (
+                                self._terminal_error(internal_result)
+                                if internal_result is not None
+                                else "invalid_result_contract"
+                            )
+                    except ValidationError as exc:
+                        details = [
+                            {
+                                "path": ".".join((str(part) for part in item["loc"])),
+                                "error": item["type"],
+                                "message": item["msg"],
+                            }
+                            for item in exc.errors(
+                                include_input=False, include_url=False
+                            )[:4]
+                        ]
+                        error = (
+                            "invalid_decision_schema:"
+                            + json.dumps(details, ensure_ascii=False)[:1400]
+                        )
+                    except (TypeError, ValueError):
+                        error = "invalid_decision_schema"
+                if error or decision is None:
+                    decision_rejected = True
+                    content = json.dumps(calls, ensure_ascii=False)[:2500]
+                    feedback = render_prompt_template(
+                        feedback_prompt, {"reason": error}
+                    )
+                    return ModelResponse(
+                        result=[
+                            AIMessage(content=content),
+                            HumanMessage(content=feedback),
+                        ]
+                    )
+                consumed_observations = known
+                if decision.result is not None:
+                    return ModelResponse(
+                        result=[AIMessage(content=decision.model_dump_json())],
+                        structured_response=decision.result,
+                    )
+                checkpoint = decision.model_dump_json(exclude={"queries", "result"})
+                query_calls = [
+                    {
+                        "name": query.tool,
+                        "args": query.arguments.model_dump(exclude_none=True),
+                        "id": f"{calls[0]['id']}-q{index + 1}",
+                        "type": "tool_call",
+                    }
+                    for index, query in enumerate(decision.queries)
+                ]
+                for query_call in query_calls:
+                    original_decisions[query_call["id"]] = {
+                        **calls[0],
+                        "args": decision.model_dump(exclude_none=True),
+                    }
+                return ModelResponse(
+                    result=[AIMessage(content=checkpoint, tool_calls=query_calls)]
+                )
+            model = request.model.bind_tools(
+                [step_tool],
+                tool_choice={
+                    "type": "function",
+                    "function": {"name": "LlmInvestigationDecision"},
+                },
+                **request.model_settings,
+            )
+            output = model.invoke(
+                ([request.system_message] if request.system_message else []) + messages
+            )
+            calls = getattr(output, "tool_calls", ())
+            parsed = None
+            if len(calls) == 1 and calls[0].get("name") == "LlmInvestigationResult":
+                parsed = self._extract({"structured_response": calls[0].get("args")})
+            elif len(calls) == 1 and calls[0].get("name") == "LlmInvestigationDecision":
+                arguments = calls[0].get("args")
+                if isinstance(arguments, dict) and arguments.get("queries") in (
+                    None,
+                    [],
+                    (),
+                ):
+                    parsed = self._extract(
+                        {"structured_response": arguments.get("result")}
+                    )
+            if parsed is None:
+                return ModelResponse(
+                    result=[AIMessage(content="context_conclusion_missing_or_invalid")]
+                )
+            return ModelResponse(result=[output], structured_response=parsed)
+
         agent: Any = create_agent(
             llm,
             tools,
-            system_prompt=_PROMPT.read_text(encoding="utf-8"),
+            system_prompt=self._system_prompt,
             response_format=ToolStrategy(LlmInvestigationResult, handle_errors=True),
+            middleware=[
+                stop_closed_investigation,
+                investigation_budget,
+                retry_rejected_decision,
+            ],
         )
         return agent.invoke(
             {"messages": [("human", user_prompt)]},
-            # One React round is a model decision plus at most one tool
-            # result.  Keep the graph recursion limit close to the declared
-            # round budget; the client-side tool gate remains the hard cost
-            # limit for repeated or parallel tool requests.
-            # A LangGraph round includes the model decision, the tool node,
-            # and the model's structured-result turn.  The old ``2*n+2``
-            # allowance could exhaust before the terminal InvestigationResult
-            # was emitted even when the declared tool/round budget was not
-            # exceeded.  Keep the runtime tool gate as the hard cost bound,
-            # but leave enough graph steps for every bounded round to close.
             config={"recursion_limit": max(12, self._max_rounds * 6 + 6)},
         )
 
@@ -515,11 +663,29 @@ class SubtaskReactEngine:
                 value.model_dump() if hasattr(value, "model_dump") else value
             )
             return InvestigationResult.model_validate(provider.model_dump())
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
+    def _terminal_error(self, result: InvestigationResult) -> str:
+        error = self._result_contract_error(result, allow_patch_only=True)
+        if error:
+            return error
+        known = set(getattr(self._tool_client, "observation_aliases", {}))
+        referenced = {
+            ref.observation_id
+            for finding in result.findings
+            for ref in finding.observations
+        }
+        if referenced - known:
+            return "unknown_finding_observations:" + ",".join(
+                sorted(referenced - known)
+            )
+        return ""
+
     @staticmethod
-    def _result_contract_error(result: InvestigationResult) -> str:
+    def _result_contract_error(
+        result: InvestigationResult, *, allow_patch_only: bool = False
+    ) -> str:
         """Reject contradictory terminal payloads before they enter State.
 
         Pydantic validates field shapes, but the cross-field meaning is part of
@@ -528,63 +694,42 @@ class SubtaskReactEngine:
         would silently ignore.  Failing here keeps the state machine explicit
         and makes malformed provider output visible in Trace.
         """
-
         if result.outcome == "findings":
             if not result.findings:
                 return "findings_outcome_without_findings"
-            if any(not finding.observations for finding in result.findings):
+            if not allow_patch_only and any(
+                (not finding.observations for finding in result.findings)
+            ):
                 return "finding_without_observations"
             return ""
         if result.findings:
             return "findings_present_on_non_findings_outcome"
         return ""
 
-    def _build_user_prompt(self, task: Any, symbol_context: Any, instruction: SubtaskInstruction) -> str:
-        aliases = getattr(self._tool_client, "symbol_aliases", {})
-        raw_to_alias = {raw: alias for alias, raw in aliases.items()}
-
-        def render_symbol(symbol: Any) -> str:
-            payload = symbol.model_dump()
-            raw = str(payload.get("symbol_id", ""))
-            payload["symbol_id"] = raw_to_alias.get(raw, raw)
-            owner = str(payload.get("owner_id", ""))
-            if owner:
-                payload["owner_id"] = raw_to_alias.get(owner, owner)
-            import json
-            return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-
-        symbols = "\n".join(
-            render_symbol(symbol) for symbol in (symbol_context.symbols if symbol_context else ())
-            if symbol.symbol_id in set(instruction.initial_symbol_ids)
-        ) or "(仅允许使用 instruction 中的 symbol_id)"
-        initial_ids = set(instruction.initial_symbol_ids)
-        references = "\n".join(
-            json.dumps(
-                {
-                    **reference.model_dump(),
-                    "symbol_id": raw_to_alias.get(reference.symbol_id, reference.symbol_id),
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-            for reference in (getattr(symbol_context, "references", ()) if symbol_context else ())
-            if reference.symbol_id in initial_ids
-        ) or "(无变更行引用目标)"
-        safe_instruction = instruction.model_copy(update={
-            "initial_symbol_ids": tuple(
-                raw_to_alias.get(symbol_id, symbol_id)
-                for symbol_id in instruction.initial_symbol_ids
-            )
-        })
-        return (
-            f'<subtask id="{instruction.subtask_id}" reviewer="{instruction.reviewer.value}" '
-            f'change_unit="{instruction.change_unit_id}">\n'
-            f"<task_patch file=\"{task.file}\">\n{task.patch}\n</task_patch>\n"
-            f"<symbol_context>\n{symbols}\n</symbol_context>\n"
-            f"<changed_references>\n{references}\n</changed_references>\n"
-            f"<instruction>\n{safe_instruction.model_dump_json(exclude_defaults=True)}\n</instruction>\n"
-            "只调查该子任务；根据实际工具事实返回 InvestigationResult。"
+    def _build_user_prompt(
+        self, task: Any, symbol_context: Any, instruction: SubtaskInstruction
+    ) -> str:
+        from codeguard_agent.pipeline.controlled.investigation_decision import (
+            symbol_name,
         )
+
+        initial_ids = set(instruction.initial_symbol_ids)
+        initial_symbols = [
+            {"symbol_id": raw, "name": symbol_name(raw)}
+            for raw in instruction.initial_symbol_ids
+        ]
+        symbols = [
+            s.model_dump()
+            for s in getattr(symbol_context, "symbols", ())
+            if s.symbol_id in initial_ids
+        ]
+        references = [
+            r.model_dump()
+            for r in getattr(symbol_context, "references", ())
+            if r.symbol_id in initial_ids
+        ]
+        anchors = [a.model_dump() for a in getattr(task, "deletion_anchors", ())]
+        return f'''<subtask id="{instruction.subtask_id}">\n<task_patch file="{task.file}">\n{task.patch}\n</task_patch>\n<deletion_anchors>{json.dumps(anchors, ensure_ascii=False, separators=(",", ":"))}</deletion_anchors>\n<initial_symbols>{json.dumps(initial_symbols, separators=(",", ":"))}</initial_symbols>\n<symbol_context>{json.dumps(symbols, ensure_ascii=False)}</symbol_context>\n<changed_references>{json.dumps(references, ensure_ascii=False)}</changed_references>\n<prepared_source>{self._initial_context}</prepared_source>\n<instruction>{instruction.model_dump_json(exclude_defaults=True)}</instruction>\n'''
 
 
 __all__ = ["SubtaskReactEngine", "SubtaskReactOutcome"]

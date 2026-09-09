@@ -4,9 +4,7 @@
 """
 
 from __future__ import annotations
-
 from typing import Any
-
 from pydantic import BaseModel, Field
 
 
@@ -67,8 +65,6 @@ class TraceSummary(BaseModel):
 class DegradationReport(BaseModel):
     """降级事件汇总，供 trace 仪表盘展示。"""
 
-    react_degraded_recursion: int = 0
-    react_synthesis_fallback: int = 0
     direct_tier_tasks: int = 0
     discoverer_failed: int = 0
     task_review_failed: int = 0
@@ -77,8 +73,8 @@ class DegradationReport(BaseModel):
     @property
     def total_degradations(self) -> int:
         return (
-            self.react_degraded_recursion
-            + self.react_synthesis_fallback
+            0
+            + 0
             + self.discoverer_failed
             + self.task_review_failed
             + self.judge_synthesis_failed

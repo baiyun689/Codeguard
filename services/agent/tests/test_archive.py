@@ -4,9 +4,7 @@
 """
 
 from __future__ import annotations
-
 import json
-
 import evals.archive as archive_mod
 from evals.archive import (
     GIT_SHA_PLACEHOLDER,
@@ -18,7 +16,9 @@ from evals.metrics import aggregate, aggregate_by_capability
 from evals.schema import CouncilTraceStats, MatchOutcome
 
 
-def _outcome(case_id, *, clean=False, tp=0, fp=0, fn=0, expected=0, reported=0) -> MatchOutcome:
+def _outcome(
+    case_id, *, clean=False, tp=0, fp=0, fn=0, expected=0, reported=0
+) -> MatchOutcome:
     return MatchOutcome(
         case_id=case_id,
         is_clean=clean,
@@ -30,27 +30,23 @@ def _outcome(case_id, *, clean=False, tp=0, fp=0, fn=0, expected=0, reported=0) 
     )
 
 
-# --------- 按能力切片 ---------
-
 def test_aggregate_by_capability_slices_subset():
-    # 两条用例:file 用例审准(tp=1),diff-only 用例漏报(fn=1)。
     run = [
         _outcome("rb_file", tp=1, expected=1, reported=1),
         _outcome("syn", fn=1, expected=1, reported=0),
     ]
     caps = {"rb_file": ["file"], "syn": ["diff-only"]}
     sliced = aggregate_by_capability([run], caps)
-
     assert set(sliced) == {"file", "diff-only"}
-    assert sliced["file"].recall == 1.0       # file 子集审准
-    assert sliced["diff-only"].recall == 0.0  # diff-only 子集漏报
+    assert sliced["file"].recall == 1.0
+    assert sliced["diff-only"].recall == 0.0
 
 
 def test_aggregate_by_capability_skips_empty_tags():
     run = [_outcome("a", tp=1, expected=1, reported=1)]
     caps = {"a": ["file"]}
     sliced = aggregate_by_capability([run], caps)
-    assert set(sliced) == {"file"}  # 没有 ast/rag 用例就不出现这些键
+    assert set(sliced) == {"file"}
 
 
 def test_case_with_multiple_capabilities_counts_in_each():
@@ -61,8 +57,6 @@ def test_case_with_multiple_capabilities_counts_in_each():
     assert sliced["ast"].recall == 1.0
 
 
-# --------- 归档记录 ---------
-
 def _sample_record(git_sha="abc123"):
     run = [
         _outcome("rb_file", tp=1, expected=1, reported=1),
@@ -72,7 +66,7 @@ def _sample_record(git_sha="abc123"):
     return build_archive_record(
         profile_name="pipeline-file",
         profile_mode="pipeline",
-        profile_tools=["get_file_content"],
+        profile_tools=["read_symbol"],
         tools_enabled=True,
         provider="openai",
         model="deepseek-chat",
@@ -92,7 +86,7 @@ def test_archive_record_has_all_fields():
         "name": "pipeline-file",
         "mode": "pipeline",
         "orchestration": "adr-032",
-        "tools": ["get_file_content"],
+        "tools": ["read_symbol"],
         "tools_enabled": True,
         "fp_verify": False,
     }
@@ -105,25 +99,26 @@ def test_archive_record_has_all_fields():
 
 def test_archive_preserves_evidence_ledger_council_metrics():
     outcome = _outcome("phase5", reported=1)
-    outcome.council_trace = CouncilTraceStats(**{
-        "candidate_count": 1,
-        "final_issue_count": 1,
-        "final_issue_supported_count": 1,
-        "final_issue_support_coverage": 1.0,
-        "artifact_count": 3,
-        "patch_artifact_count": 1,
-        "context_artifact_count": 1,
-        "tool_artifact_count": 1,
-        "candidate_tool_backed_count": 1,
-        "valid_reference_count": 2,
-        "replay_valid_count": 1,
-        "judge_batch_call_count": 1,
-    })
-
+    outcome.council_trace = CouncilTraceStats(
+        **{
+            "candidate_count": 1,
+            "final_issue_count": 1,
+            "final_issue_supported_count": 1,
+            "final_issue_support_coverage": 1.0,
+            "artifact_count": 3,
+            "patch_artifact_count": 1,
+            "context_artifact_count": 1,
+            "tool_artifact_count": 1,
+            "candidate_tool_backed_count": 1,
+            "valid_reference_count": 2,
+            "replay_valid_count": 1,
+            "judge_batch_call_count": 1,
+        }
+    )
     record = build_archive_record(
         profile_name="pipeline-file",
         profile_mode="pipeline",
-        profile_tools=["get_file_content"],
+        profile_tools=["read_symbol"],
         tools_enabled=True,
         provider="mock",
         model="(mock)",
@@ -134,7 +129,6 @@ def test_archive_preserves_evidence_ledger_council_metrics():
         git_sha="abc123",
         timestamp="2026-07-13T10-00-00",
     )
-
     archived = record["cases"][0]["council_trace"]
     assert archived["final_issue_support_coverage"] == 1.0
     assert archived["artifact_count"] == 3
@@ -151,7 +145,6 @@ def test_write_archive_filename_and_roundtrip(tmp_path):
 
 
 def test_write_archive_does_not_overwrite_existing(tmp_path):
-    # 不同时间戳 → 不同文件名 → 追加累积。
     r1 = _sample_record()
     r2 = _sample_record()
     r2["timestamp"] = "2026-06-14T11-00-00"
@@ -160,10 +153,10 @@ def test_write_archive_does_not_overwrite_existing(tmp_path):
     assert len(list(tmp_path.glob("*.json"))) == 2
 
 
-# --------- git sha 占位 ---------
-
 def test_git_sha_fallback_on_failure(monkeypatch):
+
     def _boom(*a, **k):
         raise OSError("git not found")
+
     monkeypatch.setattr(archive_mod.subprocess, "run", _boom)
     assert git_short_sha() == GIT_SHA_PLACEHOLDER

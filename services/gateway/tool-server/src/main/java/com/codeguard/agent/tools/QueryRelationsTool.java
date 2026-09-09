@@ -90,6 +90,19 @@ public final class QueryRelationsTool implements AgentTool {
             if (value.graph().node(subject).isEmpty()) {
                 return ToolResult.error("symbol_not_found: " + subject);
             }
+            var kind = value.graph().node(subject).orElseThrow().kind();
+            if ((relation.equals("field_readers") || relation.equals("field_writers"))
+                    && kind != com.codeguard.agent.graph.GraphNodeKind.FIELD) {
+                return ToolResult.error("invalid_relation_subject: " + relation
+                        + " requires FIELD, got " + kind
+                        + "; use a resolved field symbol, not its containing method or type");
+            }
+            if ((relation.equals("callers") || relation.equals("callees"))
+                    && kind != com.codeguard.agent.graph.GraphNodeKind.METHOD
+                    && kind != com.codeguard.agent.graph.GraphNodeKind.CONSTRUCTOR) {
+                return ToolResult.error("invalid_relation_subject: " + relation
+                        + " requires METHOD or CONSTRUCTOR, got " + kind);
+            }
             SourceSet scope = GraphToolSupport.sourceScope(value, subject);
             List<GraphEdge> edges = collect(value, subject, relation, depth, scope);
             List<GraphNode> nodes = nodesFor(value, subject, edges);
@@ -126,11 +139,17 @@ public final class QueryRelationsTool implements AgentTool {
                     continue;
                 }
                 List<GraphEdge> edges = matching(value, current, relation);
+                if (relation.equals("callers")) {
+                    edges = new ArrayList<>(edges);
+                    edges.addAll(GraphToolSupport.potentialUnresolvedCallers(value, current, scope));
+                }
                 result.addAll(edges);
                 edges.stream()
                         .filter(edge -> edge.sourceSet() == scope)
                         .filter(edge -> edge.resolution() == ResolutionStatus.RESOLVED)
-                        .map(edge -> relation.equals("callers")
+                        .map(edge -> relation.equals("overrides")
+                                ? (edge.sourceId().equals(current) ? edge.targetId() : edge.sourceId())
+                                : relation.equals("callers")
                                 || relation.equals("field_readers")
                                 || relation.equals("field_writers")
                                 || relation.equals("implementations")
@@ -211,10 +230,62 @@ public final class QueryRelationsTool implements AgentTool {
                     }
                 }
             }
+            if (includeContext) {
+                addEndpointSource(root, value);
+            }
             return ToolResult.ok(GraphToolSupport.JSON.writeValueAsString(root));
         } catch (Exception exception) {
             return ToolResult.error("graph_result_error: " + exception.getMessage());
         }
+    }
+
+    /** Source facts only: bounded excerpts of direct endpoints on this page. */
+    private static void addEndpointSource(ObjectNode root, ProjectSnapshot value) {
+        String subject = root.path("subject_symbol_id").asText();
+        java.util.Map<String, Integer> endpoints = new java.util.LinkedHashMap<>();
+        for (JsonNode edge : root.path("relationships")) {
+            if (!edge.path("resolution").asText().equals("RESOLVED")) continue;
+            String from = edge.path("sourceId").asText();
+            String to = edge.path("targetId").asText();
+            // Callers/readers/writers: center on their use of the subject.
+            // Callees/parent declarations: begin at the endpoint declaration.
+            if (subject.equals(to) && !subject.equals(from)) {
+                endpoints.putIfAbsent(from, edge.path("line").asInt());
+            } else if (subject.equals(from) && !subject.equals(to)) {
+                endpoints.putIfAbsent(to, 0);
+            }
+        }
+        int included = 0;
+        for (JsonNode symbol : root.path("symbols")) {
+            String id = symbol.path("id").asText();
+            if (included >= 3 || !endpoints.containsKey(id)
+                    || !symbol.path("source_set").asText().equals(root.path("source_scope").asText())) continue;
+            String source = value.sources().get(symbol.path("file").asText());
+            if (source == null) continue;
+            String[] lines = source.split("\\R", -1);
+            int first = symbol.path("startLine").asInt();
+            int last = symbol.path("endLine").asInt();
+            if (first < 1 || last < first || last > lines.length) continue;
+            int useLine = endpoints.get(id);
+            int start = useLine >= first && useLine <= last ? Math.max(first, useLine - 6) : first;
+            int end = start - 1;
+            StringBuilder text = new StringBuilder();
+            for (int line = start; line <= Math.min(last, start + 23); line++) {
+                String next = lines[line - 1] + "\n";
+                if (text.length() + next.length() > 1000) break;
+                text.append(next);
+                end = line;
+            }
+            if (text.isEmpty()) continue;
+            ObjectNode excerpt = ((ObjectNode) symbol).putObject("source_excerpt");
+            excerpt.put("start_line", start);
+            excerpt.put("end_line", end);
+            excerpt.put("text", text.toString());
+            excerpt.put("truncated", start > first || end < last);
+            if (end < last) excerpt.put("next_cursor", end + 1);
+            included++;
+        }
+        root.put("omitted_source_excerpt_count", endpoints.size() - included);
     }
 
     private static String lineContext(String source, int line) {

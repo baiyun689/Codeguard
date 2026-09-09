@@ -5,18 +5,12 @@ import com.codeguard.agent.core.AgentTool;
 import com.codeguard.agent.core.ToolResult;
 import com.codeguard.agent.graph.ProjectSnapshotProvider;
 
-/**
- * Stable public source-reading capability for the controlled reviewer.
- *
- * <p>The legacy wire name {@code get_file_content} remains registered for
- * compatibility.  New callers use this narrower name so a model cannot
- * mistake the operation for arbitrary file access.</p>
- */
+/** Reads bounded source for a resolved symbol through the session sandbox. */
 public final class ReadSymbolTool implements AgentTool {
-    private final GetFileContentTool delegate;
+    private final SymbolSourceReader delegate;
 
     public ReadSymbolTool(ProjectSnapshotProvider snapshot) {
-        this.delegate = new GetFileContentTool(snapshot);
+        this.delegate = new SymbolSourceReader(snapshot);
     }
 
     @Override
@@ -26,7 +20,7 @@ public final class ReadSymbolTool implements AgentTool {
 
     @Override
     public String description() {
-        return "读取已解析项目 symbol 的有界源码；只接受 GraphPlan 或前序关系查询返回的 symbol_id，"
+        return "读取已解析项目 symbol 的有界源码；接受初始符号、关系查询和源码成员目录返回的 symbol_id，"
                 + "支持 start_line/end_line/cursor 续取，不接受文件路径、文件名或自行猜测的 symbol。";
     }
 

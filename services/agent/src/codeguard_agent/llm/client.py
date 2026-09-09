@@ -90,7 +90,11 @@ def build_llm(settings: Settings, temperature: float | None = None) -> Any:
         # 延迟导入:没装对应包 / 用 mock 模式时不强制依赖
         from langchain_openai import ChatOpenAI
 
-        kwargs: dict[str, Any] = {"model": settings.model, "api_key": settings.api_key}
+        kwargs: dict[str, Any] = {
+            "model": settings.model, "api_key": settings.api_key,
+            "timeout": settings.llm_timeout_seconds, "max_retries": 0,
+            "disable_streaming": True,
+        }
         if settings.api_base_url:
             kwargs["base_url"] = settings.api_base_url
         if temperature is not None:
@@ -113,7 +117,11 @@ def build_llm(settings: Settings, temperature: float | None = None) -> Any:
     if settings.provider == "claude":
         from langchain_anthropic import ChatAnthropic
 
-        kwargs = {"model": settings.model, "api_key": settings.api_key}
+        kwargs = {
+            "model": settings.model, "api_key": settings.api_key,
+            "timeout": settings.llm_timeout_seconds, "max_retries": 0,
+            "disable_streaming": True,
+        }
         if settings.api_base_url:
             kwargs["base_url"] = settings.api_base_url
         if temperature is not None:
@@ -143,6 +151,8 @@ def invoke_with_retry(llm: Any, messages: list[tuple[str, str]], max_retries: in
                     getattr(exc, "status_code", "?"), exc,
                 )
                 raise
+            if attempt + 1 >= max_retries:
+                break
             wait = 2**attempt
             logger.warning("LLM 调用失败(第 %d 次),%ds 后重试: %s", attempt + 1, wait, exc)
             time.sleep(wait)

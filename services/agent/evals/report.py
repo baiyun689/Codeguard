@@ -7,11 +7,8 @@
 """
 
 from __future__ import annotations
-
 from datetime import datetime
-
 from codeguard_agent.config import Settings
-
 from evals.schema import AggregateMetrics, MatchOutcome
 
 
@@ -31,34 +28,24 @@ def render_history_views(records: list[dict], trend_limit: int = 8) -> str:
     """
     if not records:
         return "## 趋势 / 对照 / 能力切片\n\n_(暂无历史归档,跑一次评测后即可生成)_\n"
-
     lines: list[str] = []
-
-    # ① 历史趋势(最近 trend_limit 次,跨 profile 合并按时间排)
     lines += [
         "## 历史趋势(最近 %d 次)" % trend_limit,
         "",
         "| 时间 | git | profile | 工具 | P | R | F1 | 误报率 |",
-        "|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|",
     ]
     for r in records[-trend_limit:]:
         prof = r.get("profile", {})
         m = r.get("metrics", {})
         tools = "开" if prof.get("tools_enabled") else "关"
         lines.append(
-            f"| {r.get('timestamp', '—')} | {r.get('git_sha', '—')} | "
-            f"{prof.get('name', '—')} | {tools} | "
-            f"{_fmt(m.get('precision'))} | {_fmt(m.get('recall'))} | "
-            f"{_fmt(m.get('f1'))} | {_fmt(m.get('false_positives_on_clean'))} |"
+            f"| {r.get('timestamp', '—')} | {r.get('git_sha', '—')} | {prof.get('name', '—')} | {tools} | {_fmt(m.get('precision'))} | {_fmt(m.get('recall'))} | {_fmt(m.get('f1'))} | {_fmt(m.get('false_positives_on_clean'))} |"
         )
-
-    # 各 profile 取最近一次(对照与能力切片都基于"最新快照")
     latest_by_profile: dict[str, dict] = {}
     for r in records:
         latest_by_profile[r.get("profile", {}).get("name", "?")] = r
     profiles_sorted = sorted(latest_by_profile)
-
-    # ② profile 横向对照(各 profile 最近一次)
     lines += [
         "",
         "## profile 横向对照(各 profile 最近一次)",
@@ -71,14 +58,15 @@ def render_history_views(records: list[dict], trend_limit: int = 8) -> str:
         m = r.get("metrics", {})
         tools = "开" if r.get("profile", {}).get("tools_enabled") else "关"
         lines.append(
-            f"| {name} | {tools} | {_fmt(m.get('precision'))} | {_fmt(m.get('recall'))} | "
-            f"{_fmt(m.get('f1'))} | {_fmt(m.get('false_positives_on_clean'))} |"
+            f"| {name} | {tools} | {_fmt(m.get('precision'))} | {_fmt(m.get('recall'))} | {_fmt(m.get('f1'))} | {_fmt(m.get('false_positives_on_clean'))} |"
         )
-
-    # ③ 按能力切片(行=能力,列=profile,值=该子集 recall;recall 最能体现工具增益)
-    all_caps = sorted({
-        cap for r in latest_by_profile.values() for cap in (r.get("by_capability") or {})
-    })
+    all_caps = sorted(
+        {
+            cap
+            for r in latest_by_profile.values()
+            for cap in r.get("by_capability") or {}
+        }
+    )
     if all_caps:
         header = "| 能力 \\ profile | " + " | ".join(profiles_sorted) + " |"
         sep = "|---" * (len(profiles_sorted) + 1) + "|"
@@ -98,7 +86,6 @@ def render_history_views(records: list[dict], trend_limit: int = 8) -> str:
                 cell = bycap.get(cap)
                 row.append(_fmt(cell.get("recall")) if cell else "—")
             lines.append(" | ".join(row) + " |")
-
     return "\n".join(lines) + "\n"
 
 
@@ -115,11 +102,7 @@ def render_report(
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     judge_line = ""
     if metrics.avg_judge_message_quality is not None:
-        judge_line = (
-            f"| LLM-judge 描述质量 | {metrics.avg_judge_message_quality:.2f} / 5 |\n"
-            f"| LLM-judge 建议质量 | {metrics.avg_judge_suggestion_quality:.2f} / 5 |\n"
-        )
-
+        judge_line = f"| LLM-judge 描述质量 | {metrics.avg_judge_message_quality:.2f} / 5 |\n| LLM-judge 建议质量 | {metrics.avg_judge_suggestion_quality:.2f} / 5 |\n"
     effective_model_label = model_label or settings.model or "(provider-default)"
     lines = [
         "# Codeguard 审查质量评测报告",
@@ -166,13 +149,8 @@ def render_report(
     ]
     for o in runs[-1]:
         lines.append(
-            f"| {o.case_id} | {'clean' if o.is_clean else 'vuln'} | "
-            f"{o.expected_total} | {o.reported_total} | "
-            f"{o.true_positives} | {o.false_positives} | {o.false_negatives} |"
+            f"| {o.case_id} | {('clean' if o.is_clean else 'vuln')} | {o.expected_total} | {o.reported_total} | {o.true_positives} | {o.false_positives} | {o.false_negatives} |"
         )
-
-    # 工具使用画像:回答"工具到底有没有被用上"(ADR-022 未答的问题)。仅工具档的用例有 tool_usage。
-    # 用来分辨"真调工具导航"与"纯靠 diff 推理蒙对"——是否读到了 diff 之外的文件。
     usage_rows = [o for o in runs[-1] if o.tool_usage is not None]
     if usage_rows:
         lines += [
@@ -187,10 +165,8 @@ def render_report(
         for o in usage_rows:
             u = o.tool_usage
             lines.append(
-                f"| {o.case_id} | {u.tool_calls} | {', '.join(u.tools_used) or '—'} | "
-                f"{', '.join(u.symbols_read) or '—'} |"
+                f"| {o.case_id} | {u.tool_calls} | {', '.join(u.tools_used) or '—'} | {', '.join(u.symbols_read) or '—'} |"
             )
-
     council_rows = [o for o in runs[-1] if o.council_trace is not None]
     if council_rows:
         lines += [
@@ -207,22 +183,20 @@ def render_report(
             agent_order = ["threat_model", "behavior", "maintainability"]
             seen = set(agent_order)
             agent_parts = [
-                f"{name}={c.candidate_count_by_agent.get(name, 0)}" for name in agent_order
+                f"{name}={c.candidate_count_by_agent.get(name, 0)}"
+                for name in agent_order
             ]
             agent_parts.extend(
-                f"{name}={count}"
-                for name, count in sorted(c.candidate_count_by_agent.items())
-                if name not in seen
+                (
+                    f"{name}={count}"
+                    for name, count in sorted(c.candidate_count_by_agent.items())
+                    if name not in seen
+                )
             )
             agent_detail = ", ".join(agent_parts) if agent_parts else "—"
             lines.append(
-                f"| {o.case_id} | "
-                f"{c.candidate_count} | "
-                f"{agent_detail} | "
-                f"{c.artifact_count} | {c.verdict_count} | "
-                f"{c.removed_by_judge} | {c.truncated_candidates} |"
+                f"| {o.case_id} | {c.candidate_count} | {agent_detail} | {c.artifact_count} | {c.verdict_count} | {c.removed_by_judge} | {c.truncated_candidates} |"
             )
-
         lines += [
             "",
             "### 裁决指标",
@@ -235,13 +209,8 @@ def render_report(
         for o in council_rows:
             c = o.council_trace
             lines.append(
-                f"| {o.case_id} | "
-                f"{c.judge_no_support_drop_count} | "
-                f"{c.judge_failed_candidate_count} | "
-                f"{c.critical_candidate_count} | "
-                f"{', '.join(f'{key}={value}' for key, value in sorted(c.severity_transitions.items())) or '—'} |"
+                f"| {o.case_id} | {c.judge_no_support_drop_count} | {c.judge_failed_candidate_count} | {c.critical_candidate_count} | {', '.join((f'{key}={value}' for key, value in sorted(c.severity_transitions.items()))) or '—'} |"
             )
-
         lines += [
             "",
             "### 证据覆盖与成本",
@@ -252,12 +221,8 @@ def render_report(
         for o in council_rows:
             c = o.council_trace
             lines.append(
-                f"| {o.case_id} | "
-                f"{c.final_issue_supported_count}/{c.final_issue_count} ({_fmt(c.final_issue_support_coverage)}) | "
-                f"{c.candidate_patch_only_count}/{c.candidate_context_backed_count}/"
-                f"{c.candidate_tool_backed_count}/{c.candidate_ungrounded_count} |"
+                f"| {o.case_id} | {c.final_issue_supported_count}/{c.final_issue_count} ({_fmt(c.final_issue_support_coverage)}) | {c.candidate_patch_only_count}/{c.candidate_context_backed_count}/{c.candidate_tool_backed_count}/{c.candidate_ungrounded_count} |"
             )
-
         lines += [
             "",
             "### 证据账本(Evidence Ledger)",
@@ -271,79 +236,51 @@ def render_report(
         for o in council_rows:
             c = o.council_trace
             lines.append(
-                f"| {o.case_id} | "
-                f"{c.patch_artifact_count}/{c.context_artifact_count}/"
-                f"{c.tool_artifact_count}/{c.reused_artifact_count} | "
-                f"{c.valid_reference_count}/{c.limited_reference_count}/{c.invalid_reference_count} | "
-                f"{c.evidence_gap_count}/{c.graph_indeterminate_count} | "
-                f"{c.replay_requested_count}/{c.replay_valid_count}/"
-                f"{c.replay_limited_count}/{c.replay_failed_count} | "
-                f"{c.judge_batch_call_count}/{c.judge_failed_candidate_count}/"
-                f"{c.judge_no_support_drop_count} |"
+                f"| {o.case_id} | {c.patch_artifact_count}/{c.context_artifact_count}/{c.tool_artifact_count}/{c.reused_artifact_count} | {c.valid_reference_count}/{c.limited_reference_count}/{c.invalid_reference_count} | {c.evidence_gap_count}/{c.graph_indeterminate_count} | {c.replay_requested_count}/{c.replay_valid_count}/{c.replay_limited_count}/{c.replay_failed_count} | {c.judge_batch_call_count}/{c.judge_failed_candidate_count}/{c.judge_no_support_drop_count} |"
             )
-
         lines += [
             "",
             "### 降级摘要",
             "",
-            "| 用例 | ReAct→直连(递归) | ReAct结构化收口降级 | Direct 分派 | 发现者失败 | Task 失败 | Judge 失败 |",
-            "|---|---|---|---|---|---|---|",
+            "| 用例 | Direct 分派 | 发现者失败 | Task 失败 | Judge 失败 | 调查未完成 |",
+            "|---|---|---|---|---|---|",
         ]
         for o in council_rows:
             c = o.council_trace
             lines.append(
-                f"| {o.case_id} | "
-                f"{c.react_degraded_recursion_count} | "
-                f"{c.react_synthesis_fallback_count} | "
-                f"{c.direct_tier_task_count} | "
-                f"{c.discoverer_failed_count} | "
-                f"{c.task_review_failed_count} | "
-                f"{c.judge_synthesis_failed_count} |"
+                f"| {o.case_id} | {c.direct_tier_task_count} | {c.discoverer_failed_count} | {c.task_review_failed_count} | {c.judge_synthesis_failed_count} | {c.investigation_incomplete_count} |"
             )
-
-    # 规则尺 vs 裁判尺交叉校验:仅当本次确有用例走 LLM 主判时才有意义。
-    # 主判(LLM)与规则尺判出的 TP/FP/FN 不一致的用例,正是"关键词撞词/漏配"被裁判纠正之处,
-    # 也是核对裁判是否离谱、留存可复现凭证的地方。
     last = runs[-1]
-    if any(o.primary_judge == "llm" for o in last):
+    if any((o.primary_judge == "llm" for o in last)):
         diverged = [
-            o for o in last
+            o
+            for o in last
             if (o.true_positives, o.false_positives, o.false_negatives)
             != (o.rule_true_positives, o.rule_false_positives, o.rule_false_negatives)
         ]
         agreement = (
             f"{metrics.judge_rule_agreement:.1%}"
-            if metrics.judge_rule_agreement is not None else "—"
+            if metrics.judge_rule_agreement is not None
+            else "—"
         )
         lines += [
             "",
             "## 规则尺 vs 裁判尺(最后一次跑测)",
             "",
-            f"**裁判↔规则一致率:{agreement}**(全部跑测累计)。这是评测尺自身的健康度——"
-            "一致率低说明规则尺关键词匹配偏差大、需靠裁判纠偏,此时复杂用例指标只有开 `--judge` 才可信。",
+            f"**裁判↔规则一致率:{agreement}**(全部跑测累计)。这是评测尺自身的健康度——一致率低说明规则尺关键词匹配偏差大、需靠裁判纠偏,此时复杂用例指标只有开 `--judge` 才可信。",
             "",
-            "主判为 LLM 裁判(语义配对),规则尺并行作确定性交叉校验。下表只列两尺判定不一致的用例;"
-            f"共 {len(diverged)} 条分歧(本次跑测)。分歧为 0 则两尺一致,可放心用规则尺做廉价回归。",
+            f"主判为 LLM 裁判(语义配对),规则尺并行作确定性交叉校验。下表只列两尺判定不一致的用例;共 {len(diverged)} 条分歧(本次跑测)。分歧为 0 则两尺一致,可放心用规则尺做廉价回归。",
             "",
             "| 用例 | 裁判 TP/FP/FN | 规则 TP/FP/FN |",
             "|---|---|---|",
         ]
         for o in diverged:
             lines.append(
-                f"| {o.case_id} | "
-                f"{o.true_positives}/{o.false_positives}/{o.false_negatives} | "
-                f"{o.rule_true_positives}/{o.rule_false_positives}/{o.rule_false_negatives} |"
+                f"| {o.case_id} | {o.true_positives}/{o.false_positives}/{o.false_negatives} | {o.rule_true_positives}/{o.rule_false_positives}/{o.rule_false_negatives} |"
             )
-
-    # 级别诊断:逐条列出"期望级别 vs 报告级别",定位是哪几条把级别判错了。
-    # 只统计标了期望 severity 的命中项(漏报的 FN 不会出现在这里)。
-    severity_rows = [
-        (o.case_id, d)
-        for o in runs[-1]
-        for d in o.severity_detail
-    ]
+    severity_rows = [(o.case_id, d) for o in runs[-1] for d in o.severity_detail]
     if severity_rows:
-        miss = sum(1 for _, d in severity_rows if d.get("match") == "✗")
+        miss = sum((1 for _, d in severity_rows if d.get("match") == "✗"))
         lines += [
             "",
             "## 级别诊断(最后一次跑测)",
@@ -355,19 +292,15 @@ def render_report(
         ]
         for case_id, d in severity_rows:
             lines.append(
-                f"| {case_id} | {d.get('type', '')} | "
-                f"{d.get('expected', '')} | {d.get('reported', '')} | {d.get('match', '')} |"
+                f"| {case_id} | {d.get('type', '')} | {d.get('expected', '')} | {d.get('reported', '')} | {d.get('match', '')} |"
             )
-
-    # 过度上报诊断:逐复杂/带诱饵用例拆"被骗"和"凭空乱报",直接点名哪条用例骗到了 agent。
     bait_rows = [o for o in runs[-1] if o.distractor_total > 0]
     if bait_rows:
         lines += [
             "",
             "## 过度上报诊断(最后一次跑测)",
             "",
-            "对埋了诱饵的用例,把误报拆成「中诱饵(被似是而非的点骗了)」与「凭空乱报(既非真问题也非诱饵)」。"
-            "中诱饵高=克制力差、易被表象误导;凭空乱报高=无中生有。",
+            "对埋了诱饵的用例,把误报拆成「中诱饵(被似是而非的点骗了)」与「凭空乱报(既非真问题也非诱饵)」。中诱饵高=克制力差、易被表象误导;凭空乱报高=无中生有。",
             "",
             "| 用例 | 诱饵数 | 中诱饵 | 凭空乱报 | FP 合计 |",
             "|---|---|---|---|---|",
@@ -375,25 +308,20 @@ def render_report(
         for o in bait_rows:
             spurious = o.false_positives - o.distractor_hits
             lines.append(
-                f"| {o.case_id} | {o.distractor_total} | {o.distractor_hits} | "
-                f"{spurious} | {o.false_positives} |"
+                f"| {o.case_id} | {o.distractor_total} | {o.distractor_hits} | {spurious} | {o.false_positives} |"
             )
-
-    # 主/次项 recall 对照:一眼看出"抓大漏小"还是反过来。
     if metrics.recall_primary is not None or metrics.recall_secondary is not None:
         lines += [
             "",
             "## 主/次项 recall 对照",
             "",
-            "按严重级别分层的检出率:主项=CRITICAL(必须修),次项=WARNING/INFO(建议/可选)。"
-            "主低次高=漏掉要紧问题(危险);主高次低=只盯大的、忽略次要(可接受)。",
+            "按严重级别分层的检出率:主项=CRITICAL(必须修),次项=WARNING/INFO(建议/可选)。主低次高=漏掉要紧问题(危险);主高次低=只盯大的、忽略次要(可接受)。",
             "",
             "| 档位 | Recall |",
             "|---|---|",
             f"| 主项(CRITICAL) | {_fmt(metrics.recall_primary)} |",
             f"| 次项(WARNING/INFO) | {_fmt(metrics.recall_secondary)} |",
         ]
-
     lines += [
         "",
         "## 怎么读这份报告",

@@ -4,9 +4,7 @@
 """
 
 from __future__ import annotations
-
 import json
-
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.evidence import (
     ArtifactAvailability,
@@ -63,19 +61,28 @@ def _dossier(
 
 def _patch_artifact(payload: str = "+    exec(cmd);\n") -> EvidenceArtifact:
     return EvidenceArtifact.build(
-        task_id=TASK_ID, reviewer="threat_model", revision=REV,
-        source_kind=EvidenceSourceKind.TASK_PATCH, payload=payload,
+        task_id=TASK_ID,
+        reviewer="threat_model",
+        revision=REV,
+        source_kind=EvidenceSourceKind.TASK_PATCH,
+        payload=payload,
         availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.GENERATED,
         arguments={"file_path": "src/A.java"},
     )
 
 
-def _file_artifact(payload: str = "class A { void m() { exec(cmd); } }") -> EvidenceArtifact:
+def _file_artifact(
+    payload: str = "class A { void m() { exec(cmd); } }",
+) -> EvidenceArtifact:
     return EvidenceArtifact.build(
-        task_id=TASK_ID, reviewer="threat_model", revision=REV,
-        source_kind=EvidenceSourceKind.TOOL_CALL, tool="get_file_content",
-        arguments={"symbol_id": "java:A#run()"}, payload=payload,
+        task_id=TASK_ID,
+        reviewer="threat_model",
+        revision=REV,
+        source_kind=EvidenceSourceKind.TOOL_CALL,
+        tool="read_symbol",
+        arguments={"symbol_id": "java:A#run()"},
+        payload=payload,
         availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.EXECUTED,
     )
@@ -89,22 +96,33 @@ def _graph_payload(
     source_scope: str = "MAIN",
     relationships: list | None = None,
 ) -> str:
-    return json.dumps({
-        "schema_version": 2,
-        "outcome": outcome,
-        "coverage": coverage,
-        "source_scope": source_scope,
-        "subject_symbol_id": subject,
-        "symbols": [{"id": subject, "kind": "method", "source_set": source_scope}],
-        "relationships": relationships if relationships is not None else [
-            {"sourceId": "java:A#m()", "targetId": "java:B#exec()", "kind": "calls",
-             "file": "A.java", "line": 1, "source_set": "MAIN",
-             "resolution": "RESOLVED"},
-        ],
-        "unresolved_relationships": [],
-        "unresolved_count": 0,
-        "limitations": [],
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "schema_version": 2,
+            "outcome": outcome,
+            "coverage": coverage,
+            "source_scope": source_scope,
+            "subject_symbol_id": subject,
+            "symbols": [{"id": subject, "kind": "method", "source_set": source_scope}],
+            "relationships": relationships
+            if relationships is not None
+            else [
+                {
+                    "sourceId": "java:A#m()",
+                    "targetId": "java:B#exec()",
+                    "kind": "calls",
+                    "file": "A.java",
+                    "line": 1,
+                    "source_set": "MAIN",
+                    "resolution": "RESOLVED",
+                }
+            ],
+            "unresolved_relationships": [],
+            "unresolved_count": 0,
+            "limitations": [],
+        },
+        ensure_ascii=False,
+    )
 
 
 def _graph_artifact(
@@ -114,10 +132,15 @@ def _graph_artifact(
     availability: ArtifactAvailability = ArtifactAvailability.AVAILABLE,
 ) -> EvidenceArtifact:
     return EvidenceArtifact.build(
-        task_id=TASK_ID, reviewer="threat_model", revision=revision,
-        source_kind=EvidenceSourceKind.TOOL_CALL, tool="inspect_change_impact",
-        arguments={"symbol_id": "java:A#m()"}, payload=payload,
-        availability=availability, capture_mode=EvidenceCaptureMode.EXECUTED,
+        task_id=TASK_ID,
+        reviewer="threat_model",
+        revision=revision,
+        source_kind=EvidenceSourceKind.TOOL_CALL,
+        tool="query_relations",
+        arguments={"subject_symbol_id": "java:A#m()", "relation": "callees"},
+        payload=payload,
+        availability=availability,
+        capture_mode=EvidenceCaptureMode.EXECUTED,
     )
 
 
@@ -127,12 +150,19 @@ class _FakeToolClient:
         self._success = success
         self.calls = 0
 
-    def inspect_change_impact(self, symbol_id: str):
+    def query_relations(self, subject_symbol_id: str, relation: str, **kwargs):
         self.calls += 1
         return ToolResponse(success=self._success, result=self._result)
 
 
-def _verify(candidate: CandidateIssue, artifacts: dict, *, tool_client=None, revision: str = REV, enabled_replay_tools=None):
+def _verify(
+    candidate: CandidateIssue,
+    artifacts: dict,
+    *,
+    tool_client=None,
+    revision: str = REV,
+    enabled_replay_tools=None,
+):
     dossier = _dossier(candidate)
     return verify_evidence(
         [dossier],
@@ -143,9 +173,6 @@ def _verify(candidate: CandidateIssue, artifacts: dict, *, tool_client=None, rev
     )
 
 
-# ── patch/context/工具健康 ─────────────────────────────────────────────
-
-
 def test_patch_hash_有效_grounded():
     patch = _patch_artifact()
     batch = _verify(_candidate(patch.id), {patch.id: patch})
@@ -153,9 +180,11 @@ def test_patch_hash_有效_grounded():
     assert verification.grounding_status == "grounded"
     assert verification.eligible_for_judge is True
     assert any(
-        item.artifact_id == patch.id
-        and item.validation_status is EvidenceValidationStatus.VALID
-        for item in verification.valid_evidence
+        (
+            item.artifact_id == patch.id
+            and item.validation_status is EvidenceValidationStatus.VALID
+            for item in verification.valid_evidence
+        )
     )
 
 
@@ -180,20 +209,24 @@ def test_context_fact_partial_标_limited():
         source_set="MAIN",
     )
     context = EvidenceArtifact.build(
-        task_id=TASK_ID, reviewer="threat_model", revision=REV,
+        task_id=TASK_ID,
+        reviewer="threat_model",
+        revision=REV,
         source_kind=EvidenceSourceKind.SYMBOL_CONTEXT,
-        tool="resolve_change_context", payload=symbol.model_dump_json(),
+        tool="resolve_change_context",
+        payload=symbol.model_dump_json(),
         arguments={"symbol_id": symbol.symbol_id},
         availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.GENERATED,
         limitations=("symbol_context_truncated",),
     )
-    batch = _verify(_candidate(patch.id, context.id), {patch.id: patch, context.id: context})
+    batch = _verify(
+        _candidate(patch.id, context.id), {patch.id: patch, context.id: context}
+    )
     verification = batch.candidates["c1"]
     assert verification.grounding_status == "partially_grounded"
     context_items = [
-        item for item in verification.valid_evidence
-        if item.artifact_id == context.id
+        item for item in verification.valid_evidence if item.artifact_id == context.id
     ]
     assert context_items[0].validation_status is EvidenceValidationStatus.LIMITED
     assert "symbol_context_truncated" in context_items[0].limitations
@@ -234,24 +267,22 @@ def test_deletion_anchor_allows_enclosing_symbol_context() -> None:
     )
     candidate = _candidate(patch.id, context.id).model_copy(update={"line": 11})
     symbol_context = TaskSymbolContext(
-        task_id=TASK_ID,
-        status=SymbolResolutionStatus.RESOLVED,
-        symbols=(symbol,),
+        task_id=TASK_ID, status=SymbolResolutionStatus.RESOLVED, symbols=(symbol,)
     )
-
     batch = verify_evidence(
-        [CandidateDossier(
-            candidate=candidate, task=task, symbol_context=symbol_context
-        )],
+        [
+            CandidateDossier(
+                candidate=candidate, task=task, symbol_context=symbol_context
+            )
+        ],
         artifacts={patch.id: patch, context.id: context},
         tool_client=None,
         revision=REV,
         enabled_replay_tools=None,
     )
-
     verification = batch.candidates[candidate.id]
     assert verification.eligible_for_judge is True
-    assert any(item.artifact_id == context.id for item in verification.valid_evidence)
+    assert any((item.artifact_id == context.id for item in verification.valid_evidence))
 
 
 def test_deletion_anchor_rejects_symbol_context_for_another_task_line() -> None:
@@ -289,26 +320,31 @@ def test_deletion_anchor_rejects_symbol_context_for_another_task_line() -> None:
         capture_mode=EvidenceCaptureMode.GENERATED,
     )
     candidate = _candidate(patch.id, context.id).model_copy(update={"line": 13})
-
     batch = verify_evidence(
-        [CandidateDossier(
-            candidate=candidate,
-            task=task,
-            symbol_context=TaskSymbolContext(
-                task_id=TASK_ID,
-                status=SymbolResolutionStatus.RESOLVED,
-                symbols=(unrelated_symbol,),
-            ),
-        )],
+        [
+            CandidateDossier(
+                candidate=candidate,
+                task=task,
+                symbol_context=TaskSymbolContext(
+                    task_id=TASK_ID,
+                    status=SymbolResolutionStatus.RESOLVED,
+                    symbols=(unrelated_symbol,),
+                ),
+            )
+        ],
         artifacts={patch.id: patch, context.id: context},
         tool_client=None,
         revision=REV,
         enabled_replay_tools=None,
     )
-
     verification = batch.candidates[candidate.id]
-    assert all(item.artifact_id != context.id for item in verification.valid_evidence)
-    assert any("symbol_scope_mismatch" in item.detail for item in verification.invalid_references)
+    assert all((item.artifact_id != context.id for item in verification.valid_evidence))
+    assert any(
+        (
+            "symbol_scope_mismatch" in item.detail
+            for item in verification.invalid_references
+        )
+    )
 
 
 def test_symbol_context_scope_mismatch_is_invalid():
@@ -332,16 +368,15 @@ def test_symbol_context_scope_mismatch_is_invalid():
         availability=ArtifactAvailability.AVAILABLE,
         capture_mode=EvidenceCaptureMode.GENERATED,
     )
-
     batch = _verify(
-        _candidate(patch.id, context.id),
-        {patch.id: patch, context.id: context},
+        _candidate(patch.id, context.id), {patch.id: patch, context.id: context}
     )
-
     verification = batch.candidates["c1"]
     assert any(
-        item.detail.startswith("invalid_symbol_context:symbol_scope_mismatch")
-        for item in verification.invalid_references
+        (
+            item.detail.startswith("invalid_symbol_context:symbol_scope_mismatch")
+            for item in verification.invalid_references
+        )
     )
 
 
@@ -355,13 +390,11 @@ def test_文件工具_complete_valid():
     verification = batch.candidates["c1"]
     assert verification.grounding_status == "grounded"
     file_items = [
-        item for item in verification.valid_evidence
+        item
+        for item in verification.valid_evidence
         if item.artifact_id == file_artifact.id
     ]
     assert file_items[0].validation_status is EvidenceValidationStatus.VALID
-
-
-# ── 图护栏 ─────────────────────────────────────────────────────────────
 
 
 def test_图响应_valid_护栏通过():
@@ -389,16 +422,19 @@ def test_图响应_subject_mismatch_invalid():
 def test_图响应_legacy_scope_fields_protocol_invalid():
     patch = _patch_artifact()
     legacy_fields = (
-        "main_symbols", "test_symbols", "generated_symbols",
-        "main_relationships", "test_relationships", "generated_relationships",
+        "main_symbols",
+        "test_symbols",
+        "generated_symbols",
+        "main_relationships",
+        "test_relationships",
+        "generated_relationships",
     )
     for field in legacy_fields:
         payload = json.loads(_graph_payload())
         payload[field] = []
         graph = _graph_artifact(json.dumps(payload, ensure_ascii=False))
         batch = _verify(
-            _candidate(patch.id, graph.id),
-            {patch.id: patch, graph.id: graph},
+            _candidate(patch.id, graph.id), {patch.id: patch, graph.id: graph}
         )
         verification = batch.candidates["c1"]
         assert verification.grounding_status == "partially_grounded"
@@ -433,12 +469,13 @@ def test_图响应_coverage_partial_limited_保留正事实():
 
 def test_图响应_not_found_complete_作为有效范围事实():
     patch = _patch_artifact()
-    graph = _graph_artifact(_graph_payload(
-        outcome="not_found", coverage="complete", relationships=[]
-    ))
+    graph = _graph_artifact(
+        _graph_payload(outcome="not_found", coverage="complete", relationships=[])
+    )
     batch = _verify(_candidate(patch.id, graph.id), {patch.id: patch, graph.id: graph})
     graph_items = [
-        item for item in batch.candidates["c1"].valid_evidence
+        item
+        for item in batch.candidates["c1"].valid_evidence
         if item.artifact_id == graph.id
     ]
     assert graph_items[0].validation_status is EvidenceValidationStatus.VALID
@@ -446,26 +483,27 @@ def test_图响应_not_found_complete_作为有效范围事实():
 
 def test_图响应_illegal_outcome_coverage_combination_invalid():
     patch = _patch_artifact()
-    graph = _graph_artifact(_graph_payload(
-        outcome="not_found", coverage="partial", relationships=[]
-    ))
+    graph = _graph_artifact(
+        _graph_payload(outcome="not_found", coverage="partial", relationships=[])
+    )
     batch = _verify(_candidate(patch.id, graph.id), {patch.id: patch, graph.id: graph})
     verification = batch.candidates["c1"]
     assert verification.invalid_references
     assert "invalid_graph_outcome_coverage" in verification.invalid_references[0].detail
 
 
-# ── 异常重放 ───────────────────────────────────────────────────────────
-
-
 def test_旧图响应协议直接_invalid_且不重放():
     patch = _patch_artifact()
-    graph = _graph_artifact(json.dumps({
-        "coverage": "partial",
-        "subject_symbol_id": "java:A#m()",
-        "source_scope": "MAIN",
-        "relationships": [],
-    }))
+    graph = _graph_artifact(
+        json.dumps(
+            {
+                "coverage": "partial",
+                "subject_symbol_id": "java:A#m()",
+                "source_scope": "MAIN",
+                "relationships": [],
+            }
+        )
+    )
     client = _FakeToolClient(_graph_payload())
     batch = _verify(
         _candidate(patch.id, graph.id),
@@ -481,9 +519,9 @@ def test_旧图响应协议直接_invalid_且不重放():
 
 def test_indeterminate_不重放_形成_evidence_gap():
     patch = _patch_artifact()
-    graph = _graph_artifact(_graph_payload(
-        outcome="indeterminate", coverage="partial", relationships=[]
-    ))
+    graph = _graph_artifact(
+        _graph_payload(outcome="indeterminate", coverage="partial", relationships=[])
+    )
     client = _FakeToolClient(_graph_payload())
     batch = _verify(
         _candidate(patch.id, graph.id),
@@ -491,7 +529,9 @@ def test_indeterminate_不重放_形成_evidence_gap():
         tool_client=client,
     )
     verification = batch.candidates["c1"]
-    assert not any(item.artifact_id == graph.id for item in verification.valid_evidence)
+    assert not any(
+        (item.artifact_id == graph.id for item in verification.valid_evidence)
+    )
     assert verification.evidence_gaps[0].reason == "graph_indeterminate"
     assert graph.id not in batch.replayed_artifact_ids
     assert client.calls == 0
@@ -499,9 +539,7 @@ def test_indeterminate_不重放_形成_evidence_gap():
 
 def test_失败artifact_重放后重新校验为_valid():
     patch = _patch_artifact()
-    graph = _graph_artifact(
-        _graph_payload(), availability=ArtifactAvailability.FAILED
-    )
+    graph = _graph_artifact(_graph_payload(), availability=ArtifactAvailability.FAILED)
     batch = _verify(
         _candidate(patch.id, graph.id),
         {patch.id: patch, graph.id: graph},
@@ -511,9 +549,7 @@ def test_失败artifact_重放后重新校验为_valid():
     assert len(batch.replayed_artifacts) == 1
     replayed = next(iter(batch.replayed_artifacts.values()))
     graph_items = [
-        item
-        for item in verification.valid_evidence
-        if item.artifact_id == replayed.id
+        item for item in verification.valid_evidence if item.artifact_id == replayed.id
     ]
     assert graph_items[0].validation_status is EvidenceValidationStatus.VALID
     assert "evidence_replay_valid" in [event for event, _ in batch.trace]
@@ -521,9 +557,11 @@ def test_失败artifact_重放后重新校验为_valid():
     assert replayed.replayed_from_artifact_id == graph.id
     assert replayed.call_id.startswith("evidence-replay-")
     replay_trace = next(
-        json.loads(detail)
-        for event, detail in batch.trace
-        if event == "evidence_replay_valid"
+        (
+            json.loads(detail)
+            for event, detail in batch.trace
+            if event == "evidence_replay_valid"
+        )
     )
     assert replay_trace["artifact_id"] == replayed.id
     assert replay_trace["replayed_from_artifact_id"] == graph.id
@@ -531,9 +569,7 @@ def test_失败artifact_重放后重新校验为_valid():
 
 def test_失败artifact_白名单空_形成_gap():
     patch = _patch_artifact()
-    graph = _graph_artifact(
-        _graph_payload(), availability=ArtifactAvailability.FAILED
-    )
+    graph = _graph_artifact(_graph_payload(), availability=ArtifactAvailability.FAILED)
     batch = _verify(
         _candidate(patch.id, graph.id),
         {patch.id: patch, graph.id: graph},
@@ -546,9 +582,7 @@ def test_失败artifact_白名单空_形成_gap():
 
 def test_重放失败_形成_gap_不作为反证():
     patch = _patch_artifact()
-    graph = _graph_artifact(
-        _graph_payload(), availability=ArtifactAvailability.FAILED
-    )
+    graph = _graph_artifact(_graph_payload(), availability=ArtifactAvailability.FAILED)
     batch = _verify(
         _candidate(patch.id, graph.id),
         {patch.id: patch, graph.id: graph},
@@ -556,7 +590,7 @@ def test_重放失败_形成_gap_不作为反证():
     )
     verification = batch.candidates["c1"]
     assert verification.evidence_gaps
-    assert any("replay" in lim for lim in verification.evidence_gaps[0].limitations)
+    assert any(("replay" in lim for lim in verification.evidence_gaps[0].limitations))
     assert len(batch.replayed_artifacts) == 1
     replayed = next(iter(batch.replayed_artifacts.values()))
     assert replayed.availability is ArtifactAvailability.FAILED
@@ -577,9 +611,7 @@ def test_revision_mismatch_触发重放():
 
 def test_重放_相同调用全局只执行一次():
     patch = _patch_artifact()
-    graph = _graph_artifact(
-        _graph_payload(), availability=ArtifactAvailability.FAILED
-    )
+    graph = _graph_artifact(_graph_payload(), availability=ArtifactAvailability.FAILED)
     candidate_b = _candidate(patch.id, graph.id).model_copy(update={"id": "c2"})
     dossier_b = _dossier(candidate_b)
     client = _FakeToolClient(_graph_payload())
@@ -596,9 +628,7 @@ def test_重放_相同调用全局只执行一次():
 
 def test_重放后仍_indeterminate_形成_gap_不升级():
     patch = _patch_artifact()
-    graph = _graph_artifact(
-        _graph_payload(), availability=ArtifactAvailability.FAILED
-    )
+    graph = _graph_artifact(_graph_payload(), availability=ArtifactAvailability.FAILED)
     replay_payload = _graph_payload(
         outcome="indeterminate", coverage="partial", relationships=[]
     )
@@ -610,11 +640,10 @@ def test_重放后仍_indeterminate_形成_gap_不升级():
     )
     verification = batch.candidates["c1"]
     assert verification.evidence_gaps[0].reason == "graph_indeterminate"
-    assert not any(item.artifact_id == graph.id for item in verification.valid_evidence)
+    assert not any(
+        (item.artifact_id == graph.id for item in verification.valid_evidence)
+    )
     assert "evidence_replay_unavailable" in [event for event, _ in batch.trace]
-
-
-# ── 注解上下文与引用范围 ───────────────────────────────────────────────
 
 
 def _annotation_context(annotation: str = "PreAuthorize") -> TaskSymbolContext:
@@ -668,21 +697,19 @@ def test_引用指向缺失artifact_无效引用_partially_grounded():
 def test_跨任务artifact_无效引用():
     patch = _patch_artifact()
     foreign = _file_artifact().model_copy(update={"task_id": "task-other"})
-    batch = _verify(_candidate(patch.id, foreign.id), {patch.id: patch, foreign.id: foreign})
+    batch = _verify(
+        _candidate(patch.id, foreign.id), {patch.id: patch, foreign.id: foreign}
+    )
     verification = batch.candidates["c1"]
     assert verification.grounding_status == "partially_grounded"
     assert verification.invalid_references
 
 
 def test_候选无patch引用_ungrounded():
-    # 自动 patch 引用缺失(如绑定异常)时,候选不可裁决。
     batch = _verify(_candidate(), {})
     verification = batch.candidates["c1"]
     assert verification.grounding_status == "ungrounded"
     assert verification.eligible_for_judge is False
-
-
-# ── 指标事件 ───────────────────────────────────────────────────────────
 
 
 def test_验证指标事件_存在():

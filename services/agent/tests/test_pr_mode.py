@@ -1,135 +1,90 @@
-"""PR 体量分类器单测。"""
+"""两档 PR 粒度的边界、覆盖与真实图路由回归。"""
 
-from __future__ import annotations
+import pytest
 
-from codeguard_agent.models.tasks import ReviewBudget, ReviewMode
+from codeguard_agent.models.tasks import ReviewBudget, ReviewMode, ReviewRouteThresholds
 from codeguard_agent.pipeline.tasks.task_builder import classify_diff, diff_metrics
+from codeguard_agent.pipeline.orchestration.graph import _classify_mode_node
 
 
-_SMALL_CHARS = 1000
-_MEDIUM_CHARS = 30000
-
-
-def _diff_text(files: int, hunks_per_file: int = 1, chars: int = _SMALL_CHARS) -> str:
-    """生成指定大小的合成 diff 文本。"""
-    per_file = max(1, files)
-    per_hunk = max(1, hunks_per_file * per_file)
-    hunk_chars = max(1, chars // per_hunk)
-    line = "x" * min(hunk_chars - 30, 80)  # 留空间给 diff header
-    sections: list[str] = []
-    for i in range(files):
-        f = f"F{i:02d}.java"
-        header = f"diff --git a/{f} b/{f}\n--- a/{f}\n+++ b/{f}\n"
-        hunks = "\n".join(
-            f"@@ -1,1 +1,{len(line) // 2 + 1} @@\n+{line}"
-            for _ in range(max(1, hunks_per_file // max(1, files)))
+def _diff(files=1, hunks=1, chars=None):
+    text = "".join(
+        f"diff --git a/F{i}.java b/F{i}.java\n--- a/F{i}.java\n+++ b/F{i}.java\n"
+        + "".join(
+            f"@@ -{j + 1},1 +{j + 1},1 @@\n-old();\n+newCall();\n" for j in range(hunks)
         )
-        sections.append(header + hunks)
-    text = "\n".join(sections)
-    # 填充或截断到目标长度
-    if len(text) < chars:
-        text += "\n" + " " * (chars - len(text))
-    return text[:chars]
+        for i in range(files)
+    )
+    if chars is not None:
+        assert chars >= len(text)
+        text += " " * (chars - len(text))
+    return text
 
 
-def _budget(**overrides) -> ReviewBudget:
-    kwargs = {
-        "small_max_files": 3,
-        "small_max_hunks": 5,
-        "small_max_diff_chars": 8000,
-        "medium_max_files": 15,
-        "medium_max_diff_chars": 60000,
-        **overrides,
+@pytest.mark.parametrize(
+    "files,chars,expected",
+    [
+        (1, 1000, ReviewMode.NORMAL),
+        (4, 9000, ReviewMode.NORMAL),
+        (15, 60000, ReviewMode.NORMAL),
+        (16, 60000, ReviewMode.LARGE),
+        (1, 60001, ReviewMode.LARGE),
+    ],
+)
+def test_default_boundaries(files, chars, expected):
+    diff = _diff(files=files, chars=chars)
+    state = _classify_mode_node()({"diff_text": diff})
+    assert classify_diff(diff, ReviewBudget()) == expected
+    assert state["review_mode"] == expected.value
+    route = state["review_route"]
+    assert route.initial_mode == route.effective_mode == expected
+    assert route.selected_node == (
+        "file_task_builder" if expected is ReviewMode.NORMAL else "diff_task_builder"
+    )
+    assert route.metrics.diff_chars == chars
+    assert route.thresholds.model_dump() == {
+        "normal_max_files": 15,
+        "normal_max_diff_chars": 60000,
     }
-    return ReviewBudget(**kwargs)
 
 
-class TestSmallPR:
-    def test_metrics_match_the_values_used_for_routing(self):
-        diff = _diff_text(files=2, hunks_per_file=2, chars=_SMALL_CHARS)
-        assert diff_metrics(diff).model_dump() == {
-            "file_count": 2,
-            "hunk_count": 2,
-            "diff_chars": len(diff),
-        }
-
-    def test_single_file_small_diff(self):
-        diff = _diff_text(files=1, hunks_per_file=1, chars=_SMALL_CHARS)
-        assert classify_diff(diff, _budget()) == ReviewMode.SMALL
-
-    def test_three_files_at_boundary(self):
-        diff = _diff_text(files=3, hunks_per_file=1, chars=_SMALL_CHARS)
-        assert classify_diff(diff, _budget()) == ReviewMode.SMALL
-
-    def test_four_files_exceeds_small(self):
-        diff = _diff_text(files=4, hunks_per_file=1, chars=_SMALL_CHARS)
-        assert classify_diff(diff, _budget()) == ReviewMode.MEDIUM
-
-    def test_diff_chars_exceeds_small(self):
-        # 9000 chars > small_max_diff_chars=8000
-        diff = _diff_text(files=1, hunks_per_file=1, chars=9000)
-        assert classify_diff(diff, _budget()) == ReviewMode.MEDIUM
-
-    def test_exceeds_hunks(self):
-        # 6 hunks > small_max_hunks=5
-        diff = _diff_text(files=1, hunks_per_file=6, chars=_SMALL_CHARS)
-        assert classify_diff(diff, _budget()) == ReviewMode.MEDIUM
-
-    def test_custom_thresholds(self):
-        diff = _diff_text(files=1, hunks_per_file=1, chars=_SMALL_CHARS)
-        # 把 small 阈值降到 500 chars → 1000 chars 变成 medium
-        assert classify_diff(diff, _budget(small_max_diff_chars=500)) == ReviewMode.MEDIUM
+def test_many_hunks_do_not_create_a_third_tier():
+    diff = _diff(files=1, hunks=30)
+    assert diff_metrics(diff).hunk_count == 30
+    assert classify_diff(diff, ReviewBudget()) is ReviewMode.NORMAL
 
 
-class TestMediumPR:
-    def test_fifteen_files_at_boundary(self):
-        diff = _diff_text(files=15, hunks_per_file=1, chars=_MEDIUM_CHARS)
-        assert classify_diff(diff, _budget()) == ReviewMode.MEDIUM
-
-    def test_sixteen_files_exceeds_medium(self):
-        diff = _diff_text(files=16, hunks_per_file=1, chars=_MEDIUM_CHARS)
-        assert classify_diff(diff, _budget()) == ReviewMode.LARGE
-
-    def test_diff_chars_exceeds_medium(self):
-        # 65000 chars > medium_max_diff_chars=60000
-        diff = _diff_text(files=1, hunks_per_file=1, chars=65000)
-        assert classify_diff(diff, _budget()) == ReviewMode.LARGE
-
-    def test_many_files_within_medium_chars(self):
-        # 10 files, small diff → medium (exceeds small files but within medium)
-        diff = _diff_text(files=10, hunks_per_file=1, chars=_SMALL_CHARS)
-        assert classify_diff(diff, _budget()) == ReviewMode.MEDIUM
+def test_custom_thresholds_drive_both_classification_and_trace():
+    budget = ReviewBudget(normal_max_files=2, normal_max_diff_chars=1000)
+    for diff in (_diff(files=3), _diff(chars=1001)):
+        state = _classify_mode_node()({"diff_text": diff, "review_budget": budget})
+        assert state["review_mode"] == "large"
+        assert state["review_route"].thresholds.normal_max_files == 2
+        assert state["review_route"].thresholds.normal_max_diff_chars == 1000
 
 
-class TestLargePR:
-    def test_many_files(self):
-        diff = _diff_text(files=20, hunks_per_file=1, chars=_MEDIUM_CHARS)
-        assert classify_diff(diff, _budget()) == ReviewMode.LARGE
-
-    def test_large_diff_chars(self):
-        diff = _diff_text(files=1, hunks_per_file=1, chars=70000)
-        assert classify_diff(diff, _budget()) == ReviewMode.LARGE
-
-    def test_hunk_count_is_derived_from_diff_not_prebuilt_tasks(self):
-        diff = _diff_text(files=3, hunks_per_file=1, chars=_SMALL_CHARS)
-        assert classify_diff(diff, _budget()) == ReviewMode.SMALL
-
-    def test_deleted_files_count_toward_pr_size(self):
-        diff = "".join(
-            f"diff --git a/F{i:02d}.java b/F{i:02d}.java\n"
-            "deleted file mode 100644\n"
-            f"--- a/F{i:02d}.java\n"
-            "+++ /dev/null\n"
-            "@@ -1 +0,0 @@\n"
-            "-class Removed {}\n"
-            for i in range(16)
+@pytest.mark.parametrize("binary", [False, True])
+def test_deleted_and_binary_files_count_toward_size(binary):
+    diff = "".join(
+        f"diff --git a/F{i}.java b/F{i}.java\n"
+        + (
+            f"Binary files a/F{i}.java and b/F{i}.java differ\n"
+            if binary
+            else f"deleted file mode 100644\n--- a/F{i}.java\n+++ /dev/null\n@@ -1 +0,0 @@\n-class Removed {{}}\n"
         )
-        assert classify_diff(diff, _budget()) == ReviewMode.LARGE
+        for i in range(16)
+    )
+    assert diff_metrics(diff).file_count == 16
+    assert classify_diff(diff, ReviewBudget()) is ReviewMode.LARGE
 
-    def test_binary_sections_count_toward_pr_size(self):
-        diff = "".join(
-            f"diff --git a/F{i:02d}.bin b/F{i:02d}.bin\n"
-            f"Binary files a/F{i:02d}.bin and b/F{i:02d}.bin differ\n"
-            for i in range(16)
-        )
-        assert classify_diff(diff, _budget()) == ReviewMode.LARGE
+
+def test_empty_diff_and_two_mode_contract():
+    assert classify_diff("", ReviewBudget()) is ReviewMode.NORMAL
+    assert set(ReviewMode) == {ReviewMode.NORMAL, ReviewMode.LARGE}
+    assert set(ReviewRouteThresholds.model_fields) == {
+        "normal_max_files",
+        "normal_max_diff_chars",
+    }
+    assert not any(
+        key.startswith(("small_", "medium_")) for key in ReviewBudget.model_fields
+    )

@@ -1,76 +1,26 @@
-# Codeguard 评测(eval)框架
+# 审查质量评测
 
-> 用「带标注的数据集 + 统计指标」量化审查质量,而不是用 `assert` 死磕不确定的 LLM 输出。
-> 跑出的指标用于在统一数据集上对照各 profile 的审查质量。
+当前 profile 针对变更驱动的有界审查。历史归档中的同名 profile 可能使用旧编排，比较时必须核对 git revision、模型、工具是否实际启用及标答版本。行号/关键词匹配只是自动诊断口径，不等于语义正确率。历史 case 限制见 `../ARCHITECTURE.md`。
 
-正式的 60 例真实仓库素材库与 selected-20-v2 快速回归评测(当前启用 15 个精选 case，2 轮 × 多 profile
-对照,人工按正式标答计指标)见 `reports/selected-20-v2-real/`。`runner` 是统一跑批入口,
-`profiles.yaml` 声明被测编排(直接 diff / ReviewCouncil 全编排 / Plan-and-Execute 受控发现等)。
+| Profile | 配置 |
+|---|---|
+| `eval-direct-diff` | 无工具 diff 直审对照 |
+| `eval-codeguard-full` | 完整有界审查、源码与关系工具、证据验证与裁决 |
+| `eval-controlled-codegraph` | 当前 Full 的同配置别名 |
+| `eval-source-only` | 有界审查仅开放源码工具 |
+| `eval-no-evidence` | 有界取证，跳过证据验证，直接裁决候选 |
 
-## 为什么需要它
+先运行 `tests/` 的离线工程回归，再按授权选择单 case 或更多付费评测。Windows 命令加 `conda run -n codeguard --no-capture-output` 前缀，在 `services/agent` 执行。
 
-`tests/` 里的 pytest 测的是**工程正确性**(流水线跑不跑得通);
-这里测的是**审查质量**(它到底能不能审出真问题、会不会乱报)。两者互补,缺一不可。
-
-## 快速开始
-
-```bash
-cd services/agent
-pip install -e . pyyaml          # pyyaml 用于读数据集
-
-# 1) 零成本验证评测链路是否打通(不调真实 LLM,指标无业务含义)
-CODEGUARD_PROVIDER=mock python -m evals.runner
-
-# 2) 调真实 LLM 跑评测,重复 3 次统计方差
-export CODEGUARD_API_KEY=sk-xxx
-python -m evals.runner --runs 3
-
-# 3) 额外开 LLM-as-judge(语义复核 + 描述/建议质量打分,更准、更贵)
-python -m evals.runner --runs 3 --judge
-
-# 4) 工具开档(默认走受控 Plan-and-Execute,可调 Java 工具);需先起工具服务并配 URL
-#    CODEGUARD_TOOL_SERVER_URL=http://localhost:9090 python -m evals.runner --tools
+```powershell
+conda run -n codeguard --no-capture-output python -m pytest tests/ -q
+# 以下会调用模型；仅在获得对应评测授权后执行。
+conda run -n codeguard --no-capture-output python -m evals.runner --profile eval-codeguard-full --runs 1
 ```
 
-报告默认写到 `evals/reports/pipeline.md`,控制台也会打印速览。
+图谱 profile 需要工具服务 URL、真实仓库与可用模型。严格工具模式不把工具不可用静默当作无工具成功。比较不同 profile 时固定数据集、标答、模型与运行轮数；保留逐 case 检出、候选来源、token、延迟、未完成状态及原始报告。
 
-## profile:把"被测系统"做成可插拔(统一标准下做对照)
-
-评测的**统一标准 = 固定数据集 + 固定指标**;"用什么配置跑"由 **profile** 描述,见
-`evals/profiles.yaml`(`mode` + `orchestration` + `discovery_mode` + 启用工具集 + 可选模型)。**加一个工具 / 换一种编排 = 加一行
-profile,数据集与指标零改动。**
-
-```bash
-# 按 profile 跑(覆盖 --tools);不指定则用 --tools 合成 ad-hoc(管线 + 工具开/关)
-python -m evals.runner --profile pipeline-notools --runs 1
-python -m evals.runner --profile adr-032-smoke --runs 1
-python -m evals.runner --profile eval-controlled-codegraph --runs 1  # Plan-and-Execute 受控发现
-CODEGUARD_TOOL_SERVER_URL=http://localhost:9090 \
-  python -m evals.runner --profile pipeline-file --runs 1   # 工具开档,需先起工具服务
-```
-
-每次运行落一份历史归档到 `evals/runs/<时间>_<gitsha>_<profile>.json`(整体指标 + 逐用例 +
-按能力聚合,追加不覆盖)。报告从历史渲染三类视图:
-
-- **历史趋势**:同一 profile 跨版本/时间的指标变化(防退化)。
-- **profile 横向对照**:各 profile 最近一次的同组指标并排(老的"工具开 vs 关"只是其特例)。
-- **按能力切片**:在"需要某能力"的用例子集上各 profile 的 Recall——同一能力行内一比即该能力的
-  工具/编排增益,比笼统的"工具开 vs 关"精确。
-
-ADR-032 默认路径还会在报告中追加 **ReviewCouncil 过程统计**:候选数、证据轮次、Challenge 数量、
-SelfChecker 移除来源与 trace 事件数。这些中间态只用于诊断和呈现,不参与判分,也不进入产品
-`ReviewResult`。
-
-每个 task 的路由、Plan、Reviewer assignment、符号解析状态和跳过原因保留在
-State/trace 中；产品结果仍然只比较 `ReviewResult.issues`。
-`CODEGUARD_MAX_REVIEW_TASKS` / `CODEGUARD_MAX_TASKS_PER_FILE` 只用于大型 diff 的预算回归。
-
-Phase 2 最小样本包括：删除 `@PreAuthorize`、新增 repository update、多步共享状态无锁更新、
-普通 getter 兜底，以及多 hunk 大 diff。它们用于验证方向信号、三路路由和 TaskRank 选择行为；
-不把规则命中本身当作最终漏洞结论。
-
-> 工具增益要测得出,前提是用例**真的需要该能力**(diff-only 看着没问题、读了文件/上下文才暴露)。
-> 若一条用例从 diff 本身就能猜中,开/关工具指标会一样——那是用例不够"难",不是工具没用。
+State/Trace 记录任务路由、符号解析、声明分组、预取/动态查询、调查结果和证据裁决；不再包含 Plan、三维分派、初筛种子或固定步骤评估。产品匹配仍以 `ReviewResult.issues` 为准。
 
 ## 合成回归集与真实仓库集
 

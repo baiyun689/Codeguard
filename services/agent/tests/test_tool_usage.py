@@ -5,9 +5,7 @@
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass
-
 from evals.tool_usage import summarize_tool_usage
 
 
@@ -29,9 +27,9 @@ def test_empty_trace_is_all_blank():
 
 def test_symbols_read_parsed_and_deduped_sorted():
     trace = [
-        _FakeCtx(tool="get_file_content", args='{"symbol_id": "java:B#n()"}', content="..."),
-        _FakeCtx(tool="get_file_content", args='{"symbol_id": "java:A#m()"}', content="..."),
-        _FakeCtx(tool="get_file_content", args='{"symbol_id": "java:A#m()"}', content="..."),
+        _FakeCtx(tool="read_symbol", args='{"symbol_id": "java:B#n()"}', content="..."),
+        _FakeCtx(tool="read_symbol", args='{"symbol_id": "java:A#m()"}', content="..."),
+        _FakeCtx(tool="read_symbol", args='{"symbol_id": "java:A#m()"}', content="..."),
     ]
     u = summarize_tool_usage(trace)
     assert u.symbols_read == ["java:A#m()", "java:B#n()"]
@@ -39,6 +37,6 @@ def test_symbols_read_parsed_and_deduped_sorted():
 
 
 def test_malformed_args_falls_back_to_raw_string():
-    trace = [_FakeCtx(tool="get_file_content", args="not-json", content="x")]
+    trace = [_FakeCtx(tool="read_symbol", args="not-json", content="x")]
     u = summarize_tool_usage(trace)
     assert u.symbols_read == ["not-json"]

@@ -6,12 +6,12 @@ AI Pull Request 代码审查系统，支持安全、行为正确性和可维护�
 
 Codeguard 由 Python Agent 和 Java Gateway 组成，提供受控审查编排、代码事实分析、证据验证和 GitHub 集成能力。
 
-当前默认受控路径按完整调查子任务运行 bounded React；`planned_steps` 仅作为兼容执行模式保留。
+默认采用变更声明驱动的有界 ReAct；另提供无工具 diff 直审对照。
 
 ## 功能特性
 
 - 一个统一 Reviewer 覆盖安全、行为正确性和可维护性审查。
-- 基于 Plan-and-Execute 的任务级受控审查流程。
+- 先准备变更源码，再由同一 Reviewer 按需调查并输出候选。
 - 基于 Java AST、符号和调用图的代码事实工具。
 - Evidence Ledger、确定性证据验证和批量结果裁决。
 - 多模型路由、限流、熔断、重试和故障降级。
@@ -20,7 +20,25 @@ Codeguard 由 Python Agent 和 Java Gateway 组成，提供受控审查编排、
 
 ## 工作原理
 
-Codeguard 由 Java Gateway 和 Python Agent 组成。Java 负责请求接入、任务调度和确定性代码工具；Python 负责任务级 Plan-and-Execute 编排、证据验证和结果裁决。
+默认路径不再先让模型猜疑点、再把疑点交给另一个模型调查。运行时按实际变更行和删除锚点定位声明，每组最多 4 个声明；Reviewer 在第一次推理前收到有界当前版本源码，并自己决定是否继续查调用关系。
+
+```text
+diff → 文件/hunk 任务 → DirectGate → SymbolResolution
+     → 变更声明分组 → 源码与有界一跳关系准备 → Reviewer（阅读 / 查询 / 候选）
+     → 确定性定位 → Evidence Ledger 验证 → 批量 Judge → 结果合并
+```
+
+当前仅保留 `controlled` 有界审查与 `direct` 无工具对照；旧三维发现者、Plan、Summary、DirectTriage、GraphPlan 和固定步骤执行入口已移除。每组最多 6 次探索决策、8 次工具尝试（预取也计数），另预留一次结论；每 task 总工具预算 32。源码读取最多占工具预算的一半，每片最多 120 行；源码与一跳关系合计预取默认最多 6 次，保留至少 2 次动态查询，每页关系 limit=6 并请求端点源码。预取同样计入超时；未查询和分页缺口明确展示，不将空关系预取当成模型空转。分组只覆盖实际变更声明，不遍历全项目符号；新增空行不额外触发整类调查。
+
+同一 Reviewer 使用 `read_symbol` / `query_relations` 沿真实 ID 继续调查。方法源码附带所属类型的最多 64 个成员导航入口；目录不证明调用或数据流。关系页最多附带 3 个端点源码片段，各最多 24 行/1000 字符；继承、泛型、动态绑定与不完整解析仍可能形成证据缺口。
+
+每轮只生成简短 assessment 和 queries/result 二选一。默认模型接口不包含旧初筛的兼容元数据，也不要求 observation_refs 已读回执。结果最多 8 个独立候选；每个跨 symbol 主张必须引用真实观察（最多 3 条），纯 patch 问题可不引用工具，patch 由运行时自动绑定。终止前校验结果和引用。新增代码用原文片段定位；删除变更提供当前版本锚点。定位失败保留 `line=0` 文件级候选，受控路径不为定位增加模型调用。
+
+Java 负责沙箱、revision 快照、AST/调用图、缓存和工具事实；Python 负责分组、推理、预算、候选和裁决。共享缓存只在一次审查内生效，各组的证据编号与工具历史独立。工具原文进入内容寻址账本；Verifier 验证真实性/范围，Judge 判断缺陷是否成立，两者不能混为一谈。
+
+预算耗尽、截断、符号不可用或模型报告的限制会留下未完成状态；已有候选继续进入裁决，不把未完成当成安全。同步请求受超时约束，关闭工具客户端不能强制中止已经发出的 HTTP 请求。
+
+当前有真实跨 diff 取证案例，但没有稳定高召回的结论。五轮异构 case 的结果、节点取舍和已知限制见 [设计与验证记录](services/agent/ARCHITECTURE.md)。
 
 ### 整体架构
 
@@ -45,60 +63,72 @@ flowchart LR
 模块职责：
 
 - **CI Webhook**：接收 GitHub 事件，创建和调度审查任务。
-- **Python Agent**：拆分审查任务，执行 Plan-and-Execute 受控审查，并完成证据验证与结果裁决。
+- **Python Agent**：拆分审查任务，执行变更驱动的有界审查，并完成证据验证与结果裁决。
 - **LLM Proxy**：统一管理模型访问和提供商路由。
 - **Tool Server**：在沙盒内提供文件、符号、AST 和调用关系等代码事实。
 
 ### Agent 审查工作流
 
-下图是当前默认的受控子任务调查路径；旧固定步骤仅用于兼容回放。
+PR 规模只分两档：`NORMAL`（文件数 ≤15 且 diff ≤60,000 字符）按文件构建任务；超过任一阈值则进入 `LARGE`，按 hunk 构建任务。hunk 数仅作统计，不再划分第三档。
+
+下图对应实际外层 LangGraph 节点。Direct 与 Full 是任务类别：图先处理 Direct 任务，再处理选中的 Full 任务；没有对应任务的节点直接返回，不调用模型。
+
+```mermaid
+flowchart TD
+    Diff[Diff] --> Classify[classify_mode]
+    Classify -->|NORMAL| File[file_task_builder]
+    Classify -->|LARGE| Hunk[diff_task_builder]
+    File --> Route[task_route · DirectGate]
+    Hunk --> Route
+    Route --> Direct[direct_task_review]
+    Direct --> Select[task_selection · Full tasks]
+    Select --> Symbols[symbol_resolution]
+    Symbols --> Review[controlled_review]
+    Review --> Coordinator[council_coordinator]
+    Coordinator --> Verify[evidence_verifier]
+    Verify --> Judge[council_judge]
+    Judge --> Merge[causal_merge]
+    Merge --> Result[ReviewResult]
+```
+
+| 节点 | 职责 |
+|---|---|
+| `classify_mode` | 按 diff 规模决定文件或 hunk 粒度，不调用模型。 |
+| `file_task_builder` / `diff_task_builder` | 构建文件任务 / hunk 任务，保存变更行与删除锚点。 |
+| `task_route` | DirectGate 确定性区分低风险文档/注释任务与 Full 任务。 |
+| `direct_task_review` | 仅处理 Direct 任务；节点内完成直审、定位和裁决，暂存独立结果。 |
+| `task_selection` | 选择 Full 任务并记录大 diff 截断，不调用风险分类模型。 |
+| `symbol_resolution` | 通过 Gateway 批量解析变更位置，获得真实符号和导航上下文。 |
+| `controlled_review` | 按变更声明分组、预取上下文，运行有界 ReAct；节点内完成候选定位与账本绑定。 |
+| `council_coordinator` | 汇总和归并候选，准备后续验证的候选集合。 |
+| `evidence_verifier` | 零 LLM 校验证据内容、revision、符号范围及图谱合同；仅对可恢复失败重放。 |
+| `council_judge` | 按批判断候选是否由有效证据支持，给出去留和定级；不补查工具。 |
+| `causal_merge` | 对保留候选做根因分析与保守合并，合入 Direct 结果。 |
+
+`controlled_review` 内部步骤如下，分组、预取、定位和绑定都由运行时完成，不是额外的模型规划节点：
 
 ```mermaid
 flowchart LR
-    Diff[代码变更] --> Tasks[任务构建]
-    Tasks --> Route{任务路由}
-
-    Route -->|直接任务| Direct[直接审查]
-    Route -->|完整任务| Plan[审查计划]
-    Plan --> Summary[变更摘要]
-    Summary --> Symbols[符号解析]
-    Symbols --> Triage[直接初筛]
-    Triage -->|局部证据充分| DirectFinding[直接候选]
-    Triage -->|需要外部事实| GraphPlan[图谱计划]
-    GraphPlan --> Subtasks[调查子任务]
-    Subtasks --> React[子任务 React]
-    React --> Findings[调查结果]
-    DirectFinding --> Locate[候选定位]
-    Findings --> Locate
-    Locate --> Collect[候选汇总]
-    Collect --> Verify[证据验证]
-    Verify --> Judge[结果裁决]
-    Judge --> Merge[语义合并]
-
-    Direct --> Result[审查结果]
-    Merge --> Result
+    Groups[变更声明分组] --> Context[有界源码与一跳关系预取]
+    Context --> Decide[同一 Reviewer 决策]
+    Decide -->|queries| Tools[read_symbol / query_relations]
+    Tools -->|真实观察与剩余预算| Decide
+    Decide -->|result| Candidate[候选定位与证据绑定]
 ```
 
-节点职责：
+| 工具 | 使用者与用途 |
+|---|---|
+| `resolve_change_context` | 运行时专用，将变更位置解析成符号；不向 Reviewer 暴露。 |
+| `read_symbol` | Reviewer 读取已知符号的有界源码，可分页。 |
+| `query_relations` | Reviewer 查询 callers、callees、field_readers、field_writers、implementations、overrides，沿返回的真实 ID 深入。 |
 
-- **任务构建**：按照变更规模生成审查任务。
-- **任务路由**：确定任务进入 Direct 或 Full 流程。
-- **审查计划**：为完整任务路由有限知识主题；统一 Reviewer 固定覆盖安全、行为正确性和可维护性。
-- **直接初筛**：把局部证据充分的发现与中性调查种子分流；不把跨文件猜测当作候选事实。
-- **图谱计划**：将每个调查种子拆成完整的有限子任务，明确调查目标、起始 symbol、允许关系、所需事实、停止条件和预算，不输出候选答案。
-- **调查子任务**：一个变更锚点对应一个完整调查问题；每个子任务只开放 `read_symbol`、`query_relations` 和合法起始 symbol。
-- **子任务 React**：在子任务范围内根据工具返回动态决定下一次有限查询，可沿工具返回的已解析 symbol 继续调查；只输出有证据绑定的 InvestigationResult，不直接决定最终保留。
-- **候选构建**：将 InvestigationResult 中的直接观察绑定到 Evidence Ledger 的真实 Artifact；没有有效证据的 finding 不进入候选。
-- **证据验证 / 结果裁决**：验证 Artifact、引用和覆盖范围，再由 Judge 统一决定保留、合并、类型和严重程度。
-- **候选定位**：校验问题是否准确对应本次新增代码。
-- **候选汇总**：汇集并规范化各审查维度的发现。
-- **证据验证**：检查候选引用的代码和工具事实是否真实可用。
-- **结果裁决**：根据候选和证据判断保留、丢弃及严重程度。
-- **语义合并**：合并语义相同的重复问题，不跨独立机制合并。
+最终报告提供根因与代码来源，内部证据编号由运行时管理。图谱展示静态事实，不保证动态调用关系完备；预算或证据不足会留下未完成状态。
 
-本地审查输出 Markdown 报告和 HTML Trace；GitHub App 审查则进一步将结果回写到 Check Run、行内标注和 PR 评论。
-最终问题包含用户可读的“根因”和“来源位置”（文件、symbol、行号及已验证关系）；内部证据编号只保留在 Trace/Evidence Ledger，
-不会要求用户理解 Txx/Cxx。
+### 审查提示词
+
+主提示词位于 [change-review.txt](services/agent/src/codeguard_agent/prompts/controlled/change-review.txt)，按角色与目标、输入与证据边界、审查与决策、工具使用、结束条件、输出合同组织。
+
+[controlled 提示词目录](services/agent/src/codeguard_agent/prompts/controlled)中的辅助文件分别负责任务范围、预算通知、探索/结论阶段及错误反馈。结构化字段以运行时绑定的 schema 为准，调用预算、超时和终止约束由代码执行。提示词分文件组织不增加工作流节点或模型调用。
 
 ## 使用 Docker Compose 快速开始
 
@@ -188,7 +218,7 @@ Prometheus 数据均使用命名卷持久化。
 ### 本地 Web 审查界面
 
 启动 `codeguard` 服务后，可访问 `http://localhost:8501` 打开本地审查界面。
-在界面中填写宿主机上的 Git 项目根目录，选择 Diff 基线后即可开始审查。界面默认使用完整的 `controlled` 受控审查管线；摘要、代码图谱、Evidence Ledger、Judge
+在界面中填写宿主机上的 Git 项目根目录，选择 Diff 基线后即可开始审查。界面默认使用完整的 `controlled` 受控审查管线；代码图谱、Evidence Ledger、Judge
 和语义合并不会被拆成相互独立的开关；报告和 Agent Trace
 作为展示选项提供。
 
@@ -236,7 +266,7 @@ Webhook 直接指向映射端口。
 
 ### Agent Trace
 
-Trace 展示 LangGraph 主执行流、Task 路由、Plan、SymbolResolution、统一 Reviewer、受控 DirectTriage/GraphPlan，以及子任务 React（兼容模式下也可显示旧 Execute）、
+Trace 展示实际执行的任务路由、SymbolResolution、变更分组、源码预取和 Reviewer 的查询/结论，以及
 证据验证、Judge 和语义合并，并可展开查看工具调用、预算、证据引用与节点输入输出。
 
 ![Agent Trace 执行流](docs/showcase/agent-trace.png)
@@ -379,22 +409,14 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 | `CODEGUARD_GRAPH_CACHE_MAX_SNAPSHOTS` | `4` | 跨会话保留的完整项目快照上限 |
 | `CODEGUARD_GRAPH_CACHE_TTL_MINUTES` | `30` | 项目快照访问后过期时间 |
 | `CODEGUARD_GRAPH_BUILD_TIMEOUT_SECONDS` | `120` | 全项目 AST 与语义图构建超时 |
-| `CODEGUARD_DISCOVERY_MODE` | `controlled` | 受控审查模式：`controlled`（Plan-and-Execute） |
-| `CODEGUARD_CONTROLLED_INITIAL_TOOL_BUDGET` | `12` | controlled 每 task 初始工具调用预算 |
-| `CODEGUARD_CONTROLLED_DELTA_TOOL_BUDGET` | `4` | `planned_steps` 兼容路径每 task Delta 工具调用预算 |
+| `CODEGUARD_DISCOVERY_MODE` | `controlled` | 受控审查模式：`controlled`（变更驱动有界审查）或 `direct`（无工具对照） |
 | `CODEGUARD_CONTROLLED_MAX_PATH_DEPTH` | `3` | controlled 路径最大深度（最大 3） |
-| `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_CHANGE_UNIT` | `8` | 每个变更单元保留的初筛候选上限 |
-| `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_REVIEWER` | `8` | 每个 Reviewer/task 保留的初筛候选上限 |
-| `CODEGUARD_CONTROLLED_MAX_SEEDS_PER_TASK` | `24` | 每个 task 的初筛候选硬上限 |
-| `CODEGUARD_CONTROLLED_MAX_KNOWLEDGE_TOPICS` | `4` | 每 task 知识主题上限 |
 | `CODEGUARD_CONTROLLED_EXECUTE_CONCURRENCY` | `3` | controlled 同一 task 内独立证据步骤的最大并发数；`1` 为串行 |
-| `CODEGUARD_CONTROLLED_EXECUTION_MODE` | `subtask_react` | 默认按完整调查子任务运行有界 React；`planned_steps` 保留旧固定步骤兼容 |
-| `CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS` | `20` | 单个调查子任务的工具调用上限（初始宽松预算，可配置） |
-| `CODEGUARD_CONTROLLED_SUBTASK_MAX_ROUNDS` | `12` | 单个调查子任务的 React 轮数上限（初始宽松预算，可配置） |
+| `CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS` | `8` | 单个调查子任务的工具调用上限（可配置） |
+| `CODEGUARD_CONTROLLED_SUBTASK_MAX_ROUNDS` | `6` | 单个调查子任务的 React 轮数上限（可配置） |
 | `CODEGUARD_CONTROLLED_SUBTASK_TIMEOUT_SECONDS` | `120` | 单个调查子任务的执行超时预算 |
-| `CODEGUARD_CONTROLLED_TASK_MAX_TOOL_CALLS` | `96` | 单 task 所有调查子任务共享的工具调用上限（初始宽松预算，可配置） |
-| `CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_REVIEWER` | `8` | 单 Reviewer 的 GraphPlan 子任务上限 |
-| `CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_TASK` | `24` | 单 task 的 GraphPlan 子任务上限 |
+| `CODEGUARD_CONTROLLED_TASK_MAX_TOOL_CALLS` | `32` | 单 task 所有调查子任务共享的工具调用上限（可配置） |
+| `CODEGUARD_CONTROLLED_MAX_SUBTASKS_PER_TASK` | `8` | 单 task 的调查子任务上限 |
 | `CODEGUARD_TOOL_SERVER_PROJECT_ROOT` | 空 | 宿主 Agent 连接 Docker Gateway 时的容器项目根路径（Compose 通常为 `/workspace/projects`） |
 
 Compose 会设置打包部署所需的容器内部路径和端口，并在未显式设置时将
@@ -460,7 +482,7 @@ docker build -t codeguard:local .
 
 真实质量评测使用 `selected-20-v2` 当前启用的 15 个精选真实 Java 仓库；正式标答以各 case 的 `expected` 为准，另有
 `planted-bugs.diff` 生成的 hunk 诊断记录用于辅助分析。评测 profile 覆盖 direct、代码图谱和
-Plan-and-Execute 受控发现，具体 Recall、Precision、F1 与稳定性结果以评测报告为准。评测框架、profile 定义与报告见
+变更驱动的有界发现，具体 Recall、Precision、F1 与稳定性结果以评测报告为准。评测框架、profile 定义与报告见
 [`services/agent/evals/README.md`](services/agent/evals/README.md)。
 
 ## 参与贡献

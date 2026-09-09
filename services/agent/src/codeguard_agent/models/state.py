@@ -5,10 +5,8 @@
 """
 
 from __future__ import annotations
-
 import operator
-from typing import Annotated, Protocol, TypedDict
-
+from typing import Annotated, TypedDict
 from codeguard_agent.models.council import (
     CandidateIssue,
     CausalComparison,
@@ -20,24 +18,15 @@ from codeguard_agent.models.council import (
 from codeguard_agent.models.evidence import (
     CandidateVerification,
     EvidenceArtifact,
-    EvidenceCatalog,
     ToolTraceRef,
     merge_evidence_artifacts,
 )
-from codeguard_agent.models.schemas import DiscoveredIssue, DiscoveryReviewResult, Issue, ReviewResult
+from codeguard_agent.models.schemas import Issue
 from codeguard_agent.models.tasks import (
-    DirectTriageResult,
-    EvidenceAssessment,
     InvestigationResult,
-    ProofMatch,
-    ReviewerGraphPlan,
-    KnowledgeRoutePlan,
-    PlanUnit,
-    ReviewAssignments,
     ReviewBudget,
     ReviewRoute,
     ReviewTask,
-    TaskAgentPlan,
     TaskRoute,
     TaskSelection,
     TaskSymbolContext,
@@ -45,23 +34,10 @@ from codeguard_agent.models.tasks import (
 )
 
 
-class ReviewerOutcomeLike(Protocol):
-    """发现者执行结果的最小状态接口，避免状态模型依赖 execution 引擎。"""
-
-    result: DiscoveryReviewResult | ReviewResult | None
-    status: object
-    failure_reason: str
-    tool_trace_records: list[ToolTraceRef]
-    execution_events: list[str]
-    evidence_catalog: EvidenceCatalog | None
-
-
 def collect_candidate_reducer(
-    existing: list[CandidateIssue] | None,
-    new: list[CandidateIssue] | None,
+    existing: list[CandidateIssue] | None, new: list[CandidateIssue] | None
 ) -> list[CandidateIssue]:
     """按 candidate ID 去重，保留第一次出现的候选 payload。"""
-
     merged = list(existing or []) + list(new or [])
     seen: set[str] = set()
     result: list[CandidateIssue] = []
@@ -76,123 +52,39 @@ def collect_candidate_reducer(
 class ReviewState(TypedDict, total=False):
     """顶层审查图共享状态。"""
 
-    # Input: 本次审查的只读事实
     diff_text: str
     evidence_revision: str
-
-    # Config: 本次运行的策略和预算
     enabled_tools: list[str] | None
     enabled_evidence_tools: list[str] | None
     max_retries: int
     structured_method: str
-    react_recursion_limit: int
-    allow_direct_fallback: bool
     review_budget: ReviewBudget
-
-    # Plan: 确定性规划结果
     review_mode: str
     review_route: ReviewRoute
     review_tasks: list[ReviewTask]
     task_routes: dict[str, TaskRoute]
-    plan_units: list[PlanUnit]
-    task_plans: dict[str, TaskAgentPlan]
     direct_final_issues: list[Issue]
     task_selection: TaskSelection
-    review_assignments: ReviewAssignments
-    discovery_mode: str
-    controlled_initial_tool_budget: int
-    controlled_delta_tool_budget: int
     controlled_max_path_depth: int
-    controlled_max_seeds_per_change_unit: int
-    controlled_max_seeds_per_reviewer: int
-    controlled_max_seeds_per_task: int
-    controlled_max_knowledge_topics: int
-    controlled_execute_concurrency: int
-    controlled_execution_mode: str
-    controlled_subtask_max_tool_calls: int
-    controlled_subtask_max_rounds: int
-    controlled_subtask_timeout_seconds: int
-    controlled_task_max_tool_calls: int
-    controlled_max_subtasks_per_reviewer: int
-    controlled_max_subtasks_per_task: int
-    knowledge_route_plan: dict[str, KnowledgeRoutePlan]
-    controlled_triage: dict[str, DirectTriageResult]
-    controlled_triage_outcomes: dict[str, str]
-    controlled_triage_reasons: dict[str, str]
-    controlled_graph_plans: dict[str, ReviewerGraphPlan]
-    # The subtask React path has a different plan contract from the legacy
-    # fixed-step executor.  Keep it in a separate field instead of placing a
-    # ``SubtaskPlan`` in ``controlled_graph_plans`` and relying on consumers to
-    # guess which model is present for a given key.
     controlled_subtask_plans: dict[str, SubtaskPlan]
     controlled_subtask_results: dict[str, InvestigationResult]
     controlled_subtask_outcomes: dict[str, str]
     controlled_subtask_reasons: dict[str, str]
-    # Seed omissions/failures are tracked separately from executable subtask
-    # lifecycle so one reviewer cannot hide another reviewer's GraphPlan gap.
-    controlled_subtask_seed_outcomes: dict[str, str]
-    controlled_subtask_seed_reasons: dict[str, str]
-    controlled_assessments: dict[str, EvidenceAssessment]
-    controlled_proof_matches: dict[str, ProofMatch]
-    # CandidateIssue keeps explanatory fields out of generic model dumps so
-    # they cannot accidentally become product output. LangGraph may serialize
-    # CandidateIssue values between nodes, so controlled review carries this
-    # explicit non-product context map for EvidenceJudge dossier rehydration.
     controlled_candidate_contexts: dict[str, dict[str, str]]
-
-    # Working: 跨节点传递、会影响后续决策的审查工作集
-    diff_summary: str
     task_symbol_contexts: dict[str, TaskSymbolContext]
     raw_candidate_issues: Annotated[list[CandidateIssue], collect_candidate_reducer]
     candidate_issues: list[CandidateIssue]
     candidate_verifications: dict[str, CandidateVerification]
     evidence_artifacts: Annotated[dict[str, EvidenceArtifact], merge_evidence_artifacts]
-    review_summaries: Annotated[list[str], operator.add]
     judge_survivor_ids: list[str]
     causal_profiles: dict[str, CausalProfile]
     causal_comparisons: list[CausalComparison]
     causal_merge_groups: list[CausalMergeGroup]
     causal_merge_stats: dict[str, int]
-
-    # Output: 对外 ReviewResult 的来源
     final_issues: list[Issue]
     summary: str
-
-    # Diagnostics: Trace / eval 数据，不属于产品输出
     symbol_resolution_diagnostics: dict[str, str]
     council_stats: CouncilRunStats
     council_trace: Annotated[list[CouncilTrace], operator.add]
     truncated_candidates: Annotated[int, operator.add]
     tool_trace_records: Annotated[list[ToolTraceRef], operator.add]
-
-
-class ReviewerState(TypedDict, total=False):
-    """单个发现者 Agent 子图的局部状态。"""
-
-    # Input / 策略：由顶层 ReviewState 投影而来
-    diff_text: str
-    enabled_tools: list[str] | None
-    max_retries: int
-    structured_method: str
-    diff_summary: str
-    react_recursion_limit: int
-    allow_direct_fallback: bool
-    task_knowledge: str
-    plan_objectives: tuple[str, ...]
-    knowledge_topics: tuple[str, ...]
-    review_task: ReviewTask
-    task_symbol_context: TaskSymbolContext
-    tier: str
-    task_scope: str
-    review_tool_client: object
-
-    # 当前 task 的证据目录和结构化 Prompt
-    evidence_revision: str
-    evidence_catalog: EvidenceCatalog | None
-
-    issues: list[DiscoveredIssue]
-    tool_trace_records: list[ToolTraceRef]
-    review_summaries: list[str]
-    council_trace: Annotated[list[CouncilTrace], operator.add]
-    user_prompt: str
-    outcome: ReviewerOutcomeLike
