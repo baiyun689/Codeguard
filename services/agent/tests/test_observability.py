@@ -35,7 +35,10 @@ from codeguard_agent.observability.serialization import (
     serialize_messages,
     serialize_trace_value,
 )
-from codeguard_agent.observability.view_model import build_trace_view
+from codeguard_agent.observability.view_model import (
+    _controlled_review_summary,
+    build_trace_view,
+)
 from codeguard_agent.pipeline.evidence.projection import (
     GraphProjectionFocus,
     ProjectionAudience,
@@ -480,8 +483,118 @@ def test_dashboard_renders_controlled_sections_instead_of_empty_react_panels():
     assert "图谱取证计划" in html
 
 
+def test_controlled_summary_reports_orphan_seed_status_without_fake_parentheses():
+    summary = _controlled_review_summary({
+        "controlled_triage": {},
+        "controlled_graph_plans": {},
+        "controlled_subtask_plans": {},
+        "controlled_subtask_outcomes": {
+            "task-a:seed:seed-1": "omitted",
+        },
+        "controlled_assessments": {},
+        "controlled_proof_matches": {},
+        "tool_trace_records": [],
+        "candidate_issues": [],
+    })
+
+    assert "种子记录 omitted 1" in summary
+    assert "种子记录 omitted 1）" not in summary
+
+
+def test_controlled_trace_keeps_failed_seed_reviewer_scope_separate():
+    report = _controlled_review_report_fixture()
+    output = report.events[1].detail["output"]
+    output["controlled_execution_mode"] = "subtask_react"
+    output["controlled_subtask_plans"] = {
+        "task-a:behavior": {
+            "reviewer": "behavior",
+            "task_id": "task-a",
+            "subtasks": [],
+        },
+    }
+    output["controlled_subtask_seed_outcomes"] = {
+        "task-a:threat_model:seed:seed-threat": "failed",
+    }
+    output["controlled_subtask_seed_reasons"] = {
+        "task-a:threat_model:seed:seed-threat": "graph_plan_worker_failed",
+    }
+
+    view = build_trace_view(report)
+    threat = next(
+        section
+        for section in view["controlled_sections"]
+        if section["key"] == "controlled_threat_model"
+    )
+    orphan = next(
+        view["steps"][step_id]
+        for step_id in threat["step_ids"]
+        if step_id.startswith("controlled:subtask-plan-orphan:")
+    )
+    assert orphan["status"] == "failed"
+    assert orphan["output"]["unplanned"][0]["reason"] == (
+        "graph_plan_worker_failed"
+    )
+
+    behavior = next(
+        section
+        for section in view["controlled_sections"]
+        if section["key"] == "controlled_behavior"
+    )
+    assert not any(
+        step_id.startswith("controlled:subtask-plan-orphan:")
+        for step_id in behavior["step_ids"]
+    )
+
+
+def test_controlled_summary_reports_failed_direct_triage():
+    summary = _controlled_review_summary({
+        "controlled_triage": {},
+        "controlled_triage_outcomes": {
+            "task-a:behavior": "failed",
+        },
+        "controlled_graph_plans": {},
+        "controlled_subtask_plans": {},
+        "controlled_subtask_outcomes": {},
+        "controlled_assessments": {},
+        "controlled_proof_matches": {},
+        "tool_trace_records": [],
+        "candidate_issues": [],
+    })
+
+    assert "初筛失败 1" in summary
+
+
+def test_controlled_trace_renders_failed_direct_triage_state():
+    report = _controlled_review_report_fixture()
+    output = report.events[1].detail["output"]
+    output["controlled_triage"] = {}
+    output["controlled_triage_outcomes"] = {
+        "task-a:behavior": "failed",
+    }
+    output["controlled_triage_reasons"] = {
+        "task-a:behavior": "triage_result_missing",
+    }
+
+    view = build_trace_view(report)
+    behavior = next(
+        section
+        for section in view["controlled_sections"]
+        if section["key"] == "controlled_behavior"
+    )
+    triage = next(
+        view["steps"][step_id]
+        for step_id in behavior["step_ids"]
+        if view["steps"][step_id]["code_name"] == "direct_triage"
+    )
+    assert triage["status"] == "failed"
+    assert "triage_result_missing" in triage["summary"]
+
+
 def test_controlled_trace_recovers_tool_record_when_native_path_is_unscoped():
     report = _controlled_review_report_fixture()
+    report.events[1].detail["output"]["tool_trace_records"][0]["subtask_id"] = (
+        "subtask-behavior-task-a-1"
+    )
     report.events.extend([
         _flow_event(
             3,
@@ -521,14 +634,169 @@ def test_controlled_trace_recovers_tool_record_when_native_path_is_unscoped():
         for section in view["controlled_sections"]
         if section["key"] == "controlled_behavior"
     )
-    synthetic_tools = [
+    scoped_tools = [
         view["steps"][step_id]
         for step_id in behavior["tool_step_ids"]
-        if step_id.startswith("controlled:tool:")
+        if view["steps"][step_id].get("subtask_id")
     ]
-    assert len(synthetic_tools) == 1
-    assert synthetic_tools[0]["pair_id"] == "controlled-call-1"
-    assert synthetic_tools[0]["output"]["outcome"] == "found"
+    assert len(scoped_tools) == 1
+    assert scoped_tools[0]["pair_id"] == "controlled-call-1"
+    assert scoped_tools[0]["output"]["outcome"] == "found"
+    assert scoped_tools[0]["subtask_id"] == "subtask-behavior-task-a-1"
+
+
+def test_controlled_trace_keeps_dynamic_tool_owned_by_subtask():
+    report = _controlled_review_report_fixture()
+    output = report.events[1].detail["output"]
+    output["controlled_execution_mode"] = "subtask_react"
+    output["controlled_subtask_plans"] = {
+        "task-a:behavior": {
+            "reviewer": "behavior",
+            "task_id": "task-a",
+            "subtasks": [{
+                "subtask_id": "subtask-behavior-task-a-1",
+                "seed_id": "seed-1",
+                "objective": "核对 callback 路径",
+                "initial_symbol_ids": ["java:demo.Service#execute()"],
+                "allowed_tools": ["query_relations", "read_symbol"],
+                "allowed_relations": ["callees"],
+            }],
+        },
+    }
+    output["controlled_subtask_outcomes"] = {
+        "task-a:subtask-behavior-task-a-1": "findings",
+    }
+    output["tool_trace_records"][0]["subtask_id"] = (
+        "subtask-behavior-task-a-1"
+    )
+
+    view = build_trace_view(report)
+    behavior = next(
+        section for section in view["controlled_sections"]
+        if section["key"] == "controlled_behavior"
+    )
+    tool_steps = [
+        view["steps"][step_id]
+        for step_id in behavior["tool_step_ids"]
+        if view["steps"][step_id]["code_name"] == "inspect_path"
+    ]
+
+    assert len(tool_steps) == 1
+    assert tool_steps[0]["reviewer"] == "controlled_behavior"
+
+
+def test_controlled_trace_does_not_merge_same_query_from_two_subtasks():
+    """Equal query arguments still keep each bounded React owner visible."""
+
+    report = _controlled_review_report_fixture()
+    output = report.events[1].detail["output"]
+    output["controlled_execution_mode"] = "subtask_react"
+    output["controlled_subtask_plans"] = {
+        "task-a:behavior": {
+            "reviewer": "behavior",
+            "task_id": "task-a",
+            "subtasks": [
+                {
+                    "subtask_id": "subtask-1",
+                    "seed_id": "seed-1",
+                    "initial_symbol_ids": ["java:demo.Service#execute()"],
+                    "allowed_relations": ["callees"],
+                },
+                {
+                    "subtask_id": "subtask-2",
+                    "seed_id": "seed-2",
+                    "initial_symbol_ids": ["java:demo.Service#execute()"],
+                    "allowed_relations": ["callees"],
+                },
+            ],
+        },
+    }
+    output["tool_trace_records"] = [
+        {
+            "call_id": "app-1",
+            "subtask_id": "subtask-1",
+            "tool": "inspect_path",
+            "arguments": {
+                "symbol_id": "java:demo.Service#execute()",
+                "path_kind": "behavior",
+                "max_depth": "3",
+            },
+            "status": "complete",
+            "duration_ms": 2.0,
+            "output": {},
+        },
+        {
+            "call_id": "app-2",
+            "subtask_id": "subtask-2",
+            "tool": "inspect_path",
+            "arguments": {
+                "symbol_id": "java:demo.Service#execute()",
+                "path_kind": "behavior",
+                "max_depth": "3",
+            },
+            "status": "complete",
+            "duration_ms": 3.0,
+            "output": {},
+        },
+    ]
+    report.events.extend([
+        _flow_event(
+            3,
+            "tool_start",
+            "tools",
+            "controlled_review",
+            "native-1",
+            detail={
+                "tool_name": "inspect_path",
+                "input": {
+                    "symbol_id": "java:demo.Service#execute()",
+                    "path_kind": "behavior",
+                    "max_depth": "3",
+                },
+            },
+        ),
+        _flow_event(
+            4,
+            "tool_end",
+            "tools",
+            "controlled_review",
+            "native-1",
+            detail={"tool_name": "inspect_path", "output": {}},
+        ),
+        _flow_event(
+            5,
+            "tool_start",
+            "tools",
+            "controlled_review",
+            "native-2",
+            detail={
+                "tool_name": "inspect_path",
+                "input": {
+                    "symbol_id": "java:demo.Service#execute()",
+                    "path_kind": "behavior",
+                    "max_depth": "3",
+                },
+            },
+        ),
+        _flow_event(
+            6,
+            "tool_end",
+            "tools",
+            "controlled_review",
+            "native-2",
+            detail={"tool_name": "inspect_path", "output": {}},
+        ),
+    ])
+
+    view = build_trace_view(report)
+    owned = [
+        view["steps"][step_id]
+        for section in view["controlled_sections"]
+        for step_id in section["tool_step_ids"]
+        if view["steps"][step_id].get("subtask_id") in {"subtask-1", "subtask-2"}
+    ]
+    assert {step["subtask_id"] for step in owned} == {"subtask-1", "subtask-2"}
+    assert len(owned) == 2
 
 
 def test_controlled_tool_fallback_uses_artifact_preview_and_hash():
@@ -796,6 +1064,37 @@ def test_trace_normalization_uses_parent_run_to_disambiguate_same_payload_tasks(
 
     tool_ends = [event for event in report.events if event.event_type == "tool_end"]
     assert [event.detail["artifact_id"] for event in tool_ends] == ids
+
+
+def test_trace_normalization_preserves_subtask_owner_for_active_react():
+    report = TraceReport(
+        run_id="subtask-owner",
+        timestamp="2026-08-24T00:00:00",
+        events=[_flow_event(
+            1,
+            "node_end",
+            "controlled_review",
+            "controlled_review",
+            "controlled-node",
+            detail={"output": {"tool_trace_records": [{
+                "call_id": "call-subtask",
+                "subtask_id": "subtask-behavior-task-a-1",
+                "artifact_id": "",
+                "tool": "query_relations",
+                "arguments": {
+                    "subject_symbol_id": "java:A#run()",
+                    "relation": "callees",
+                },
+                "status": "complete",
+                "duration_ms": 1.0,
+            }]}},
+        )],
+    )
+
+    normalize_trace_report(report, {})
+
+    refs = report.events[0].detail["state_write"]["tool_trace_records"]
+    assert refs[0]["subtask_id"] == "subtask-behavior-task-a-1"
 
 
 def test_trace_preview_reuses_runtime_focused_reviewer_projection():

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeAlias, cast
 import json
 
 from codeguard_agent.llm.client import invoke_with_retry
@@ -24,17 +24,22 @@ from codeguard_agent.pipeline.controlled.subtask_capabilities import (
     required_graph_tool,
 )
 
-_RELATIONS = {
+RelationKind: TypeAlias = Literal[
     "callers", "callees", "field_readers", "field_writers",
     "implementations", "overrides",
-}
-_RELATION_ORDER = (
+]
+
+_RELATIONS: frozenset[RelationKind] = frozenset({
+    "callers", "callees", "field_readers", "field_writers",
+    "implementations", "overrides",
+})
+_RELATION_ORDER: tuple[RelationKind, ...] = (
     "callers", "callees", "field_readers", "field_writers",
     "implementations", "overrides",
 )
 
 
-def _direction_safe_relations(seed: InvestigationSeed) -> tuple[str, ...]:
+def _direction_safe_relations(seed: InvestigationSeed) -> tuple[RelationKind, ...]:
     """Return relation families executable for a normalized seed direction.
 
     ``query_relations`` is intentionally one tool with several typed relation
@@ -52,7 +57,7 @@ def _direction_safe_relations(seed: InvestigationSeed) -> tuple[str, ...]:
     text = " ".join(
         (seed.observed_change, seed.investigation_question, seed.risk_dimension)
     ).lower()
-    allowed: set[str] = set()
+    allowed: set[RelationKind] = set()
     if seed.direction == "upstream" or seed.evidence_need is EvidenceNeed.INSPECT_CHANGE_IMPACT:
         allowed.add("callers")
     elif seed.direction == "downstream" or seed.evidence_need is EvidenceNeed.INSPECT_PATH:
@@ -61,10 +66,27 @@ def _direction_safe_relations(seed: InvestigationSeed) -> tuple[str, ...]:
         allowed.update(("implementations", "overrides"))
 
     if seed.direction is None:
-        if any(marker in text for marker in ("caller", "调用方", "上游", "consumer", "消费者")):
+        caller_hint = any(
+            marker in text
+            for marker in ("caller", "调用方", "上游", "consumer", "消费者")
+        )
+        callee_hint = any(
+            marker in text for marker in ("callee", "被调用", "下游")
+        )
+        # A vague question can mention both sides of a call.  Never turn that
+        # ambiguity into two opposite traversal permissions.  Prefer the
+        # typed evidence need when it gives us an unambiguous direction;
+        # otherwise leave the call family out and let the deterministic
+        # fallback below choose one safe default.
+        if caller_hint and not callee_hint:
             allowed.add("callers")
-        if any(marker in text for marker in ("callee", "被调用", "下游")):
+        elif callee_hint and not caller_hint:
             allowed.add("callees")
+        elif caller_hint and callee_hint:
+            if seed.evidence_need is EvidenceNeed.INSPECT_CHANGE_IMPACT:
+                allowed.add("callers")
+            elif seed.evidence_need is EvidenceNeed.INSPECT_PATH:
+                allowed.add("callees")
 
     state_markers = (
         "field", "字段", "state", "状态", "context", "上下文", "cache", "缓存",
@@ -326,12 +348,12 @@ def _validate_plan(
             diagnostics.append(f"subtask_no_allowed_tool:{item.seed_id}")
             continue
         direction_relations = set(_direction_safe_relations(seed))
-        requested_relations = tuple(
+        requested_relations: tuple[RelationKind, ...] = tuple(
             relation
             for relation in item.allowed_relations
             if relation in direction_relations
         )
-        relations = requested_relations or tuple(
+        relations: tuple[RelationKind, ...] = requested_relations or tuple(
             relation
             for relation in _default_relations(seed)
             if relation in direction_relations
@@ -339,8 +361,27 @@ def _validate_plan(
         primary = item.primary_tool if item.primary_tool in tools else _default_tool(seed, tools)
         depth = min(item.max_tool_calls, max_tool_calls)
         rounds = min(item.max_rounds, max_rounds)
+        if max_tool_calls > 0 and depth == 0:
+            # A provider may accidentally emit a zero-call instruction even
+            # though the task has an executable evidence budget.  Running such
+            # a React would only create an immediate rejected tool turn and a
+            # misleading empty result, so repair it to the smallest useful
+            # bounded investigation.
+            depth = 1
+            diagnostics.append(f"subtask_tool_budget_repaired:{item.seed_id}")
         if depth < 0 or rounds < 1:
             continue
+        required_facts = tuple(item.required_facts)
+        if not required_facts:
+            required_facts = (seed.investigation_question,)
+            diagnostics.append(f"subtask_required_facts_filled:{item.seed_id}")
+        stop_conditions = tuple(item.stop_conditions)
+        if not stop_conditions:
+            stop_conditions = (
+                "required_facts 已获得直接支持或反驳时立即收口",
+                "结果 partial、unresolved、无进展或预算耗尽时输出 inconclusive",
+            )
+            diagnostics.append(f"subtask_stop_conditions_filled:{item.seed_id}")
         normalized_item = item.model_copy(
             update={
                 "subtask_id": f"subtask-{reviewer.value}-{task_id}-{len(valid)+1}",
@@ -353,6 +394,8 @@ def _validate_plan(
                 "direction": seed.direction,
                 "max_tool_calls": depth,
                 "max_rounds": rounds,
+                "required_facts": required_facts,
+                "stop_conditions": stop_conditions,
             }
         )
         # Providers occasionally emit a second instruction for the same seed
@@ -420,9 +463,9 @@ def _validate_plan(
         repaired_count = 0
         ordered: list[SubtaskInstruction] = []
         for seed in seeds.values():
-            item = valid_by_seed.get(seed.seed_id)
-            if item is None:
-                item = _fallback_instruction(
+            ordered_item: SubtaskInstruction | None = valid_by_seed.get(seed.seed_id)
+            if ordered_item is None:
+                fallback_item = _fallback_instruction(
                     reviewer,
                     task_id,
                     seed,
@@ -431,10 +474,11 @@ def _validate_plan(
                     enabled_tools=enabled_tools,
                     subtask_index=len(ordered) + 1,
                 )
-                if item is not None:
+                if fallback_item is not None:
+                    ordered_item = fallback_item
                     repaired_count += 1
-            if item is not None:
-                ordered.append(item.model_copy(update={
+            if ordered_item is not None:
+                ordered.append(ordered_item.model_copy(update={
                     "subtask_id": f"subtask-{reviewer.value}-{task_id}-{len(ordered) + 1}"
                 }))
         valid = ordered[:max_subtasks]
@@ -501,7 +545,13 @@ def _fallback_instruction(
         observed_change=seed.observed_change,
         initial_symbol_ids=seed.initial_symbol_ids,
         allowed_tools=tools,
-        allowed_relations=_default_relations(seed),
+        allowed_relations=cast(
+            tuple[Literal[
+                "callers", "callees", "field_readers", "field_writers",
+                "implementations", "overrides",
+            ], ...],
+            _default_relations(seed),
+        ),
         primary_tool=_default_tool(seed, tools),
         path_kind=seed.path_kind,
         direction=seed.direction,

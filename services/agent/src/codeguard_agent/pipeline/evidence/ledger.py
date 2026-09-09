@@ -183,6 +183,7 @@ def capture_tool_records(
                 call_to_artifact[call_id] = artifact.id
         trace_refs.append(ToolTraceRef(
             call_id=call_id,
+            subtask_id=str(getattr(record, "subtask_id", "")),
             artifact_id=artifact_id,
             tool=str(getattr(record, "tool", "")),
             arguments=arguments,

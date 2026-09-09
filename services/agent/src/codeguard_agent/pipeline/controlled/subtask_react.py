@@ -16,7 +16,15 @@ from typing import Any
 
 from codeguard_agent.models.tasks import InvestigationResult, SubtaskInstruction
 from codeguard_agent.pipeline.controlled.llm_contracts import LlmInvestigationResult
-from codeguard_agent.pipeline.execution.discovery import DiscoveryToolRecord
+from codeguard_agent.pipeline.execution.discovery import (
+    COMPLETE_PATCH_RESULT,
+    REPEATED_TOOL_RESULT,
+    SUBTASK_BUDGET_TERMINAL_RESULT,
+    SUBTASK_NO_PROGRESS_TERMINAL_RESULT,
+    DiscoveryToolRecord,
+)
+from codeguard_agent.models.evidence import EvidenceValidationStatus
+from codeguard_agent.pipeline.evidence.graph_response import validate_graph_payload
 from codeguard_agent.llm.client import invoke_with_retry
 
 logger = logging.getLogger("codeguard")
@@ -174,6 +182,16 @@ class SubtaskReactEngine:
                 ["subtask_tool_budget_exceeded"],
             )
         parsed = self._extract(raw)
+        if parsed is not None:
+            contract_error = self._result_contract_error(parsed)
+            if contract_error:
+                return SubtaskReactOutcome(
+                    None,
+                    "failed",
+                    contract_error,
+                    records,
+                    ["subtask_protocol_failed"],
+                )
         # A provider may emit the terminal structured result immediately after
         # the first rejected call.  Preserve a finding backed by the successful
         # observations already captured; only ``no_finding`` remains unsafe
@@ -225,6 +243,20 @@ class SubtaskReactEngine:
                 records,
                 ["subtask_protocol_failed"],
             )
+        if parsed.outcome == "no_finding" and not any(
+            self._record_is_usable_source(record) for record in records
+        ):
+            # A graph-required subtask cannot establish a negative result from
+            # an empty trajectory.  Keep this distinct from protocol failure:
+            # it is an evidence gap that the caller can report or retry at a
+            # higher orchestration layer, never a clean review.
+            return SubtaskReactOutcome(
+                None,
+                "inconclusive",
+                "no_finding_without_observation",
+                records,
+                ["subtask_no_finding_without_observation"],
+            )
         if parsed.subtask_id != instruction.subtask_id:
             parsed = parsed.model_copy(update={"subtask_id": instruction.subtask_id})
         return SubtaskReactOutcome(
@@ -232,6 +264,106 @@ class SubtaskReactEngine:
             "complete",
             records=records,
             events=[f"subtask_react_{parsed.outcome}"],
+        )
+
+    @staticmethod
+    def _record_is_usable_source(record: DiscoveryToolRecord) -> bool:
+        """Return whether a record contains source that can support a negative.
+
+        A graph page can establish a positive relationship, but neither a
+        relationship nor an empty/partial page proves that the investigated
+        behavior is safe.  Requiring a real source read for ``no_finding``
+        keeps the negative terminal state fail-closed without preventing the
+        React from using graph facts to decide what source to read next.
+        """
+
+        if str(getattr(record, "tool", "")) not in {
+            "read_symbol", "get_file_content"
+        }:
+            return False
+        if not SubtaskReactEngine._record_contains_fact(record):
+            return False
+        raw = str(
+            getattr(record, "resolved_output", "")
+            or getattr(record, "output", "")
+            or ""
+        ).strip()
+        return raw not in {
+            COMPLETE_PATCH_RESULT,
+            REPEATED_TOOL_RESULT,
+            SUBTASK_BUDGET_TERMINAL_RESULT,
+            SUBTASK_NO_PROGRESS_TERMINAL_RESULT,
+        } and "end_of_symbol: true" not in raw
+
+    @staticmethod
+    def _record_contains_fact(record: DiscoveryToolRecord) -> bool:
+        """Return whether a successful tool record contains usable facts.
+
+        A non-empty serialized value is not enough: ``{}``, ``null`` and
+        malformed graph payloads are execution artifacts, not observations
+        that can support a negative conclusion.  Source reads are accepted
+        when they contain text; graph reads must carry the v2 contract and at
+        least one resolved symbol or relationship.
+        """
+
+        if str(getattr(record, "status", "")) not in {
+            "complete", "reused", "available"
+        }:
+            return False
+        raw = str(
+            getattr(record, "resolved_output", "")
+            or getattr(record, "output", "")
+            or ""
+        ).strip()
+        if not raw or raw in {
+            COMPLETE_PATCH_RESULT,
+            REPEATED_TOOL_RESULT,
+            SUBTASK_BUDGET_TERMINAL_RESULT,
+            SUBTASK_NO_PROGRESS_TERMINAL_RESULT,
+        }:
+            return False
+        tool = str(getattr(record, "tool", ""))
+        if tool not in {
+            "query_relations",
+            "inspect_path",
+            "inspect_change_impact",
+            "inspect_structure",
+        }:
+            return raw not in {"{}", "null", "[]"}
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if not isinstance(payload, dict):
+            return False
+        arguments = getattr(record, "arguments", {})
+        expected_subject = ""
+        if isinstance(arguments, dict):
+            expected_subject = str(
+                arguments.get("subject_symbol_id")
+                or arguments.get("symbol_id")
+                or ""
+            )
+        validation = validate_graph_payload(
+            raw,
+            tool=tool,
+            expected_subject=expected_subject,
+        )
+        # Reuse the canonical graph contract instead of maintaining a second
+        # partial schema here.  LIMITED/UNAVAILABLE/INVALID responses are
+        # valid investigation observations, but they cannot justify a clean
+        # negative terminal state.
+        if validation.status is not EvidenceValidationStatus.VALID:
+            return False
+        symbols = payload.get("symbols")
+        relationships = payload.get("relationships")
+        return bool(
+            isinstance(relationships, list) and relationships
+            or (
+                str(getattr(record, "tool", "")) == "inspect_structure"
+                and isinstance(symbols, list)
+                and symbols
+            )
         )
 
     def _finalize_after_budget(
@@ -324,6 +456,8 @@ class SubtaskReactEngine:
         )
         if parsed is None:
             return None
+        if self._result_contract_error(parsed):
+            return None
         if parsed.subtask_id != instruction.subtask_id:
             parsed = parsed.model_copy(update={"subtask_id": instruction.subtask_id})
         return parsed
@@ -345,7 +479,10 @@ class SubtaskReactEngine:
             "query_relations": lambda: make_query_relations_tool(self._tool_client),
         }
         tools = [factories[name]() for name in instruction.allowed_tools if name in factories]
-        agent = create_agent(
+        # LangChain's dynamically typed agent graph has provider-dependent
+        # input/output overloads.  Keep the boundary typed as Any here; the
+        # result is immediately validated by _extract/_result_contract_error.
+        agent: Any = create_agent(
             llm,
             tools,
             system_prompt=_PROMPT.read_text(encoding="utf-8"),
@@ -381,6 +518,27 @@ class SubtaskReactEngine:
         except Exception:  # noqa: BLE001
             return None
 
+    @staticmethod
+    def _result_contract_error(result: InvestigationResult) -> str:
+        """Reject contradictory terminal payloads before they enter State.
+
+        Pydantic validates field shapes, but the cross-field meaning is part of
+        the React protocol: ``findings`` must contain evidence-bearing entries,
+        and non-finding outcomes must not smuggle findings that the coordinator
+        would silently ignore.  Failing here keeps the state machine explicit
+        and makes malformed provider output visible in Trace.
+        """
+
+        if result.outcome == "findings":
+            if not result.findings:
+                return "findings_outcome_without_findings"
+            if any(not finding.observations for finding in result.findings):
+                return "finding_without_observations"
+            return ""
+        if result.findings:
+            return "findings_present_on_non_findings_outcome"
+        return ""
+
     def _build_user_prompt(self, task: Any, symbol_context: Any, instruction: SubtaskInstruction) -> str:
         aliases = getattr(self._tool_client, "symbol_aliases", {})
         raw_to_alias = {raw: alias for alias, raw in aliases.items()}
@@ -399,6 +557,7 @@ class SubtaskReactEngine:
             render_symbol(symbol) for symbol in (symbol_context.symbols if symbol_context else ())
             if symbol.symbol_id in set(instruction.initial_symbol_ids)
         ) or "(仅允许使用 instruction 中的 symbol_id)"
+        initial_ids = set(instruction.initial_symbol_ids)
         references = "\n".join(
             json.dumps(
                 {
@@ -409,6 +568,7 @@ class SubtaskReactEngine:
                 separators=(",", ":"),
             )
             for reference in (getattr(symbol_context, "references", ()) if symbol_context else ())
+            if reference.symbol_id in initial_ids
         ) or "(无变更行引用目标)"
         safe_instruction = instruction.model_copy(update={
             "initial_symbol_ids": tuple(

@@ -510,6 +510,13 @@ function stateReferenceValue(step){
       if(!Object.prototype.hasOwnProperty.call(value,ref.key))return;
       value=value[ref.key]
     }
+    if(ref.key_prefix!==undefined&&value&&typeof value==="object"&&!Array.isArray(value)){
+      var prefix=String(ref.key_prefix),filtered={};
+      Object.keys(value).forEach(function(key){
+        if(key.indexOf(prefix)===0)filtered[key]=value[key]
+      });
+      value=filtered
+    }
     if(value===undefined)return;
     hasValue=true;
     if(ref.label){

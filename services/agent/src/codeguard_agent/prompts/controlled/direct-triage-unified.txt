@@ -30,6 +30,44 @@
 
 不要为了“完整”扫描每个 symbol，也不要同时请求相反方向的关系。工具能力和事实由后续 GraphPlan/子任务 React 处理；本节点只负责覆盖和分流。
 
+## 从变更行确定调查入口
+
+不要凭方法名猜入口。按下面的优先级从输入事实中选择 `initial_symbol_ids`：
+
+1. 变更行的 `changed_references` 中有已解析目标时，优先使用该目标；这是新增/删除调用真正指向的 symbol。
+2. 若问题依赖调用发生的条件、顺序、异常或状态写入，使用 `symbol_context` 中包裹变更行的 METHOD/CONSTRUCTOR 作为补充入口，并在问题中说明需要核对调用点所在方法。
+3. 若是返回值、参数或接口契约被修改，使用包裹变更的 symbol 作为主体，向上调查 callers；不要把被调用的通用库方法当作主体。
+4. 若是字段、缓存或上下文状态变化，只有在 `symbol_context` 明确给出 FIELD 或实际读写目标时才创建字段读写调查；没有稳定字段 symbol 时记录解析缺口，不拼造 ID。
+5. 若是接口/抽象类/覆写变化，使用已解析的接口或方法 symbol，调查 implementations/overrides；不要把类名相同当作实现关系。
+
+新增或删除调用的 seed 必须把“调用点所在方法”和“已解析调用目标”写入同一个调查问题，但仍只保留一个连续 seed。问题应描述需要核对的事实，例如“核对该调用目标返回的对象是否在当前方法或下游被修改”，而不是拆成“查调用方”“查被调用方”两个任务。纯删除使用 `deletion_anchor` 对应的旧行定位；不要将删除行当作新版本行号。
+
+对每个 ChangeUnit，最多保留少量高价值 seed：优先状态/异常/返回值/回调/权限边界等可能改变行为的跨 symbol 变化，其次才是一般耦合。没有稳定入口的疑点仍可保留为 `inconclusive` 方向，但不得用经验补 symbol、路径或运行时后果。
+
+## Java 变更模式检查清单
+
+对每个连续变更区间至少快速核对一次下面对应的模式；只在 diff 实际出现时使用，
+不要为了清单完整而扫描无关 symbol：
+
+- 新增、删除或替换方法/构造器调用：记录调用点所在 METHOD/CONSTRUCTOR 和
+  `changed_references` 中解析出的目标；若后果依赖目标返回值、异常、回调或状态，生成一个
+  同时包含“调用点方法 + 目标 symbol”的 downstream seed。
+- 改变返回表达式、参数、异常或状态清理：主体使用包裹变更的 symbol；若影响取决于消费者，
+  生成 upstream callers seed；若影响取决于主体继续调用的对象，生成 downstream callees seed，
+  不能把两种方向塞进同一 seed。
+- 新增/删除 listener、callback、重试、事务或并发边界：把注册/执行所在方法作为入口，
+  目标 listener/实现只有在 `changed_references` 已解析时才加入；需要确认实现时调查
+  implementations/overrides 或下游 callees。
+- 字段、缓存、上下文和锁的读写变化：只有出现稳定 FIELD 或实际读写目标时才调查
+  field_readers/field_writers；没有字段 symbol 时保留解析缺口，不用字段名猜 ID。
+- 接口、抽象方法、父类或构造器变化：只用已解析的接口/父类/构造器 symbol 调查
+  implementations/overrides 或 callers；类名相同不是关系证据。
+- 纯删除：定位使用删除侧 `deletion_anchor`；不要把旧行号当成当前版本新增行号，也不要因为
+  删除后“看不见调用方”就断言调用关系不存在。
+
+每个模式最终只生成一个连续 investigation seed；seed 的 objective 是待核对事实，
+不是“审查这个方法所有潜在 bug”。
+
 ## 输出纪律
 
 - 每个 ChangeUnit 必须且只能出现一次 coverage；局部问题用 `local_only`，需要外部事实用 `graph_needed`，确认无问题用 `not_applicable`。

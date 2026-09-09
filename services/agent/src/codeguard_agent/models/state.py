@@ -28,6 +28,7 @@ from codeguard_agent.models.schemas import DiscoveredIssue, DiscoveryReviewResul
 from codeguard_agent.models.tasks import (
     DirectTriageResult,
     EvidenceAssessment,
+    InvestigationResult,
     ProofMatch,
     ReviewerGraphPlan,
     KnowledgeRoutePlan,
@@ -116,14 +117,21 @@ class ReviewState(TypedDict, total=False):
     controlled_max_subtasks_per_task: int
     knowledge_route_plan: dict[str, KnowledgeRoutePlan]
     controlled_triage: dict[str, DirectTriageResult]
+    controlled_triage_outcomes: dict[str, str]
+    controlled_triage_reasons: dict[str, str]
     controlled_graph_plans: dict[str, ReviewerGraphPlan]
     # The subtask React path has a different plan contract from the legacy
     # fixed-step executor.  Keep it in a separate field instead of placing a
     # ``SubtaskPlan`` in ``controlled_graph_plans`` and relying on consumers to
     # guess which model is present for a given key.
     controlled_subtask_plans: dict[str, SubtaskPlan]
+    controlled_subtask_results: dict[str, InvestigationResult]
     controlled_subtask_outcomes: dict[str, str]
     controlled_subtask_reasons: dict[str, str]
+    # Seed omissions/failures are tracked separately from executable subtask
+    # lifecycle so one reviewer cannot hide another reviewer's GraphPlan gap.
+    controlled_subtask_seed_outcomes: dict[str, str]
+    controlled_subtask_seed_reasons: dict[str, str]
     controlled_assessments: dict[str, EvidenceAssessment]
     controlled_proof_matches: dict[str, ProofMatch]
     # CandidateIssue keeps explanatory fields out of generic model dumps so

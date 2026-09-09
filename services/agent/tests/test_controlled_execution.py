@@ -1734,6 +1734,132 @@ def test_controlled_review_node_runs_unified_triage_without_tools():
     assert output["tool_trace_records"] == []
 
 
+def test_subtask_react_state_keeps_plan_result_and_terminal_status_separate(
+    monkeypatch,
+):
+    """The active path writes one inspectable lifecycle record per subtask."""
+
+    import codeguard_agent.pipeline.orchestration.graph as graph_module
+    from codeguard_agent.models.tasks import (
+        InvestigationResult,
+        InvestigationSeed,
+        PlanUnit,
+        SubtaskInstruction,
+        SubtaskPlan,
+        TaskRoute,
+    )
+    from codeguard_agent.pipeline.controlled.subtask_react import (
+        SubtaskReactOutcome,
+    )
+
+    task = ReviewTask(
+        id="A.java#h0",
+        file="A.java",
+        patch="+call();",
+        changed_lines=[2],
+    )
+    seed = InvestigationSeed(
+        seed_id="investigation-behavior-state",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-A.java#h0",
+        observed_change="新增 call 调用",
+        investigation_question="核对 call 的下游实现是否改变状态",
+        location_file="A.java",
+        location_line=2,
+        initial_symbol_ids=("s1",),
+        evidence_need=EvidenceNeed.INSPECT_PATH,
+        allowed_tools=("query_relations", "read_symbol"),
+        path_kind="behavior",
+        direction="downstream",
+    )
+    triage = DirectTriageResult(
+        coverage=(CoverageDeclaration(
+            change_unit_id="CU-A.java#h0",
+            decision=CoverageDecision.GRAPH_NEEDED,
+        ),),
+        investigation_seeds=(seed,),
+    )
+    instruction = SubtaskInstruction(
+        subtask_id="subtask-behavior-A.java#h0-1",
+        seed_id=seed.seed_id,
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id=seed.change_unit_id,
+        objective=seed.investigation_question,
+        observed_change=seed.observed_change,
+        initial_symbol_ids=seed.initial_symbol_ids,
+        allowed_tools=("query_relations", "read_symbol"),
+        allowed_relations=("callees",),
+        primary_tool="query_relations",
+        path_kind="behavior",
+        direction="downstream",
+        required_facts=("下游实现及其状态使用",),
+        stop_conditions=("事实不足时 inconclusive",),
+        max_tool_calls=1,
+        max_rounds=1,
+    )
+    plan = SubtaskPlan(
+        reviewer=ReviewerKind.BEHAVIOR,
+        task_id=task.id,
+        subtasks=(instruction,),
+    )
+
+    monkeypatch.setattr(
+        graph_module,
+        "run_direct_triage",
+        lambda **_kwargs: (triage, ()),
+    )
+    monkeypatch.setattr(
+        graph_module,
+        "run_subtask_plan",
+        lambda **_kwargs: (plan, ()),
+    )
+
+    class _FakeReact:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, *_args, **_kwargs):
+            return SubtaskReactOutcome(
+                InvestigationResult(
+                    subtask_id=instruction.subtask_id,
+                    outcome="inconclusive",
+                    limitations=("测试未提供工具事实",),
+                ),
+                "complete",
+            )
+
+    monkeypatch.setattr(graph_module, "SubtaskReactEngine", _FakeReact)
+    node = _controlled_review_node(
+        object(),
+        tool_client=_GraphClient(),
+        controlled_execution_mode="subtask_react",
+        subtask_max_tool_calls=1,
+        subtask_max_rounds=1,
+        task_max_tool_calls=1,
+        max_subtasks_per_reviewer=1,
+        max_subtasks_per_task=1,
+    )
+    output = node({
+        "review_tasks": [task],
+        "task_selection": TaskSelection(selected_task_ids=[task.id]),
+        "task_routes": {task.id: TaskRoute(task_id=task.id, route="full", reason="test")},
+        "plan_units": [PlanUnit(id="A.java", file="A.java", task_ids=(task.id,))],
+        "knowledge_route_plan": {},
+        "task_symbol_contexts": {task.id: _context()},
+        "evidence_revision": "r1",
+        "max_retries": 1,
+        "structured_method": "function_calling",
+        "controlled_max_knowledge_topics": 0,
+    })
+
+    status_key = f"{task.id}:{instruction.subtask_id}"
+    assert output["controlled_triage_outcomes"] == {f"{task.id}:behavior": "complete"}
+    assert output["controlled_subtask_plans"][f"{task.id}:behavior"].subtasks
+    assert output["controlled_subtask_results"][status_key].outcome == "inconclusive"
+    assert output["controlled_subtask_outcomes"][status_key] == "inconclusive"
+    assert output["controlled_subtask_seed_outcomes"] == {}
+
+
 def test_claim_consequence_repair_requires_observer_for_ordering_claims():
     graph_seed = CandidateSeed(
         reviewer=ReviewerKind.BEHAVIOR,

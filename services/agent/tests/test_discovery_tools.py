@@ -226,6 +226,22 @@ def test_focused_client_rejects_raw_symbols_outside_its_scope() -> None:
     assert raw.calls == 0
 
 
+def test_focused_client_rejects_raw_relation_subjects_outside_its_scope() -> None:
+    raw = _StableRelationClient()
+    client = CoordinatedDiscoveryToolClient(
+        raw,
+        DiscoveryToolCoordinator(),
+        projection_focus=SimpleNamespace(changed_symbol_ids=("java:demo.A#m()",)),
+    )
+
+    response = client.query_relations("java:demo.Other#n()", "callees")
+
+    assert response.success is False
+    assert (response.error or "").startswith("symbol_not_in_review_context")
+    assert client.trace_records[-1].status == "failed"
+    assert raw.calls == 0
+
+
 def test_canonical_key_normalizes_symbol_entities_without_lowercasing() -> None:
     left = canonical_tool_key(
         "get_file_content",
@@ -746,4 +762,40 @@ def test_dynamic_aliases_never_pollute_shared_symbol_cache() -> None:
     assert client_a.symbol_aliases.get("R01") == "java:B#run()"
     assert "R02" not in client_a.symbol_aliases
     assert delegate.source_calls == ["java:B#run()", "java:C#run()"]
-    assert delegate.source_calls == ["java:B#run()", "java:C#run()"]
+
+
+def test_subtask_initial_aliases_do_not_preseed_entire_symbol_catalog() -> None:
+    """Only the explicit frontier is Sxx; graph-returned symbols become Rxx."""
+
+    class Delegate:
+        def query_relations(self, subject, relation, **_kwargs):  # noqa: ARG002
+            return ToolResponse(
+                True,
+                json.dumps({
+                    "schema_version": 2,
+                    "outcome": "found",
+                    "coverage": "complete",
+                    "symbols": [
+                        {"id": subject, "kind": "METHOD"},
+                        {"id": "java:B#run()", "kind": "METHOD"},
+                    ],
+                    "relationships": [{
+                        "sourceId": subject,
+                        "targetId": "java:B#run()",
+                        "kind": "CALLS",
+                    }],
+                }),
+            )
+
+    client = CoordinatedDiscoveryToolClient(
+        Delegate(),
+        DiscoveryToolCoordinator(),
+        initial_symbol_ids={"java:A#run()"},
+        symbol_catalog_ids=("java:A#run()", "java:B#run()"),
+        lossless_payload=True,
+    )
+
+    assert client.symbol_aliases == {"S01": "java:A#run()"}
+    result = client.query_relations("S01", "callees")
+    assert result.success
+    assert client.symbol_aliases["R01"] == "java:B#run()"

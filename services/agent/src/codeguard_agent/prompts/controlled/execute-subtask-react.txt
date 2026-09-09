@@ -31,6 +31,22 @@
 应立即收口。每次深入只能从工具返回的已解析 Rxx 进入，并且必须说明它仍服务于原 objective；
 不要为了“再看一层”而扩大调查范围。
 
+## 事实驱动的决策表
+
+每次工具返回后只按下面的顺序判断，不要凭工具名称直接下结论：
+
+| 已获得事实 | 下一步 | 允许的收口 |
+| --- | --- | --- |
+| 返回了与 objective 相关的已解析关系，但还缺调用点所在方法的条件、顺序、异常或状态使用 | 读取该关系端点的 Rxx 源码；若端点未返回源码 symbol，不得自行拼接 ID | 事实完整且 finding 有直接机制证据时 `findings`，否则继续或 `inconclusive` |
+| 读取的源码已经展示变更机制与跨 symbol 后果，并能绑定同一 objective 的关系观察 | 停止工具调用，整理最小观察集合 | `findings` |
+| 真实源码明确表明变更在调查范围内被复制、保护、回滚或其它机制抵消 | 停止工具调用，记录反驳事实 | `no_finding` |
+| 返回 `partial`、`unresolved`、空页、缺少目标，或只看到关系存在而没有行为语义 | 不得把缺失当作不存在；只在同一 subject/relation 有明确下一页或已返回端点时继续 | 若仍缺关键事实则 `inconclusive` |
+| 连续两次相同前沿无新增事实、工具被拒绝、预算或超时 | 停止所有工具调用 | 有直接证据才 `findings`；否则 `inconclusive` 或 `failed` |
+
+一个“关系存在”观察不能单独形成 finding；一个“没有找到关系”观察也不能单独形成
+`no_finding`。不要为了凑齐关系和源码而读取与 objective 无关的 symbol；仅有关系或
+“没有找到关系”时，必须继续寻找相关源码，不能直接输出 `no_finding`。
+
 如果工具返回 `subtask_tool_budget_exceeded`、`subtask_no_progress` 或包含“已自动停止调查”的终止提示，
 这不是新的事实，也不是“没有问题”的证明。立即输出 `InvestigationResult`；若已有 observation 能直接证明机制才输出
 `findings`，否则输出 `inconclusive`。不得继续调用工具、不得把终止原因写成 `no_finding`。
@@ -46,7 +62,12 @@
 ## 终止状态
 
 - `findings`：至少一个 finding 的 claim、mechanism、location 和 observations 都有直接证据；每个子任务最多两个相互独立 finding。
-- `no_finding`：调查得到的源码/关系明确反驳该 objective，或确认变更在此范围内安全。说明性限制放入 limitations。
+- `no_finding`：调查得到的真实源码明确反驳该 objective，或确认变更在此范围内安全；
+  至少要有一条成功返回的实际 `read_symbol`/`get_file_content` 源码观察作为依据。
+  图谱关系、`not_found`/空页、partial/unresolved 页面、完整 patch 复用提示和
+  `end_of_symbol` 终止标记都不能单独支撑 `no_finding`。只有空轨迹、工具失败或
+  “没有看到目标”时，不能输出 `no_finding`，应输出 `inconclusive`。说明性限制放入
+  limitations。
 - `inconclusive`：工具失败、覆盖 partial、预算耗尽或关键事实缺失，不能把它当作 clean，也不能输出猜测 finding。
 - `failed`：协议、权限或执行错误使调查无法可靠进行。
 
@@ -57,9 +78,23 @@
 1. 先停止所有工具调用；
 2. 只使用已经返回的 observation，不能补充推测或重新解释未返回的路径；
 3. 有直接机制证据时输出 `findings`，每个 finding 绑定 1～3 条 observation；
-4. 只有明确反驳 objective 的事实才能输出 `no_finding`；
+4. 只有真实源码观察明确反驳 objective 才能输出 `no_finding`；图谱关系必须先引导
+   读取相关源码，不能单独形成否定结论；
 5. 事实不足、查询无进展、结果 partial 或预算终止时输出 `inconclusive`；
 6. 不得输出空的 `findings`，不得在终止结果后继续发起工具调用。
+
+## 终止前自检
+
+在发出结构化结果前，逐项核对：
+
+- `subtask_id` 必须与输入完全一致；`outcome` 只能是 `findings`、`no_finding`、`inconclusive` 或 `failed`。
+- 选择 `findings` 时，至少有一个 finding；每个 finding 都必须有非空 `claim`、`mechanism`、真实源码位置，以及 1～3 个本轮工具返回的 observation_id。通常至少包含一条关系观察和一条源码/机制观察；只有“关系存在”不能形成 finding。
+- observation_id 必须逐字复制工具返回末尾的本地编号；不要写 `Sxx`/`Rxx` 当证据，也不要写不存在的 Txx。不要在 claim、mechanism 或 impact 中引用没有被 observation 直接展示的调用方、参数传播、执行顺序或外部行为。
+- 选择 `no_finding` 只表示已获得真实源码明确反驳 objective，并且必须存在成功的
+  `read_symbol`/`get_file_content` 观察；没有找到目标、仅有图谱关系、结果
+  partial/unresolved、控制标记、连续无进展或预算结束都必须选择 `inconclusive`。
+- 选择 `inconclusive` 时 `findings` 必须为空，并在 `limitations` 简短说明缺失事实或停止原因；不要借此输出猜测候选。
+- `failed` 仅用于协议、权限或工具执行错误；模型不能把“没有发现问题”写成 failed。
 
 ## 输出格式
 

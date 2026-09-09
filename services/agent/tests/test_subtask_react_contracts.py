@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +29,7 @@ from codeguard_agent.pipeline.controlled.subtask_capabilities import (
 from codeguard_agent.pipeline.orchestration.graph import _allocate_subtask_budgets
 from codeguard_agent.pipeline.controlled.subtask_react import SubtaskReactEngine
 from codeguard_agent.pipeline.execution.discovery import (
+    COMPLETE_PATCH_RESULT,
     CoordinatedDiscoveryToolClient,
     DiscoveryToolRecord,
     DiscoveryToolCoordinator,
@@ -112,6 +114,45 @@ def test_investigation_result_can_confirm_only_with_local_observation_ids():
     )
     assert result.outcome == "findings"
     assert [item.observation_id for item in result.findings[0].observations] == ["T01", "T02"]
+
+
+def test_subtask_react_rejects_findings_outcome_without_evidence_entries():
+    class Client:
+        trace_records = ()
+        tool_calls = 0
+        budget_exhausted = False
+        no_progress_exhausted = False
+
+    instruction = SubtaskInstruction(
+        subtask_id="subtask-invalid-findings",
+        seed_id="seed-invalid-findings",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-task-1",
+        objective="检查返回行为",
+        observed_change="返回表达式发生变化",
+        initial_symbol_ids=("java:A#run()",),
+        allowed_tools=("read_symbol",),
+    )
+    engine = SubtaskReactEngine(Client(), max_tool_calls=2, max_rounds=2)
+    engine._run_agent = lambda *args: {
+        "structured_response": InvestigationResult(
+            subtask_id=instruction.subtask_id,
+            outcome="findings",
+        )
+    }
+
+    outcome = engine.run(
+        object(),
+        task=SimpleNamespace(file="src/A.java", patch="+return run();"),
+        symbol_context=SimpleNamespace(symbols=()),
+        instruction=instruction,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.reason == "findings_outcome_without_findings"
+    assert outcome.events == ["subtask_protocol_failed"]
 
 
 def test_subtask_tool_budget_is_enforced_before_delegate_call():
@@ -424,6 +465,18 @@ def test_subtask_relation_allowlist_matches_the_investigation_direction():
     )
 
 
+def test_ambiguous_direction_never_allows_opposite_call_families():
+    ambiguous = _seed().model_copy(update={
+        "direction": None,
+        "evidence_need": EvidenceNeed.INSPECT_STRUCTURE,
+        "investigation_question": "检查调用方和被调用方的状态使用",
+    })
+
+    relations = _direction_safe_relations(ambiguous)
+
+    assert not ({"callers", "callees"} <= set(relations))
+
+
 def test_subtask_plan_repairs_every_seed_when_provider_omits_one():
     first = _seed().model_copy(update={"seed_id": "investigation-first"})
     second = _seed().model_copy(update={
@@ -447,6 +500,7 @@ def test_subtask_plan_repairs_every_seed_when_provider_omits_one():
                     initial_symbol_ids=("S01",),
                     allowed_tools=("inspect_change_impact", "get_file_content"),
                     primary_tool="inspect_change_impact",
+                    max_tool_calls=0,
                 ),),
             )
 
@@ -479,6 +533,9 @@ def test_subtask_plan_repairs_every_seed_when_provider_omits_one():
     )
     assert [item.seed_id for item in plan.subtasks] == [first.seed_id, second.seed_id]
     assert "subtask_plan_missing_seeds_repaired:1" in diagnostics
+    assert "subtask_tool_budget_repaired:investigation-first" in diagnostics
+    assert plan.subtasks[0].required_facts
+    assert plan.subtasks[0].stop_conditions
 
 
 def test_discovery_client_rejects_invalid_allowed_path_kind():
@@ -808,6 +865,245 @@ def test_rejected_budget_call_cannot_be_reported_as_no_finding():
     assert outcome.status == "inconclusive"
     assert outcome.reason == "tool_budget_exceeded"
     assert outcome.events == ["subtask_tool_budget_exceeded"]
+
+
+def test_empty_subtask_cannot_report_no_finding_without_an_observation():
+    class Client:
+        trace_records = ()
+        tool_calls = 0
+        budget_exhausted = False
+        no_progress_exhausted = False
+
+    instruction = SubtaskInstruction(
+        subtask_id="subtask-empty-negative",
+        seed_id="seed-empty-negative",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-task-1",
+        objective="检查返回行为",
+        observed_change="返回表达式发生变化",
+        initial_symbol_ids=("java:A#run()",),
+        allowed_tools=("read_symbol",),
+    )
+    engine = SubtaskReactEngine(Client(), max_tool_calls=2, max_rounds=2)
+    engine._run_agent = lambda *args: {
+        "structured_response": InvestigationResult(
+            subtask_id="subtask-empty-negative",
+            outcome="no_finding",
+        )
+    }
+
+    outcome = engine.run(
+        object(),
+        task=SimpleNamespace(file="src/A.java", patch="+return run();"),
+        symbol_context=SimpleNamespace(symbols=()),
+        instruction=instruction,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+
+    assert outcome.status == "inconclusive"
+    assert outcome.reason == "no_finding_without_observation"
+    assert outcome.events == ["subtask_no_finding_without_observation"]
+
+
+def test_malformed_graph_payload_cannot_support_no_finding():
+    class Client:
+        trace_records = (
+            DiscoveryToolRecord(
+                call_id="call-empty-graph",
+                tool="query_relations",
+                arguments={"subject_symbol_id": "java:A#run()", "relation": "callees"},
+                output="{}",
+                resolved_output="{}",
+                duration_ms=1.0,
+                status="complete",
+                reuse_key="",
+            ),
+        )
+        tool_calls = 1
+        budget_exhausted = False
+        no_progress_exhausted = False
+
+    instruction = SubtaskInstruction(
+        subtask_id="subtask-empty-graph",
+        seed_id="seed-empty-graph",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-task-1",
+        objective="检查返回行为",
+        observed_change="返回表达式发生变化",
+        initial_symbol_ids=("java:A#run()",),
+        allowed_tools=("query_relations",),
+    )
+    engine = SubtaskReactEngine(Client(), max_tool_calls=2, max_rounds=2)
+    engine._run_agent = lambda *args: {
+        "structured_response": InvestigationResult(
+            subtask_id="subtask-empty-graph",
+            outcome="no_finding",
+        )
+    }
+
+    outcome = engine.run(
+        object(),
+        task=SimpleNamespace(file="src/A.java", patch="+return run();"),
+        symbol_context=SimpleNamespace(symbols=()),
+        instruction=instruction,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+
+    assert outcome.status == "inconclusive"
+    assert outcome.reason == "no_finding_without_observation"
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"coverage": "partial"},
+        {"outcome": "indeterminate", "coverage": "partial", "relationships": []},
+        {
+            "coverage": "partial",
+            "unresolved_count": 1,
+            "unresolved_relationships": [{
+                "sourceId": "java:A#run()",
+                "targetId": "java:unknown#x()",
+                "kind": "CALLS",
+                "resolution": "UNRESOLVED",
+                "source_set": "MAIN",
+            }],
+        },
+    ],
+)
+def test_partial_or_indeterminate_graph_cannot_support_no_finding(updates):
+    payload = {
+        "schema_version": 2,
+        "subject_symbol_id": "java:A#run()",
+        "source_scope": "MAIN",
+        "outcome": "found",
+        "coverage": "complete",
+        "symbols": [
+            {"id": "java:A#run()", "source_set": "MAIN"},
+            {"id": "java:B#x()", "source_set": "MAIN"},
+        ],
+        "relationships": [{
+            "sourceId": "java:A#run()",
+            "targetId": "java:B#x()",
+            "kind": "CALLS",
+            "resolution": "RESOLVED",
+            "source_set": "MAIN",
+        }],
+        "unresolved_relationships": [],
+        "unresolved_count": 0,
+        "limitations": [],
+        "omitted_count": 0,
+        "omitted_path_count": 0,
+    }
+    payload.update(updates)
+
+    class Client:
+        trace_records = (
+            DiscoveryToolRecord(
+                call_id="call-graph-gap",
+                tool="query_relations",
+                arguments={"subject_symbol_id": "java:A#run()", "relation": "callees"},
+                output=json.dumps(payload),
+                resolved_output=json.dumps(payload),
+                duration_ms=1.0,
+                status="complete",
+                reuse_key="",
+            ),
+        )
+        tool_calls = 1
+        budget_exhausted = False
+        no_progress_exhausted = False
+
+    instruction = SubtaskInstruction(
+        subtask_id="subtask-graph-gap",
+        seed_id="seed-graph-gap",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-task-1",
+        objective="检查调用关系是否改变行为",
+        observed_change="调用关系发生变化",
+        initial_symbol_ids=("java:A#run()",),
+        allowed_tools=("query_relations",),
+    )
+    engine = SubtaskReactEngine(Client(), max_tool_calls=2, max_rounds=2)
+    engine._run_agent = lambda *args: {
+        "structured_response": InvestigationResult(
+            subtask_id="subtask-graph-gap",
+            outcome="no_finding",
+        )
+    }
+
+    outcome = engine.run(
+        object(),
+        task=SimpleNamespace(file="src/A.java", patch="+return run();"),
+        symbol_context=SimpleNamespace(symbols=()),
+        instruction=instruction,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+
+    assert outcome.status == "inconclusive"
+    assert outcome.reason == "no_finding_without_observation"
+
+
+def test_control_marker_and_end_of_symbol_cannot_support_no_finding():
+    class Client:
+        trace_records = (
+            DiscoveryToolRecord(
+                call_id="call-patch-marker",
+                tool="read_symbol",
+                arguments={"symbol_id": "java:A#run()"},
+                output=COMPLETE_PATCH_RESULT,
+                resolved_output=COMPLETE_PATCH_RESULT,
+                duration_ms=0.0,
+                status="reused",
+                reuse_key="",
+            ),
+            DiscoveryToolRecord(
+                call_id="call-end-marker",
+                tool="read_symbol",
+                arguments={"symbol_id": "java:A#run()", "cursor": 999},
+                output="symbol_id: java:A#run()\nend_of_symbol: true\n",
+                resolved_output="symbol_id: java:A#run()\nend_of_symbol: true\n",
+                duration_ms=1.0,
+                status="complete",
+                reuse_key="",
+            ),
+        )
+        tool_calls = 2
+        budget_exhausted = False
+        no_progress_exhausted = False
+
+    instruction = SubtaskInstruction(
+        subtask_id="subtask-marker-gap",
+        seed_id="seed-marker-gap",
+        reviewer=ReviewerKind.BEHAVIOR,
+        change_unit_id="CU-task-1",
+        objective="检查返回行为",
+        observed_change="返回表达式发生变化",
+        initial_symbol_ids=("java:A#run()",),
+        allowed_tools=("read_symbol",),
+    )
+    engine = SubtaskReactEngine(Client(), max_tool_calls=3, max_rounds=2)
+    engine._run_agent = lambda *args: {
+        "structured_response": InvestigationResult(
+            subtask_id="subtask-marker-gap",
+            outcome="no_finding",
+        )
+    }
+
+    outcome = engine.run(
+        object(),
+        task=SimpleNamespace(file="src/A.java", patch="+return run();"),
+        symbol_context=SimpleNamespace(symbols=()),
+        instruction=instruction,
+        structured_method="function_calling",
+        max_retries=1,
+    )
+
+    assert outcome.status == "inconclusive"
+    assert outcome.reason == "no_finding_without_observation"
 
 
 def test_no_progress_cannot_be_reported_as_no_finding():

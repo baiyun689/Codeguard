@@ -25,6 +25,7 @@ from codeguard_agent.pipeline.evidence.projection import (
 
 _TRACE_REF_KEYS = (
     "call_id",
+    "subtask_id",
     "artifact_id",
     "tool",
     "arguments",

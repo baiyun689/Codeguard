@@ -577,6 +577,7 @@ def _capture_records(catalog: Any, tool_records: Any) -> tuple[Any, list[ToolTra
     refs = [
         ToolTraceRef(
             call_id=str(getattr(record, "call_id", "")),
+            subtask_id=str(getattr(record, "subtask_id", "")),
             tool=str(getattr(record, "tool", "")),
             arguments={
                 key: value

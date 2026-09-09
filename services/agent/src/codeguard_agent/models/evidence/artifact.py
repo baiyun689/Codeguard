@@ -191,6 +191,11 @@ class ToolTraceRef(BaseModel):
     """进入 LangGraph State 的紧凑工具调用引用。"""
 
     call_id: str
+    # Optional execution owner.  Legacy discovery records do not carry this
+    # field; active bounded subtask React records do, so Trace can associate a
+    # dynamic Rxx query with the exact investigation that issued it without
+    # changing the Evidence Artifact identity or product output.
+    subtask_id: str = ""
     artifact_id: str = ""
     tool: str
     arguments: dict[str, str] = Field(default_factory=dict)

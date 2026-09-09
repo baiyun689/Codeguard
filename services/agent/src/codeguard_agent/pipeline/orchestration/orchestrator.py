@@ -157,8 +157,8 @@ class PipelineOrchestrator:
 
         fp_verify_llm:裁决模型(异源千问 temperature=0);None 时回退到主 llm。
         发现执行方式由 ``discovery_mode`` 决定：``controlled`` 使用
-        DirectTriage→GraphPlan→EvidenceExecutor，``react`` 在有 tool_client 时
-        使用 ReAct，``direct`` 明确关闭工具发现。
+        DirectTriage→GraphPlan→bounded subtask React，``react`` 在有
+        tool_client 时使用历史 ReAct 兼容路径，``direct`` 明确关闭工具发现。
         enabled_tools:暴露给审查员的工具白名单(评测 profile 控制);None=全开(CLI 默认)。
         enabled_evidence_tools:EvidenceAgent 的独立白名单；None 时沿用 enabled_tools。
         allow_direct_fallback:ReAct 失败/空结果时是否允许无工具直连复审；严格 eval 关闭。

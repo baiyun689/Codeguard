@@ -54,6 +54,7 @@ from codeguard_agent.models.tasks import (
     TaskSelection,
     TaskRoute,
     InvestigationSeed,
+    InvestigationResult,
     SubtaskInstruction,
     SubtaskPlan,
 )
@@ -1839,10 +1840,15 @@ def _controlled_review_node(
         all_trace_refs: list[Any] = []
         traces: list[CouncilTrace] = []
         triage_state: dict[str, Any] = {}
+        triage_outcome_state: dict[str, str] = {}
+        triage_reason_state: dict[str, str] = {}
         graph_plan_state: dict[str, Any] = {}
         subtask_plan_state: dict[str, SubtaskPlan] = {}
+        subtask_result_state: dict[str, InvestigationResult] = {}
         subtask_outcome_state: dict[str, str] = {}
         subtask_reason_state: dict[str, str] = {}
+        subtask_seed_outcome_state: dict[str, str] = {}
+        subtask_seed_reason_state: dict[str, str] = {}
         assessment_state: dict[str, Any] = {}
         proof_state: dict[str, Any] = {}
 
@@ -1898,16 +1904,22 @@ def _controlled_review_node(
             seeds_by_reviewer: dict[str, list[CandidateSeed]] = {}
             investigation_seeds_by_reviewer: dict[str, list[InvestigationSeed]] = {}
             for reviewer_config, outcome in zip((item[1] for item in triage_jobs), triage_results):
+                triage_key = f"{task.id}:{reviewer_config.source_agent}"
                 if outcome is None:
+                    triage_outcome_state[triage_key] = "failed"
+                    triage_reason_state[triage_key] = "triage_worker_failed"
                     traces.append(CouncilTrace(node="direct_triage", event="reviewer_failed", detail=f"task={task.id} reviewer={reviewer_config.source_agent}"))
                     continue
                 result, diagnostics = outcome
                 if result is None:
+                    triage_outcome_state[triage_key] = "failed"
+                    triage_reason_state[triage_key] = ";".join(diagnostics) or "triage_result_missing"
                     traces.extend(CouncilTrace(node="direct_triage", event="diagnostic", detail=f"task={task.id} reviewer={reviewer_config.source_agent} {diagnostic}") for diagnostic in diagnostics)
                     continue
                 seeds = [_locate_controlled_seed(seed, task) for seed in result.issues]
                 result = result.model_copy(update={"issues": tuple(seeds)})
-                triage_state[f"{task.id}:{reviewer_config.source_agent}"] = result
+                triage_state[triage_key] = result
+                triage_outcome_state[triage_key] = "complete"
                 seeds_by_reviewer[reviewer_config.source_agent] = seeds
                 investigation_seeds_by_reviewer[reviewer_config.source_agent] = list(
                     result.investigation_seeds
@@ -2006,6 +2018,15 @@ def _controlled_review_node(
                     reviewer_limit = max(0, max_subtasks_per_reviewer)
                     neutral = neutral_values[:reviewer_limit]
                     if len(neutral_values) > reviewer_limit:
+                        for omitted_seed in neutral_values[reviewer_limit:]:
+                            omitted_key = (
+                                f"{task.id}:{reviewer_config.source_agent}:"
+                                f"seed:{omitted_seed.seed_id}"
+                            )
+                            subtask_seed_outcome_state[omitted_key] = "omitted"
+                            subtask_seed_reason_state[omitted_key] = (
+                                "reviewer_subtask_limit"
+                            )
                         traces.append(CouncilTrace(
                             node="graph_plan",
                             event="subtask_seed_limit",
@@ -2047,6 +2068,15 @@ def _controlled_review_node(
                 for job, result in zip(subtask_plan_jobs, subtask_plan_results):
                     reviewer_config, _reviewer_kind, _neutral = job
                     if result is None:
+                        for omitted_seed in _neutral:
+                            omitted_key = (
+                                f"{task.id}:{reviewer_config.source_agent}:"
+                                f"seed:{omitted_seed.seed_id}"
+                            )
+                            subtask_seed_outcome_state[omitted_key] = "failed"
+                            subtask_seed_reason_state[omitted_key] = (
+                                "graph_plan_worker_failed"
+                            )
                         traces.append(CouncilTrace(
                             node="graph_plan",
                             event="failed",
@@ -2087,6 +2117,18 @@ def _controlled_review_node(
                         (reviewer_config, item)
                         for item in plan.subtasks
                     )
+                    planned_seed_ids = {item.seed_id for item in plan.subtasks}
+                    for neutral_seed in _neutral:
+                        if neutral_seed.seed_id in planned_seed_ids:
+                            continue
+                        omitted_key = (
+                            f"{task.id}:{reviewer_config.source_agent}:"
+                            f"seed:{neutral_seed.seed_id}"
+                        )
+                        subtask_seed_outcome_state[omitted_key] = "omitted"
+                        subtask_seed_reason_state[omitted_key] = (
+                            "seed_not_planned"
+                        )
 
                 task_budget = max(0, task_max_tool_calls)
                 # Never start a React that cannot make even one evidence call.
@@ -2102,6 +2144,7 @@ def _controlled_review_node(
                     else 0
                 )
                 if len(planned_subtasks) > max_runnable_subtasks:
+                    omitted_subtasks = planned_subtasks[max_runnable_subtasks:]
                     traces.append(CouncilTrace(
                         node="graph_plan",
                         event="subtask_task_limit",
@@ -2111,6 +2154,10 @@ def _controlled_review_node(
                             f"limit={max_runnable_subtasks}"
                         ),
                     ))
+                    for _reviewer_config, instruction in omitted_subtasks:
+                        omitted_key = f"{task.id}:{instruction.subtask_id}"
+                        subtask_outcome_state[omitted_key] = "omitted"
+                        subtask_reason_state[omitted_key] = "task_tool_budget_limit"
                 planned_subtasks = planned_subtasks[:max_runnable_subtasks]
                 for _reviewer_config, instruction in planned_subtasks:
                     subtask_outcome_state[f"{task.id}:{instruction.subtask_id}"] = "planned"
@@ -2143,7 +2190,14 @@ def _controlled_review_node(
                 def run_subtask(indexed_item):
                     subtask_index, item = indexed_item
                     reviewer_config, instruction = item
-                    per_subtask_budget = subtask_budgets[subtask_index]
+                    # The task allocator provides the aggregate upper bound;
+                    # GraphPlan may further tighten one investigation.  Honor
+                    # both limits so a provider cannot silently turn one
+                    # small subtask into a full-budget exploration.
+                    per_subtask_budget = min(
+                        subtask_budgets[subtask_index],
+                        max(0, instruction.max_tool_calls),
+                    )
                     # Each React owns its local trace/allowed-symbol set while
                     # the coordinator still shares successful HTTP results.
                     # This prevents parallel subtasks from attributing one
@@ -2159,18 +2213,13 @@ def _controlled_review_node(
                         allowed_direction=instruction.direction,
                         allowed_relations=instruction.allowed_relations,
                         initial_symbol_ids=set(instruction.initial_symbol_ids),
-                        symbol_catalog_ids=tuple(dict.fromkeys(
-                            [
-                                *(
-                                    symbol.symbol_id
-                                    for symbol in (context.symbols if context is not None else ())
-                                ),
-                                *(
-                                    reference.symbol_id
-                                    for reference in (context.references if context is not None else ())
-                                ),
-                            ]
-                        )),
+                        # The React receives only this instruction's finite
+                        # frontier as Sxx.  Other symbols in the task context
+                        # must become Rxx only after a real relation response;
+                        # pre-seeding the entire context would let the model
+                        # jump to an unqueried symbol and blur evidence scope.
+                        symbol_catalog_ids=tuple(instruction.initial_symbol_ids),
+                        subtask_id=instruction.subtask_id,
                     )
                     engine = SubtaskReactEngine(
                         coordinated_client,
@@ -2223,6 +2272,8 @@ def _controlled_review_node(
                 }
                 for _subtask_index, reviewer_config, instruction, outcome, _client in valid_subtask_results:
                     status_key = f"{task.id}:{instruction.subtask_id}"
+                    if outcome.result is not None:
+                        subtask_result_state[status_key] = outcome.result
                     subtask_outcome_state[status_key] = (
                         outcome.result.outcome
                         if outcome.result is not None
@@ -2341,15 +2392,15 @@ def _controlled_review_node(
                 graph_plan_one,
                 max_workers=min(3, len(graph_plan_jobs)),
             )
-            for job, result in zip(graph_plan_jobs, graph_plan_results):
-                reviewer_config, reviewer_kind, _graph_seeds = job
+            for graph_job, result in zip(graph_plan_jobs, graph_plan_results):
+                reviewer_config, reviewer_kind, _graph_seeds = graph_job
                 if result is None:
                     # Preserve the pre-parallel failure semantics: an
                     # unexpected worker exception gets one ordered retry
                     # instead of silently dropping this reviewer's graph
                     # candidates and reducing recall.
                     try:
-                        result = graph_plan_one(job)
+                        result = graph_plan_one(graph_job)
                         traces.append(
                             CouncilTrace(
                                 node="graph_plan",
@@ -2461,8 +2512,10 @@ def _controlled_review_node(
                     assessment_one,
                     max_workers=min(3, len(assessment_jobs)),
                 )
-                for job, result in zip(assessment_jobs, assessment_results):
-                    graph_plan, reviewer_kind, plan_seeds, plan_proofs = job
+                for assessment_job, result in zip(assessment_jobs, assessment_results):
+                    graph_plan, reviewer_kind, plan_seeds, plan_proofs = assessment_job
+                    assessments: dict[str, Any] = {}
+                    assessment_diagnostics: tuple[str, ...] = ()
                     if result is None:
                         # The normal assessment function already contains
                         # provider/protocol fallbacks.  This extra ordered
@@ -2470,7 +2523,7 @@ def _controlled_review_node(
                         # wrapper, keeping parallelism from changing the
                         # candidate recall contract.
                         try:
-                            result = assessment_one(job)
+                            result = assessment_one(assessment_job)
                             traces.append(
                                 CouncilTrace(
                                     node="evidence_assessment",
@@ -2545,15 +2598,16 @@ def _controlled_review_node(
                                 )
                             )
                         source_for_item.update(approved_source_symbols)
-                        executed_for_item = {
+                        executed_for_item: set[tuple[str, str, str, int | None]] = {
                             (
                                 step_execution.step.tool,
                                 step_execution.step.subject_ref,
-                                step_execution.step.path_kind or "",
+                                str(step_execution.step.path_kind or ""),
                                 step_execution.step.max_depth,
                             )
                             for step_execution in work_item_execution.steps
                         }
+                        enabled_tools = state.get("enabled_tools")
                         replan_step, replan_diagnostics = run_graph_replan(
                             reviewer=reviewer_kind,
                             task_id=task.id,
@@ -2569,8 +2623,8 @@ def _controlled_review_node(
                             structured_method=state.get("structured_method", "function_calling"),
                             max_path_depth=state.get("controlled_max_path_depth", 3),
                             enabled_tools=(
-                                set(state["enabled_tools"])
-                                if state.get("enabled_tools") is not None
+                                set(enabled_tools)
+                                if enabled_tools is not None
                                 else None
                             ),
                         )
@@ -2746,6 +2800,16 @@ def _controlled_review_node(
                                 )
                             )
                             continue
+                        if assessment is None:
+                            traces.append(CouncilTrace(
+                                node="controlled_review",
+                                event="candidate_gate_skip",
+                                detail=(
+                                    f"task={task.id} work_item={work_item.work_item_id} "
+                                    "reason=assessment_missing_after_finalize"
+                                ),
+                            ))
+                            continue
                         # CandidateFinalize deliberately changes only the
                         # internal status; the original claim and evidence
                         # references remain owned by EvidenceAssessment.
@@ -2816,15 +2880,25 @@ def _controlled_review_node(
             )
         }
         return {
+            # Keep the effective execution contract in the node patch as well
+            # as in the input State.  Trace/view-model consumers often receive
+            # only this patch (especially after a failed node), so they must
+            # not infer the active reviewer layout from absent maps.
+            "controlled_execution_mode": controlled_execution_mode,
             "raw_candidate_issues": deduped_candidates,
             "candidate_issues": collect_candidate_reducer([], deduped_candidates),
             "evidence_artifacts": all_artifacts,
             "tool_trace_records": all_trace_refs,
             "controlled_triage": triage_state,
+            "controlled_triage_outcomes": triage_outcome_state,
+            "controlled_triage_reasons": triage_reason_state,
             "controlled_graph_plans": graph_plan_state,
             "controlled_subtask_plans": subtask_plan_state,
+            "controlled_subtask_results": subtask_result_state,
             "controlled_subtask_outcomes": subtask_outcome_state,
             "controlled_subtask_reasons": subtask_reason_state,
+            "controlled_subtask_seed_outcomes": subtask_seed_outcome_state,
+            "controlled_subtask_seed_reasons": subtask_seed_reason_state,
             "controlled_assessments": assessment_state,
             "controlled_proof_matches": proof_state,
             "controlled_candidate_contexts": candidate_contexts,

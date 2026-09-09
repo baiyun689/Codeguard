@@ -110,6 +110,7 @@ class DiscoveryToolRecord:
     reuse_key: str
     reused_from_call_id: str = ""
     resolved_output: str = ""  # 运行时真实原始结果;reused 记录 output 是短标记,真实 payload 在此
+    subtask_id: str = ""  # active bounded React owner; empty for legacy callers
 
 
 def _normalize_path(value: str) -> str:
@@ -343,6 +344,7 @@ class CoordinatedDiscoveryToolClient:
         initial_symbol_ids: set[str] | frozenset[str] = frozenset(),
         symbol_catalog_ids: tuple[str, ...] = (),
         max_no_progress_calls: int = 2,
+        subtask_id: str = "",
     ) -> None:
         self._delegate = delegate
         self._coordinator = coordinator
@@ -373,6 +375,7 @@ class CoordinatedDiscoveryToolClient:
         self._no_progress_streaks: dict[str, int] = {}
         self._no_progress_exhausted = False
         self._termination_reason = ""
+        self._subtask_id = str(subtask_id or "")
         self._max_path_depth = max(1, min(3, max_path_depth))
         if allowed_path_kind not in {None, "behavior", "security"}:
             raise ValueError(
@@ -390,7 +393,12 @@ class CoordinatedDiscoveryToolClient:
             for symbol_id in initial_symbol_ids
             if symbol_id.strip()
         }
-        catalog_ids = set(symbol_catalog_ids) | initial_ids
+        # ``symbol_catalog_ids`` is retained for API compatibility with the
+        # legacy executor, but it must not pre-seed aliases in a bounded
+        # subtask.  Only the explicit frontier is addressable as Sxx; every
+        # other symbol has to be returned by an actual graph response before
+        # it receives an Rxx alias and becomes readable.
+        catalog_ids = initial_ids
         self._initial_allowed_symbol_ids = set(initial_ids)
         self._raw_by_symbol_alias: dict[str, str] = {
             f"S{index:02d}": symbol_id
@@ -743,6 +751,7 @@ class CoordinatedDiscoveryToolClient:
                 self._first_call_ids[key] = effective_call_id
             record = DiscoveryToolRecord(
                 call_id=effective_call_id,
+                subtask_id=self._subtask_id,
                 tool=tool_name,
                 arguments=canonical_arguments,
                 output=response.as_tool_output(),
@@ -1003,6 +1012,23 @@ class CoordinatedDiscoveryToolClient:
         raw_symbol_id = self._resolve_symbol_ref(subject_symbol_id)
         if raw_symbol_id is None:
             return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
+        # In a focused client raw IDs are accepted only when they belong to
+        # the initial change context or were returned by an earlier graph
+        # response.  Alias mode already enforces this in ``_resolve_symbol_ref``;
+        # this guard closes the no-alias path as well, otherwise a model could
+        # bypass the subtask scope by sending an arbitrary Gateway symbol ID.
+        if (
+            self._allowed_symbol_ids is not None
+            and raw_symbol_id not in self._allowed_symbol_ids
+        ):
+            return self._invoke(
+                "query_relations",
+                {"subject_symbol_id": raw_symbol_id, "relation": relation},
+                lambda: ToolResponse(
+                    success=False,
+                    error="symbol_not_in_review_context",
+                ),
+            )
         # Compatible tool-calling models occasionally emit an exploratory
         # limit/depth outside the Gateway contract.  Clamp those values at
         # the Python boundary so a harmless over-request cannot consume a
