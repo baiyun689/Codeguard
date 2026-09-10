@@ -744,7 +744,7 @@ def build_review_graph(
     discovery_only=False,
     controlled_max_path_depth=3,
     controlled_execute_concurrency=3,
-    controlled_subtask_max_tool_calls=8,
+    controlled_subtask_max_tool_calls=10,
     controlled_subtask_max_rounds=6,
     controlled_subtask_timeout_seconds=120,
     controlled_task_max_tool_calls=32,

@@ -82,5 +82,9 @@ def make_query_relations_tool(client: ToolClient):
             "implementations 或 overrides。callers/callees 的 subject 必须是方法；field_readers/field_writers 的 subject 必须是字段，不能传包含它的类或方法。"
             "默认一跳，depth 最大 3。结果超限时只对同一 subject/relation 使用 cursor 续取，"
             "返回精确端点、调用位置、解析状态和覆盖信息。不能使用任意图查询，不能使用源码名字拼造 symbol_id。"
+            "受控审查返回 new_queryable_symbols：本次结果中新加入当前调查组导航范围的真实 symbol_id；"
+            "它不是缺陷列表或必查清单，也不是新增代码。详情复用 symbols/relationships/source_excerpt。"
+            "先判断本页能否支持或排除疑点，再按尚缺事实选择新端点深入或读取源码；"
+            "已有源码够用就不重读，续页使用原查询的 cursor，不改变 limit 重查首页。空新增列表不等于没有新证据。"
         ),
     )

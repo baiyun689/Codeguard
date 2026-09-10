@@ -1,6 +1,7 @@
 """Default change coverage and evidence handoff, no paid model calls."""
 
 import json
+import pytest
 from types import SimpleNamespace
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
@@ -269,7 +270,8 @@ def test_first_decision_sees_one_hop_evidence_and_can_cite_it_without_querying()
     )
 
 
-def test_prefetch_preserves_exploration_budget_and_reports_unqueried_frontiers():
+@pytest.mark.parametrize("budget", [8, 10])
+def test_prefetch_preserves_exploration_budget_and_reports_unqueried_frontiers(budget):
     from codeguard_agent.pipeline.controlled.change_review import prepare_change_context
     from codeguard_agent.pipeline.execution.discovery import (
         CoordinatedDiscoveryToolClient,
@@ -288,12 +290,12 @@ def test_prefetch_preserves_exploration_budget_and_reports_unqueried_frontiers()
         DiscoveryToolCoordinator(),
         canonical_symbol_ids=True,
         lossless_payload=True,
-        max_tool_calls=8,
+        max_tool_calls=budget,
         initial_symbol_ids={s.symbol_id for s in group},
         subtask_id="prefetch",
     )
     instruction = SimpleNamespace(
-        max_tool_calls=8,
+        max_tool_calls=budget,
         allowed_tools=("read_symbol", "query_relations"),
         allowed_relations=("callers", "callees"),
     )
@@ -304,7 +306,7 @@ def test_prefetch_preserves_exploration_budget_and_reports_unqueried_frontiers()
         text.split("<preparation_scope>")[1].split("</preparation_scope>")[0]
     )
     assert len(manifest["unqueried_relations"]) == 6
-    assert manifest["reserved_tool_attempts"] == 2
+    assert manifest["reserved_tool_attempts"] == budget - 6
     assert client.read_symbol("java:B#consume()").success
     assert client.tool_calls == 7
 
@@ -340,7 +342,7 @@ def test_empty_prefetch_does_not_close_model_exploration_but_closes_empty_fronti
 
 
 def test_preparation_deadline_prevents_first_model_call(monkeypatch):
-    from codeguard_agent.models.tasks import ReviewerKind, SubtaskInstruction
+    from codeguard_agent.models.tasks import SubtaskInstruction
     from codeguard_agent.pipeline.controlled import subtask_react
 
     task, context = fixture()
@@ -504,7 +506,6 @@ def test_pure_deletion_anchor_reaches_reviewer_and_survives_location_binding():
     from codeguard_agent.models.tasks import (
         DeletionAnchor,
         InvestigationFinding,
-        ReviewerKind,
         SubtaskInstruction,
     )
     from codeguard_agent.pipeline.controlled.subtask_react import SubtaskReactEngine

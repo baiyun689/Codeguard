@@ -83,7 +83,7 @@ class PipelineOrchestrator:
         discovery_mode: str = "controlled",
         controlled_max_path_depth: int = 3,
         controlled_execute_concurrency: int = 3,
-        controlled_subtask_max_tool_calls: int = 8,
+        controlled_subtask_max_tool_calls: int = 10,
         controlled_subtask_max_rounds: int = 6,
         controlled_subtask_timeout_seconds: int = 120,
         controlled_task_max_tool_calls: int = 32,

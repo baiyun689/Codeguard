@@ -4,8 +4,6 @@ from __future__ import annotations
 import pytest
 from codeguard_agent.config import Settings
 from codeguard_agent import config as config_module
-from codeguard_agent.models.tasks import ReviewBudget
-from codeguard_agent.models.state import ReviewState
 
 
 def _settings(**overrides) -> Settings:
@@ -85,7 +83,7 @@ def test_phase2_budget_defaults(monkeypatch):
     assert settings.max_tasks_per_file == 10
     assert settings.graph_build_timeout_seconds == 120
     assert settings.controlled_max_subtasks_per_task == 8
-    assert settings.controlled_subtask_max_tool_calls == 8
+    assert settings.controlled_subtask_max_tool_calls == 10
 
 
 def test_phase2_budget_env_override(monkeypatch):

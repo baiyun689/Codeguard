@@ -632,7 +632,7 @@ class CoordinatedDiscoveryToolClient:
             response, coordinator_reused, first_call_id = (
                 self._coordinator.execute_with_trace(key, call)
             )
-            self._remember_graph_symbols(tool_name, response, arguments)
+            new_symbols = self._remember_graph_symbols(tool_name, response, arguments)
             with self._lock:
                 if _cacheable(response):
                     self._seen.add(key)
@@ -656,7 +656,11 @@ class CoordinatedDiscoveryToolClient:
             )
             visible = _alias_echo(
                 tool_name,
-                self._visible_response(tool_name, response, arguments),
+                self._with_new_symbols(
+                    tool_name,
+                    self._visible_response(tool_name, response, arguments),
+                    new_symbols,
+                ),
                 self._next_t_alias(record_call_id),
                 arguments,
                 self._projection_focus,
@@ -725,7 +729,7 @@ class CoordinatedDiscoveryToolClient:
         tool_name: str,
         response: ToolResponse,
         arguments: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> list[str]:
         """Extend the source-read allowlist with symbols visible to the reviewer.
 
         The Gateway payload is retained separately as an Evidence Artifact, but
@@ -737,7 +741,7 @@ class CoordinatedDiscoveryToolClient:
         symbol remain fail-closed.
         """
         if not response.success:
-            return
+            return []
         if tool_name in {"read_symbol", "read_symbol"}:
             header = (response.result or "").partition("\n\n")[0]
             owner = next(
@@ -781,9 +785,9 @@ class CoordinatedDiscoveryToolClient:
                             self._next_symbol_alias += 1
                             self._raw_by_symbol_alias[alias] = symbol_id
                             self._symbol_alias_by_raw[symbol_id] = alias
-            return
+            return []
         if tool_name not in GRAPH_DISCOVERY_TOOLS:
-            return
+            return []
         visible_response = (
             response
             if self._lossless_payload
@@ -794,26 +798,27 @@ class CoordinatedDiscoveryToolClient:
         try:
             payload = json.loads(visible_response.result or "")
         except (TypeError, ValueError, json.JSONDecodeError):
-            return
+            return []
         if not isinstance(payload, dict):
-            return
+            return []
         symbols = payload.get("symbols")
         if not isinstance(symbols, list):
-            return
+            return []
         ids = {
             unescape(str(item.get("id", ""))).strip()
             for item in symbols
             if isinstance(item, dict) and str(item.get("id", "")).strip()
         }
         if not ids or self._allowed_symbol_ids is None:
-            return
+            return []
         with self._lock:
             raw_ids = {
                 self._raw_by_symbol_alias.get(symbol_id, symbol_id) for symbol_id in ids
             }
+            new_ids = sorted(raw_ids - self._allowed_symbol_ids)
             self._allowed_symbol_ids.update(raw_ids)
             if not self._alias_mode:
-                return
+                return new_ids
             for symbol_id in sorted(raw_ids):
                 if symbol_id in self._symbol_alias_by_raw:
                     continue
@@ -821,6 +826,26 @@ class CoordinatedDiscoveryToolClient:
                 self._next_symbol_alias += 1
                 self._raw_by_symbol_alias[alias] = symbol_id
                 self._symbol_alias_by_raw[symbol_id] = alias
+            return [self._symbol_alias_by_raw[symbol_id] for symbol_id in new_ids]
+
+    @staticmethod
+    def _with_new_symbols(
+        tool: str, response: ToolResponse, symbols: list[str]
+    ) -> ToolResponse:
+        """Add group-local navigation, never mutate cached/ledger fact payloads."""
+        if tool != "query_relations" or not response.success:
+            return response
+        try:
+            payload = json.loads(response.result or "")
+        except (ValueError, TypeError):
+            return response
+        if not isinstance(payload, dict):
+            return response
+        payload["new_queryable_symbols"] = [{"symbol_id": sid} for sid in symbols]
+        return ToolResponse(
+            success=True,
+            result=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        )
 
     def _record(
         self,

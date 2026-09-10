@@ -76,7 +76,7 @@ class Settings:
     discovery_mode: str = "controlled"
     controlled_max_path_depth: int = 3
     controlled_execute_concurrency: int = 3
-    controlled_subtask_max_tool_calls: int = 8
+    controlled_subtask_max_tool_calls: int = 10
     controlled_subtask_max_rounds: int = 6
     controlled_subtask_timeout_seconds: int = 120
     controlled_task_max_tool_calls: int = 32
@@ -153,7 +153,7 @@ class Settings:
             "CODEGUARD_CONTROLLED_EXECUTE_CONCURRENCY", 3
         )
         controlled_subtask_max_tool_calls = _nonnegative_int_env(
-            "CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS", 8
+            "CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS", 10
         )
         controlled_subtask_max_rounds = _positive_int_env(
             "CODEGUARD_CONTROLLED_SUBTASK_MAX_ROUNDS", 6

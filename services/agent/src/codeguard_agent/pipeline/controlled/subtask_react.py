@@ -51,7 +51,7 @@ class SubtaskReactEngine:
         self,
         tool_client: Any,
         *,
-        max_tool_calls: int = 8,
+        max_tool_calls: int = 10,
         max_rounds: int = 6,
         timeout_seconds: int = 120,
         initial_context: str = "",

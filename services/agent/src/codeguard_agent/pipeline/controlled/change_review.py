@@ -36,7 +36,8 @@ def prepare_change_context(client, group, instruction) -> str:
     """
     budget = instruction.max_tool_calls
     reserve = min(budget, max(2, budget // 3))
-    preparation_limit = budget - reserve
+    preparation_limit = min(6, budget - reserve)
+    reserve = budget - preparation_limit
     prepared = []
     attempted = []
     if "read_symbol" in instruction.allowed_tools:
@@ -143,7 +144,7 @@ def build_change_review_node(
     scope_factory,
     allocate_budgets,
     execute_concurrency=3,
-    max_tool_calls=8,
+    max_tool_calls=10,
     max_rounds=6,
     timeout_seconds=120,
     task_tool_budget=32,

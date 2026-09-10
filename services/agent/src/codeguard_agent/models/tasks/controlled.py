@@ -68,7 +68,7 @@ class SubtaskInstruction(ControlledModel):
         ],
         ...,
     ] = Field(default=(), max_length=6)
-    max_tool_calls: StrictInt = Field(default=8, ge=0, le=20)
+    max_tool_calls: StrictInt = Field(default=10, ge=0, le=20)
     max_rounds: StrictInt = Field(default=6, ge=1, le=12)
 
 

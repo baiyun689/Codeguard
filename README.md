@@ -28,7 +28,9 @@ diff → 文件/hunk 任务 → DirectGate → SymbolResolution
      → 确定性定位 → Evidence Ledger 验证 → 批量 Judge → 结果合并
 ```
 
-当前仅保留 `controlled` 有界审查与 `direct` 无工具对照；旧三维发现者、Plan、Summary、DirectTriage、GraphPlan 和固定步骤执行入口已移除。每组最多 6 次探索决策、8 次工具尝试（预取也计数），另预留一次结论；每 task 总工具预算 32。源码读取最多占工具预算的一半，每片最多 120 行；源码与一跳关系合计预取默认最多 6 次，保留至少 2 次动态查询，每页关系 limit=6 并请求端点源码。预取同样计入超时；未查询和分页缺口明确展示，不将空关系预取当成模型空转。分组只覆盖实际变更声明，不遍历全项目符号；新增空行不额外触发整类调查。
+当前仅保留 `controlled` 有界审查与 `direct` 无工具对照；旧三维发现者、Plan、Summary、DirectTriage、GraphPlan 和固定步骤执行入口已移除。每组最多 6 次探索决策、10 次工具尝试（预取也计数），另预留一次结论；每 task 总工具预算 32。源码读取最多占工具预算的一半，每片最多 120 行；源码与一跳关系合计预取默认最多 6 次，保留至少 4 次动态查询，每页关系 limit=6 并请求端点源码。预取同样计入超时；未查询和分页缺口明确展示，不将空关系预取当成模型空转。分组只覆盖实际变更声明，不遍历全项目符号；新增空行不额外触发整类调查。
+
+关系结果附带 `new_queryable_symbols`，列出本次新增到当前调查组的可查询 ID；它是导航清单，不是缺陷或必查清单。模型先检查证据是否回答当前问题，再按剩余事实缺口选择端点、源码或续页，提交前检查本组其它变更。原始工具证据和共享缓存不包含该组内元数据。
 
 同一 Reviewer 使用 `read_symbol` / `query_relations` 沿真实 ID 继续调查。方法源码附带所属类型的最多 64 个成员导航入口；目录不证明调用或数据流。关系页最多附带 3 个端点源码片段，各最多 24 行/1000 字符；继承、泛型、动态绑定与不完整解析仍可能形成证据缺口。
 
@@ -412,7 +414,7 @@ python -m codeguard_agent review --repo C:\path\to\repository --base HEAD
 | `CODEGUARD_DISCOVERY_MODE` | `controlled` | 受控审查模式：`controlled`（变更驱动有界审查）或 `direct`（无工具对照） |
 | `CODEGUARD_CONTROLLED_MAX_PATH_DEPTH` | `3` | controlled 路径最大深度（最大 3） |
 | `CODEGUARD_CONTROLLED_EXECUTE_CONCURRENCY` | `3` | controlled 同一 task 内独立证据步骤的最大并发数；`1` 为串行 |
-| `CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS` | `8` | 单个调查子任务的工具调用上限（可配置） |
+| `CODEGUARD_CONTROLLED_SUBTASK_MAX_TOOL_CALLS` | `10` | 单个调查子任务的工具调用上限（可配置） |
 | `CODEGUARD_CONTROLLED_SUBTASK_MAX_ROUNDS` | `6` | 单个调查子任务的 React 轮数上限（可配置） |
 | `CODEGUARD_CONTROLLED_SUBTASK_TIMEOUT_SECONDS` | `120` | 单个调查子任务的执行超时预算 |
 | `CODEGUARD_CONTROLLED_TASK_MAX_TOOL_CALLS` | `32` | 单 task 所有调查子任务共享的工具调用上限（可配置） |

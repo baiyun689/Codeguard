@@ -1,6 +1,7 @@
 from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 import json
+import pytest
 from threading import Event, Lock
 from types import SimpleNamespace
 from codeguard_agent.pipeline.execution.discovery import (
@@ -287,6 +288,39 @@ def test_repeated_relation_probes_close_subtask_at_same_frontier() -> None:
     assert fourth.success is False
     assert "subtask_no_progress" in (fourth.error or "")
     assert raw.calls == 3
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+def test_new_relation_symbols_are_group_local_and_do_not_pollute_cache(canonical):
+    raw = _StableRelationClient()
+    coordinator = DiscoveryToolCoordinator()
+
+    def group():
+        return CoordinatedDiscoveryToolClient(
+            raw, coordinator,
+            initial_symbol_ids={"java:demo.A#run()"},
+            symbol_catalog_ids=("java:demo.A#run()",),
+            lossless_payload=True,
+            canonical_symbol_ids=canonical,
+        )
+
+    first, second = group(), group()
+
+    def payload(response):
+        return json.loads(response.result.split("\n\n[证据编号", 1)[0])
+
+    root = "java:demo.A#run()" if canonical else "S01"
+    a = payload(first.query_relations(root, "callees"))
+    b = payload(second.query_relations(root, "callees"))
+    assert a["new_queryable_symbols"] == [
+        {"symbol_id": "java:demo.B#run()" if canonical else "R01"}
+    ]
+    assert b["new_queryable_symbols"] == a["new_queryable_symbols"]
+    assert raw.calls == 1
+    later = payload(first.query_relations(root, "callees", limit=21))
+    assert later["new_queryable_symbols"] == []
+    for client in (first, second):
+        assert all("new_queryable_symbols" not in r.output for r in client.trace_records)
 
 
 def test_empty_relation_response_counts_as_no_progress() -> None:
