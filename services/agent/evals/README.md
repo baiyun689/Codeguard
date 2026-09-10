@@ -32,7 +32,7 @@ State/Trace 记录任务路由、符号解析、声明分组、预取/动态查�
 (见 `dataset.py:_LOCAL_ONLY_DIRS`),选材/造 diff 时参考。`dataset/selected-20-v2/` 是已跑评测集
 (`manifest.yaml + cases/<case_id>/`,含 planted-bugs.diff 与 checkpoint 数据)。
 
-`selected-20-v2` 的正式评测口径是当前启用 case 的 `case.yaml` 中的 `expected`，共 76 条已确认问题。
+`selected-20-v2` 的正式评测口径是当前启用 case 的 `case.yaml` 中的 `expected`，共 76 条登记标答，尚未全部验证。
 历史用例仍可能包含 `evidence_required`、`evidence_anchors` 和 `evidence_scope` 元数据；旧的
 [`selected-20-v2-evidence.yaml`](selected-20-v2-evidence.yaml) 仅保留用于兼容历史归档，当前加载器和评测都不读取它们。
 评测命中只读取文件、行号和类型/语义匹配；`Issue.evidence_locations` 与 `root_cause` 不阻断 TP/FN/FP，
@@ -188,3 +188,9 @@ expected:
 每加一个工具 / 换一种编排,只需新增一个 profile,**用同一条命令再跑一份报告**,
 和已有 profile(直接 diff / Council / 代码图谱 / 完整举证)并排对比 —— Recall 提升多少、误报降多少,
 就是该能力的价值证明。
+
+## 验证后的本地 pilot（2026-09-10）
+
+`dataset/verified-pilot-v1` 独立保留 1 个已验证多缺陷开发样本、2 个等价代码变更 clean 样本和 2 个新的 prospective 缺陷变体。全部来自一个已知仓库，编译与行为 oracle 已离线验证；不代表跨项目留出测试，首轮评测及两个指定 case 的追加一轮结果见 [评测准备与验证记录](EVALUATION_PREPARATION.md)。详情见该目录 README.md。`python -m evals.frozen_dataset <目录>` 校验冻结输入；`python -m evals.adjudication prepare/score` 保留独立于 matcher 的逐条语义复核，pending 不生成最终分数。旧 76 标答不追认全部有效。
+
+`dataset/verified-codec-holdout-v1` 另外提供 2 个来自 Commons Codec 固定版本的 repository-holdout 变体（现有其他 case 来源中未出现该仓库）。MAIN 编译和实际行为 oracle 已验证，首轮规则检出 2/2；小样本不代表稳定效果。与 pilot 的开发、多次调试样本分开统计。公开项目是否出现在模型预训练中未知。

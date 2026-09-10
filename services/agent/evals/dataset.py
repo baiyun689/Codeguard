@@ -37,6 +37,8 @@ _LOCAL_ONLY_DIRS = frozenset({
     "interview-v1",
     "selected-20-v2",
     "graph-necessity-v1",
+    "verified-pilot-v1",
+    "verified-codec-holdout-v1",
 })
 
 def _is_local_only(path: Path, root: Path) -> bool:

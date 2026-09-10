@@ -45,6 +45,8 @@ services/agent/evals/demo-runs/
 # 本地评测数据集、人工记录与一次性报告脚本
 services/agent/evals/dataset/interview-v1/
 services/agent/evals/dataset/selected-20-v2/
+services/agent/evals/dataset/verified-pilot-v1/
+services/agent/evals/dataset/verified-codec-holdout-v1/
 eval-cases/
 eval-results/
 
