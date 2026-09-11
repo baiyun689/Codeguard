@@ -569,14 +569,21 @@ def _classify_edges(
             "field_writers",
             "implementations",
             "overrides",
+            "parents",
+            "children",
+            "type_users",
+            "type_references",
+            "entrypoints",
         }:
             if relation == "callees" and edge.kind == "CALLS":
                 traversal.append((edge, edge.source, edge.target))
             elif relation == "callers" and edge.kind == "CALLS":
                 traversal.append((edge, edge.target, edge.source))
-            elif relation in {"field_readers", "field_writers", "implementations"}:
-                attached.append(edge)
-            elif relation == "overrides":
+            elif relation in {"parents", "type_references"}:
+                traversal.append((edge, edge.source, edge.target))
+            elif relation in {"children", "type_users", "entrypoints"}:
+                traversal.append((edge, edge.target, edge.source))
+            elif relation in {"field_readers", "field_writers", "implementations", "overrides"}:
                 attached.append(edge)
         else:
             attached.append(edge)
@@ -662,6 +669,8 @@ _SEMANTIC_EDGE_KINDS = frozenset(
         "IMPLEMENTS",
         "OVERRIDES",
         "EXPOSES_ROUTE",
+        "EXTENDS",
+        "REFERENCES_TYPE",
     }
 )
 _SEMANTIC_TARGET_GROUPS = (

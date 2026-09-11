@@ -56,6 +56,11 @@ def make_query_relations_tool(client: ToolClient):
             "field_writers",
             "implementations",
             "overrides",
+            "parents",
+            "children",
+            "type_users",
+            "type_references",
+            "entrypoints",
         ],
         depth: int = 1,
         limit: int = 20,
@@ -79,7 +84,10 @@ def make_query_relations_tool(client: ToolClient):
         name="query_relations",
         description=(
             "查询已知 symbol 的一种项目关系。relation 只能是 callers、callees、field_readers、field_writers、"
-            "implementations 或 overrides。callers/callees 的 subject 必须是方法；field_readers/field_writers 的 subject 必须是字段，不能传包含它的类或方法。"
+            "implementations、overrides、parents、children、type_users、type_references 或 entrypoints。"
+            "callers/callees/entrypoints 的 subject 必须是方法或构造器；"
+            "field_readers/field_writers 的 subject 必须是字段，不能传包含它的类或方法；"
+            "parents/children/type_users 的 subject 必须是类型；type_references 的 subject 必须是方法、构造器、字段或类型。"
             "默认一跳，depth 最大 3。结果超限时只对同一 subject/relation 使用 cursor 续取，"
             "返回精确端点、调用位置、解析状态和覆盖信息。不能使用任意图查询，不能使用源码名字拼造 symbol_id。"
             "受控审查返回 new_queryable_symbols：本次结果中新加入当前调查组导航范围的真实 symbol_id；"

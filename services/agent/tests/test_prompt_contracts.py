@@ -82,3 +82,18 @@ def test_prompt_template_rendering_is_strict():
         render_prompt_template("{{value}}", {})
     with pytest.raises(ValueError, match="extra"):
         render_prompt_template("plain", {"value": "data"})
+
+
+def test_controlled_prompt_documents_extended_relation_directions_and_subjects():
+    prompt = _prompt("controlled/change-review.txt")
+    for relation in (
+        "parents",
+        "children",
+        "type_users",
+        "type_references",
+        "entrypoints",
+    ):
+        assert relation in prompt
+    assert "`parents` 和 `type_references`" in prompt
+    assert "`children`、`type_users` 和 `entrypoints`" in prompt
+    assert "`type_references` 用于方法、构造器、字段或类型主体" in prompt

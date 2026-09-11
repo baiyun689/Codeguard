@@ -45,7 +45,7 @@ Direct 与 Full 是任务类别；外层图先处理 Direct 再处理 Full，并
 - `pipeline/controlled/change_review.py` 按实际新增行/删除锚点的真实声明分组，每组最多 4 个符号。缺失解析与覆盖截断必须记录，不猜测符号 ID。
 - 源码与一跳关系预取在子任务超时和工具预算内。默认 10 次工具尝试，源码最多占一半，总预取最多 6 次，保留至少 4 次动态查询；关系 limit=6，不自动追分页。每组最多 6 次探索决策，另最多一次原历史内的无工具结论；task 总工具预算 32，最多 8 组。
 - `subtask_react.py` 只暴露 `read_symbol`、`query_relations`。模型每轮 queries/result 二选一，最多两个独立查询；结果最多 8 findings，每条最多 3 观察引用。观察引用必须是本组真实 Txx，patch 运行时自动绑定。查询必须说明 `fact_question`，此说明不作为事实。
-- `resolve_change_context` 仅由运行时调用。关系支持 callers/callees/field_readers/field_writers/implementations/overrides。返回真实 canonical ID 后才可继续探索，不从源码文本猜 ID。
+- `resolve_change_context` 仅由运行时调用。关系支持 callers/callees/field_readers/field_writers/implementations/overrides/parents/children/type_users/type_references/entrypoints。返回真实 canonical ID 后才可继续探索，不从源码文本猜 ID。
 - 空的完整关系关闭该查询，局部连续两次无进展关闭该查询，全局连续四次无进展终止取证。预算、超时、覆盖不足不等于安全。预取不计入模型无进展计数。禁止收口后再次查询或另开 Catalog synthesis。
 - `query_relations` 模型视图附带 `new_queryable_symbols`，仅含本次新进入本组可见导航范围的 ID；不是证据或必查列表，跨组缓存复用仍独立计算。
 - 工具原文进入内容寻址 Evidence Ledger，State 的工具轨迹只存 `ToolTraceRef`。每组历史与证据编号独立，单次审查共享工具缓存，跨审查不共享。

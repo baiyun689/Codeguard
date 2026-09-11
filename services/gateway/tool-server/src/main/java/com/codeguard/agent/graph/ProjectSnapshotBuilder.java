@@ -203,7 +203,8 @@ final class ProjectSnapshotBuilder {
         String relation = toolName.equals("query_relations")
                 ? JSON.readTree(input).path("relation").asText("") : "";
         boolean reverse = toolName.equals("inspect_change_impact")
-                || Set.of("callers", "field_readers", "field_writers", "implementations")
+                || Set.of("callers", "field_readers", "field_writers", "implementations",
+                        "children", "type_users", "entrypoints")
                         .contains(relation);
         int fileLimit = reverse ? 64 : 24;
         for (int depth = 0; depth < maxDepth && !frontier.isEmpty(); depth++) {
@@ -215,7 +216,9 @@ final class ProjectSnapshotBuilder {
                     continue;
                 }
                 List<GraphEdge> edges = reverse
-                        ? resolveIncoming(index, current, semanticCache, parserFactory, fileLimit, false)
+                        ? resolveIncoming(
+                                index, current, semanticCache, parserFactory, fileLimit, false,
+                                relation)
                         : resolveOutgoing(
                                 index, current, semanticCache, parserFactory, fileLimit, resolvedFiles);
                 if (relation.equals("overrides")) {
@@ -240,7 +243,7 @@ final class ProjectSnapshotBuilder {
                 || subjectNode.kind() == GraphNodeKind.TYPE))) {
             discovered.addAll(resolveIncoming(
                     index, subject, semanticCache, parserFactory, fileLimit,
-                    toolName.equals("inspect_structure")));
+                    toolName.equals("inspect_structure"), relation));
         }
         return withEdges(index, discovered);
     }
@@ -436,6 +439,7 @@ final class ProjectSnapshotBuilder {
                 edges.add(edge(owner, id, GraphEdgeKind.DECLARES, file, constructor,
                         ResolutionStatus.RESOLVED, "java-ast"));
                 addAnnotationEdges(edges, id, constructor, file);
+                addFrameworkNodes(nodes, edges, constructor, id, file);
             }
             for (FieldDeclaration field : unit.findAll(FieldDeclaration.class)) {
                 String owner = ownerId(field, symbolIds, file);
@@ -515,6 +519,16 @@ final class ProjectSnapshotBuilder {
             for (ClassOrInterfaceType type : unit.findAll(ClassOrInterfaceType.class)) {
                 String source = enclosingCallableId(type, symbolIds);
                 if (source == null) {
+                    source = type.findAncestor(FieldDeclaration.class)
+                            .flatMap(field -> field.getVariables().stream()
+                                    .filter(variable -> variable.getType().findAll(ClassOrInterfaceType.class)
+                                            .stream().anyMatch(candidate -> candidate == type))
+                                    .map(symbolIds::get)
+                                    .filter(java.util.Objects::nonNull)
+                                    .findFirst())
+                            .orElse(null);
+                }
+                if (source == null) {
                     source = type.findAncestor(TypeDeclaration.class)
                             .map(symbolIds::get).orElse("file:" + file);
                 }
@@ -573,6 +587,7 @@ final class ProjectSnapshotBuilder {
                 edges.add(edge(owner, id, GraphEdgeKind.DECLARES, file, constructor,
                         ResolutionStatus.RESOLVED, "java-ast"));
                 addAnnotationEdges(edges, id, constructor, file);
+                addFrameworkNodes(nodes, edges, constructor, id, file);
             }
             for (FieldDeclaration field : unit.findAll(FieldDeclaration.class)) {
                 String owner = ownerId(field, symbolIds, file);
@@ -691,16 +706,17 @@ final class ProjectSnapshotBuilder {
             ProjectSemanticCache semanticCache,
             Supplier<JavaParser> parserFactory,
             int fileLimit,
-            boolean structureOnly
+            boolean structureOnly,
+            String relation
     ) throws Exception {
         GraphNode targetNode = index.graph().node(target).orElse(null);
         if (targetNode == null) {
             return List.of();
         }
-        String incomingKey = target + "|" + fileLimit + "|" + structureOnly;
+        String incomingKey = target + "|" + fileLimit + "|" + structureOnly + "|" + relation;
         return semanticCache.incomingEdges(incomingKey, () -> resolveIncomingUncached(
                 index, target, targetNode, semanticCache, parserFactory, fileLimit,
-                structureOnly));
+                structureOnly, relation));
     }
 
     private static List<GraphEdge> resolveIncomingOverrides(
@@ -728,14 +744,18 @@ final class ProjectSnapshotBuilder {
             ProjectSemanticCache semanticCache,
             Supplier<JavaParser> parserFactory,
             int fileLimit,
-            boolean structureOnly
+            boolean structureOnly,
+            String relation
     ) throws Exception {
         String methodName = methodName(target);
         int arity = methodArity(target);
         String fieldName = fieldName(target);
         List<GraphEdge> result = new ArrayList<>();
-        String candidateKey = candidateKey(targetNode, methodName, arity, fieldName, target);
-        List<String> candidateFiles = semanticCache.indexedCandidateFiles(index, candidateKey);
+        String candidateKey = candidateKey(
+                targetNode, methodName, arity, fieldName, target, relation);
+        List<String> candidateFiles = relation.equals("entrypoints")
+                ? List.of(targetNode.file())
+                : semanticCache.indexedCandidateFiles(index, candidateKey);
         int resolvedFiles = 0;
         for (String file : candidateFiles) {
             if (resolvedFiles >= fileLimit) {
@@ -747,7 +767,13 @@ final class ProjectSnapshotBuilder {
             if (plain == null) {
                 continue;
             }
-            if (targetNode.kind() == GraphNodeKind.CONSTRUCTOR) {
+            if (relation.equals("entrypoints")) {
+                // Framework entrypoint edges are emitted from annotations on the
+                // target method itself.  They therefore have one deterministic
+                // candidate file and do not need a repository-wide lexical scan.
+                candidate = targetNode.kind() == GraphNodeKind.METHOD
+                        || targetNode.kind() == GraphNodeKind.CONSTRUCTOR;
+            } else if (targetNode.kind() == GraphNodeKind.CONSTRUCTOR) {
                 candidate = plain.findAll(ObjectCreationExpr.class).stream().anyMatch(call ->
                         call.getType().getNameAsString().equals(methodName.replace("<init>", ""))
                                 && call.getArguments().size() == arity);
@@ -761,11 +787,14 @@ final class ProjectSnapshotBuilder {
                         || plain.findAll(FieldAccessExpr.class).stream().anyMatch(
                         field -> field.getNameAsString().equals(fieldName));
             } else if (targetNode.kind() == GraphNodeKind.TYPE) {
-                candidate = plain.findAll(ClassOrInterfaceDeclaration.class).stream().anyMatch(
-                        declaration -> declaration.getExtendedTypes().stream()
+                candidate = relation.equals("type_users")
+                        ? plain.findAll(ClassOrInterfaceType.class).stream()
                                 .anyMatch(type -> simpleTypeName(type).equals(typeName(target)))
-                                || declaration.getImplementedTypes().stream()
-                                .anyMatch(type -> simpleTypeName(type).equals(typeName(target))));
+                        : plain.findAll(ClassOrInterfaceDeclaration.class).stream().anyMatch(
+                                declaration -> declaration.getExtendedTypes().stream()
+                                        .anyMatch(type -> simpleTypeName(type).equals(typeName(target)))
+                                        || declaration.getImplementedTypes().stream()
+                                        .anyMatch(type -> simpleTypeName(type).equals(typeName(target))));
             } else {
                 candidate = false;
             }
@@ -892,13 +921,18 @@ final class ProjectSnapshotBuilder {
             String methodName,
             int arity,
             String fieldName,
-            String target
+            String target,
+            String relation
     ) {
         return switch (targetNode.kind()) {
-            case METHOD -> "METHOD|" + methodName + "|" + arity;
+            case METHOD -> relation.equals("entrypoints")
+                    ? "ENTRYPOINT|" + methodName + "|" + arity
+                    : "METHOD|" + methodName + "|" + arity;
             case CONSTRUCTOR -> "CONSTRUCTOR|" + methodName.replace("<init>", "") + "|" + arity;
             case FIELD -> "FIELD|" + fieldName;
-            case TYPE -> "TYPE|" + typeName(target);
+            case TYPE -> relation.equals("type_users")
+                    ? "TYPE_REF|" + typeName(target)
+                    : "TYPE|" + typeName(target);
             default -> targetNode.kind() + "|" + target;
         };
     }
@@ -1196,11 +1230,11 @@ final class ProjectSnapshotBuilder {
     private static void addFrameworkNodes(
             List<GraphNode> nodes,
             List<GraphEdge> edges,
-            MethodDeclaration method,
+            NodeWithAnnotations<?> declaration,
             String methodId,
             String file
     ) {
-        for (AnnotationExpr annotation : method.getAnnotations()) {
+        for (AnnotationExpr annotation : declaration.getAnnotations()) {
             String name = annotation.getName().getIdentifier();
             GraphEdgeKind kind = null;
             if (ROUTE_ANNOTATIONS.contains(name)) {

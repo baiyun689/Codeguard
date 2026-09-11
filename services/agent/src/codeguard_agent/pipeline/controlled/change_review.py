@@ -50,10 +50,16 @@ def prepare_change_context(client, group, instruction) -> str:
             prepared.append(str(response.result or response.error))
             attempted.append({"symbol_id": symbol.symbol_id, "tool": "read_symbol"})
     relation_types = {
-        "METHOD": ("callers", "callees"),
-        "CONSTRUCTOR": ("callers", "callees"),
+        "METHOD": ("callers", "callees", "entrypoints", "type_references"),
+        "CONSTRUCTOR": ("callers", "callees", "entrypoints", "type_references"),
         "FIELD": ("field_readers", "field_writers"),
-        "TYPE": ("implementations",),
+        "TYPE": (
+            "implementations",
+            "parents",
+            "children",
+            "type_users",
+            "type_references",
+        ),
     }
     scheduled = [
         (symbol.symbol_id, relations[index])
@@ -208,6 +214,11 @@ def build_change_review_node(
                         "field_writers",
                         "implementations",
                         "overrides",
+                        "parents",
+                        "children",
+                        "type_users",
+                        "type_references",
+                        "entrypoints",
                     ),
                     max_tool_calls=budgets[index],
                     max_rounds=max_rounds,

@@ -32,7 +32,7 @@ diff → 文件/hunk 任务 → DirectGate → SymbolResolution
 
 关系结果附带 `new_queryable_symbols`，列出本次新增到当前调查组的可查询 ID；它是导航清单，不是缺陷或必查清单。模型先检查证据是否回答当前问题，再按剩余事实缺口选择端点、源码或续页，提交前检查本组其它变更。原始工具证据和共享缓存不包含该组内元数据。
 
-同一 Reviewer 使用 `read_symbol` / `query_relations` 沿真实 ID 继续调查。方法源码附带所属类型的最多 64 个成员导航入口；目录不证明调用或数据流。关系页最多附带 3 个端点源码片段，各最多 24 行/1000 字符；继承、泛型、动态绑定与不完整解析仍可能形成证据缺口。
+同一 Reviewer 使用 `read_symbol` / `query_relations` 沿真实 ID 继续调查。关系查询除调用和字段读写外，还支持实现/覆写、父类/子类、类型使用方/类型引用及路由事件定时入口；方法源码附带所属类型的最多 64 个成员导航入口；目录不证明调用或数据流。关系页最多附带 3 个端点源码片段，各最多 24 行/1000 字符；继承、泛型、动态绑定与不完整解析仍可能形成证据缺口。
 
 每轮只生成简短 assessment 和 queries/result 二选一。默认模型接口不包含旧初筛的兼容元数据，也不要求 observation_refs 已读回执。结果最多 8 个独立候选；每个跨 symbol 主张必须引用真实观察（最多 3 条），纯 patch 问题可不引用工具，patch 由运行时自动绑定。终止前校验结果和引用。新增代码用原文片段定位；删除变更提供当前版本锚点。定位失败保留 `line=0` 文件级候选，受控路径不为定位增加模型调用。
 
@@ -122,7 +122,7 @@ flowchart LR
 |---|---|
 | `resolve_change_context` | 运行时专用，将变更位置解析成符号；不向 Reviewer 暴露。 |
 | `read_symbol` | Reviewer 读取已知符号的有界源码，可分页。 |
-| `query_relations` | Reviewer 查询 callers、callees、field_readers、field_writers、implementations、overrides，沿返回的真实 ID 深入。 |
+| `query_relations` | Reviewer 查询 callers、callees、field_readers、field_writers、implementations、overrides、parents、children、type_users、type_references、entrypoints，沿返回的真实 ID 深入。 |
 
 最终报告提供根因与代码来源，内部证据编号由运行时管理。图谱展示静态事实，不保证动态调用关系完备；预算或证据不足会留下未完成状态。
 

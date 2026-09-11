@@ -77,6 +77,64 @@ def _graph_with_source_excerpt():
     return payload
 
 
+def test_projection_keeps_extended_relation_direction_for_query_results():
+    subject = "java:demo.Child"
+    payload = {
+        "schema_version": 2,
+        "outcome": "found",
+        "coverage": "complete",
+        "source_scope": "MAIN",
+        "subject_symbol_id": subject,
+        "symbols": [
+            {"id": subject, "kind": "TYPE", "file": "src/Child.java", "source_set": "MAIN"},
+            {"id": "java:demo.Parent", "kind": "TYPE", "file": "src/Parent.java", "source_set": "MAIN"},
+            {"id": "java:demo.Api", "kind": "TYPE", "file": "src/Api.java", "source_set": "MAIN"},
+            {"id": "java:demo.Consumer#use(Api)", "kind": "METHOD", "file": "src/Consumer.java", "source_set": "MAIN"},
+            {"id": "java:demo.Controller#handle()", "kind": "METHOD", "file": "src/Controller.java", "source_set": "MAIN"},
+            {"id": "framework:java:demo.Controller#handle():GetMapping", "kind": "FRAMEWORK_ENTRYPOINT", "file": "src/Controller.java", "source_set": "MAIN"},
+        ],
+        "relationships": [
+            {"sourceId": subject, "targetId": "java:demo.Parent", "kind": "EXTENDS", "file": "src/Child.java", "line": 2, "source_set": "MAIN", "resolution": "RESOLVED"},
+            {"sourceId": subject, "targetId": "java:demo.Api", "kind": "REFERENCES_TYPE", "file": "src/Child.java", "line": 2, "source_set": "MAIN", "resolution": "RESOLVED"},
+            {"sourceId": "java:demo.Consumer#use(Api)", "targetId": "java:demo.Api", "kind": "REFERENCES_TYPE", "file": "src/Consumer.java", "line": 3, "source_set": "MAIN", "resolution": "RESOLVED"},
+            {"sourceId": "framework:java:demo.Controller#handle():GetMapping", "targetId": "java:demo.Controller#handle()", "kind": "EXPOSES_ROUTE", "file": "src/Controller.java", "line": 2, "source_set": "MAIN", "resolution": "RESOLVED"},
+        ],
+        "unresolved_relationships": [],
+        "unresolved_count": 0,
+        "limitations": [],
+    }
+    for relation, query_subject, expected, edges in (
+        ("parents", subject, (subject, "java:demo.Parent"), payload["relationships"][:1]),
+        ("children", "java:demo.Parent", (subject, "java:demo.Parent"), payload["relationships"][:1]),
+        ("type_references", subject, (subject, "java:demo.Api"), payload["relationships"][1:2]),
+        (
+            "type_users",
+            "java:demo.Api",
+            ("java:demo.Consumer#use(Api)", "java:demo.Api"),
+            payload["relationships"][2:3],
+        ),
+        (
+            "entrypoints",
+            "java:demo.Controller#handle()",
+            ("framework:java:demo.Controller#handle():GetMapping", "java:demo.Controller#handle()"),
+            payload["relationships"][3:4],
+        ),
+    ):
+        relation_payload = {**payload, "subject_symbol_id": query_subject, "relationships": edges}
+        projected = json.loads(
+            project_tool_payload(
+                "query_relations",
+                json.dumps(relation_payload),
+                ProjectionAudience.REVIEWER,
+                arguments={"subject_symbol_id": query_subject, "relation": relation},
+            ).content
+        )
+        assert any(
+            edge["sourceId"] == expected[0] and edge["targetId"] == expected[1]
+            for edge in projected["relationships"]
+        ), (relation, projected)
+
+
 def test_relation_source_excerpt_survives_judge_projection_and_artifact_capture():
     from codeguard_agent.models.council import CandidateIssue
     from codeguard_agent.models.evidence import EvidenceRef

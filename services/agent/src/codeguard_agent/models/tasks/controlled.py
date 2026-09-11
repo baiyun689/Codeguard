@@ -65,9 +65,14 @@ class SubtaskInstruction(ControlledModel):
             "field_writers",
             "implementations",
             "overrides",
+            "parents",
+            "children",
+            "type_users",
+            "type_references",
+            "entrypoints",
         ],
         ...,
-    ] = Field(default=(), max_length=6)
+    ] = Field(default=(), max_length=11)
     max_tool_calls: StrictInt = Field(default=10, ge=0, le=20)
     max_rounds: StrictInt = Field(default=6, ge=1, le=12)
 
