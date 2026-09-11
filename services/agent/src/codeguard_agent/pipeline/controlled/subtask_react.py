@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import json
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextvars import copy_context
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -78,6 +78,7 @@ class SubtaskReactEngine:
         task: Any,
         symbol_context: Any,
         instruction: SubtaskInstruction,
+        scoped_context: Mapping[str, Any] | None = None,
         structured_method: str,
         max_retries: int,
     ) -> SubtaskReactOutcome:
@@ -86,6 +87,7 @@ class SubtaskReactEngine:
             task=task,
             symbol_context=symbol_context,
             instruction=instruction,
+            scoped_context=scoped_context,
             structured_method=structured_method,
             max_retries=max_retries,
         )
@@ -97,6 +99,7 @@ class SubtaskReactEngine:
         task: Any,
         symbol_context: Any,
         instruction: SubtaskInstruction,
+        scoped_context: Mapping[str, Any] | None,
         structured_method: str,
         max_retries: int,
     ) -> SubtaskReactOutcome:
@@ -114,7 +117,9 @@ class SubtaskReactEngine:
                 raise TimeoutError("subtask_timeout")
             return self._run_agent(
                 llm,
-                self._build_user_prompt(task, symbol_context, instruction),
+                self._build_user_prompt(
+                    task, symbol_context, instruction, scoped_context=scoped_context
+                ),
                 instruction,
                 structured_method,
             )
@@ -707,7 +712,12 @@ class SubtaskReactEngine:
         return ""
 
     def _build_user_prompt(
-        self, task: Any, symbol_context: Any, instruction: SubtaskInstruction
+        self,
+        task: Any,
+        symbol_context: Any,
+        instruction: SubtaskInstruction,
+        *,
+        scoped_context: dict[str, Any] | None = None,
     ) -> str:
         from codeguard_agent.pipeline.controlled.investigation_decision import (
             symbol_name,
@@ -728,8 +738,24 @@ class SubtaskReactEngine:
             for r in getattr(symbol_context, "references", ())
             if r.symbol_id in initial_ids
         ]
-        anchors = [a.model_dump() for a in getattr(task, "deletion_anchors", ())]
-        return f'''<subtask id="{instruction.subtask_id}">\n<task_patch file="{task.file}">\n{task.patch}\n</task_patch>\n<deletion_anchors>{json.dumps(anchors, ensure_ascii=False, separators=(",", ":"))}</deletion_anchors>\n<initial_symbols>{json.dumps(initial_symbols, separators=(",", ":"))}</initial_symbols>\n<symbol_context>{json.dumps(symbols, ensure_ascii=False)}</symbol_context>\n<changed_references>{json.dumps(references, ensure_ascii=False)}</changed_references>\n<prepared_source>{self._initial_context}</prepared_source>\n<instruction>{instruction.model_dump_json(exclude_defaults=True)}</instruction>\n'''
+        scoped = scoped_context if scoped_context is not None else {}
+        patch = str(scoped.get("patch", getattr(task, "patch", "")))
+        raw_anchors: Any = scoped.get("deletion_anchors")
+        if raw_anchors is None:
+            raw_anchors = getattr(task, "deletion_anchors", ())
+        anchors = [
+            item.model_dump() if hasattr(item, "model_dump") else item
+            for item in raw_anchors
+        ]
+        other_changes = scoped.get("other_changes_index", ())
+        primary_lines = scoped.get("primary_change_lines", ())
+        scope_kind = str(scoped.get("scope_kind", "resolved"))
+        scope_note = (
+            "本组范围已由运行时隔离；其它变更只作为索引，不是本轮候选目标。"
+            if scoped_context is not None
+            else "本组没有额外的隔离视图；以运行时提供的 task_patch 为准。"
+        )
+        return f'''<subtask id="{instruction.subtask_id}">\n<scope>{scope_note}</scope>\n<scope_kind>{scope_kind}</scope_kind>\n<scoped_task_patch file="{task.file}">\n{patch}\n</scoped_task_patch>\n<primary_change_lines>{json.dumps(list(primary_lines), ensure_ascii=False, separators=(",", ":"))}</primary_change_lines>\n<deletion_anchors>{json.dumps(anchors, ensure_ascii=False, separators=(",", ":"))}</deletion_anchors>\n<other_changes_index>{json.dumps(list(other_changes), ensure_ascii=False, separators=(",", ":"))}</other_changes_index>\n<initial_symbols>{json.dumps(initial_symbols, separators=(",", ":"))}</initial_symbols>\n<symbol_context>{json.dumps(symbols, ensure_ascii=False)}</symbol_context>\n<changed_references>{json.dumps(references, ensure_ascii=False)}</changed_references>\n<prepared_source>{self._initial_context}</prepared_source>\n<instruction>{instruction.model_dump_json(exclude_defaults=True)}</instruction>\n'''
 
 
 __all__ = ["SubtaskReactEngine", "SubtaskReactOutcome"]

@@ -9,7 +9,7 @@ from pathlib import Path
 from hashlib import sha256
 import json
 import re
-from typing import Any
+from typing import Any, TypedDict
 from codeguard_agent.models.council import CandidateIssue, CouncilTrace
 from codeguard_agent.models.state import collect_candidate_reducer
 from codeguard_agent.models.tasks import SubtaskInstruction, SubtaskPlan
@@ -29,7 +29,17 @@ from codeguard_agent.pipeline.execution.discovery import (
 _PROMPTS = Path(__file__).resolve().parents[2] / "prompts" / "controlled"
 
 
-def prepare_change_context(client, group, instruction) -> str:
+class SubtaskPromptContext(TypedDict):
+    """Prompt-only view; the original task remains the evidence source."""
+
+    patch: str
+    primary_change_lines: tuple[int, ...]
+    deletion_anchors: tuple[Any, ...]
+    other_changes_index: tuple[dict[str, Any], ...]
+    scope_kind: str
+
+
+def prepare_change_context(client, group, instruction, scoped_context=None) -> str:
     """Bounded first pages, charged to the same budget as subsequent exploration.
 
     Read roots first, then spread incoming relations across roots before outgoing
@@ -41,12 +51,28 @@ def prepare_change_context(client, group, instruction) -> str:
     reserve = budget - preparation_limit
     prepared = []
     attempted = []
+    primary_lines = set((scoped_context or {}).get("primary_change_lines", ()))
+    primary_lines.update(
+        anchor.anchor_line
+        for anchor in (scoped_context or {}).get("deletion_anchors", ())
+    )
     if "read_symbol" in instruction.allowed_tools:
         for symbol in group[: min(budget // 2, preparation_limit)]:
+            symbol_lines = [
+                line
+                for line in primary_lines
+                if symbol.start_line <= line <= symbol.end_line
+            ]
+            if symbol_lines:
+                start_line = max(symbol.start_line, min(symbol_lines) - 4)
+                end_line = min(symbol.end_line, start_line + 119)
+            else:
+                start_line = symbol.start_line
+                end_line = min(symbol.end_line, symbol.start_line + 119)
             response = client.read_symbol(
                 symbol.symbol_id,
-                start_line=symbol.start_line,
-                end_line=min(symbol.end_line, symbol.start_line + 119),
+                start_line=start_line,
+                end_line=end_line,
             )
             prepared.append(str(response.result or response.error))
             attempted.append({"symbol_id": symbol.symbol_id, "tool": "read_symbol"})
@@ -136,15 +162,8 @@ def change_groups(task, context) -> list[tuple]:
     for line in task.resolution_lines:
         if line in blank_lines and line not in anchors:
             continue
-        enclosing = [
-            s
-            for s in symbols
-            if s.file == task.file and s.start_line <= line <= s.end_line
-        ]
-        if enclosing:
-            symbol = min(
-                enclosing, key=lambda s: (s.end_line - s.start_line, s.symbol_id)
-            )
+        symbol = _symbol_for_change_line(symbols, task, line)
+        if symbol is not None:
             selected[symbol.symbol_id] = symbol
     ordered = sorted(selected.values(), key=lambda s: (s.start_line, s.symbol_id))
     groups: list[tuple] = []
@@ -160,7 +179,247 @@ def change_groups(task, context) -> list[tuple]:
             groups.append((symbol,))
     if field_group_index is not None:
         groups[field_group_index] = tuple(fields)
+    if groups and _unresolved_change_lines(task, context):
+        # Keep partially unresolved locations visible as an explicitly
+        # incomplete scope instead of silently dropping them from review.
+        groups.append(())
     return groups or [()]
+
+
+def _symbol_for_change_line(symbols, task, line: int):
+    """Return the innermost resolved declaration owning a changed line."""
+    enclosing = [
+        symbol
+        for symbol in symbols
+        if symbol.file == task.file
+        and symbol.start_line <= line <= symbol.end_line
+    ]
+    return min(
+        enclosing,
+        key=lambda symbol: (symbol.end_line - symbol.start_line, symbol.symbol_id),
+        default=None,
+    )
+
+
+def _unresolved_change_lines(task, context) -> tuple[int, ...]:
+    """Return non-blank changed lines with no resolved declaration owner."""
+    if context is None or not getattr(context, "symbols", ()):
+        return ()
+    blank = _blank_added_lines(task)
+    anchors = {anchor.anchor_line for anchor in task.deletion_anchors}
+    symbols = tuple(context.symbols)
+    return tuple(
+        sorted(
+            line
+            for line in task.resolution_lines
+            if not (line in blank and line not in anchors)
+            and _symbol_for_change_line(symbols, task, line) is None
+        )
+    )
+
+
+def _blank_added_lines(task) -> set[int]:
+    """Find blank additions, which are not useful primary review anchors."""
+    blank: set[int] = set()
+    line_number = 0
+    for raw in task.patch.splitlines():
+        hunk = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)", raw)
+        if hunk:
+            line_number = int(hunk[1])
+        elif raw.startswith("+") and not raw.startswith("+++"):
+            if not raw[1:].strip():
+                blank.add(line_number)
+            line_number += 1
+        elif raw.startswith(" "):
+            line_number += 1
+    return blank
+
+
+def _group_change_lines(task, context, group) -> tuple[set[int], set[int]]:
+    """Return exact added/deletion-anchor lines owned by a declaration group."""
+    if not group:
+        return set(task.changed_lines), {
+            anchor.anchor_line for anchor in task.deletion_anchors
+        }
+    symbols = tuple(getattr(context, "symbols", ()) or ())
+    group_ids = {symbol.symbol_id for symbol in group}
+    blank = _blank_added_lines(task)
+    anchor_lines = {
+        anchor.anchor_line for anchor in task.deletion_anchors
+    }
+    primary: set[int] = set()
+    for line in task.resolution_lines:
+        if line in blank and line not in anchor_lines:
+            continue
+        owner = _symbol_for_change_line(symbols, task, line)
+        if owner is not None and owner.symbol_id in group_ids:
+            if line in task.changed_lines:
+                primary.add(line)
+    anchors = {
+        line
+        for line in anchor_lines
+        if (
+            (owner := _symbol_for_change_line(symbols, task, line)) is not None
+            and owner.symbol_id in group_ids
+        )
+    }
+    return primary, anchors
+
+
+def _other_changes_index(
+    task, context, group, *, include_all: bool = False
+) -> tuple[dict[str, Any], ...]:
+    """Build a compact navigation index without exposing other diff bodies."""
+    symbols = tuple(getattr(context, "symbols", ()) or ())
+    group_ids = {symbol.symbol_id for symbol in group}
+    if not symbols or (not group and not include_all):
+        return ()
+    index: list[dict[str, Any]] = []
+    for symbol in sorted(symbols, key=lambda item: (item.start_line, item.symbol_id)):
+        if symbol.symbol_id in group_ids:
+            continue
+        primary, anchors = _group_change_lines(task, context, (symbol,))
+        lines = sorted(primary | anchors)
+        if not lines:
+            continue
+        index.append(
+            {
+                "symbol_id": symbol.symbol_id,
+                "kind": symbol.kind,
+                "range": [symbol.start_line, symbol.end_line],
+                "changed_lines": lines,
+            }
+        )
+    return tuple(index)
+
+
+def _scoped_patch(task, primary_lines: set[int], anchor_lines: set[int]) -> str:
+    """Mask changed lines owned by other declarations in the prompt view.
+
+    The original patch remains in the Evidence Ledger.  This rendering is only
+    a model-context view, so replacing out-of-scope additions/deletions with a
+    marker cannot alter evidence hashes or final candidate location binding.
+    """
+    if not primary_lines and not anchor_lines:
+        return task.patch
+    rendered: list[str] = []
+    new_line: int | None = None
+    previous_surviving: int | None = None
+    pending_deletions: list[str] = []
+
+    def flush_deletions(next_line: int | None = None) -> None:
+        nonlocal pending_deletions
+        if not pending_deletions:
+            return
+        anchor = next_line if next_line is not None else previous_surviving
+        if anchor is not None and anchor in anchor_lines:
+            rendered.extend(pending_deletions)
+        else:
+            rendered.append("~ [other deletion omitted from this subtask]")
+        pending_deletions = []
+
+    for raw in task.patch.splitlines():
+        hunk = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)", raw)
+        if hunk:
+            flush_deletions()
+            new_line = int(hunk[1])
+            previous_surviving = None
+            rendered.append(raw)
+            continue
+        if raw.startswith("---") or raw.startswith("+++"):
+            flush_deletions()
+            rendered.append(raw)
+            continue
+        if raw.startswith("-"):
+            pending_deletions.append(raw)
+            continue
+        if raw.startswith("+"):
+            flush_deletions(new_line)
+            visible = new_line is None or new_line in primary_lines
+            rendered.append(raw if visible else "~ [other change omitted from this subtask]")
+            if new_line is not None:
+                previous_surviving = new_line
+                new_line += 1
+            continue
+        if raw.startswith(" "):
+            flush_deletions(new_line)
+            rendered.append(raw)
+            if new_line is not None:
+                previous_surviving = new_line
+                new_line += 1
+            continue
+        flush_deletions()
+        rendered.append(raw)
+    flush_deletions()
+    return "\n".join(rendered)
+
+
+def build_subtask_context(
+    task, context, group, *, unresolved_lines: tuple[int, ...] | None = None
+) -> SubtaskPromptContext:
+    """Compile the prompt-only context boundary for one investigation group."""
+    if unresolved_lines is not None:
+        primary_lines = set(unresolved_lines) & set(task.changed_lines)
+        anchor_lines = {
+            anchor.anchor_line
+            for anchor in task.deletion_anchors
+            if anchor.anchor_line in unresolved_lines
+        }
+        scope_kind = "unresolved"
+    else:
+        primary_lines, anchor_lines = _group_change_lines(task, context, group)
+        scope_kind = "resolved" if group else "unresolved"
+    return {
+        "patch": _scoped_patch(task, primary_lines, anchor_lines),
+        "primary_change_lines": tuple(sorted(primary_lines)),
+        "deletion_anchors": tuple(
+            anchor
+            for anchor in getattr(task, "deletion_anchors", ())
+            if anchor.anchor_line in anchor_lines
+        ),
+        "other_changes_index": _other_changes_index(
+            task, context, group, include_all=unresolved_lines is not None
+        ),
+        "scope_kind": scope_kind,
+    }
+
+
+def _group_projection_focus(task, context, group, scoped_context):
+    """Keep graph projection relevance local to the active declaration group."""
+    focused_task = task.model_copy(
+        update={
+            "changed_lines": list(scoped_context.get("primary_change_lines", ())),
+            "deletion_anchors": list(scoped_context.get("deletion_anchors", ())),
+        }
+    )
+    focused_context = (
+        context.model_copy(update={"symbols": tuple(group)})
+        if context is not None and group
+        else None
+    )
+    return graph_projection_focus(focused_task, focused_context)
+
+
+def _candidate_in_group(
+    candidate, task, scoped_context: SubtaskPromptContext, group
+) -> bool:
+    """Ensure a finding is anchored to this group, not another subtask's diff."""
+    if not group and scoped_context.get("scope_kind") != "unresolved":
+        return True
+    if str(candidate.file).replace("\\", "/") != str(task.file).replace("\\", "/"):
+        return False
+    line = int(candidate.line or 0)
+    if line == 0:
+        # A location failure is a valid, file-level candidate.  It is not
+        # evidence that the finding belongs to another declaration; preserve
+        # it for Judge, which will see the location limitation.
+        return True
+    allowed = set(scoped_context.get("primary_change_lines", ()))
+    allowed.update(
+        anchor.anchor_line
+        for anchor in scoped_context.get("deletion_anchors", ())
+    )
+    return line in allowed
 
 
 def build_change_review_node(
@@ -203,11 +462,21 @@ def build_change_review_node(
             )
             context = (state.get("task_symbol_contexts") or {}).get(task.id)
             groups = change_groups(task, context)
+            unresolved_lines = _unresolved_change_lines(task, context)
             limit = min(max_subtasks, max(1, task_tool_budget))
             for index in range(limit, len(groups)):
                 key = f"{task.id}:{review_group_id(task.id, index)}"
                 outcomes[key], reasons[key] = ("omitted", "task_budget_limit")
             groups = groups[:limit]
+            has_unresolved_scope = bool(unresolved_lines and len(groups) > 1)
+            if has_unresolved_scope:
+                traces.append(
+                    CouncilTrace(
+                        node="controlled_review",
+                        event="unresolved_change_scope",
+                        detail=f"task={task.id} lines={','.join(map(str, unresolved_lines))}",
+                    )
+                )
             budgets = allocate_budgets(
                 len(groups),
                 total_budget=task_tool_budget,
@@ -246,6 +515,10 @@ def build_change_review_node(
                 )
                 for index, group in enumerate(groups)
             ]
+            groups_by_subtask = {
+                instruction.subtask_id: group
+                for group, instruction in zip(groups, instructions)
+            }
             plans[task.id] = SubtaskPlan(task_id=task.id, subtasks=tuple(instructions))
             catalog = EvidenceCatalogBuilder().build_initial(
                 task=original,
@@ -256,10 +529,20 @@ def build_change_review_node(
 
             def run(item):
                 group, instruction = item
+                scoped_context = build_subtask_context(
+                    task,
+                    context,
+                    group,
+                    unresolved_lines=unresolved_lines
+                    if has_unresolved_scope and not group
+                    else None,
+                )
                 client = CoordinatedDiscoveryToolClient(
                     tool_client,
                     coordinator,
-                    projection_focus=graph_projection_focus(task, context),
+                    projection_focus=_group_projection_focus(
+                        task, context, group, scoped_context
+                    ),
                     lossless_payload=True,
                     canonical_symbol_ids=True,
                     max_tool_calls=instruction.max_tool_calls,
@@ -274,7 +557,12 @@ def build_change_review_node(
                     if tool_client is None:
                         return ""
                     with client.context_preparation():
-                        return prepare_change_context(client, group, instruction)
+                        return prepare_change_context(
+                            client,
+                            group,
+                            instruction,
+                            scoped_context=scoped_context,
+                        )
 
                 engine = SubtaskReactEngine(
                     client,
@@ -294,6 +582,7 @@ def build_change_review_node(
                         task=task,
                         symbol_context=context,
                         instruction=instruction,
+                        scoped_context=scoped_context,
                         structured_method=state.get(
                             "structured_method", "function_calling"
                         ),
@@ -317,6 +606,15 @@ def build_change_review_node(
                     )
                     continue
                 _, client, outcome = item
+                group = groups_by_subtask.get(instruction.subtask_id, ())
+                scoped_context = build_subtask_context(
+                    task,
+                    context,
+                    group,
+                    unresolved_lines=unresolved_lines
+                    if has_unresolved_scope and not group
+                    else None,
+                )
                 capture = capture_tool_records(catalog, client.trace_records)
                 catalog = capture.catalog
                 records.extend(capture.trace_refs)
@@ -364,6 +662,36 @@ def build_change_review_node(
                             candidate_index=len(candidates) + 1,
                         )
                         if candidate is not None:
+                            finding_file = str(finding.location_file).replace(
+                                "\\", "/"
+                            )
+                            task_file = str(task.file).replace("\\", "/")
+                            if finding_file != task_file:
+                                traces.append(
+                                    CouncilTrace(
+                                        node="execute",
+                                        event="finding_out_of_scope",
+                                        detail=(
+                                            f"{key} {finding.location_file}:{finding.location_line} "
+                                            "uses an external change location"
+                                        ),
+                                    )
+                                )
+                                continue
+                            if not _candidate_in_group(
+                                candidate, task, scoped_context, group
+                            ):
+                                traces.append(
+                                    CouncilTrace(
+                                        node="execute",
+                                        event="finding_out_of_scope",
+                                        detail=(
+                                            f"{key} {candidate.file}:{candidate.line} "
+                                            "is not anchored to this subtask"
+                                        ),
+                                    )
+                                )
+                                continue
                             candidates.append(candidate)
                         else:
                             outcomes[key], reasons[key] = (

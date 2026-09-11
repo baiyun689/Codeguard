@@ -20,15 +20,16 @@ diff → task/DirectGate → SymbolResolution
      → 确定性定位/证据绑定 → EvidenceVerifier → 批量 Judge → 合并结果
 ```
 
-- 主入口：`pipeline/controlled/change_review.py`。按位置确定性收集实际变更声明；METHOD、CONSTRUCTOR、TYPE 等非 FIELD 声明各自成组，同一文件任务内的 FIELD 声明合并为一个字段组。空白新增行不会额外触发整个类型。删除变更使用当前版本锚点。不会先遍历全项目所有 symbol。
+- 主入口：`pipeline/controlled/change_review.py`。按位置确定性收集实际变更声明；METHOD、CONSTRUCTOR、TYPE 等非 FIELD 声明各自成组，同一文件任务内的 FIELD 声明合并为一个字段组。空白新增行不会额外触发整个类型。部分解析时未归属声明的变更进入单独的未解析组并标记为未完成；不会静默丢弃。删除变更使用当前版本锚点。不会先遍历全项目所有 symbol。
 - 默认不执行知识路由 Plan、Summary、DirectTriage、模型 GraphPlan。`planned_steps` 和历史 `react` 仍是显式兼容路径；未来清理归档可以独立进行，不让旧模型接口进入默认调用。
-- 同一 Reviewer 从源码开始理解变更，不先接受预判 bug。少量根符号、真实导航、预算和证据合同约束执行；语义判断仍可能错误。
+- 同一 Reviewer 从源码开始理解变更，不先接受预判 bug。每个子任务只接收本组变更的隔离视图，其他声明仅以位置/符号索引提供导航；关系返回的外部端点仍可作为本组证据。少量根符号、真实导航、预算和证据合同约束执行；语义判断仍可能错误。
 - 默认每组最多六次探索、十次工具尝试，加一次预留结论；每 task 总工具预算 32。源码准备最多占工具额度一半，各源片段最多 120 行并受 Gateway 字节限制。源码和一跳关系合计预取最多 `budget - min(budget, max(2, budget // 3))` 次，默认最多六次，至少保留四次动态查询机会。预取/拒绝都计预算，各组共享 HTTP 缓存但不共享本地 Txx 编号。
 - 一跳预取从变更声明出发：方法/构造器查 callers/callees，字段查 readers/writers，类型查 implementations。受控调查还可按疑点查询 parents、children、type_users、type_references 和 entrypoints；这些关系保持各自方向与主体类型约束。先跨根符号分配第一个方向，再分配第二个方向；每页最多六个关系结果并请求端点源码。不自动追游标、不展开返回端点，不能称为完整邻域。`preparation_scope` 明确未查询关系，真实响应继续携带 coverage/limitations/next_cursor；只有工具原文是 Txx 证据，范围清单不是事实。
 - 首轮直接使用预取的 Txx，继续取证与终止沿用同一个决策协议，不增加直审/规划 LLM。预取在子任务超时内执行；超时后禁止首次模型调用。自动预取的空关系仍关闭对应入口，但不计入模型的全局无进展计数；模型循环开始后沿用原空转护栏。
 - Java `read_symbol` 为方法/字段同时返回所属类型的有界成员目录，免去只为寻找 ID 而读取类的额外调用。目录只来自索引，不推断调用边；不为源码读取隐式启动整项目语义展开。继承成员与外部库仍可能查不到。
 - 默认模型输出 assessment 与 queries/result，不生成旧初筛兼容字段或已读回执。结果最多八个候选，每条最多三条真实观察。局部问题可只绑定 patch，跨符号主张需要实际源码/关系支持。
 - 原对话预留结论，关闭后不再执行查询；格式纠错也使用原预算。未知最终观察编号在终止前反馈，不静默删掉未知引用再放行。
+- 子任务候选由运行时检查最终定位是否落在本组新增行或删除锚点；原始完整 patch 仍只进入 Evidence Ledger，提示词中的 `scoped_task_patch` 不会改变原始证据或 revision。
 - 定位复用已有 Locator，新增片段唯一匹配可修正行号；纯删除使用传入锚点，失败保留文件级候选。受控路径不为定位额外调用模型。
 - Artifact 使用原 task patch 摘要，展示截断不能改变 revision 身份。截断、无符号、结果 limitations 和预算省略保留未完成状态，已经有候选不代表整个组完成。
 - `eval-codeguard-full` 与 `eval-controlled-codegraph` 现在都指向 `orchestration=change-review`。旧同名 archive 不可当成同一配置做趋势对比。
