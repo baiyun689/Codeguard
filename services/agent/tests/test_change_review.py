@@ -86,15 +86,24 @@ def test_fields_share_one_group_while_other_declarations_stay_independent():
             ("java:A#fieldA", "FIELD", 20),
             ("java:A#second()", "METHOD", 30),
             ("java:A#fieldB", "FIELD", 40),
+            ("java:A#fieldC", "FIELD", 41),
+            ("java:A#fieldD", "FIELD", 42),
+            ("java:A#fieldE", "FIELD", 43),
             ("java:A", "TYPE", 50),
         )
     )
-    task = task.model_copy(update={"changed_lines": [10, 20, 30, 40, 50]})
+    task = task.model_copy(update={"changed_lines": [10, 20, 30, 40, 41, 42, 43, 50]})
     groups = change_groups(task, context.model_copy(update={"symbols": symbols}))
 
     assert [[s.symbol_id for s in group] for group in groups] == [
         ["java:A#first()"],
-        ["java:A#fieldA", "java:A#fieldB"],
+        [
+            "java:A#fieldA",
+            "java:A#fieldB",
+            "java:A#fieldC",
+            "java:A#fieldD",
+            "java:A#fieldE",
+        ],
         ["java:A#second()"],
         ["java:A"],
     ]
