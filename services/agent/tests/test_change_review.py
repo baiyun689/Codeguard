@@ -58,7 +58,8 @@ def test_all_changed_declarations_including_deletion_are_covered_once():
     )
     context = context.model_copy(update={"symbols": symbols})
     groups = change_groups(task, context)
-    assert [len(g) for g in groups] == [4, 4]
+    assert [len(g) for g in groups] == [1] * 8
+    assert all(len(g) == 1 for g in groups)
     assert len({s.symbol_id for g in groups for s in g}) == 8
     task = task.model_copy(
         update={
@@ -67,6 +68,36 @@ def test_all_changed_declarations_including_deletion_are_covered_once():
         }
     )
     assert change_groups(task, context) == [(symbols[8],)]
+
+
+def test_fields_share_one_group_while_other_declarations_stay_independent():
+    task, context = fixture()
+    symbols = tuple(
+        context.symbols[0].model_copy(
+            update={
+                "symbol_id": symbol_id,
+                "kind": kind,
+                "start_line": start_line,
+                "end_line": start_line,
+            }
+        )
+        for symbol_id, kind, start_line in (
+            ("java:A#first()", "METHOD", 10),
+            ("java:A#fieldA", "FIELD", 20),
+            ("java:A#second()", "METHOD", 30),
+            ("java:A#fieldB", "FIELD", 40),
+            ("java:A", "TYPE", 50),
+        )
+    )
+    task = task.model_copy(update={"changed_lines": [10, 20, 30, 40, 50]})
+    groups = change_groups(task, context.model_copy(update={"symbols": symbols}))
+
+    assert [[s.symbol_id for s in group] for group in groups] == [
+        ["java:A#first()"],
+        ["java:A#fieldA", "java:A#fieldB"],
+        ["java:A#second()"],
+        ["java:A"],
+    ]
 
 
 def test_default_graph_does_not_run_planning_or_triage_models():

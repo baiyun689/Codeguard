@@ -1,7 +1,8 @@
 """Default discovery: deterministic change coverage, source preparation, one reviewer.
 
-No model decides which changes deserve investigation. Groups share a file patch,
-but own at most four changed declarations. Java remains the only source reader.
+No model decides which changes deserve investigation. Method/type/constructor
+declarations are investigated independently, while changed fields share one
+field-focused investigation. Java remains the only source reader.
 """
 
 from pathlib import Path
@@ -109,7 +110,14 @@ def review_group_id(task_id: str, index: int) -> str:
 
 
 def change_groups(task, context) -> list[tuple]:
-    """Cover changed/deletion-anchor declarations once, never the whole symbol graph."""
+    """Cover changed declarations with focused, deterministic investigations.
+
+    Non-field declarations get one subtask each so unrelated methods cannot
+    consume one another's investigation context. Fields are the exception:
+    field declarations in the same file task share one subtask because their
+    read/write relationships and initialization semantics are usually coupled.
+    The group order follows the first declaration encountered in source order.
+    """
     symbols = list(context.symbols) if context else []
     selected = {}
     blank_lines = set()
@@ -139,7 +147,20 @@ def change_groups(task, context) -> list[tuple]:
             )
             selected[symbol.symbol_id] = symbol
     ordered = sorted(selected.values(), key=lambda s: (s.start_line, s.symbol_id))
-    return [tuple(ordered[i : i + 4]) for i in range(0, len(ordered), 4)] or [()]
+    groups: list[tuple] = []
+    fields: list[Any] = []
+    field_group_index: int | None = None
+    for symbol in ordered:
+        if symbol.kind.upper() == "FIELD":
+            if field_group_index is None:
+                field_group_index = len(groups)
+                groups.append(())
+            fields.append(symbol)
+        else:
+            groups.append((symbol,))
+    if field_group_index is not None:
+        groups[field_group_index] = tuple(fields)
+    return groups or [()]
 
 
 def build_change_review_node(
