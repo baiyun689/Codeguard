@@ -1106,6 +1106,11 @@ class CoordinatedDiscoveryToolClient:
             "field_writers",
             "implementations",
             "overrides",
+            "parents",
+            "children",
+            "type_users",
+            "type_references",
+            "entrypoints",
         }:
             return ToolResponse(success=False, error="unsupported_relation")
         if self._allowed_relations and relation not in self._allowed_relations:

@@ -14,6 +14,7 @@ from codeguard_agent.pipeline.execution.discovery import (
 )
 from codeguard_agent.pipeline.evidence.projection import GraphProjectionFocus
 from codeguard_agent.tools.tool_client import ToolResponse
+from codeguard_agent.tools.definitions import make_query_relations_tool
 
 
 class _FakeClient:
@@ -27,6 +28,28 @@ class _FakeClient:
             index = self.calls
             self.calls += 1
         return self._responses[min(index, len(self._responses) - 1)]
+
+
+def test_query_relations_schema_exposes_extended_graph_relations():
+    class Client:
+        def query_relations(self, *_args, **_kwargs):
+            return ToolResponse(success=True, result="ok")
+
+    schema = make_query_relations_tool(Client()).args_schema.model_json_schema()
+    relations = schema["properties"]["relation"]["enum"]
+    assert relations == [
+        "callers",
+        "callees",
+        "field_readers",
+        "field_writers",
+        "implementations",
+        "overrides",
+        "parents",
+        "children",
+        "type_users",
+        "type_references",
+        "entrypoints",
+    ]
 
 
 class _FakeGraphClient:

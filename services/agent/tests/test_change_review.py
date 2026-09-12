@@ -9,8 +9,10 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from codeguard_agent.models.tasks import ReviewTask, TaskSymbolContext
 from codeguard_agent.models.tasks.symbols import ResolvedSymbol
 from codeguard_agent.pipeline.controlled.change_review import (
+    build_subtask_context,
     build_change_review_node,
     change_groups,
+    _group_projection_focus,
     review_group_id,
 )
 from codeguard_agent.pipeline.orchestration.graph import (
@@ -58,7 +60,8 @@ def test_all_changed_declarations_including_deletion_are_covered_once():
     )
     context = context.model_copy(update={"symbols": symbols})
     groups = change_groups(task, context)
-    assert [len(g) for g in groups] == [4, 4]
+    assert [len(g) for g in groups] == [1] * 8
+    assert all(len(g) == 1 for g in groups)
     assert len({s.symbol_id for g in groups for s in g}) == 8
     task = task.model_copy(
         update={
@@ -67,6 +70,45 @@ def test_all_changed_declarations_including_deletion_are_covered_once():
         }
     )
     assert change_groups(task, context) == [(symbols[8],)]
+
+
+def test_fields_share_one_group_while_other_declarations_stay_independent():
+    task, context = fixture()
+    symbols = tuple(
+        context.symbols[0].model_copy(
+            update={
+                "symbol_id": symbol_id,
+                "kind": kind,
+                "start_line": start_line,
+                "end_line": start_line,
+            }
+        )
+        for symbol_id, kind, start_line in (
+            ("java:A#first()", "METHOD", 10),
+            ("java:A#fieldA", "FIELD", 20),
+            ("java:A#second()", "METHOD", 30),
+            ("java:A#fieldB", "FIELD", 40),
+            ("java:A#fieldC", "FIELD", 41),
+            ("java:A#fieldD", "FIELD", 42),
+            ("java:A#fieldE", "FIELD", 43),
+            ("java:A", "TYPE", 50),
+        )
+    )
+    task = task.model_copy(update={"changed_lines": [10, 20, 30, 40, 41, 42, 43, 50]})
+    groups = change_groups(task, context.model_copy(update={"symbols": symbols}))
+
+    assert [[s.symbol_id for s in group] for group in groups] == [
+        ["java:A#first()"],
+        [
+            "java:A#fieldA",
+            "java:A#fieldB",
+            "java:A#fieldC",
+            "java:A#fieldD",
+            "java:A#fieldE",
+        ],
+        ["java:A#second()"],
+        ["java:A"],
+    ]
 
 
 def test_default_graph_does_not_run_planning_or_triage_models():
@@ -98,6 +140,102 @@ def test_blank_added_separator_does_not_expand_review_to_whole_type():
     assert change_groups(
         task, context.model_copy(update={"symbols": (owner, method)})
     ) == [(method,)]
+
+
+def test_subtask_context_masks_other_declaration_changes_and_exposes_index():
+    task, context = fixture()
+    first = context.symbols[0].model_copy(
+        update={"symbol_id": "java:A#first()", "start_line": 2, "end_line": 4}
+    )
+    second = context.symbols[0].model_copy(
+        update={"symbol_id": "java:A#second()", "start_line": 8, "end_line": 10}
+    )
+    task = task.model_copy(
+        update={
+            "patch": (
+                "@@ -2,3 +2,3 @@\n"
+                " return 1;\n"
+                "+return first();\n"
+                "@@ -8,3 +8,3 @@\n"
+                " return 1;\n"
+                "+return second();"
+            ),
+            "changed_lines": [3, 9],
+        }
+    )
+    context = context.model_copy(update={"symbols": (first, second)})
+    scoped = build_subtask_context(task, context, (first,))
+
+    assert "+return first();" in scoped["patch"]
+    assert "+return second();" not in scoped["patch"]
+    assert "other change omitted" in scoped["patch"]
+    assert scoped["primary_change_lines"] == (3,)
+    assert scoped["other_changes_index"] == (
+        {
+            "symbol_id": "java:A#second()",
+            "kind": "METHOD",
+            "range": [8, 10],
+            "changed_lines": [9],
+        },
+    )
+
+    from codeguard_agent.models.tasks import SubtaskInstruction
+    from codeguard_agent.pipeline.controlled.subtask_react import SubtaskReactEngine
+
+    prompt = SubtaskReactEngine(SimpleNamespace())._build_user_prompt(
+        task,
+        context,
+        SubtaskInstruction(
+            subtask_id="first",
+            objective="review first",
+            initial_symbol_ids=(first.symbol_id,),
+        ),
+        scoped_context=scoped,
+    )
+    assert "<scoped_task_patch" in prompt
+    assert "+return second();" not in prompt
+    assert "other_changes_index" in prompt and "java:A#second()" in prompt
+    focus = _group_projection_focus(task, context, (first,), scoped)
+    assert focus.changed_symbol_ids == (first.symbol_id,)
+    assert focus.changed_lines == (3,)
+
+
+def test_subtask_instruction_allows_a_single_field_group_larger_than_four():
+    from codeguard_agent.models.tasks import SubtaskInstruction
+
+    instruction = SubtaskInstruction(
+        subtask_id="fields",
+        objective="review fields",
+        initial_symbol_ids=tuple(f"java:A#field{i}" for i in range(5)),
+    )
+    assert len(instruction.initial_symbol_ids) == 5
+
+
+def test_partial_symbol_resolution_creates_an_explicit_unresolved_scope():
+    task, context = fixture()
+    task = task.model_copy(
+        update={
+            "patch": (
+                "@@ -2,1 +2,1 @@\n"
+                "+return 0;\n"
+                "@@ -20,1 +20,1 @@\n"
+                "+unresolved();"
+            ),
+            "changed_lines": [2, 20],
+        }
+    )
+    groups = change_groups(task, context)
+    assert len(groups) == 2 and groups[0] and groups[1] == ()
+
+    scoped = build_subtask_context(
+        task, context, (), unresolved_lines=(20,)
+    )
+    assert scoped["scope_kind"] == "unresolved"
+    assert "+unresolved();" in scoped["patch"]
+    assert "+return 0;" not in scoped["patch"]
+    assert scoped["other_changes_index"][0]["symbol_id"] == "java:A#run()"
+    focus = _group_projection_focus(task, context, (), scoped)
+    assert focus.changed_symbol_ids == () and focus.changed_lines == (20,)
 
 
 class Model(BaseChatModel):

@@ -107,7 +107,7 @@ flowchart LR
     Decide -->|result| Candidate[Location and evidence binding]
 ```
 
-The model sees two tools: `read_symbol` for paginated source and `query_relations` for callers, callees, field readers/writers, implementations and overrides. `resolve_change_context` is runtime-only. Returned IDs permit further investigation; incomplete static analysis and exhausted budgets remain explicit limitations.
+The model sees two tools: `read_symbol` for paginated source and `query_relations` for callers, callees, field readers/writers, implementations, overrides, parents, children, type users, type references and framework entrypoints. `resolve_change_context` is runtime-only. Returned IDs permit further investigation; incomplete static analysis and exhausted budgets remain explicit limitations.
 
 ### Review prompts
 

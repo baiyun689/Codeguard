@@ -55,7 +55,10 @@ class SubtaskInstruction(ControlledModel):
 
     subtask_id: str = Field(min_length=1)
     objective: str = Field(min_length=1)
-    initial_symbol_ids: tuple[str, ...] = Field(default=(), max_length=4)
+    # FIELD declarations are intentionally reviewed as one group.  Do not cap
+    # this at the old four-symbol limit: the runtime still bounds the number of
+    # groups and tool calls, while a hard schema cap would silently drop fields.
+    initial_symbol_ids: tuple[str, ...] = Field(default=())
     allowed_tools: tuple[str, ...] = Field(default=(), max_length=4)
     allowed_relations: tuple[
         Literal[
@@ -65,9 +68,14 @@ class SubtaskInstruction(ControlledModel):
             "field_writers",
             "implementations",
             "overrides",
+            "parents",
+            "children",
+            "type_users",
+            "type_references",
+            "entrypoints",
         ],
         ...,
-    ] = Field(default=(), max_length=6)
+    ] = Field(default=(), max_length=11)
     max_tool_calls: StrictInt = Field(default=10, ge=0, le=20)
     max_rounds: StrictInt = Field(default=6, ge=1, le=12)
 

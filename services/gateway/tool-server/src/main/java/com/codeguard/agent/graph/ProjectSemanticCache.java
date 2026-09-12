@@ -7,6 +7,7 @@ import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.NameExpr;
+import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.util.concurrent.UncheckedExecutionException;
@@ -132,6 +133,12 @@ final class ProjectSemanticCache {
                         add(mutable, "TYPE|" + simpleTypeName(parent), file));
                 type.getImplementedTypes().forEach(parent ->
                         add(mutable, "TYPE|" + simpleTypeName(parent), file));
+            }
+            // Type users are indexed separately from inheritance candidates.
+            // The same lexical index only filters files; Symbol Solver still
+            // confirms the resolved REFERENCES_TYPE edge later.
+            for (ClassOrInterfaceType type : unit.findAll(ClassOrInterfaceType.class)) {
+                add(mutable, "TYPE_REF|" + simpleTypeName(type), file);
             }
         }
         Map<String, List<String>> frozen = new LinkedHashMap<>();

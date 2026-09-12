@@ -32,6 +32,10 @@ public final class QueryRelationsTool implements AgentTool {
     private static final int MAX_DEPTH = 3;
     private static final int DEFAULT_LIMIT = 20;
     private static final int MAX_LIMIT = 200;
+    private static final Set<String> SUPPORTED_RELATIONS = Set.of(
+            "callers", "callees", "field_readers", "field_writers",
+            "implementations", "overrides", "parents", "children",
+            "type_users", "type_references", "entrypoints");
 
     private final ProjectSnapshotProvider snapshot;
 
@@ -47,8 +51,15 @@ public final class QueryRelationsTool implements AgentTool {
     @Override
     public String description() {
         return "查询已知 symbol 的指定项目关系。relation 只能是 callers、callees、field_readers、"
-                + "field_writers、implementations 或 overrides；默认一跳，depth 最大 3，超限使用 cursor 续取。"
-                + "返回精确端点、调用位置、解析状态和覆盖信息，不接受任意图查询或自行编造 symbol_id。";
+                + "field_writers、implementations、overrides、parents、children、type_users、"
+                + "type_references 或 entrypoints；默认一跳，depth 最大 3，超限使用 cursor 续取。"
+                + "callers/callees 查询方法调用，field_readers/field_writers 查询字段读写，"
+                + "implementations/overrides 查询实现或覆写，parents/children 查询继承层级，"
+                + "type_users/type_references 查询类型使用方或类型引用，entrypoints 查询路由、事件和定时入口。"
+                + "parents/type_references 沿边正向查找，children/type_users/entrypoints 沿边反向查找；"
+                + "parents/children/type_users 需要 TYPE，type_references 需要 TYPE、METHOD、CONSTRUCTOR 或 FIELD，"
+                + "entrypoints 需要 METHOD 或 CONSTRUCTOR。返回精确端点、调用位置、解析状态和覆盖信息，"
+                + "不接受任意图查询或自行编造 symbol_id。";
     }
 
     @Override
@@ -69,8 +80,7 @@ public final class QueryRelationsTool implements AgentTool {
         if (requested.isBlank()) {
             return ToolResult.error("missing_subject_symbol_id");
         }
-        if (!Set.of("callers", "callees", "field_readers", "field_writers",
-                "implementations", "overrides").contains(relation)) {
+        if (!SUPPORTED_RELATIONS.contains(relation)) {
             return ToolResult.error("unsupported_relation: " + relation);
         }
         int depth = query.path("depth").asInt(query.path("max_depth").asInt(DEFAULT_DEPTH));
@@ -98,6 +108,26 @@ public final class QueryRelationsTool implements AgentTool {
                         + "; use a resolved field symbol, not its containing method or type");
             }
             if ((relation.equals("callers") || relation.equals("callees"))
+                    && kind != com.codeguard.agent.graph.GraphNodeKind.METHOD
+                    && kind != com.codeguard.agent.graph.GraphNodeKind.CONSTRUCTOR) {
+                return ToolResult.error("invalid_relation_subject: " + relation
+                        + " requires METHOD or CONSTRUCTOR, got " + kind);
+            }
+            if ((relation.equals("parents") || relation.equals("children")
+                    || relation.equals("type_users"))
+                    && kind != com.codeguard.agent.graph.GraphNodeKind.TYPE) {
+                return ToolResult.error("invalid_relation_subject: " + relation
+                        + " requires TYPE, got " + kind);
+            }
+            if (relation.equals("type_references")
+                    && kind != com.codeguard.agent.graph.GraphNodeKind.TYPE
+                    && kind != com.codeguard.agent.graph.GraphNodeKind.METHOD
+                    && kind != com.codeguard.agent.graph.GraphNodeKind.CONSTRUCTOR
+                    && kind != com.codeguard.agent.graph.GraphNodeKind.FIELD) {
+                return ToolResult.error("invalid_relation_subject: " + relation
+                        + " requires TYPE, METHOD, CONSTRUCTOR or FIELD, got " + kind);
+            }
+            if (relation.equals("entrypoints")
                     && kind != com.codeguard.agent.graph.GraphNodeKind.METHOD
                     && kind != com.codeguard.agent.graph.GraphNodeKind.CONSTRUCTOR) {
                 return ToolResult.error("invalid_relation_subject: " + relation
@@ -147,13 +177,7 @@ public final class QueryRelationsTool implements AgentTool {
                 edges.stream()
                         .filter(edge -> edge.sourceSet() == scope)
                         .filter(edge -> edge.resolution() == ResolutionStatus.RESOLVED)
-                        .map(edge -> relation.equals("overrides")
-                                ? (edge.sourceId().equals(current) ? edge.targetId() : edge.sourceId())
-                                : relation.equals("callers")
-                                || relation.equals("field_readers")
-                                || relation.equals("field_writers")
-                                || relation.equals("implementations")
-                                ? edge.sourceId() : edge.targetId())
+                        .map(edge -> nextSubject(current, relation, edge))
                         .forEach(next::add);
             }
             frontier = next;
@@ -168,6 +192,17 @@ public final class QueryRelationsTool implements AgentTool {
             case "field_readers" -> value.graph().incoming(subject, GraphEdgeKind.READS_FIELD);
             case "field_writers" -> value.graph().incoming(subject, GraphEdgeKind.WRITES_FIELD);
             case "implementations" -> value.graph().incoming(subject, GraphEdgeKind.IMPLEMENTS);
+            case "parents" -> value.graph().outgoing(subject, GraphEdgeKind.EXTENDS);
+            case "children" -> value.graph().incoming(subject, GraphEdgeKind.EXTENDS);
+            case "type_users" -> value.graph().incoming(subject, GraphEdgeKind.REFERENCES_TYPE);
+            case "type_references" -> value.graph().outgoing(subject, GraphEdgeKind.REFERENCES_TYPE);
+            case "entrypoints" -> {
+                List<GraphEdge> edges = new ArrayList<>();
+                edges.addAll(value.graph().incoming(subject, GraphEdgeKind.EXPOSES_ROUTE));
+                edges.addAll(value.graph().incoming(subject, GraphEdgeKind.LISTENS_TO_EVENT));
+                edges.addAll(value.graph().incoming(subject, GraphEdgeKind.SCHEDULED_BY));
+                yield edges;
+            }
             case "overrides" -> {
                 List<GraphEdge> edges = new ArrayList<>();
                 edges.addAll(value.graph().incoming(subject, GraphEdgeKind.OVERRIDES));
@@ -176,6 +211,17 @@ public final class QueryRelationsTool implements AgentTool {
             }
             default -> List.of();
         };
+    }
+
+    private static String nextSubject(String current, String relation, GraphEdge edge) {
+        if (relation.equals("overrides")) {
+            return edge.sourceId().equals(current) ? edge.targetId() : edge.sourceId();
+        }
+        if (Set.of("callers", "field_readers", "field_writers", "implementations",
+                "children", "type_users", "entrypoints").contains(relation)) {
+            return edge.sourceId();
+        }
+        return edge.targetId();
     }
 
     private static List<GraphNode> nodesFor(

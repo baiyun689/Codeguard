@@ -212,6 +212,86 @@ class GraphToolsTest {
     }
 
     @Test
+    void extendedRelationQueryFindsInheritanceTypeUsageAndFrameworkEntrypoints(
+            @TempDir Path repo
+    ) throws Exception {
+        Path root = repo.resolve("src/main/java/demo");
+        Files.createDirectories(root);
+        Files.writeString(root.resolve("Parent.java"), "package demo; class Parent { }\n");
+        Files.writeString(root.resolve("Api.java"), "package demo; interface Api { }\n");
+        Files.writeString(root.resolve("Child.java"), """
+                package demo;
+                class Child extends Parent implements Api {
+                    Api dependency;
+                    void run(Api value) {
+                        Parent parent = this;
+                        dependency = value;
+                    }
+                }
+                """);
+        Files.writeString(root.resolve("Consumer.java"), """
+                package demo;
+                class Consumer {
+                    void use(Api api) { Api copy = api; }
+                }
+                """);
+        Files.writeString(root.resolve("Controller.java"), """
+                package demo;
+                class Controller {
+                    @GetMapping("/items")
+                    void handle() { }
+                }
+                """);
+
+        var provider = new ProjectSnapshotManager()
+                .lazyProvider(ProjectKey.of(repo, "extended-relations"));
+        var tool = new QueryRelationsTool(provider);
+        var context = new AgentContext(repo);
+
+        JsonNode parents = GraphToolSupport.JSON.readTree(tool.execute(
+                "{\"subject_symbol_id\":\"java:demo.Child\",\"relation\":\"parents\"}",
+                context).getResult());
+        assertTrue(parents.path("relationships").toString().contains("java:demo.Parent"),
+                parents.toString());
+
+        JsonNode children = GraphToolSupport.JSON.readTree(tool.execute(
+                "{\"subject_symbol_id\":\"java:demo.Parent\",\"relation\":\"children\"}",
+                context).getResult());
+        assertTrue(children.path("relationships").toString().contains("java:demo.Child"),
+                children.toString());
+
+        JsonNode users = GraphToolSupport.JSON.readTree(tool.execute(
+                "{\"subject_symbol_id\":\"java:demo.Api\",\"relation\":\"type_users\"}",
+                context).getResult());
+        assertTrue(users.path("relationships").toString().contains("java:demo.Child"),
+                users.toString());
+        assertTrue(users.path("relationships").toString().contains("java:demo.Consumer"),
+                users.toString());
+
+        JsonNode references = GraphToolSupport.JSON.readTree(tool.execute(
+                "{\"subject_symbol_id\":\"java:demo.Child\",\"relation\":\"type_references\"}",
+                context).getResult());
+        assertTrue(references.path("relationships").toString().contains("java:demo.Parent"),
+                references.toString());
+        assertTrue(references.path("relationships").toString().contains("java:demo.Api"),
+                references.toString());
+
+        JsonNode fieldReferences = GraphToolSupport.JSON.readTree(tool.execute(
+                "{\"subject_symbol_id\":\"java:demo.Child#dependency\","
+                        + "\"relation\":\"type_references\"}", context).getResult());
+        assertTrue(fieldReferences.path("relationships").toString().contains("java:demo.Api"),
+                fieldReferences.toString());
+
+        JsonNode entrypoints = GraphToolSupport.JSON.readTree(tool.execute(
+                "{\"subject_symbol_id\":\"java:demo.Controller#handle()\","
+                        + "\"relation\":\"entrypoints\"}", context).getResult());
+        assertTrue(entrypoints.path("relationships").toString().contains("EXPOSES_ROUTE"),
+                entrypoints.toString());
+        assertTrue(entrypoints.path("relationships").toString().contains("framework:"),
+                entrypoints.toString());
+    }
+
+    @Test
     void lazyFieldRelationsRequireAFieldAndReturnItsReadersAndWriters(@TempDir Path repo)
             throws Exception {
         Path root = repo.resolve("src/main/java/demo");
