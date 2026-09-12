@@ -60,24 +60,34 @@ flowchart LR
 
 PR 规模只分两档：`NORMAL`（文件数 ≤15 且 diff ≤60,000 字符）按文件构建任务；超过任一阈值则进入 `LARGE`，按 hunk 构建任务。hunk 数仅作统计，不再划分第三档。
 
-下图对应实际外层 LangGraph 节点。Direct 与 Full 是任务类别：图先处理 Direct 任务，再处理选中的 Full 任务；没有对应任务的节点直接返回，不调用模型。
+下图展示从 PR Diff 到最终报告的完整过程，并展开 `controlled_review` 内部的调查循环。Direct 与 Full 是任务类别：先处理 Direct 任务并暂存结果，再处理选中的 Full 任务；没有对应任务的阶段直接跳过，不调用模型。
 
 ```mermaid
 flowchart TD
-    Diff[Diff] --> Classify[classify_mode]
-    Classify -->|NORMAL| File[file_task_builder]
-    Classify -->|LARGE| Hunk[diff_task_builder]
-    File --> Route[task_route · DirectGate]
-    Hunk --> Route
-    Route --> Direct[direct_task_review]
-    Direct --> Select[task_selection · Full tasks]
-    Select --> Symbols[symbol_resolution]
-    Symbols --> Review[controlled_review]
-    Review --> Coordinator[council_coordinator]
-    Coordinator --> Verify[evidence_verifier]
-    Verify --> Judge[council_judge]
-    Judge --> Merge[causal_merge]
-    Merge --> Result[ReviewResult]
+    Diff[PR Diff] --> Tasks[按规模构建文件或 hunk 任务]
+    Tasks --> Route[DirectGate：区分低风险与 Full 任务]
+    Route --> Direct[低风险任务：独立直审并暂存结果]
+    Direct --> Select[选择 Full 任务并记录覆盖限制]
+    Select --> Symbols[解析变更位置，获取真实符号]
+
+    subgraph Review[受控审查 · controlled_review]
+        Groups[按声明分组，隔离本组 diff] --> Context[预取源码与有限一跳关系]
+        Context --> Decide[模型评估已有证据]
+        Decide -->|缺少决定性事实| Tools[执行 1～2 个工具查询]
+        Tools -->|返回证据、新增符号与剩余预算| Decide
+        Decide -->|可以结束| Outcome[提交候选或无发现、未完成状态]
+        Decide -->|工具或轮次上限、无进展| Conclude[最多一次无工具收口]
+        Conclude --> Outcome
+        Outcome --> Bind[校验本组定位，绑定证据账本]
+    end
+
+    Symbols --> Groups
+    Bind --> Coordinator[汇总与归并候选]
+    Coordinator --> Verify[Verifier：确定性证据校验]
+    Verify --> Judge[Judge：判断缺陷成立与定级]
+    Judge --> Merge[根因合并，并合入 Direct 结果]
+    Direct -. 暂存的独立结果 .-> Merge
+    Merge --> Result[最终审查报告与完成状态]
 ```
 
 | 节点 | 职责 |
@@ -94,16 +104,7 @@ flowchart TD
 | `council_judge` | 按批判断候选是否由有效证据支持，给出去留和定级；不补查工具。 |
 | `causal_merge` | 对保留候选做根因分析与保守合并，合入 Direct 结果。 |
 
-`controlled_review` 内部步骤如下，分组、预取、定位和绑定都由运行时完成，不是额外的模型规划节点：
-
-```mermaid
-flowchart LR
-    Groups[变更声明分组] --> Context[有界源码与一跳关系预取]
-    Context --> Decide[同一 Reviewer 决策]
-    Decide -->|queries| Tools[read_symbol / query_relations]
-    Tools -->|真实观察与剩余预算| Decide
-    Decide -->|result| Candidate[候选定位与证据绑定]
-```
+图中的分组、预取、定位和绑定都由运行时完成，不是额外的模型规划节点。每组独立运行 ReAct：第一轮可以直接提交结果，也可以继续查询；提交结果后本组结束。工具或轮次上限、无进展触发有界收口，超时和协议失败保留未完成或失败状态，不视为审查通过。虚线表示 Direct 结果在最终合并时使用，不表示并行子图。
 
 | 工具 | 使用者与用途 |
 |---|---|
