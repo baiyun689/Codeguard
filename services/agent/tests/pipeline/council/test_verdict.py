@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 import json
+from types import SimpleNamespace
+import pytest
 from codeguard_agent.models.council import CandidateIssue
 from codeguard_agent.models.evidence import (
     ArtifactAvailability,
@@ -152,7 +154,7 @@ class _FakeJudgeLLM:
         self.calls = 0
         self.payloads = []
 
-    def with_structured_output(self, _schema, method=None):
+    def with_structured_output(self, _schema, method=None, include_raw=False):
         return self
 
     def invoke(self, messages):
@@ -177,7 +179,7 @@ class _ContractRetryJudgeLLM:
         self.second_id = second_id
         self.calls = 0
 
-    def with_structured_output(self, _schema, method=None):
+    def with_structured_output(self, _schema, method=None, include_raw=False):
         return self
 
     def invoke(self, messages):
@@ -202,6 +204,93 @@ def _assessment(
         evidence_ids=evidence if evidence is not None else ["F001", "F002"],
         reason="patch 与文件事实均支持",
     )
+
+
+def _raw_judge(arguments, *, name="EvidenceJudgeBatch", extra_calls=()):
+    return {
+        "parsed": None,
+        "parsing_error": ValueError("Extra data"),
+        "raw": SimpleNamespace(
+            tool_calls=list(extra_calls),
+            invalid_tool_calls=[{"name": name, "args": arguments}],
+        ),
+    }
+
+
+def _run_raw_judge(raw):
+    llm = _FakeJudgeLLM(raw)
+    batch = judge_with_evidence(
+        _assembly([_candidate("c1")]), {"c1": _verification("c1")},
+        _artifacts(), judge_llm=llm, structured_method="function_calling", max_retries=1,
+    )
+    return batch, llm
+
+
+def test_judge_recovers_single_trailing_bracket_without_another_model_call():
+    arguments = EvidenceJudgeBatch(assessments=[_assessment("c1")]).model_dump_json()
+    batch, llm = _run_raw_judge(_raw_judge(arguments + "]"))
+    assert len(batch.final_issues) == 1
+    assert llm.calls == 1
+    assert any(event == "evidence_judge_output_recovered" for event, _ in batch.trace)
+
+
+def test_judge_recovers_through_real_langchain_parser_without_network():
+    import httpx
+    from langchain_openai import ChatOpenAI
+
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "id": "test", "object": "chat.completion", "created": 0, "model": "test",
+            "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": None, "tool_calls": [{
+                    "id": "call_test", "type": "function", "function": {
+                        "name": "EvidenceJudgeBatch",
+                        "arguments": EvidenceJudgeBatch(
+                            assessments=[_assessment("c1")]
+                        ).model_dump_json() + "]",
+                    },
+                }],
+            }}],
+        })
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        llm = ChatOpenAI(model="test", api_key="test", http_client=client, max_retries=0)
+        batch = judge_with_evidence(
+            _assembly([_candidate("c1")]), {"c1": _verification("c1")},
+            _artifacts(), judge_llm=llm, structured_method="function_calling", max_retries=1,
+        )
+    assert len(batch.final_issues) == 1
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("suffix", [" {}", " explanatory text", "]]", ',"action":"drop"'])
+def test_judge_does_not_discard_arbitrary_trailing_content(suffix):
+    arguments = EvidenceJudgeBatch(assessments=[_assessment("c1")]).model_dump_json()
+    batch, _ = _run_raw_judge(_raw_judge(arguments + suffix))
+    assert not batch.final_issues
+    assert batch.verdicts[0].reason_code == "verification_failed"
+
+
+def test_recovered_judge_still_checks_evidence_references():
+    arguments = EvidenceJudgeBatch(
+        assessments=[_assessment("c1", evidence=["F999"])]
+    ).model_dump_json()
+    batch, _ = _run_raw_judge(_raw_judge(arguments + "]"))
+    assert not batch.final_issues
+
+
+@pytest.mark.parametrize("raw", [
+    _raw_judge('{"assessments": []}]', name="AnotherTool"),
+    _raw_judge('{"assessments": []}]', extra_calls=[{"name": "AnotherTool"}]),
+    _raw_judge('{"assessments": [], "assessments": []}]'),
+    _raw_judge('{"assessments": [{"action": "keep"}]}]'),
+])
+def test_judge_recovery_rejects_ambiguous_or_incomplete_payload(raw):
+    batch, _ = _run_raw_judge(raw)
+    assert not batch.final_issues
 
 
 def test_file_level_candidate_exposes_unresolved_location_limitation():

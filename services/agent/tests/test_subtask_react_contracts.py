@@ -224,6 +224,27 @@ def test_graph_recursion_is_reported_as_inconclusive_not_task_failure():
     assert outcome.events == ["subtask_inconclusive"]
 
 
+def test_connection_failure_records_cause_types_without_secrets():
+    class OpenAIConnectionError(Exception):
+        pass
+
+    def fail(*args):
+        raise OpenAIConnectionError("secret-token") from ConnectionResetError("secret-token")
+
+    engine = SubtaskReactEngine(SimpleNamespace(trace_records=()), max_tool_calls=2, max_rounds=2)
+    engine._run_agent = fail
+    outcome = engine.run(
+        object(), task=SimpleNamespace(file="src/A.java", patch="+return run();"),
+        symbol_context=SimpleNamespace(symbols=()),
+        instruction=SubtaskInstruction(
+            subtask_id="s1", objective="检查返回行为",
+            initial_symbol_ids=("java:A#run()",), allowed_tools=("read_symbol",),
+        ),
+        structured_method="function_calling", max_retries=1,
+    )
+    assert outcome.status == "failed"
+    assert outcome.reason == "OpenAIConnectionError:ConnectionResetError"
+    assert "secret-token" not in repr(outcome)
 
 
 def test_graph_recursion_after_budget_rejection_is_labeled_as_budget_gap():

@@ -270,6 +270,43 @@ def _validate_assessment(
     return item
 
 
+def _recover_judge_arguments(raw: Any) -> EvidenceJudgeBatch | None:
+    """仅恢复单个工具参数对象末尾的一个多余闭合符，不补字段、不改内容。"""
+    calls = list(getattr(raw, "tool_calls", ()) or ()) + list(
+        getattr(raw, "invalid_tool_calls", ()) or ()
+    )
+    if len(calls) != 1 or calls[0].get("name") != "EvidenceJudgeBatch":
+        return None
+    arguments = calls[0].get("args")
+    if not isinstance(arguments, str):
+        return None
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        obj: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError("duplicate_json_key")
+            obj[key] = value
+        return obj
+
+    try:
+        text = arguments.strip()
+        value, end = json.JSONDecoder(object_pairs_hook=unique_object).raw_decode(text)
+        if text[end:].strip() not in ("]", "}") or not isinstance(value, dict):
+            return None
+        if set(value) != {"assessments"} or not isinstance(value["assessments"], list):
+            return None
+        required = {"candidate_id", "action", "severity", "evidence_ids", "reason"}
+        if not value["assessments"] or any(
+            not isinstance(item, dict) or set(item) != required
+            for item in value["assessments"]
+        ):
+            return None
+        return EvidenceJudgeBatch.model_validate_json(json.dumps(value), strict=True)
+    except (ValueError, TypeError):
+        return None
+
+
 def _invoke_batch(
     payload: list[dict[str, Any]],
     *,
@@ -277,10 +314,11 @@ def _invoke_batch(
     structured_method: str,
     max_retries: int,
     prompt_file: str,
+    batch: VerdictBatch | None = None,
 ) -> EvidenceJudgeBatch | None:
     """调用批量 Judge;None/异常重试一次,再失败返回 None(由调用方二分)。"""
     structured = judge_llm.with_structured_output(
-        EvidenceJudgeBatch, method=structured_method
+        EvidenceJudgeBatch, method=structured_method, include_raw=True
     )
     system_prompt = (_PROMPT_DIR / prompt_file).read_text(encoding="utf-8")
     for attempt in range(2):
@@ -301,12 +339,35 @@ def _invoke_batch(
                 ],
                 max_retries=max_retries,
             )
+            if isinstance(result, dict) and "raw" in result and "parsed" in result:
+                envelope = result
+                result = envelope["parsed"]
+                if result is None:
+                    result = _recover_judge_arguments(envelope["raw"])
+                    if result is not None:
+                        logger.info("evidence judge recovered one trailing closing bracket")
+                        if batch is not None:
+                            _trace(batch, "evidence_judge_output_recovered", {
+                                "attempt": attempt + 1,
+                                "repair": "single_trailing_closing_bracket",
+                            })
+                    elif batch is not None:
+                        _trace(batch, "evidence_judge_output_invalid", {
+                            "attempt": attempt + 1,
+                            "error_type": type(envelope.get("parsing_error")).__name__,
+                        })
             if result is None:
                 continue
             if not isinstance(result, EvidenceJudgeBatch):
                 result = EvidenceJudgeBatch.model_validate(result)
             return result
         except Exception as exc:
+            if batch is not None:
+                _trace(batch, "evidence_judge_invoke_error", {
+                    "attempt": attempt + 1, "error_type": type(exc).__name__,
+                    "cause_type": type(exc.__cause__).__name__ if exc.__cause__ else "",
+                    "status_code": getattr(exc, "status_code", None),
+                })
             logger.warning(
                 "evidence judge batch invoke failed (attempt %d): %s", attempt + 1, exc
             )
@@ -347,6 +408,7 @@ def _judge_chunk(
         structured_method=structured_method,
         max_retries=max_retries,
         prompt_file=prompt_file,
+        batch=batch,
     )
     _trace(
         batch,

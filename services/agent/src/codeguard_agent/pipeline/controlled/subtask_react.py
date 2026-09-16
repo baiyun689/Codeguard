@@ -151,6 +151,15 @@ class SubtaskReactEngine:
                     None, "failed", "subtask_timeout", records, ["subtask_timeout"]
                 )
             error_name = type(exc).__name__
+            # 不保存异常原文（可能携带请求头/密钥），保留根因类型用于网络诊断。
+            causes = []
+            cause = exc.__cause__
+            seen: set[int] = {id(exc)}
+            while cause is not None and id(cause) not in seen and len(causes) < 5:
+                seen.add(id(cause))
+                causes.append(type(cause).__name__)
+                cause = cause.__cause__
+            error_detail = error_name + (":" + "/".join(causes) if causes else "")
             inconclusive = error_name in {
                 "GraphRecursionError",
                 "GraphRecursionLimitError",
@@ -169,7 +178,7 @@ class SubtaskReactEngine:
                 if inconclusive and budget_hit
                 else "subtask_recursion_limit"
                 if inconclusive
-                else error_name,
+                else error_detail,
                 records,
                 [
                     "subtask_no_progress_terminated"
