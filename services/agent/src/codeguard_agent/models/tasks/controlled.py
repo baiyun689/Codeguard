@@ -20,7 +20,7 @@ class InvestigationObservation(ControlledModel):
     """React 最终结论引用的本次子任务局部观察。"""
 
     observation_id: str = Field(min_length=1)
-    role: Literal["relation", "mechanism", "impact", "counter", "location"]
+    role: Literal["relation", "mechanism", "impact", "location"]
 
 
 class InvestigationFinding(ControlledModel):

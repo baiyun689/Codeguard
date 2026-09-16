@@ -30,7 +30,6 @@ class EvidenceRole(str, Enum):
     MECHANISM = "mechanism"
     REACHABILITY = "reachability"
     IMPACT = "impact"
-    COUNTER = "counter"
 
 
 class EvidenceRefSelection(BaseModel):

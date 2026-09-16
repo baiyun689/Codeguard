@@ -451,7 +451,6 @@ def _investigation_candidate(
             "relation": EvidenceRole.REACHABILITY,
             "mechanism": EvidenceRole.MECHANISM,
             "impact": EvidenceRole.IMPACT,
-            "counter": EvidenceRole.COUNTER,
             "location": EvidenceRole.LOCATION,
         }
         selections.append(

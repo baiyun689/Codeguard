@@ -1,25 +1,43 @@
 from __future__ import annotations
-import json
 from types import SimpleNamespace
 import pytest
 from codeguard_agent.models.tasks import (
     InvestigationFinding,
     InvestigationObservation,
     InvestigationResult,
-    ReviewerKind,
     SubtaskInstruction,
-    SubtaskPlan,
 )
-from codeguard_agent.models.tasks.symbols import ResolvedSymbol
 from codeguard_agent.pipeline.orchestration.graph import _allocate_subtask_budgets
 from codeguard_agent.pipeline.controlled.subtask_react import SubtaskReactEngine
 from codeguard_agent.pipeline.execution.discovery import (
-    COMPLETE_PATCH_RESULT,
     CoordinatedDiscoveryToolClient,
-    DiscoveryToolRecord,
     DiscoveryToolCoordinator,
 )
 from codeguard_agent.tools.tool_client import ToolResponse
+
+
+def test_counter_role_is_rejected_by_observation_and_evidence_contracts():
+    from pydantic import ValidationError
+    from codeguard_agent.models.schemas import EvidenceRefSelection
+
+    with pytest.raises(ValidationError):
+        InvestigationObservation(observation_id="T01", role="counter")
+    with pytest.raises(ValidationError):
+        EvidenceRefSelection(alias="T01", role="counter")
+
+
+@pytest.mark.parametrize(
+    "observation_role,evidence_role",
+    [("relation", "reachability"), ("mechanism", "mechanism"),
+     ("impact", "impact"), ("location", "location")],
+)
+def test_supported_evidence_purposes_remain_valid(observation_role, evidence_role):
+    from codeguard_agent.models.schemas import EvidenceRefSelection
+
+    observation = InvestigationObservation(observation_id="T01", role=observation_role)
+    selection = EvidenceRefSelection(alias=observation.observation_id, role=evidence_role)
+    assert selection.alias == "T01"
+    assert selection.role.value == evidence_role
 
 
 @pytest.mark.parametrize("close_tools,expected_calls", [(True, 2), (False, 4)])
@@ -204,6 +222,8 @@ def test_graph_recursion_is_reported_as_inconclusive_not_task_failure():
     assert outcome.status == "inconclusive"
     assert outcome.reason == "subtask_recursion_limit"
     assert outcome.events == ["subtask_inconclusive"]
+
+
 
 
 def test_graph_recursion_after_budget_rejection_is_labeled_as_budget_gap():
