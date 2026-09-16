@@ -167,6 +167,28 @@
       "targets": [{"expr": "codeguard_llm_circuit_open", "legendFormat": "{{provider}}", "refId": "A"}],
       "title": "LLM Circuit Breakers",
       "type": "bargauge"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "codeguard-prometheus"},
+      "description": "Cumulative completed proxy calls in each currently scraped process since its last restart. Not a count over the selected time range, and not a count of reviews. Direct model calls bypassing the proxy are excluded.",
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []},
+      "gridPos": {"h": 4, "w": 12, "x": 0, "y": 27},
+      "id": 13,
+      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(codeguard_llm_calls_total)", "instant": true, "legendFormat": "completed calls", "refId": "A"}],
+      "title": "LLM Calls · Since Process Start",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "codeguard-prometheus"},
+      "description": "Cumulative tool executions recorded by currently scraped tool-server processes since restart. Includes runtime resolve_change_context calls; cached Agent results that never reach the server are excluded. Not a count over the selected time range.",
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []},
+      "gridPos": {"h": 4, "w": 12, "x": 12, "y": 27},
+      "id": 14,
+      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(codeguard_tool_calls_total)", "instant": true, "legendFormat": "tool executions", "refId": "A"}],
+      "title": "Tool Calls · Since Process Start",
+      "type": "stat"
     }
   ],
   "refresh": "15s",
@@ -178,6 +200,6 @@
   "timezone": "browser",
   "title": "Codeguard · Review & LLM Operations",
   "uid": "codeguard-overview",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
