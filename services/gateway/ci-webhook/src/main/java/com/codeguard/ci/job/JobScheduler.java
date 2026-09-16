@@ -195,7 +195,7 @@ public final class JobScheduler implements AutoCloseable {
             Thread.currentThread().interrupt();
         }
         inFlight.clear();
-        repository.close();
+        // The repository is an injected dependency; its owner closes it after workers stop.
     }
 
     private static String shortSha(String sha) {

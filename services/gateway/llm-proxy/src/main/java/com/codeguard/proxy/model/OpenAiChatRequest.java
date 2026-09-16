@@ -18,11 +18,18 @@ public record OpenAiChatRequest(
     List<Tool> tools,
     @JsonProperty("tool_choice") Object toolChoice,
     @JsonProperty("response_format") Map<String, Object> responseFormat,
-    Boolean stream
+    Boolean stream,
+    JsonNode thinking
 ) {
+    public OpenAiChatRequest(String model, List<Message> messages, Double temperature,
+                            Integer maxTokens, List<Tool> tools, Object toolChoice,
+                            Map<String, Object> responseFormat, Boolean stream) {
+        this(model, messages, temperature, maxTokens, tools, toolChoice, responseFormat, stream, null);
+    }
+
     public OpenAiChatRequest withModel(String providerModel) {
         return new OpenAiChatRequest(
-            providerModel, messages, temperature, maxTokens, tools, toolChoice, responseFormat, stream
+            providerModel, messages, temperature, maxTokens, tools, toolChoice, responseFormat, stream, thinking
         );
     }
 

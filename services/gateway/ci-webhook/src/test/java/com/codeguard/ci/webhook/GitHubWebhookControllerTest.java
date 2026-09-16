@@ -2,8 +2,8 @@ package com.codeguard.ci.webhook;
 
 import com.codeguard.ci.job.JobRepository;
 import com.codeguard.ci.job.JobScheduler;
-import io.javalin.Javalin;
-import io.javalin.testtools.JavalinTest;
+import com.codeguard.common.GatewayApplication;
+import okhttp3.OkHttpClient;
 import okhttp3.MediaType;
 import okhttp3.Request;
 import okhttp3.RequestBody;
@@ -28,7 +28,7 @@ class GitHubWebhookControllerTest {
     private GitHubWebhookController controller;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         String dbPath = System.getProperty("java.io.tmpdir") + "/codeguard-ctrl-" + System.nanoTime();
         repo = new JobRepository(dbPath);
         scheduler = new JobScheduler(repo, 2,
@@ -40,65 +40,69 @@ class GitHubWebhookControllerTest {
     }
 
     @AfterEach
-    void tearDown() {
+    void tearDown() throws Exception {
         scheduler.close();
         repo.close();
     }
 
     @Test
-    void shouldReturn401ForInvalidSignature() {
-        JavalinTest.test(createApp(), (app, client) -> {
+    void shouldReturn401ForInvalidSignature() throws Exception {
+        try (var app = createApp()) {
+            var client = new OkHttpClient();
             String url = "http://localhost:" + app.port() + "/webhooks/github";
-            try (Response r = client.request(new Request.Builder()
+            try (Response r = client.newCall(new Request.Builder()
                     .url(url)
                     .post(RequestBody.create("{}", MediaType.parse("application/json")))
                     .header("X-Hub-Signature-256", "sha256=bad")
                     .header("X-GitHub-Event", "pull_request")
-                    .build())) {
+                    .build()).execute()) {
                 assertEquals(401, r.code());
             }
-        });
+        }
     }
 
     @Test
-    void shouldReturn200ForNonPREvent() {
-        JavalinTest.test(createApp(), (app, client) -> {
+    void shouldReturn200ForNonPREvent() throws Exception {
+        try (var app = createApp()) {
+            var client = new OkHttpClient();
             String url = "http://localhost:" + app.port() + "/webhooks/github";
             String body = "{}";
             String sig = sign(body);
-            try (Response r = client.request(new Request.Builder()
+            try (Response r = client.newCall(new Request.Builder()
                     .url(url)
                     .post(RequestBody.create(body, MediaType.parse("application/json")))
                     .header("X-Hub-Signature-256", sig)
                     .header("X-GitHub-Event", "push")
-                    .build())) {
+                    .build()).execute()) {
                 assertEquals(200, r.code());
                 assertTrue(r.body().string().contains("ignored"));
             }
-        });
+        }
     }
 
     @Test
-    void shouldReturn200ForSkippedAction() {
-        JavalinTest.test(createApp(), (app, client) -> {
+    void shouldReturn200ForSkippedAction() throws Exception {
+        try (var app = createApp()) {
+            var client = new OkHttpClient();
             String url = "http://localhost:" + app.port() + "/webhooks/github";
             String body = "{\"action\":\"closed\"}";
             String sig = sign(body);
-            try (Response r = client.request(new Request.Builder()
+            try (Response r = client.newCall(new Request.Builder()
                     .url(url)
                     .post(RequestBody.create(body, MediaType.parse("application/json")))
                     .header("X-Hub-Signature-256", sig)
                     .header("X-GitHub-Event", "pull_request")
-                    .build())) {
+                    .build()).execute()) {
                 assertEquals(200, r.code());
                 assertTrue(r.body().string().contains("skipped"));
             }
-        });
+        }
     }
 
     @Test
-    void shouldAcceptValidPRWebhook() {
-        JavalinTest.test(createApp(), (app, client) -> {
+    void shouldAcceptValidPRWebhook() throws Exception {
+        try (var app = createApp()) {
+            var client = new OkHttpClient();
             String url = "http://localhost:" + app.port() + "/webhooks/github";
             String body = """
                 {
@@ -113,22 +117,27 @@ class GitHubWebhookControllerTest {
                 }
                 """;
             String sig = sign(body);
-            try (Response r = client.request(new Request.Builder()
+            try (Response r = client.newCall(new Request.Builder()
                     .url(url)
                     .post(RequestBody.create(body, MediaType.parse("application/json")))
                     .header("X-Hub-Signature-256", sig)
                     .header("X-GitHub-Event", "pull_request")
-                    .build())) {
+                    .build()).execute()) {
                 assertEquals(202, r.code());
             }
-        });
+        }
     }
 
-    private Javalin createApp() {
-        Javalin app = Javalin.create(cfg -> cfg.showJavalinBanner = false);
-        controller.register(app);
-        return app;
+    private GatewayApplication createApp() {
+        return GatewayApplication.start(TestConfiguration.class, 0,
+                java.util.Map.of("webhookController", controller));
     }
+
+    @org.springframework.context.annotation.Configuration(proxyBeanMethods = false)
+    @org.springframework.boot.autoconfigure.EnableAutoConfiguration(
+        exclude = org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration.class)
+    @org.springframework.context.annotation.Import(com.codeguard.common.GatewayHttpConfiguration.class)
+    static class TestConfiguration {}
 
     private String sign(String body) {
         try {

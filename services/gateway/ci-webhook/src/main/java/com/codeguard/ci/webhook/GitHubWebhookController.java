@@ -7,8 +7,9 @@ import com.codeguard.ci.model.ReviewJob;
 import com.codeguard.ci.model.WebhookPayload;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -16,6 +17,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+@RestController
 public class GitHubWebhookController {
 
     private static final Logger log = LoggerFactory.getLogger(GitHubWebhookController.class);
@@ -38,30 +40,24 @@ public class GitHubWebhookController {
         this(secret, repo, scheduler, null);
     }
 
-    public void register(Javalin app) {
-        app.post("/webhooks/github", this::handle);
-    }
-
-    void handle(Context ctx) {
+    @PostMapping("/webhooks/github")
+    public ResponseEntity<?> handle(HttpServletRequest request, @RequestBody(required = false) byte[] rawBody) {
         // Layer 1: Verify signature
-        String sig = ctx.header("X-Hub-Signature-256");
-        byte[] body = ctx.bodyAsBytes();
+        String sig = request.getHeader("X-Hub-Signature-256");
+        byte[] body = rawBody == null ? new byte[0] : rawBody;
         if (!verifier.verify(sig, body)) {
-            ctx.status(401).result("signature mismatch");
-            return;
+            return ResponseEntity.status(401).body("signature mismatch");
         }
 
         // Layer 1.5: Rate limit check
         if (guard != null && !guard.tryAcquireWebhook(100)) {
-            ctx.status(429).header("Retry-After", "120").json(Map.of("error", "rate_limited"));
-            return;
+            return ResponseEntity.status(429).header("Retry-After", "120").body(Map.of("error", "rate_limited"));
         }
 
         // Non-PR events → 200 empty
-        String event = ctx.header("X-GitHub-Event");
+        String event = request.getHeader("X-GitHub-Event");
         if (!"pull_request".equals(event)) {
-            ctx.status(200).result("ignored: " + event);
-            return;
+            return ResponseEntity.status(200).body("ignored: " + event);
         }
 
         try {
@@ -69,8 +65,7 @@ public class GitHubWebhookController {
             String action = root.path("action").asText();
 
             if (!ALLOWED_ACTIONS.contains(action)) {
-                ctx.status(200).result("skipped action: " + action);
-                return;
+                return ResponseEntity.status(200).body("skipped action: " + action);
             }
 
             WebhookPayload payload = extractPayload(root);
@@ -80,38 +75,35 @@ public class GitHubWebhookController {
                 payload.repoFullName(), payload.prNumber(), payload.headSha());
             if (existing.isPresent() && existing.get().getStatus() == ReviewJob.Status.PENDING) {
                 boolean accepted = scheduler.submit(existing.get());
-                ctx.status(accepted ? 202 : 503).json(Map.of(
+                return ResponseEntity.status(accepted ? 202 : 503).body(Map.of(
                     "status", accepted ? "accepted" : "queue_full",
                     "job_id", existing.get().getId()
                 ));
-                return;
             }
             if (existing.isPresent() && existing.get().getStatus() != ReviewJob.Status.FAILED) {
-                ctx.status(200).json(Map.of(
+                return ResponseEntity.status(200).body(Map.of(
                     "status", "already_processed",
                     "job_id", existing.get().getId(),
                     "job_status", existing.get().getStatus().name()
                 ));
-                return;
             }
 
             ReviewJob job = new ReviewJob(payload);
             var inserted = repo.insert(job);
             if (inserted.isEmpty()) {
-                ctx.status(200).json(Map.of("status", "duplicate"));
-                return;
+                return ResponseEntity.status(200).body(Map.of("status", "duplicate"));
             }
 
             boolean accepted = scheduler.submit(inserted.get());
             if (accepted) {
-                ctx.status(202).json(Map.of("status", "accepted", "job_id", inserted.get().getId()));
+                return ResponseEntity.status(202).body(Map.of("status", "accepted", "job_id", inserted.get().getId()));
             } else {
-                ctx.status(503).json(Map.of("status", "queue_full"));
+                return ResponseEntity.status(503).body(Map.of("status", "queue_full"));
             }
 
         } catch (Exception e) {
             log.error("webhook 处理异常", e);
-            ctx.status(500).result("internal error");
+            return ResponseEntity.status(500).body("internal error");
         }
     }
 

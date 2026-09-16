@@ -1,7 +1,7 @@
 package com.codeguard.toolserver;
 
-import io.javalin.Javalin;
-import io.javalin.testtools.JavalinTest;
+import com.codeguard.common.GatewayApplication;
+import okhttp3.OkHttpClient;
 import okhttp3.MediaType;
 import okhttp3.Request;
 import okhttp3.RequestBody;
@@ -22,48 +22,51 @@ class ToolServerControllerTest {
     @Test
     void requiresTokenBeforeCreatingOrCallingTools(@TempDir Path root) throws Exception {
         Path repository = gitRepository(root.resolve("repo"));
-        JavalinTest.test(createApp(root), (app, client) -> {
+        try (var app = createApp(root)) {
+            var client = new OkHttpClient();
             String base = "http://localhost:" + app.port();
             Request request = new Request.Builder()
                     .url(base + "/api/v1/tools/session")
                     .post(sessionBody(repository))
                     .build();
-            try (Response response = client.request(request)) {
+            try (Response response = client.newCall(request).execute()) {
                 assertEquals(401, response.code());
             }
-        });
+        }
     }
 
     @Test
     void acceptsAllowedGitRepositoryWithCorrectToken(@TempDir Path root) throws Exception {
         Path repository = gitRepository(root.resolve("repo"));
-        JavalinTest.test(createApp(root), (app, client) -> {
+        try (var app = createApp(root)) {
+            var client = new OkHttpClient();
             String base = "http://localhost:" + app.port();
             Request request = new Request.Builder()
                     .url(base + "/api/v1/tools/session")
                     .header("X-Codeguard-Tool-Token", TOKEN)
                     .post(sessionBody(repository))
                     .build();
-            try (Response response = client.request(request)) {
+            try (Response response = client.newCall(request).execute()) {
                 assertEquals(200, response.code());
             }
-        });
+        }
     }
 
     @Test
     void rejectsRepositoryOutsideAllowedRoot(@TempDir Path root, @TempDir Path outside) throws Exception {
         Path repository = gitRepository(outside.resolve("repo"));
-        JavalinTest.test(createApp(root), (app, client) -> {
+        try (var app = createApp(root)) {
+            var client = new OkHttpClient();
             String base = "http://localhost:" + app.port();
             Request request = new Request.Builder()
                     .url(base + "/api/v1/tools/session")
                     .header("X-Codeguard-Tool-Token", TOKEN)
                     .post(sessionBody(repository))
                     .build();
-            try (Response response = client.request(request)) {
+            try (Response response = client.newCall(request).execute()) {
                 assertEquals(400, response.code());
             }
-        });
+        }
     }
 
     @Test
@@ -73,7 +76,8 @@ class ToolServerControllerTest {
         Files.createDirectories(source.getParent());
         Files.writeString(source, "package demo; class Service { void run() {} }\n");
 
-        JavalinTest.test(createApp(root), (app, client) -> {
+        try (var app = createApp(root)) {
+            var client = new OkHttpClient();
             String base = "http://localhost:" + app.port();
             Request session = new Request.Builder()
                     .url(base + "/api/v1/tools/session")
@@ -81,7 +85,7 @@ class ToolServerControllerTest {
                     .post(sessionBody(repository))
                     .build();
             String sessionId;
-            try (Response response = client.request(session)) {
+            try (Response response = client.newCall(session).execute()) {
                 assertEquals(200, response.code());
                 String body = response.body().string();
                 sessionId = body.replaceAll(".*\\\"session_id\\\":\\\"([^\\\"]+)\\\".*", "$1");
@@ -93,7 +97,7 @@ class ToolServerControllerTest {
                     .header("X-Session-Id", sessionId)
                     .post(json("{\"query\":\"{\\\"symbol_id\\\":\\\"java:demo.Service#run()\\\"}\"}"))
                     .build();
-            try (Response response = client.request(symbolQuery)) {
+            try (Response response = client.newCall(symbolQuery).execute()) {
                 assertEquals(200, response.code());
                 String body = response.body().string();
                 assertTrue(body.contains("\"success\":true"), body);
@@ -106,7 +110,7 @@ class ToolServerControllerTest {
                     .header("X-Session-Id", sessionId)
                     .post(json("{\"file_path\":\"src/main/java/demo/Service.java\"}"))
                     .build();
-            try (Response response = client.request(legacyPath)) {
+            try (Response response = client.newCall(legacyPath).execute()) {
                 assertEquals(200, response.code());
                 String body = response.body().string();
                 assertTrue(body.contains("\"success\":false"), body);
@@ -120,20 +124,41 @@ class ToolServerControllerTest {
                     .post(json("{\"file_path\":\"src/main/java/demo/Service.java\","
                             + "\"query\":\"{\\\"symbol_id\\\":\\\"java:demo.Service#run()\\\"}\"}"))
                     .build();
-            try (Response response = client.request(mixedLegacyPath)) {
+            try (Response response = client.newCall(mixedLegacyPath).execute()) {
                 assertEquals(200, response.code());
                 assertTrue(response.body().string().contains("symbol_id_only"));
             }
-        });
+        }
     }
 
-    private static Javalin createApp(Path root) {
+    @Test
+    void rejectsChunkedOversizeBodiesAfterAuthentication(@TempDir Path root) throws Exception {
+        byte[] oversized = new byte[com.codeguard.common.GatewayHttpConfiguration.MAX_REQUEST_BYTES + 1];
+        java.util.Arrays.fill(oversized, (byte) ' ');
+        try (var app = createApp(root); var client = java.net.http.HttpClient.newHttpClient()) {
+            var uri = java.net.URI.create("http://localhost:" + app.port() + "/api/v1/tools/session");
+            var request = java.net.http.HttpRequest.newBuilder(uri)
+                    .header("X-Codeguard-Tool-Token", TOKEN)
+                    .header("Content-Type", "application/json")
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofInputStream(
+                            () -> new java.io.ByteArrayInputStream(oversized))).build();
+            assertEquals(413, client.send(request, java.net.http.HttpResponse.BodyHandlers.discarding()).statusCode());
+            var unauthorized = java.net.http.HttpRequest.newBuilder(uri)
+                    .header("Content-Type", "application/json")
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString("invalid json")).build();
+            assertEquals(401, client.send(unauthorized, java.net.http.HttpResponse.BodyHandlers.discarding()).statusCode());
+            var health = java.net.http.HttpRequest.newBuilder(java.net.URI.create(
+                    "http://localhost:" + app.port() + "/health/ready")).build();
+            assertEquals(200, client.send(health, java.net.http.HttpResponse.BodyHandlers.discarding()).statusCode());
+        }
+    }
+
+    private static GatewayApplication createApp(Path root) {
         GatewaySettings settings = GatewaySettings.from(Map.of(
                 "CODEGUARD_TOOL_SERVER_TOKEN", TOKEN,
                 "CODEGUARD_TOOL_ALLOWED_ROOTS", root.toString()), root);
-        Javalin app = Javalin.create(config -> config.showJavalinBanner = false);
-        new ToolServerController(new com.codeguard.common.GatewayMetrics(), settings).registerRoutes(app);
-        return app;
+        return GatewayApplication.start(ToolServerConfiguration.class, 0,
+                Map.of("gatewaySettings", settings));
     }
 
     private static Path gitRepository(Path repository) throws Exception {

@@ -9,8 +9,8 @@ import com.codeguard.proxy.router.ProviderRouter;
 import com.codeguard.proxy.router.ProviderRouter.RouteTarget;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,7 +25,8 @@ import java.util.List;
  *
  * 流程：验证 → 路由 → 遍历降级链（熔断跳过 + 韧性包装） → 协议转换 → 返回。
  */
-public final class ChatCompletionsHandler implements Handler {
+@RestController
+public final class ChatCompletionsHandler {
     private static final Logger log = LoggerFactory.getLogger(ChatCompletionsHandler.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -41,36 +42,32 @@ public final class ChatCompletionsHandler implements Handler {
             .build();
     }
 
-    @Override
-    public void handle(Context ctx) {
+    @PostMapping("/v1/chat/completions")
+    public ResponseEntity<?> handle(@RequestBody(required = false) String rawBody) {
         // 1. Parse request
         OpenAiChatRequest request;
         try {
-            request = MAPPER.readValue(ctx.body(), OpenAiChatRequest.class);
+            request = MAPPER.readValue(rawBody == null ? "" : rawBody, OpenAiChatRequest.class);
         } catch (IOException e) {
-            ctx.status(400).json(OpenAiChatResponse.error(
+            return ResponseEntity.status(400).body(OpenAiChatResponse.error(
                 "Invalid JSON: " + e.getMessage(), "invalid_request_error", "400"));
-            return;
         }
 
         // 2. Validate
-        if (request.model() == null || request.model().isBlank()) {
-            ctx.status(400).json(OpenAiChatResponse.error(
+        if (request == null || request.model() == null || request.model().isBlank()) {
+            return ResponseEntity.status(400).body(OpenAiChatResponse.error(
                 "model is required", "invalid_request_error", "400"));
-            return;
         }
         if (request.messages() == null || request.messages().isEmpty()) {
-            ctx.status(400).json(OpenAiChatResponse.error(
+            return ResponseEntity.status(400).body(OpenAiChatResponse.error(
                 "messages is required", "invalid_request_error", "400"));
-            return;
         }
 
         // 3. Route
         List<RouteTarget> chain = router.resolveChain(request.model());
         if (chain.isEmpty()) {
-            ctx.status(404).json(OpenAiChatResponse.error(
+            return ResponseEntity.status(404).body(OpenAiChatResponse.error(
                 "unknown model: " + request.model(), "invalid_request_error", "404"));
-            return;
         }
 
         // 4. Try chain with fallback
@@ -105,8 +102,7 @@ public final class ChatCompletionsHandler implements Handler {
 
                 // Success
                 log.debug("LLM 调用成功: model={} provider={}", request.model(), adapter.providerName());
-                ctx.status(200).json(response);
-                return;
+                return ResponseEntity.status(200).body(response);
 
             } catch (CallNotPermittedException e) {
                 // 熔断器开路 → 跳过当前 provider，降级到下一个
@@ -118,9 +114,8 @@ public final class ChatCompletionsHandler implements Handler {
                 // Non-retryable client errors (4xx except 429)
                 if (e.httpStatus() != 429 && e.httpStatus() >= 400 && e.httpStatus() < 500) {
                     log.error("客户端错误 [{}]: {} (provider={})", e.httpStatus(), e.getMessage(), adapter.providerName());
-                    ctx.status(e.httpStatus()).json(OpenAiChatResponse.error(
+                    return ResponseEntity.status(e.httpStatus()).body(OpenAiChatResponse.error(
                         e.getMessage(), e.errorType(), e.errorCode()));
-                    return;
                 }
                 lastError = e;
                 if (canFallback) {
@@ -141,7 +136,7 @@ public final class ChatCompletionsHandler implements Handler {
         String detail = lastError != null ? lastError.getMessage() : "all providers unavailable";
         log.error("所有 provider 尝试失败: model={}, chain={}",
             request.model(), chain.stream().map(target -> target.adapter().providerName()).toList());
-        ctx.status(502).json(OpenAiChatResponse.error(
+        return ResponseEntity.status(502).body(OpenAiChatResponse.error(
             detail, "proxy_error", "502"));
     }
 }

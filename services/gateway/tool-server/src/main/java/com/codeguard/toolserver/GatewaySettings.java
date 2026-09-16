@@ -34,7 +34,7 @@ public record GatewaySettings(
         return from(System.getenv(), Path.of(System.getProperty("java.io.tmpdir", "/tmp")));
     }
 
-    static GatewaySettings from(Map<String, String> env, Path tempDir) {
+    public static GatewaySettings from(Map<String, String> env, Path tempDir) {
         return new GatewaySettings(
             positiveInt(env, "CODEGUARD_TOOL_SERVER_PORT", 9090),
             positiveInt(env, "CODEGUARD_MAX_CONCURRENT_REVIEWS", 2),

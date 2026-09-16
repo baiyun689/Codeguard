@@ -7,13 +7,13 @@ import com.codeguard.toolserver.ToolSessionManager.Session;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import io.javalin.Javalin;
-import io.javalin.http.Context;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
-import java.security.MessageDigest;
 
 /**
  * 工具服务的 HTTP 端点控制器。
@@ -27,63 +27,30 @@ import java.security.MessageDigest;
  * 统一响应信封:成功 {@code {success:true, result:...}},失败 {@code {success:false, error:...}}。
  * 注意:{@code session} 是保留路径段,不会被当成工具名分发。
  */
+@RestController
 public final class ToolServerController {
 
     private static final Logger log = LoggerFactory.getLogger(ToolServerController.class);
     private static final String SESSION_HEADER = "X-Session-Id";
-    private static final String TOOL_TOKEN_HEADER = "X-Codeguard-Tool-Token";
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper;
     private final ToolSessionManager sessionManager;
-    private final String toolServerToken;
     private final GatewayMetrics metrics;
 
-    public ToolServerController() {
-        this(new GatewayMetrics(), GatewaySettings.fromEnv());
-    }
-
-    public ToolServerController(GatewayMetrics metrics) {
-        this(metrics, GatewaySettings.fromEnv());
-    }
-
-    public ToolServerController(GatewayMetrics metrics, GatewaySettings settings) {
+    public ToolServerController(GatewayMetrics metrics, ToolSessionManager sessionManager, ObjectMapper mapper) {
         this.metrics = metrics;
-        this.toolServerToken = settings.toolServerToken();
-        this.sessionManager = new ToolSessionManager(
-                new com.codeguard.agent.graph.ProjectSnapshotManager(
-                        settings.graphCacheMaxSnapshots(),
-                        settings.graphCacheTtl(),
-                        settings.graphBuildTimeout()),
-                new WorkspaceAccessPolicy(settings.toolAllowedRoots()));
+        this.sessionManager = sessionManager;
+        this.mapper = mapper;
         metrics.gaugeToolSessions(sessionManager, ToolSessionManager::activeSessionCount);
     }
 
-    public void registerRoutes(Javalin app) {
-        app.before("/api/v1/tools/*", this::requireToolToken);
-        app.post("/api/v1/tools/session", this::handleCreateSession);
-        app.delete("/api/v1/tools/session/{sessionId}", this::handleDeleteSession);
-        // 通用分发:{name} 形参承接所有工具名。session 已由更具体的上面两条路由抢先匹配。
-        app.post("/api/v1/tools/{name}", this::handleToolCall);
-        log.info("工具服务端点已注册");
-    }
-
-    private void requireToolToken(Context ctx) {
-        String supplied = ctx.header(TOOL_TOKEN_HEADER);
-        if (supplied == null || !MessageDigest.isEqual(
-                toolServerToken.getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                supplied.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
-            ctx.status(401).json(error("unauthorized"));
-            ctx.skipRemainingHandlers();
-        }
-    }
-
-    private void handleCreateSession(Context ctx) {
+    @PostMapping("/api/v1/tools/session")
+    public ResponseEntity<?> handleCreateSession(@RequestBody(required = false) String rawBody) {
         try {
-            JsonNode body = mapper.readTree(ctx.body());
+            JsonNode body = mapper.readTree(rawBody == null ? "" : rawBody);
             String repoDir = textOrEmpty(body, "repo_path");
             if (repoDir.isEmpty()) {
-                ctx.json(error("缺少 repo_path"));
-                return;
+                return ResponseEntity.ok(error("缺少 repo_path"));
             }
             String revision = textOrEmpty(body, "revision");
             String sessionId = sessionManager.create(Path.of(repoDir), revision);
@@ -91,44 +58,43 @@ public final class ToolServerController {
 
             ObjectNode resp = success(null);
             resp.put("session_id", sessionId);
-            ctx.json(resp);
+            return ResponseEntity.ok(resp);
         } catch (WorkspaceAccessPolicy.RejectedWorkspaceException e) {
-            ctx.status(400).json(error(e.getMessage()));
+            return ResponseEntity.status(400).body(error(e.getMessage()));
         } catch (Exception e) {
             log.error("创建会话失败", e);
-            ctx.json(error("创建会话失败: " + e.getMessage()));
+            return ResponseEntity.ok(error("创建会话失败: " + e.getMessage()));
         }
     }
 
-    private void handleDeleteSession(Context ctx) {
-        sessionManager.remove(ctx.pathParam("sessionId"));
-        ctx.json(success(null));
+    @DeleteMapping("/api/v1/tools/session/{sessionId}")
+    public ResponseEntity<?> handleDeleteSession(@PathVariable("sessionId") String sessionId) {
+        sessionManager.remove(sessionId);
+        return ResponseEntity.ok(success(null));
     }
 
-    private void handleToolCall(Context ctx) {
-        String toolName = ctx.pathParam("name");
-        String sessionId = ctx.header(SESSION_HEADER);
+    @PostMapping("/api/v1/tools/{name}")
+    public ResponseEntity<?> handleToolCall(@PathVariable("name") String toolName,
+            HttpServletRequest request, @RequestBody(required = false) String rawBody) {
+        String sessionId = request.getHeader(SESSION_HEADER);
 
         Session session = sessionManager.get(sessionId);
         if (session == null) {
             // 缺失/过期一律拒绝,绝不执行任何文件访问。
-            ctx.json(error("会话不存在或已过期: " + (sessionId == null ? "(缺少 " + SESSION_HEADER + ")" : sessionId)));
-            return;
+            return ResponseEntity.ok(error("会话不存在或已过期: " + (sessionId == null ? "(缺少 " + SESSION_HEADER + ")" : sessionId)));
         }
 
         AgentTool tool = session.getTool(toolName);
         if (tool == null) {
-            ctx.json(error("未知工具: " + toolName));
-            return;
+            return ResponseEntity.ok(error("未知工具: " + toolName));
         }
 
         try {
-            JsonNode body = mapper.readTree(ctx.body());
+            JsonNode body = mapper.readTree(rawBody == null ? "" : rawBody);
             // 工具请求统一承载在 query 字符串中。源码工具已经是 symbol-only
             // 契约，旧的 file_path 入参直接拒绝，避免协议表面上继续支持路径读取。
             if (toolName.equals("read_symbol") && body.has("file_path")) {
-                ctx.json(error("symbol_id_only"));
-                return;
+                return ResponseEntity.ok(error("symbol_id_only"));
             }
             String input = textOrEmpty(body, "query");
 
@@ -138,11 +104,11 @@ public final class ToolServerController {
             // 记录工具调用,便于观测"工具利用率"(对照实验指标)与排障。
             log.info("工具调用 [{}] {}(\"{}\") -> {}", session.getId(), toolName, input,
                     result.isSuccess() ? "ok" : "err:" + result.getError());
-            ctx.json(result.isSuccess() ? success(result.getResult()) : error(result.getError()));
+            return ResponseEntity.ok(result.isSuccess() ? success(result.getResult()) : error(result.getError()));
         } catch (Exception e) {
             metrics.toolCall(toolName, "error");
             log.error("工具执行失败: {}", toolName, e);
-            ctx.json(error("工具执行失败: " + e.getMessage()));
+            return ResponseEntity.ok(error("工具执行失败: " + e.getMessage()));
         }
     }
 
