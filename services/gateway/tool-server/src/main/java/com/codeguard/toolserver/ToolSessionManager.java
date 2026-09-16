@@ -18,15 +18,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * 工具会话管理器。
- * <p>
- * 为每次审查创建一个会话,持有该次审查的 {@link AgentContext} 与 per-session 工具注册表。
- * 会话超过 TTL 自动过期回收。所有工具调用经 {@code X-Session-Id} 关联到会话,
- * 会话不存在/过期则被上层拒绝。
- * <p>
- * 项目级轻量源码索引由 {@link ProjectSnapshotManager} 跨同版本会话共享；语义边由
- * {@link ProjectSnapshotProvider} 按工具查询局部扩展。Session 不再在创建阶段触发
- * 全项目符号求解。
+ * 管理工具会话及其资源生命周期。
+ *
+ * 每次审查拥有独立 AgentContext 和工具注册表，通过 X-Session-Id 关联请求，
+ * 超过 TTL 的会话自动回收。同版本会话共享项目轻量索引，语义关系按查询懒解析。
  */
 public final class ToolSessionManager {
 
@@ -67,16 +62,13 @@ public final class ToolSessionManager {
             this.createdAt = System.currentTimeMillis();
             this.projectKey = ProjectKey.of(repoRoot, revision);
             this.snapshotManager = snapshotManager;
-            // Do not start the project-wide index merely by creating a session. The
-            // source-only read_symbol path can now complete without any index build;
-            // callers that explicitly request the legacy snapshot still trigger it here.
+            // 会话创建时不启动项目索引构建；源码可独立读取，完整快照在实际访问时加载。
             this.snapshot = null;
             this.snapshotProvider = snapshotManager.lazyProvider(projectKey);
 
             this.registry = new ToolRegistry();
             // 加工具 = 在这里 register 一个实现即可,无需改协议(扩展接缝 design.md D2)。
-            // Stable controlled-review capabilities.  The historical tools
-            // below remain registered for an explicit compatibility mode.
+            // 注册受控审查使用的符号解析、源码读取和关系查询工具。
             this.registry.register(new ReadSymbolTool(snapshotProvider));
             this.registry.register(new QueryRelationsTool(snapshotProvider));
             this.registry.register(new ResolveChangeContextTool(snapshotProvider));

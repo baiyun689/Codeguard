@@ -18,7 +18,7 @@ import java.io.InputStreamReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
-/** Preserve the old 10 MB HTTP body bound, including chunked requests. */
+/** 限制 HTTP 请求体最大为 10 MB，包含分块传输的请求。 */
 @Configuration(proxyBeanMethods = false)
 public class GatewayHttpConfiguration {
     public static final int MAX_REQUEST_BYTES = 10_000_000;

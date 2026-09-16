@@ -4,7 +4,7 @@ import com.codeguard.common.GatewayApplication;
 import com.codeguard.toolserver.GatewaySettings;
 import java.util.Map;
 
-/** Public webhook Boot context. Business components are owned by Spring beans. */
+/** 公共 Webhook 服务入口，业务组件由 Spring 容器管理。 */
 public final class CiServerApp {
     private final GatewaySettings settings;
     private GatewayApplication application;

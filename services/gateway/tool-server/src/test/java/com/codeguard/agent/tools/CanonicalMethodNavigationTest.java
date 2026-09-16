@@ -152,8 +152,7 @@ class CanonicalMethodNavigationTest {
             assertTrue(page.path("relationships").isEmpty(), response.getResult());
             assertFalse(page.path("unresolved_relationships").isEmpty(), response.getResult());
             assertEquals("partial", page.path("coverage").asText());
-            // Explicit ids remain distinct; an ambiguous solver answer must
-            // not merge the declarations or manufacture a positive caller.
+            // 不同的完整符号标识保持独立；歧义求解结果不能合并声明或生成确定的调用关系。
             assertEquals("java:demo.Service#use(" + parameter + ")", page.path("subject_symbol_id").asText());
         }
     }

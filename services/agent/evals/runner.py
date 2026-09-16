@@ -69,10 +69,9 @@ logger = logging.getLogger("codeguard.evals")
 
 
 def case_evidence_revision(case: EvalCase) -> str:
-    """repo-backed 用例的证据 revision:head_revision + diff 内容摘要。
+    """以仓库提交号和 diff 摘要构造评测证据的版本标识。
 
-    证据账本内容寻址锚点(源文档 §5.1):Artifact 与 Gateway session 身份一致。
-    合成用例无 head_revision 时返回空串,由编排器按 diff 摘要兜底。
+    无提交号时返回空字符串，由编排器使用 diff 摘要作为版本标识。
     """
     if case.provenance and case.provenance.head_revision:
         digest = hashlib.sha256(case.diff.encode("utf-8")).hexdigest()
@@ -206,7 +205,7 @@ def _runtime_identity(settings: Any, llm: Any) -> _RuntimeIdentity:
 
 
 def _effective_discovery_mode(profile: Any, settings: Any) -> str:
-    """Resolve the profile override, falling back to the controlled default."""
+    """读取评测配置指定的发现模式，未指定时使用默认受控审查。"""
     return getattr(profile, "discovery_mode", None) or getattr(
         settings, "discovery_mode", "controlled"
     )

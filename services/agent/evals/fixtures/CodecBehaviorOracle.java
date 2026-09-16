@@ -3,7 +3,7 @@ import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.codec.binary.StringUtils;
 
-/** Cross-file/public-consumer checks; compiled against the actual project. */
+/** 验证跨文件调用和公共接口使用行为，依赖实际项目编译结果。 */
 public class CodecBehaviorOracle {
     interface Check { boolean run() throws Exception; }
     static void check(String name, Check check) {

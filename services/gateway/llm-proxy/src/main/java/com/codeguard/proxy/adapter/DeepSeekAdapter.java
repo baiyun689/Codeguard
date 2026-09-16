@@ -65,7 +65,7 @@ public final class DeepSeekAdapter implements LlmAdapter {
     public OpenAiChatResponse translateResponse(String rawBody, int statusCode) {
         if (statusCode != 200) {
             try {
-                // Try to parse as OpenAiChatResponse.ErrorResponse
+                // 尝试按 OpenAI 兼容错误结构解析响应。
                 var errorResp = MAPPER.readValue(rawBody, OpenAiChatResponse.ErrorResponse.class);
                 throw new AdapterException(statusCode, errorResp.error().message(),
                     errorResp.error().type(), errorResp.error().code());
@@ -77,7 +77,7 @@ public final class DeepSeekAdapter implements LlmAdapter {
         }
         try {
             JsonNode root = MAPPER.readTree(rawBody);
-            // Normalize tool_calls[].function.arguments to always be a JSON string
+            // 将工具调用的 function.arguments 统一为 JSON 字符串。
             JsonNode choices = root.get("choices");
             if (choices != null && choices.isArray()) {
                 for (JsonNode choice : choices) {
@@ -90,7 +90,7 @@ public final class DeepSeekAdapter implements LlmAdapter {
                         if (func == null) continue;
                         JsonNode args = func.get("arguments");
                         if (args == null) continue;
-                        // DeepSeek sometimes returns arguments as a JSON object instead of string
+                        // 兼容 DeepSeek 将工具参数返回为 JSON 对象的情况。
                         if (!args.isTextual()) {
                             ((ObjectNode) func).put("arguments", args.toString());
                         }
@@ -106,7 +106,7 @@ public final class DeepSeekAdapter implements LlmAdapter {
         }
     }
 
-    /** Thrown when an adapter encounters a provider error. Carries HTTP status and error details. */
+    /** 模型服务异常，包含 HTTP 状态码和错误详情。 */
     public static final class AdapterException extends RuntimeException {
         private final int httpStatus;
         private final String errorType;

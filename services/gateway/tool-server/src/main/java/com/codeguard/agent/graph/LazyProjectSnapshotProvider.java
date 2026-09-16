@@ -8,10 +8,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * 版本固定、按工具查询扩展的快照提供器。
+ * 固定版本、按工具查询扩展关系的快照提供器。
  *
- * <p>同一个 revision 只共享轻量 SourceIndex；每个规范化查询最多执行一次局部语义
- * 扩展。提供器不把局部快照写回共享索引，避免不同 reviewer 的查询顺序改变彼此结果。</p>
+ * 共享轻量索引与语义缓存，规范查询结果在提供器内复用；
+ * 局部查询生成独立快照，不修改共享索引。
  */
 final class LazyProjectSnapshotProvider implements ProjectSnapshotProvider, SourceSnapshotProvider {
     private final ProjectSnapshotManager manager;
@@ -105,9 +105,7 @@ final class LazyProjectSnapshotProvider implements ProjectSnapshotProvider, Sour
         });
         try {
             ProjectSnapshot source = query.get(queryTimeout.toMillis(), TimeUnit.MILLISECONDS);
-            // Framework entrypoint ids are not Java declaration ids and cannot be mapped
-            // from a type name suffix. Preserve the old complete-index behavior for them;
-            // ordinary java:* symbols stay on the source-only fast path.
+            // 框架入口标识不对应 Java 声明，使用完整索引定位；普通 Java 符号使用源码定位。
             if (source.sources().isEmpty()
                     && !SourceSnapshotBuilder.symbolId(input).startsWith("java:")) {
                 return load("read_symbol", input);

@@ -1,8 +1,4 @@
-"""Evidence Ledger 证据目录(P/C/T Artifact 注册)的工程正确性测试。
-
-覆盖:patch/上下文/工具结果的目录注册、短别名分配、reused 解析到首次
-真实 payload、目录经引擎与用户提示词贯通(源文档 §5.2-§5.6)。
-"""
+"""验证 patch、上下文和工具证据的注册、短别名分配、复用解析及提示词传递。"""
 
 from __future__ import annotations
 import json

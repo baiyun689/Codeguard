@@ -42,19 +42,19 @@ public class GitHubWebhookController {
 
     @PostMapping("/webhooks/github")
     public ResponseEntity<?> handle(HttpServletRequest request, @RequestBody(required = false) byte[] rawBody) {
-        // Layer 1: Verify signature
+        // 验证 Webhook 请求签名。
         String sig = request.getHeader("X-Hub-Signature-256");
         byte[] body = rawBody == null ? new byte[0] : rawBody;
         if (!verifier.verify(sig, body)) {
             return ResponseEntity.status(401).body("signature mismatch");
         }
 
-        // Layer 1.5: Rate limit check
+        // 检查请求速率限制。
         if (guard != null && !guard.tryAcquireWebhook(100)) {
             return ResponseEntity.status(429).header("Retry-After", "120").body(Map.of("error", "rate_limited"));
         }
 
-        // Non-PR events → 200 empty
+        // 非 PR 事件直接返回空的成功响应。
         String event = request.getHeader("X-GitHub-Event");
         if (!"pull_request".equals(event)) {
             return ResponseEntity.status(200).body("ignored: " + event);
@@ -70,7 +70,7 @@ public class GitHubWebhookController {
 
             WebhookPayload payload = extractPayload(root);
 
-            // Idempotency check
+            // 检查是否已存在相同提交的审查任务。
             Optional<ReviewJob> existing = repo.findByDedupKey(
                 payload.repoFullName(), payload.prNumber(), payload.headSha());
             if (existing.isPresent() && existing.get().getStatus() == ReviewJob.Status.PENDING) {

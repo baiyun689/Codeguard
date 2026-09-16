@@ -47,7 +47,7 @@ public final class ClaudeAdapter implements LlmAdapter {
         anthropic.put("model", request.model());
         anthropic.put("max_tokens", request.maxTokens() != null ? request.maxTokens() : 4096);
 
-        // Extract system message
+        // 提取系统消息。
         String systemPrompt = null;
         List<OpenAiChatRequest.Message> conversationMessages = new ArrayList<>();
         for (var msg : request.messages()) {
@@ -62,12 +62,12 @@ public final class ClaudeAdapter implements LlmAdapter {
             anthropic.put("system", systemPrompt);
         }
 
-        // Convert messages
+        // 转换对话消息。
         ArrayNode messages = MAPPER.createArrayNode();
         for (var msg : conversationMessages) {
             ObjectNode m = MAPPER.createObjectNode();
             m.put("role", "user".equals(msg.role()) ? "user" : "assistant");
-            // Build content array (Anthropic uses content blocks, not flat strings)
+            // 构建 Anthropic 使用的内容块数组。
             ArrayNode content = MAPPER.createArrayNode();
             if (msg.content() instanceof String text) {
                 ObjectNode textBlock = MAPPER.createObjectNode();
@@ -75,7 +75,7 @@ public final class ClaudeAdapter implements LlmAdapter {
                 textBlock.put("text", text);
                 content.add(textBlock);
             }
-            // Handle tool_calls from assistant → Anthropic tool_use blocks
+            // 将助手的工具调用转换为 Anthropic 的 tool_use 内容块。
             if (msg.toolCalls() != null) {
                 for (var tc : msg.toolCalls()) {
                     ObjectNode toolBlock = MAPPER.createObjectNode();
@@ -95,7 +95,7 @@ public final class ClaudeAdapter implements LlmAdapter {
         }
         anthropic.set("messages", messages);
 
-        // Convert tools
+        // 转换工具定义。
         if (request.tools() != null && !request.tools().isEmpty()) {
             ArrayNode tools = MAPPER.createArrayNode();
             for (var tool : request.tools()) {
@@ -110,7 +110,7 @@ public final class ClaudeAdapter implements LlmAdapter {
             anthropic.set("tools", tools);
         }
 
-        // tool_choice mapping
+        // 映射工具选择参数。
         if (request.toolChoice() != null) {
             if (request.toolChoice() instanceof String s && "required".equals(s)) {
                 ObjectNode tc = MAPPER.createObjectNode();
@@ -156,12 +156,12 @@ public final class ClaudeAdapter implements LlmAdapter {
         try {
             JsonNode root = MAPPER.readTree(rawBody);
 
-            // Build OpenAI-format response
+            // 构建符合 OpenAI 格式的响应。
             String id = root.has("id") ? root.get("id").asText() : "claude-" + System.currentTimeMillis();
             String model = root.has("model") ? root.get("model").asText() : "claude";
             long created = System.currentTimeMillis() / 1000;
 
-            // Convert Anthropic content blocks → OpenAI message
+            // 将 Anthropic 内容块转换为 OpenAI 消息。
             var message = new OpenAiChatResponse.ResponseMessage("assistant", null, new ArrayList<>());
             JsonNode content = root.get("content");
             if (content != null && content.isArray()) {
@@ -186,7 +186,7 @@ public final class ClaudeAdapter implements LlmAdapter {
                 }
             }
 
-            // Map stop_reason → finish_reason
+            // 将停止原因映射为 OpenAI 的 finish_reason。
             String stopReason = root.has("stop_reason") ? root.get("stop_reason").asText() : "end_turn";
             String finishReason = switch (stopReason) {
                 case "end_turn" -> "stop";
@@ -196,7 +196,7 @@ public final class ClaudeAdapter implements LlmAdapter {
                 default -> "stop";
             };
 
-            // Usage
+            // 填充 Token 用量。
             JsonNode usage = root.get("usage");
             var u = new OpenAiChatResponse.Usage(
                 usage != null && usage.has("input_tokens") ? usage.get("input_tokens").asInt() : 0,

@@ -3,7 +3,7 @@ import java.util.*;
 import co.nstant.in.cbor.*;
 import co.nstant.in.cbor.model.*;
 
-/** Executed against the actual compiled project, outside the reviewer workspace. */
+/** 在实际编译的项目上执行行为验证，验证程序位于被审工作区之外。 */
 public class CborBehaviorOracle {
     interface Check { boolean run() throws Exception; }
     static void check(String name, Check test) {

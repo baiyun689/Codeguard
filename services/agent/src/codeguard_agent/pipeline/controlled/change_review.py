@@ -1,8 +1,7 @@
-"""Default discovery: deterministic change coverage, source preparation, one reviewer.
+"""按变更声明分组，预取有界源码与关系上下文，并执行统一审查。
 
-No model decides which changes deserve investigation. Method/type/constructor
-declarations are investigated independently, while changed fields share one
-field-focused investigation. Java remains the only source reader.
+方法、类型和构造器分别调查；同一文件任务中的字段合并调查。
+分组由程序确定，源码与图谱事实通过 Java 工具服务读取。
 """
 
 from pathlib import Path
@@ -30,7 +29,7 @@ _PROMPTS = Path(__file__).resolve().parents[2] / "prompts" / "controlled"
 
 
 class SubtaskPromptContext(TypedDict):
-    """Prompt-only view; the original task remains the evidence source."""
+    """调查组的提示词视图；证据账本仍保存原始任务内容。"""
 
     patch: str
     primary_change_lines: tuple[int, ...]
@@ -40,10 +39,10 @@ class SubtaskPromptContext(TypedDict):
 
 
 def prepare_change_context(client, group, instruction, scoped_context=None) -> str:
-    """Bounded first pages, charged to the same budget as subsequent exploration.
+    """在工具预算内预取源码首页与一跳关系。
 
-    Read roots first, then spread incoming relations across roots before outgoing
-    relations. Never expand returned endpoints or follow cursors speculatively.
+    先读取根符号源码，再依次查询各根符号的入向和出向关系。
+    预取不自动扩展返回符号或追踪分页游标，与后续探索共用预算。
     """
     budget = instruction.max_tool_calls
     reserve = min(budget, max(2, budget // 3))
@@ -131,18 +130,15 @@ def prepare_change_context(client, group, instruction, scoped_context=None) -> s
 
 
 def review_group_id(task_id: str, index: int) -> str:
-    """Unique across file tasks so tool traces cannot attach to another group."""
+    """生成跨文件任务唯一的调查组标识，用于关联工具轨迹。"""
     return f"change-{sha256(task_id.encode('utf-8')).hexdigest()[:12]}-{index + 1}"
 
 
 def change_groups(task, context) -> list[tuple]:
-    """Cover changed declarations with focused, deterministic investigations.
+    """根据变更声明生成确定性的调查分组。
 
-    Non-field declarations get one subtask each so unrelated methods cannot
-    consume one another's investigation context. Fields are the exception:
-    field declarations in the same file task share one subtask because their
-    read/write relationships and initialization semantics are usually coupled.
-    The group order follows the first declaration encountered in source order.
+    非字段声明各自成组，同一文件任务中的字段声明共用一组。
+    分组顺序按照声明在源码中首次出现的位置排列。
     """
     symbols = list(context.symbols) if context else []
     selected = {}
@@ -180,14 +176,13 @@ def change_groups(task, context) -> list[tuple]:
     if field_group_index is not None:
         groups[field_group_index] = tuple(fields)
     if groups and _unresolved_change_lines(task, context):
-        # Keep partially unresolved locations visible as an explicitly
-        # incomplete scope instead of silently dropping them from review.
+        # 将未解析的变更位置单独保留为未完成的审查范围。
         groups.append(())
     return groups or [()]
 
 
 def _symbol_for_change_line(symbols, task, line: int):
-    """Return the innermost resolved declaration owning a changed line."""
+    """返回包含变更行的最内层已解析声明。"""
     enclosing = [
         symbol
         for symbol in symbols
@@ -202,7 +197,7 @@ def _symbol_for_change_line(symbols, task, line: int):
 
 
 def _unresolved_change_lines(task, context) -> tuple[int, ...]:
-    """Return non-blank changed lines with no resolved declaration owner."""
+    """返回没有解析出所属声明的非空变更行。"""
     if context is None or not getattr(context, "symbols", ()):
         return ()
     blank = _blank_added_lines(task)
@@ -219,7 +214,7 @@ def _unresolved_change_lines(task, context) -> tuple[int, ...]:
 
 
 def _blank_added_lines(task) -> set[int]:
-    """Find blank additions, which are not useful primary review anchors."""
+    """找出空白新增行，将其排除在主要定位锚点之外。"""
     blank: set[int] = set()
     line_number = 0
     for raw in task.patch.splitlines():
@@ -236,7 +231,7 @@ def _blank_added_lines(task) -> set[int]:
 
 
 def _group_change_lines(task, context, group) -> tuple[set[int], set[int]]:
-    """Return exact added/deletion-anchor lines owned by a declaration group."""
+    """返回本组声明对应的新增行和删除锚点。"""
     if not group:
         return set(task.changed_lines), {
             anchor.anchor_line for anchor in task.deletion_anchors
@@ -269,7 +264,7 @@ def _group_change_lines(task, context, group) -> tuple[set[int], set[int]]:
 def _other_changes_index(
     task, context, group, *, include_all: bool = False
 ) -> tuple[dict[str, Any], ...]:
-    """Build a compact navigation index without exposing other diff bodies."""
+    """为其他变更生成简要导航索引，不展开其 diff 正文。"""
     symbols = tuple(getattr(context, "symbols", ()) or ())
     group_ids = {symbol.symbol_id for symbol in group}
     if not symbols or (not group and not include_all):
@@ -294,11 +289,9 @@ def _other_changes_index(
 
 
 def _scoped_patch(task, primary_lines: set[int], anchor_lines: set[int]) -> str:
-    """Mask changed lines owned by other declarations in the prompt view.
+    """在提示词中隐藏属于其他声明的变更行。
 
-    The original patch remains in the Evidence Ledger.  This rendering is only
-    a model-context view, so replacing out-of-scope additions/deletions with a
-    marker cannot alter evidence hashes or final candidate location binding.
+    该视图只影响模型输入；账本中的原始 patch、证据摘要及候选定位依据保持不变。
     """
     if not primary_lines and not anchor_lines:
         return task.patch
@@ -357,7 +350,7 @@ def _scoped_patch(task, primary_lines: set[int], anchor_lines: set[int]) -> str:
 def build_subtask_context(
     task, context, group, *, unresolved_lines: tuple[int, ...] | None = None
 ) -> SubtaskPromptContext:
-    """Compile the prompt-only context boundary for one investigation group."""
+    """构建单个调查组的提示词上下文范围。"""
     if unresolved_lines is not None:
         primary_lines = set(unresolved_lines) & set(task.changed_lines)
         anchor_lines = {
@@ -385,7 +378,7 @@ def build_subtask_context(
 
 
 def _group_projection_focus(task, context, group, scoped_context):
-    """Keep graph projection relevance local to the active declaration group."""
+    """将图谱投影的相关性范围限定为当前声明组。"""
     focused_task = task.model_copy(
         update={
             "changed_lines": list(scoped_context.get("primary_change_lines", ())),
@@ -403,16 +396,14 @@ def _group_projection_focus(task, context, group, scoped_context):
 def _candidate_in_group(
     candidate, task, scoped_context: SubtaskPromptContext, group
 ) -> bool:
-    """Ensure a finding is anchored to this group, not another subtask's diff."""
+    """检查候选是否定位于当前调查组的变更范围。"""
     if not group and scoped_context.get("scope_kind") != "unresolved":
         return True
     if str(candidate.file).replace("\\", "/") != str(task.file).replace("\\", "/"):
         return False
     line = int(candidate.line or 0)
     if line == 0:
-        # A location failure is a valid, file-level candidate.  It is not
-        # evidence that the finding belongs to another declaration; preserve
-        # it for Judge, which will see the location limitation.
+        # 定位失败的候选保留为文件级问题，并将位置限制交给裁决阶段处理。
         return True
     allowed = set(scoped_context.get("primary_change_lines", ()))
     allowed.update(

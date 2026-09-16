@@ -99,8 +99,7 @@ final class SourceSnapshotBuilder {
         }
         String[] parts = owner.split("\\.");
         List<String> suffixes = new ArrayList<>();
-        // Nested types are declared in the outer type's file. Try the full path first,
-        // then progressively remove nested type segments.
+        // 嵌套类型位于外层类型的文件中；先匹配完整路径，再逐层移除嵌套类型名称。
         for (int length = parts.length; length >= 1; length--) {
             StringBuilder suffix = new StringBuilder();
             for (int i = 0; i < length; i++) {
@@ -155,7 +154,7 @@ final class SourceSnapshotBuilder {
                 }
             }
         } catch (IOException ignored) {
-            // The caller will receive an empty source snapshot and a deterministic diagnostic.
+            // 解析失败时返回空源码快照，并附带诊断信息。
         }
         return Optional.empty();
     }

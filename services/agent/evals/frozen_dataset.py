@@ -1,4 +1,4 @@
-"""Offline integrity check for a versioned local suite (no model calls)."""
+"""离线校验本地版本化评测集的完整性，不调用模型。"""
 from __future__ import annotations
 
 import argparse

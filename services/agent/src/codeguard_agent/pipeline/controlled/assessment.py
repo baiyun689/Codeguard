@@ -18,14 +18,10 @@ _PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts" / "controlled"
 def collapse_candidate_duplicates(
     candidates: list[CandidateIssue],
 ) -> tuple[list[CandidateIssue], int]:
-    """Collapse cross-reviewer reports of the same local mechanism.
+    """按位置和主张相似度归并重复候选。
 
-    The controlled default uses one unified reviewer.  Legacy replays may still
-    contain multiple reviewer outputs, so this reducer remains conservative:
-    candidates must belong to the same task/file, be within a
-    three-line location window, and have materially similar claim/type text.
-    It never merges unrelated same-line findings and leaves the semantic
-    keep/drop decision to CouncilJudge.
+    候选须属于同一任务和文件，行号相距不超过三行，且问题说明具有足够的词汇重合。
+    此处只进行确定性去重，候选是否成立由后续裁决处理。
     """
 
     result: list[CandidateIssue] = []
@@ -109,12 +105,8 @@ def _same_controlled_mechanism(
     similarity = len(shared) / len(union) if union else 0.0
     if left.type == right.type or similarity >= 0.35:
         return True
-    # Different reviewers may choose different type labels for one exact
-    # changed expression.  When they report the same line and their smaller
-    # claim shares a substantial set of code/technical tokens, treat it as a
-    # duplicate while retaining the higher-priority source agent.  The
-    # location and lexical overlap guards keep unrelated same-file findings
-    # separate; semantic keep/drop remains Judge's responsibility.
+    # 同一行上类型标签不同的候选，可按主张词汇重合度识别为重复。
+    # 合并时保留优先级较高的来源；位置与词汇约束用于区分独立问题。
     overlap_coefficient = len(shared) / min(len(left_tokens), len(right_tokens))
     return left.line == right.line and len(shared) >= 3 and overlap_coefficient >= 0.30
 

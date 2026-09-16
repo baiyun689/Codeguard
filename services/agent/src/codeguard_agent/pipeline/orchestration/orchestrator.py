@@ -1,8 +1,7 @@
-"""审查编排器门面。
+"""审查编排器入口。
 
-内部执行 ReviewCouncil 图：
-summary? → symbol_resolution → review_council → council_judge → END。
-对外返回稳定的 `ReviewResult`。
+构建并执行任务拆分、符号解析、受控调查、证据验证、裁决及结果合并流程，
+对外返回 ReviewResult，并可额外记录 Trace 和评测元数据。
 """
 
 from __future__ import annotations
@@ -69,10 +68,7 @@ def _create_checkpointer(backend: str, db_path: str):
 
 
 class PipelineOrchestrator:
-    """审查编排器(内部为 LangGraph 状态图,门面不变)。
-
-    `run()` 内部建图 + invoke(见 graph.py)。
-    """
+    """封装 LangGraph 审查图的构建、执行与结果提取。"""
 
     def __init__(
         self,
@@ -123,18 +119,13 @@ class PipelineOrchestrator:
         thread_id: str | None = None,
         evidence_revision: str = "",
     ) -> ReviewResult:
-        """跑完整条管线,返回结构化的 ReviewResult。
+        """执行审查管线并返回 ReviewResult。
 
-        fp_verify_llm:裁决模型(异源千问 temperature=0);None 时回退到主 llm。
-        发现执行方式由 ``discovery_mode`` 决定：``controlled`` 使用
-        变更分组→有界源码准备→bounded ReAct，``react`` 在有
-        tool_client 时使用历史 ReAct 兼容路径，``direct`` 明确关闭工具发现。
-        enabled_tools:暴露给审查员的工具白名单(评测 profile 控制);None=全开(CLI 默认)。
-        enabled_evidence_tools:EvidenceAgent 的独立白名单；None 时沿用 enabled_tools。
-        allow_direct_fallback:ReAct 失败/空结果时是否允许无工具直连复审；严格 eval 关闭。
-        evidence_mode:证据链开关；"off" 时跳过取证/门控,候选由 DirectJudge 直接终审(消融基线档)。
-        trace_sink / metadata_sink：可选 eval 侧信道，不进入 ReviewResult 对外接口。
-        thread_id:可选的检查点线程标识,用于中断恢复。
+        fp_verify_llm 指定裁决模型，为 None 时使用主模型。
+        discovery_mode 选择受控调查或无工具直审。
+        enabled_tools 控制审查工具白名单；evidence_mode 控制证据验证流程。
+        trace_sink 和 metadata_sink 接收运行轨迹与评测元数据，不进入产品结果。
+        thread_id 用于关联检查点。
         """
         if not diff_text.strip():
             return ReviewResult(summary="没有检测到代码变更,无需审查。")
@@ -233,12 +224,9 @@ class PipelineOrchestrator:
 
 
 def _artifact_tool_profile(artifacts: dict) -> list:
-    """从最终 Artifact 集派生评测工具画像(源文档 §10.7)。
+    """从最终证据集合提取实际工具调用信息，供评测统计使用。
 
-    只含 TOOL_CALL 且首次真实执行(EXECUTED)的 Artifact:reused 不重复计算
-    实际调用,patch/context 不计 tool_calls。条目包含工具使用画像
-    (tool/args/content/status),供 eval 的 tools_used/symbols_read/tool_calls
-    与严格工具降级检测读取。
+    仅统计首次执行的工具证据，复用记录、patch 和上下文不计为额外调用。
     """
     from codeguard_agent.models.evidence import EvidenceCaptureMode, EvidenceSourceKind
     from types import SimpleNamespace

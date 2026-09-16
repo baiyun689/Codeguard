@@ -51,13 +51,11 @@ class InvestigationResult(ControlledModel):
 
 
 class SubtaskInstruction(ControlledModel):
-    """单个 React 的调查上下文；默认由运行时编译，旧计划字段仅供兼容。"""
+    """单个 ReAct 调查组的上下文、符号入口和执行限制，由运行时生成。"""
 
     subtask_id: str = Field(min_length=1)
     objective: str = Field(min_length=1)
-    # FIELD declarations are intentionally reviewed as one group.  Do not cap
-    # this at the old four-symbol limit: the runtime still bounds the number of
-    # groups and tool calls, while a hard schema cap would silently drop fields.
+    # 同一文件任务中的字段声明共用调查组；执行范围由组数和工具预算约束。
     initial_symbol_ids: tuple[str, ...] = Field(default=())
     allowed_tools: tuple[str, ...] = Field(default=(), max_length=4)
     allowed_relations: tuple[

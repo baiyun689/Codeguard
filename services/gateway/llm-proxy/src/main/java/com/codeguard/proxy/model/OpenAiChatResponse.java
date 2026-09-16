@@ -40,20 +40,20 @@ public record OpenAiChatResponse(
         @JsonProperty("total_tokens") int totalTokens
     ) {}
 
-    /** OpenAI-compatible error response. */
+    /** OpenAI 兼容格式的错误响应。 */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ErrorResponse(ErrorDetail error) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ErrorDetail(String message, String type, String code) {}
 
-    /** Factory: create a 200 OK response. */
+    /** 创建成功响应对象。 */
     public static OpenAiChatResponse success(String id, String model, long created,
                                               List<Choice> choices, Usage usage) {
         return new OpenAiChatResponse(id, "chat.completion", created, model, choices, usage);
     }
 
-    /** Factory: create an error-mapped response (returned as body, HTTP status set separately). */
+    /** 创建错误响应体，HTTP 状态码由调用方单独设置。 */
     public static ErrorResponse error(String message, String type, String code) {
         return new ErrorResponse(new ErrorDetail(message, type, code));
     }

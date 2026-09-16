@@ -15,7 +15,7 @@ public class ResultFeedback {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final int MAX_ANNOTATIONS = 50;
     private static final int MAX_LINE_COMMENTS = 10;
-    private static final int MAX_SUMMARY_CHARS = 65_000;  // GitHub limit 65535
+    private static final int MAX_SUMMARY_CHARS = 65_000;  // GitHub 文本长度上限为 65535。
 
     private final GitHubClient client;
 

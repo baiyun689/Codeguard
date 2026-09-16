@@ -250,7 +250,7 @@ def _symbol_resolution_node(tool_client):
 
 
 def _discovery_collector_node():
-    """历史诊断拓扑:只记录发现者候选,不伪造未经过 Judge 的产品 Issue。"""
+    """诊断节点只记录候选，不将未经裁决的问题转换为对外 Issue。"""
 
     def _node(state: ReviewState) -> dict:
         raw = list(state.get("raw_candidate_issues") or [])
@@ -504,11 +504,10 @@ def _investigation_candidate(
 def _allocate_subtask_budgets(
     count: int, *, total_budget: int, per_subtask_limit: int
 ) -> tuple[int, ...]:
-    """Split a task budget fairly.
+    """均分任务的工具预算。
 
-    The caller caps the number of runnable subtasks to the available budget;
-    direct callers that request more slots than calls receive trailing zeroes
-    and must apply the same cap before starting a React.
+    当子任务数超过可分配调用次数时，末尾分组获得零预算；
+    调用方须仅启动获得预算的调查组。
     """
     if count <= 0 or total_budget <= 0 or per_subtask_limit <= 0:
         return tuple((0 for _ in range(max(0, count))))
@@ -687,7 +686,7 @@ def _causal_merge_node(judge_llm=None):
 
 
 def _direct_judge_node(judge_llm=None):
-    """无证据链消融档的候选终审:跳过取证/门控,DirectJudge 直接裁决(ADR-046)。"""
+    """无证据链评测模式的候选终审，由 DirectJudge 直接裁决。"""
 
     def _node(state: ReviewState) -> dict:
         from codeguard_agent.pipeline.council.metrics import compute_council_run_stats
@@ -749,7 +748,7 @@ def build_review_graph(
     controlled_task_max_tool_calls=32,
     controlled_max_subtasks_per_task=8,
 ):
-    """Build the change-driven review, or the explicit tool-free baseline."""
+    """构建变更驱动的审查图，或显式选择无工具对照流程。"""
     from langgraph.graph import END, START, StateGraph
     from codeguard_agent.pipeline.controlled.change_review import (
         build_change_review_node,

@@ -1,10 +1,7 @@
-"""证据目录构建与候选引用绑定(Evidence Ledger 的运行时注册入口)。
+"""注册证据目录并绑定候选引用。
 
-把 patch(P01)、符号解析事实(Cxx)、真实工具结果(Txx)注册为内容寻址
-Artifact 并分配短别名;发现者输出短编号后,在离开发现子图前绑定为
-内部稳定 artifact ID。LLM 只选择编号,不生产证据内容。
-
-设计依据:docs/superpowers/plans/2026-08-17-evidence-ledger-refactor.md §5/§6。
+将任务 patch、符号解析上下文及工具结果保存为内容寻址证据，分配模型可用的短别名。
+模型提交候选后，运行时将短别名转换为稳定证据标识；证据原文由运行时捕获。
 """
 
 from __future__ import annotations
@@ -204,12 +201,11 @@ def bind_discovered_issue(
     catalog: EvidenceCatalog,
     candidate_index: int,
 ) -> CandidateIssue:
-    """把发现者输出(DiscoveredIssue 或 mock 的 Issue)绑定为内部候选(源文档 §6)。
+    """将审查输出绑定为内部候选，并解析证据短别名。
 
-    步骤:稳定候选 ID → 自动绑定 P01 → 按 LLM 原顺序解析外部 refs
-    (未知别名/跨任务/跨 revision/失败 Artifact 留痕) → 同 Artifact 去重、
-    最多 3 条外部引用。工具引用全无效时候选退化为 patch-only,仍正常进入
-    Verifier/Judge——LLM 无法通过编造编号获得证据。
+    生成稳定候选标识，自动绑定任务 patch；按模型引用顺序检查任务、版本和证据状态。
+    相同证据去重，外部引用最多保留三条。无有效工具引用时仅保留 patch 证据，
+    仍由验证和裁决阶段判断是否足以支持候选。
     """
     cid = f"{reviewer}-{candidate_index}-{issue.file}:{issue.line}:{issue.type}"
     refs: list[EvidenceRef] = []

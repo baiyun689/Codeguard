@@ -1,4 +1,4 @@
-"""Offline contracts for the sole bounded runtime and its reporting surface."""
+"""验证有界审查运行流程与结果展示的离线协议。"""
 
 import pytest
 

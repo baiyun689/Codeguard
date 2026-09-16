@@ -61,7 +61,7 @@ public class ReviewJob {
         this.updatedAt = Instant.now();
     }
 
-    // getters
+    // 字段访问方法。
     public Long getId() { return id; }
     public String getRepo() { return repo; }
     public int getPrNumber() { return prNumber; }

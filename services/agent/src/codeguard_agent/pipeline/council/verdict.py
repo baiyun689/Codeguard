@@ -64,11 +64,10 @@ def _trace(batch: VerdictBatch, event: str, detail: dict[str, object]) -> None:
 def _evidence_item_payload(
     dossier: CandidateDossier, verification: CandidateVerification
 ) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
-    """把候选可见的已验证证据渲染为 Judge 输入条目。
+    """将候选的已验证证据投影为裁决模型输入。
 
-    返回 (条目列表, [(批内 F 编号, artifact_id) 映射])。patch 用 candidate
-    line 所在 hunk(line 不在 changed lines 时带 candidate_line_unknown
-    限制);图 payload 摘要化、文件 payload 截 2000 字符(源文档 §8.2)。
+    返回证据条目及批内 F 编号到证据标识的映射。patch 选取候选位置对应的变更块，
+    位置不明确时附带限制；图谱生成摘要，源码内容限制为 2000 字符。
     """
     items: list[dict[str, Any]] = []
     mapping: list[tuple[str, str]] = []
@@ -121,12 +120,10 @@ def _evidence_item_payload(
 def _bounded_graph_path_facts(
     content: str, *, arguments: dict[str, Any], max_depth: int = 3, max_paths: int = 8
 ) -> list[dict[str, Any]]:
-    """Render complete resolved CALLS paths already present in a projection.
+    """从投影中提取完整且已解析的 CALLS 路径。
 
-    This helper deliberately has no semantic detector: it only walks the
-    exact ``relationships`` visible in the Judge projection, from the tool's
-    subject, within the configured relation depth bound.  Partial graph
-    coverage remains in ``limitations`` and is never hidden by this view.
+    只遍历裁决模型可见的关系，从查询主体出发并遵守深度限制。
+    图谱覆盖不完整的限制保留在 limitations 中。
     """
     try:
         payload = json.loads(content)
@@ -531,14 +528,10 @@ def _recover_return_state_assessment(
     artifacts: dict[str, EvidenceArtifact],
     fact_map: dict[str, str],
 ) -> EvidenceJudgeAssessment | None:
-    """Recover one evidence-closed return/state candidate after a model drop.
+    """对具备完整证据链的返回值或状态候选进行补充裁决。
 
-    This deliberately recognizes a *shape*, not a domain or issue label.  A
-    candidate must contain an observable state consequence, and the ledger
-    must independently contain patch + source + graph facts for the same
-    bounded review task.  Legitimate return refactors without a state/cache
-    observation do not enter this path and remain subject to the LLM Judge's
-    drop decision.
+    候选须描述可观察的状态后果，且同一任务的账本同时包含 patch、源码和图谱事实。
+    不符合条件的候选保留模型原有的丢弃结论。
     """
     candidate = dossier.candidate
     candidate_text = " ".join(

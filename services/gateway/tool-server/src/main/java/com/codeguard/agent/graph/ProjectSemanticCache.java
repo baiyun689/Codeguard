@@ -23,15 +23,10 @@ import java.util.concurrent.ExecutionException;
 import java.util.function.Supplier;
 
 /**
- * Revision-scoped cache for lazy semantic expansion.
+ * 按仓库版本缓存语义解析结果。
  *
- * <p>The lightweight source index is shared by {@link ProjectSnapshotManager}, but
- * the old lazy provider only cached an exact tool query.  That meant three tools
- * asking about the same source file each parsed and resolved the file again.  This
- * cache keeps the expensive immutable products of that work: a parser factory,
- * per-file edges, candidate files for reverse lookup, and complete incoming edge
- * sets.  Guava's {@code Cache.get} provides single-flight loading for equal keys;
- * failed loads are not retained by Guava.</p>
+ * 保存解析器工厂、文件关系边、反向查询候选文件及完整入向关系集合。
+ * 相同键的并发加载由 Guava Cache.get 合并，失败的加载不进入缓存。
  */
 final class ProjectSemanticCache {
     @FunctionalInterface
@@ -83,11 +78,9 @@ final class ProjectSemanticCache {
     }
 
     /**
-     * 返回按源码 AST 预建的反向候选文件集合。
+     * 从源码 AST 构建并缓存反向查询候选文件集合。
      *
-     * <p>候选索引只用于筛选文件，关系仍需经过现有语义解析确认，因此不会把
-     * 词法命中提升为 RESOLVED 事实。索引在同一 revision 内只构建一次，可避免
-     * inspect_structure / inspect_change_impact 为每个 target 重扫全部 AST。</p>
+     * 索引只筛选文件，关系仍须经过符号求解确认，不将词法命中作为已解析事实。
      */
     List<String> indexedCandidateFiles(ProjectSnapshot snapshot, String key) {
         Map<String, List<String>> index = lexicalCandidateFiles;
@@ -134,9 +127,8 @@ final class ProjectSemanticCache {
                 type.getImplementedTypes().forEach(parent ->
                         add(mutable, "TYPE|" + simpleTypeName(parent), file));
             }
-            // Type users are indexed separately from inheritance candidates.
-            // The same lexical index only filters files; Symbol Solver still
-            // confirms the resolved REFERENCES_TYPE edge later.
+            // 类型引用与继承关系分别建立候选索引。
+            // 词法索引只筛选文件，REFERENCES_TYPE 关系仍由 Symbol Solver 确认。
             for (ClassOrInterfaceType type : unit.findAll(ClassOrInterfaceType.class)) {
                 add(mutable, "TYPE_REF|" + simpleTypeName(type), file);
             }

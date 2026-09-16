@@ -4,7 +4,9 @@
 
 AI pull request review for security, behavioral, and maintainability risks, with GitHub Checks and pull request feedback.
 
-Codeguard combines a Python Agent with a Java Gateway for controlled review orchestration, code facts, evidence verification, and GitHub integration.
+Codeguard combines a Python Agent with a Spring Boot Java Gateway for controlled review orchestration, code facts, evidence verification, and GitHub integration.
+
+The gateway uses Spring Boot 3.5, Spring MVC and embedded Tomcat. Three isolated application contexts retain the CI/tool/proxy ports (8080/9090/9091) without exposing internal tool routes on the public webhook port. Spring beans manage component wiring and lifecycle; JDBC/HikariCP, existing environment variables and HTTP contracts are retained. See the [Spring Boot migration notes](services/gateway/SPRING_BOOT.md).
 
 ## Features
 
@@ -59,6 +61,8 @@ The model interface contains assessment and queries/result, without historical t
 Unresolved questions, missing symbols and truncation remain incomplete even when other findings survive. Deterministic evidence verification establishes provenance and scope; the final Judge assesses the claim. This does not guarantee semantic correctness or exhaustive graph coverage. See [architecture and five-case validation](services/agent/ARCHITECTURE.md) for actual results and limitations.
 
 ### Agent workflow
+
+The Judge retains raw structured responses and can recover one redundant closing bracket after a complete JSON object, while still validating fields and evidence references. Truncated output is never completed automatically. Recovery and failure diagnostics appear in Trace. The web UI displays exit code 2 as an incomplete review; zero reported issues does not mean the code is clean.
 
 `NORMAL` uses file tasks when the diff has at most 15 files and 60,000 characters. Exceeding either threshold selects `LARGE` and hunk tasks. Hunk count is reported but does not create another tier.
 
@@ -177,6 +181,8 @@ To build from the current checkout instead of relying on a published image:
 ```bash
 docker compose up -d --build
 ```
+
+To enable Prometheus and the provisioned Grafana dashboard, run `docker compose --profile observability up -d`. Grafana is available at `http://localhost:3000` and Prometheus at `http://localhost:9093`. The dashboard includes model and tool call totals since the currently scraped service processes started; these reset on restart and are not counts over the selected time range. Local CLI/eval runs bypass the CI scheduler, so they do not populate CI job success or duration metrics. Model calls made directly to a provider bypass proxy metrics.
 
 The CI webhook always listens on port `8080` inside the container; the internal Tool Server and LLM Proxy listen on `9090` and `9091`. Change only the host-side webhook port with `CODEGUARD_HOST_PORT`, for example:
 
@@ -362,7 +368,7 @@ Java checks:
 
 ```bash
 cd services/gateway
-mvn --batch-mode verify    # Builds all 4 submodules: shared, tool-server, ci-webhook, llm-proxy
+sh ./mvnw --batch-mode verify # Windows PowerShell: .\mvnw.cmd --batch-mode verify
 ```
 
 Container build:

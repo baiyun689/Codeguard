@@ -1,12 +1,7 @@
-"""从管线工具上下文 trace 提炼"工具使用画像"(评测可观测性)。
+"""从工具证据提取调用次数、所读符号及跨 diff 访问情况。
 
-回答 ADR-022 没答上的问题:审查员到底有没有调工具、有没有真读到 diff 之外的符号上下文——
-还是纯靠 diff 推理蒙对。纯函数,吃 GatheredContext 形状的对象
-(带 ``.tool`` / ``.args`` / ``.content`` 属性),与管线/网络解耦,可独立单测。
-
-注意:输入是编排器从证据 Artifact 派生的画像(见 orchestrator._artifact_tool_profile,
-仅首次真实执行 EXECUTED 的 TOOL_CALL、按 (tool, args) 去重),故 tool_calls 是
-"去重后取得有效上下文的调用条数",非原始调用次数(见 ToolUsage 文档)。
+输入为包含 tool、args、content 属性的工具记录，按工具和参数去重。
+只统计首次实际执行的工具证据，不重复计算缓存复用，不发起网络请求。
 """
 
 from __future__ import annotations

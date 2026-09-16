@@ -74,7 +74,7 @@ class ProjectSemanticCacheTest {
             result.cancel(true);
 
             assertEquals(true, result.isCancelled());
-            // Let the worker observe the interrupt before the executor is closed.
+            // 等待工作线程响应中断，再关闭执行器。
             executor.shutdownNow();
         } finally {
             executor.shutdownNow();

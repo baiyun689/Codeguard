@@ -1,11 +1,10 @@
 package com.codeguard.agent.graph;
 
 /**
- * 源码读取专用的快照接缝。
+ * 提供符号源码读取所需的文件快照。
  *
- * <p>源码工具只需要目标 symbol 所在文件的 AST，不应为了读取一个方法而等待
- * 全项目轻量索引或语义图构建。生产懒加载提供器实现该接口，测试和旧调用方仍可
- * 使用 {@link ProjectSnapshotProvider} 的通用接缝。</p>
+ * 仅解析目标符号所在文件的 AST，无需等待项目级索引或语义图完成。
+ * 不提供该接口的调用方可使用通用项目快照接口。
  */
 @FunctionalInterface
 public interface SourceSnapshotProvider {

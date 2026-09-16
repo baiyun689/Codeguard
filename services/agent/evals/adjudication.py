@@ -1,8 +1,8 @@
-"""Offline semantic scoring, kept separate from the historical rule matcher.
+"""离线语义复核与评分，独立于规则匹配结果。
 
-Usage: python -m evals.adjudication prepare ARCHIVE REVIEW.json
-       python -m evals.adjudication score ARCHIVE REVIEW.json
-Preparation never invokes a model. All reports start pending, including rule hits.
+用法：python -m evals.adjudication prepare ARCHIVE REVIEW.json
+      python -m evals.adjudication score ARCHIVE REVIEW.json
+准备材料不调用模型，所有报告条目均从待复核状态开始。
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def prepare(archive: dict) -> dict:
 
 
 def score(archive: dict, review: dict) -> dict:
-    """Refuse incomplete/mismatched adjudication; do not silently impute FP/TP."""
+    """拒绝未完成或不匹配的复核结果，不自动补填真阳性或误报判定。"""
     if archive.get("runs", 1) != 1:
         raise ValueError("Use a single-run archive")
     if review.get("archive_sha256") != digest(archive):
@@ -86,7 +86,7 @@ def score(archive: dict, review: dict) -> dict:
             elif verdict == "false_positive":
                 false_count += 1
             elif verdict == "novel_valid":
-                # A clean patch needs relabeling/versioning if a genuine defect is found.
+                # 正常变更中若发现真实缺陷，须更新标注与数据集版本。
                 if not gold:
                     raise ValueError("Clean label contradicted: version the dataset before scoring")
                 totals["novel_valid_reports"] += 1

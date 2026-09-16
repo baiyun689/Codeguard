@@ -172,7 +172,7 @@ class _FakeJudgeLLM:
 
 
 class _ContractRetryJudgeLLM:
-    """First response omits one candidate; the bounded retry returns it."""
+    """模拟首次响应遗漏候选、有界重试后返回该候选的裁决模型。"""
 
     def __init__(self, first_id: str, second_id: str):
         self.first_id = first_id
@@ -416,7 +416,7 @@ def test_drop裁决_不产出issue():
 
 
 def test_judge_drop_does_not_discard_verified_return_state_observation():
-    """Model wording must not erase a ledger-closed state propagation fact."""
+    """验证模型措辞不会抹去证据完整的状态传播事实。"""
     patch = "-\treturn context;\n+\treturn doOpenInternal(retryPolicy, state);\n"
     source = "\n        if (this.retryContextCache.containsKey(key)) {\n            RetryContext context = this.retryContextCache.get(key);\n            context.removeAttribute(RetryContext.CLOSED);\n            return doOpenInternal(retryPolicy, state);\n        }\n    "
     graph = json.dumps(

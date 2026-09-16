@@ -1,1 +1,1 @@
-"""Change-driven bounded review and evidence-producing investigation."""
+"""按变更声明组织有界审查、工具取证和调查结果。"""

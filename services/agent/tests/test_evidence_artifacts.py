@@ -1,8 +1,4 @@
-"""Evidence Ledger 内容寻址 Artifact 的工程正确性测试。
-
-覆盖:内容寻址 ID 的稳定性与敏感性、Artifact 构造、fan-in 归并 reducer、
-ToolClient/编排器/评测 runner 的 revision 贯通(源文档 §4.3/§5.1)。
-"""
+"""验证证据内容标识的稳定性、合并规则及工具会话的版本一致性。"""
 
 from __future__ import annotations
 import hashlib

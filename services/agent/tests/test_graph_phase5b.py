@@ -1,4 +1,4 @@
-"""Phase 5B graph wiring and single-writer contracts(ADR-046 两节点证据链版)。"""
+"""验证证据链节点连接与状态字段写入职责。"""
 
 from __future__ import annotations
 import codeguard_agent.pipeline.orchestration.graph as G

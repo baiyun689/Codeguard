@@ -22,8 +22,10 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 
 /**
- * LLM 调用韧性服务：限流 → 熔断（按 provider） → 重试。
- * 每个 provider 有独立的 CircuitBreaker，RateLimiter 和 Retry 全局共享。
+ * 模型调用的限流、熔断和重试服务。
+ *
+ * 调用时由外到内依次经过重试、服务商熔断器、全局限流器和模型请求。
+ * 每个服务商分别持有重试和熔断实例，限流器由本服务实例共享。
  */
 public final class ResilienceService {
     private static final Logger log = LoggerFactory.getLogger(ResilienceService.class);
@@ -98,9 +100,7 @@ public final class ResilienceService {
         });
     }
 
-    /**
-     * 包装 LLM 调用：限流 → 熔断（指定 provider） → 重试。
-     */
+    /** 包装模型请求，调用顺序为重试、服务商熔断器、全局限流器、实际请求。 */
     public <T> T executeLlmCall(Supplier<T> supplier, String providerName) {
         CircuitBreaker cb = circuitBreakerFor(providerName);
         Supplier<T> decorated = RateLimiter.decorateSupplier(rateLimiter, supplier);

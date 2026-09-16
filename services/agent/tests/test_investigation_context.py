@@ -1,4 +1,4 @@
-"""Real agent protocol tests with scripted local models; no provider requests."""
+"""使用本地模拟模型验证实际 Agent 协议，不请求模型服务。"""
 
 import json
 from types import SimpleNamespace

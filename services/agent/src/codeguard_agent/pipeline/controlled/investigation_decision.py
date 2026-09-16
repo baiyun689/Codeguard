@@ -1,7 +1,6 @@
-"""A single model decision consumes observations, then queries or concludes.
+"""定义单轮调查决策：读取已有观察后，选择继续查询或提交结果。
 
-The schema reuses the two actual tool schemas. It does not invent graph actions,
-interpret source, or treat the model's assessment as factual evidence.
+查询参数复用实际工具结构；模型的分析文本不作为工具事实写入证据账本。
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ class _Decision(BaseModel):
 def decision_schema(
     tools: list[Any],
 ) -> Any:
-    """Publish query arguments from the actual tool definitions, without drift."""
+    """从实际工具定义中提取查询参数结构。"""
     variants: list[Any] = []
     for tool in tools:
         variants.append(
@@ -48,7 +47,7 @@ def decision_schema(
 
 
 def symbol_name(symbol_id: str) -> str:
-    """Simple declared name from the Gateway's canonical Java symbol format."""
+    """从 Gateway 的规范 Java 符号标识中提取声明名称。"""
     if not symbol_id.startswith("java:"):
         return ""
     if "#" in symbol_id:
@@ -59,7 +58,7 @@ def symbol_name(symbol_id: str) -> str:
 def decision_error(
     decision: Any, *, aliases: dict[str, str], known: set[str], pending: set[str]
 ) -> str:
-    """Check observable protocol facts; semantic correctness remains an LLM task."""
+    """校验查询的协议约束；语义正确性由模型判断。"""
     if not decision.assessment.strip():
         return "assessment_empty"
     if bool(decision.queries) == (decision.result is not None):
@@ -76,11 +75,9 @@ def decision_error(
 
 
 def decision_messages(messages: list[Any], originals: dict[str, Any]) -> list[Any]:
-    """Expose one decision call/result pair, retaining every actual observation.
+    """将模型历史整理为决策与结果对，同时保留实际观察。
 
-    Internal query calls still execute in the existing tool node. They must not
-    teach the model a second, unadvertised function-calling protocol. This view
-    is for model input only; tool tracing and factual ledger capture are intact.
+    内部查询仍由工具节点执行；此处只调整模型输入视图，不改变工具轨迹和证据记录。
     """
     from langchain_core.messages import AIMessage, ToolMessage
 

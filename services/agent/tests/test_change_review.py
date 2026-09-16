@@ -1,4 +1,4 @@
-"""Default change coverage and evidence handoff, no paid model calls."""
+"""验证变更分组覆盖和证据传递，不调用付费模型。"""
 
 import json
 import pytest

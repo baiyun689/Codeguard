@@ -10,10 +10,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-/**
- * 按 model 名路由到 provider 降级链。
- * 路由表从 ProxyConfig 加载，未匹配的 model 返回空链。
- */
+/** 按模型名称匹配服务商降级链；未匹配时使用已配置适配器组成的默认链。 */
 public final class ProviderRouter {
     private static final Logger log = LoggerFactory.getLogger(ProviderRouter.class);
 
@@ -23,7 +20,7 @@ public final class ProviderRouter {
     private final List<RouteTarget> defaultFallback;
 
     public ProviderRouter(ProxyConfig config, Map<String, LlmAdapter> adapters) {
-        // Build route map from config
+        // 根据配置构建模型路由表。
         var routeMap = new java.util.LinkedHashMap<String, List<RouteTarget>>();
         for (var entry : config.routes().entrySet()) {
             String modelName = entry.getKey();
@@ -47,7 +44,7 @@ public final class ProviderRouter {
         }
         this.routes = Collections.unmodifiableMap(routeMap);
 
-        // Default fallback: if no specific route, try all configured adapters
+        // 没有匹配路由时，依次尝试已配置的服务商适配器。
         this.defaultFallback = adapters.values().stream()
             .map(adapter -> new RouteTarget(adapter, ""))
             .toList();
@@ -73,7 +70,7 @@ public final class ProviderRouter {
         if (chain != null && !chain.isEmpty()) {
             return chain;
         }
-        // Fuzzy match: check if any registered model contains the requested name
+        // 模糊匹配：检查已注册模型名是否包含请求的名称。
         for (var entry : routes.entrySet()) {
             if (entry.getKey().contains(modelName) || modelName.contains(entry.getKey())) {
                 log.info("模糊匹配: '{}' → '{}'", modelName, entry.getKey());

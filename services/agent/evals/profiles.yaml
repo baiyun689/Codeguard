@@ -1,4 +1,4 @@
-# Current bounded reviewer and explicit comparison profiles. Historical engines were removed.
+# 有界审查及无工具、仅源码和无证据验证等对照评测配置。
 profiles:
   eval-direct-diff:
     mode: pipeline

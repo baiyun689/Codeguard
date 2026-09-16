@@ -34,13 +34,8 @@ class MaterializedWorkspace:
         if not self.path.exists():
             return
 
-        # Windows may keep a Git index/object or a Gateway file handle alive
-        # for a short period after the HTTP session has been destroyed.  A
-        # single rmtree therefore made an otherwise valid evaluation abort
-        # while cleaning up.  Retry the exact materialized directory with
-        # bounded backoff; if a third-party handle still wins, leave it in
-        # place and let the next maintenance pass remove it rather than
-        # discarding the completed case's score.
+        # Windows 文件句柄可能延迟释放，清理目录时采用有界退避重试。
+        # 重试后仍被占用的目录保留待清理，不丢弃已经完成的评测结果。
         import shutil
 
         delay = 0.25
@@ -61,12 +56,10 @@ class MaterializedWorkspace:
 
 
 def tool_server_repo_path(repo_path: str | Path) -> str:
-    """Map a host workspace to the path visible inside a containerized Gateway.
+    """将宿主机工作区路径映射为容器内工具服务可访问的路径。
 
-    The evaluator still materializes and cleans up the workspace on the host,
-    while Docker Compose mounts ``CODEGUARD_PROJECTS_DIR`` at a different
-    container path.  Mapping is opt-in through ``CODEGUARD_TOOL_SERVER_PROJECT_ROOT``;
-    without it, the original path is preserved for native Gateway deployments.
+    工作区仍由宿主机创建和清理；配置 CODEGUARD_TOOL_SERVER_PROJECT_ROOT 时启用映射，
+    未配置时保留原路径，供原生部署使用。
     """
 
     host_root = os.environ.get("CODEGUARD_PROJECTS_DIR", "").strip()

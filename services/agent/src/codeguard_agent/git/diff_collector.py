@@ -1,8 +1,4 @@
-"""读取 git diff。
-
-阶段 1 只支持一种最简单的输入:本地 git 仓库的 diff。
-后续阶段再扩展 GitHub PR diff 等来源。
-"""
+"""调用 Git 命令采集本地仓库变更，并提供按文件拆分 diff 的辅助函数。"""
 
 from __future__ import annotations
 
@@ -13,18 +9,10 @@ _DIFF_HEADER = re.compile(r"^diff --git a/(.+?) b/(.+)$")
 
 
 def collect_diff(repo_path: str = ".", base: str = "HEAD") -> str:
-    """采集本地 git 仓库的代码变更(diff 文本)。
+    """返回仓库相对指定基线的统一 diff 文本。
 
-    参数:
-        repo_path: git 仓库路径,默认当前目录
-        base: 对比基准。默认 'HEAD' 表示"工作区相对最近一次提交的改动"。
-              也可传入分支名或提交号(如 'main')做分支间对比。
-
-    返回:
-        unified diff 格式的文本;没有任何改动时返回空字符串。
-
-    说明:这里直接调用系统 git 命令而非用 GitPython 之类的库,
-    是为了阶段 1 把依赖压到最少。后续如需更强的 diff 解析能力再换。
+    repo_path 为仓库路径，base 可为分支、提交号或 HEAD。
+    默认比较工作区与 HEAD；没有变更时返回空字符串。
     """
     result = subprocess.run(
         ["git", "-C", repo_path, "diff", base],
@@ -51,17 +39,11 @@ def collect_head_revision(repo_path: str = ".") -> str:
 
 
 def split_diff_by_file(diff_text: str) -> dict[str, str]:
-    """把 unified diff 按文件拆成 {现文件相对路径: 该文件的 diff 片段}。
+    """按文件拆分统一 diff，返回当前文件路径到完整 diff 片段的映射。
 
-    用途:保留为通用 diff 工具,供测试、诊断或后续明确需要按文件查看 diff
-    的场景复用。当前 ADR-032 发现者运行链路始终读取完整 diff,不再按文件裁剪。
-
-    设计要点:
-    - 以 `diff --git ` 行为分段边界,每段保留完整的文件头与 hunk。
-    - 段的 key 优先取 `+++ b/<path>`，没有该头时退化到 `diff --git` 的新路径。
-      因而纯重命名、二进制和仅 mode 变更也能稳定定位当前文件。
-    - 删除文件的新文件头是 `+++ /dev/null`,没有"现文件"路径,跳过。
-    - 确定性纯函数,可独立单测、不触发 IO;空 diff / 无法解析 → 返回空 dict。
+    以 diff --git 为分段边界，保留文件头和全部变更块。
+    优先使用 +++ b/ 中的新路径，缺失时使用 diff --git 中的新路径。
+    删除文件不含当前文件路径，因此跳过；空输入返回空字典。
     """
     if not diff_text:
         return {}

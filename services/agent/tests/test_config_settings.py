@@ -1,4 +1,4 @@
-"""Phase 2 budget configuration tests."""
+"""验证审查预算配置的读取和默认值。"""
 
 from __future__ import annotations
 import pytest

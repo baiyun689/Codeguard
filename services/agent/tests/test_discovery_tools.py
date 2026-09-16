@@ -711,7 +711,7 @@ def test_separate_coordinators_do_not_share_cache() -> None:
 
 
 def test_dynamic_aliases_never_pollute_shared_symbol_cache() -> None:
-    """R01 is local to each subtask; cache keys must use the raw symbol."""
+    """各子任务的 R01 别名相互独立，缓存键使用实际符号标识。"""
 
     class Delegate:
         def __init__(self) -> None:
@@ -784,7 +784,7 @@ def test_dynamic_aliases_never_pollute_shared_symbol_cache() -> None:
 
 
 def test_subtask_initial_aliases_do_not_preseed_entire_symbol_catalog() -> None:
-    """Only the explicit frontier is Sxx; graph-returned symbols become Rxx."""
+    """显式入口分配 Sxx 别名，图谱返回的符号分配 Rxx 别名。"""
 
     class Delegate:
         def query_relations(self, subject, relation, **_kwargs):

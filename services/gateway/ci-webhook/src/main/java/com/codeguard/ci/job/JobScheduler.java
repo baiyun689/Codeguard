@@ -19,7 +19,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Single-instance scheduler that owns job state, retry, feedback and shutdown. */
+/** 单实例审查调度器，管理任务状态、重试、结果回写与停止流程。 */
 public final class JobScheduler implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(JobScheduler.class);
     private static final int MAX_RETRIES = 2;
@@ -195,7 +195,7 @@ public final class JobScheduler implements AutoCloseable {
             Thread.currentThread().interrupt();
         }
         inFlight.clear();
-        // The repository is an injected dependency; its owner closes it after workers stop.
+        // 任务仓库由注入方管理，在工作线程停止后关闭。
     }
 
     private static String shortSha(String sha) {

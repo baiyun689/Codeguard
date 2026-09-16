@@ -4,7 +4,7 @@
 
 AI Pull Request 代码审查系统，结合项目级代码事实分析发现代码变更中的具体问题，并通过 GitHub Checks 和 PR 评论反馈结果。
 
-Codeguard 由 Python Agent 和 Java Gateway 组成，提供受控审查编排、代码事实分析、证据验证和 GitHub 集成能力。
+Codeguard 由 Python Agent 和 Spring Boot Java Gateway 组成，提供受控审查编排、代码事实分析、证据验证和 GitHub 集成能力。
 
 默认采用变更驱动的有界审查流程。
 
@@ -55,6 +55,8 @@ flowchart LR
 - **Python Agent**：组织审查任务，执行变更驱动的有界审查，并完成证据验证与结果裁决。
 - **LLM Proxy**：统一管理模型访问和提供商路由。
 - **Tool Server**：在沙盒内提供文件、符号、AST 和调用关系等代码事实。
+
+Java Gateway 使用 Spring Boot 3.5、Spring MVC 与内嵌 Tomcat。CI、工具、模型代理各有独立的 Spring 应用上下文，保持 8080/9090/9091 端口及路由隔离；控制器、调度器和工具依赖由 `@Bean` 组装，Spring 管理启动与关闭。MySQL 继续使用 JDBC/HikariCP，既有环境变量与 HTTP 协议保持兼容。详见 [Spring Boot 结构与迁移说明](services/gateway/SPRING_BOOT.md)。
 
 ### Agent 审查工作流
 
@@ -113,6 +115,8 @@ flowchart TD
 | `query_relations` | Reviewer 查询 callers、callees、field_readers、field_writers、implementations、overrides、parents、children、type_users、type_references、entrypoints，沿返回的真实 ID 深入。 |
 
 最终报告提供根因与代码来源，内部证据编号由运行时管理。图谱展示静态事实，不保证动态调用关系完备；预算或证据不足会留下未完成状态。
+
+Judge 保留原始结构化响应：仅对完整 JSON 对象末尾多出一个闭合括号的情况做有限恢复，仍执行字段及证据引用校验；不补全截断结果。恢复和失败原因写入 Trace。网页将退出码 2 显示为“审查未完成”，此时问题数为 0 不代表没有缺陷。
 
 ### 审查提示词
 
@@ -200,6 +204,8 @@ Prometheus 位于 `http://localhost:9093`。
 - 审查管线：活动任务、成功率、吞吐和 P95 耗时；
 - AST / Evidence 工具：按工具与结果统计调用速率；
 - LLM 韧性：按 Provider 呈现调用量、P95 耗时、重试、fallback 和熔断器状态。
+
+看板底部另展示当前服务进程启动以来的模型与工具累计调用数，便于查看短审查记录；服务重启后计数重新开始，并非所选时间范围内的调用量。本地 CLI / eval 审查不经过 CI 调度器，因此不会生成 CI 任务成功率和耗时指标。模型直连厂商时，也不会产生代理侧模型指标。
 
 `ops/prometheus/alerts.yml` 预置服务不可用、审查失败率、慢审查、工具错误率、
 LLM 失败率和熔断器开路告警规则。Prometheus 默认保留 15 天数据；Grafana 与
@@ -461,8 +467,10 @@ Java 检查：
 
 ```bash
 cd services/gateway
-mvn --batch-mode verify     # 构建全部四个子模块：shared、tool-server、ci-webhook、llm-proxy
+sh ./mvnw --batch-mode verify  # Windows PowerShell 使用 .\mvnw.cmd --batch-mode verify
 ```
+
+Maven Wrapper 固定 Maven 3.9.9，需要 JDK 21；首次执行会下载构建工具。可执行包仍为 `services/gateway/ci-webhook/target/codeguard-gateway.jar`，使用 `java -jar` 启动。
 
 容器构建：
 

@@ -49,10 +49,12 @@ Direct 与 Full 是任务类别；外层图先处理 Direct 再处理 Full，并
 - `resolve_change_context` 仅由运行时调用。关系支持 callers/callees/field_readers/field_writers/implementations/overrides/parents/children/type_users/type_references/entrypoints。返回真实 canonical ID 后才可继续探索，不从源码文本猜 ID。
 - 空的完整关系关闭该查询，局部连续两次无进展关闭该查询，全局连续四次无进展终止取证。预算、超时、覆盖不足不等于安全。预取不计入模型无进展计数。禁止收口后再次查询或另开 Catalog synthesis。
 - `query_relations` 模型视图附带 `new_queryable_symbols`，仅含本次新进入本组可见导航范围的 ID；不是证据或必查列表，跨组缓存复用仍独立计算。
+- 证据引用不提供 `counter` 分类。ReAct 探索中取得足以推翻猜想的事实时必须舍弃该猜想；仅限制部分范围时，修正主张后重新确认支持证据。Judge 仍独立检查已有材料中的防护、限制和矛盾事实。
 - 工具原文进入内容寻址 Evidence Ledger，State 的工具轨迹只存 `ToolTraceRef`。每组历史与证据编号独立，单次审查共享工具缓存，跨审查不共享。
 - Gateway graph schema v2 只返回当前 source_scope 的 symbols/relationships/unresolved_relationships；partial 支持已知正事实，不能证明关系不存在。源码片段不得逃逸声明和 revision；MAIN/TEST/GENERATED 不混用。
 - 受控候选定位是确定性的：新增行原文片段与删除锚点，失败保留 line=0 与限制，不额外请求模型定位。Direct 分支仍有自身定位与裁决。
 - Verifier 零 LLM，只验证证据真实可用且范围正确，不判断漏洞。Judge 每批最多 8 个候选，引用可见支持事实、合同校验、失败关闭；不补证。因果合并只处理已保留候选。
+- Judge 使用 include_raw 保留原始输出，仅允许完整 JSON 对象后单个多余闭合括号的恢复；不得补字段、补截断或接受重复键/多工具结果，恢复后仍执行 schema 和引用合同校验。Trace 区分恢复、解析失败与调用异常；网页退出码 2 展示“审查未完成”。
 - 同步 HTTP 有请求超时；Future.cancel 不能中断已运行线程。超时关闭客户端并阻止后续模型/工具调用，在途请求靠自身超时返回。
 
 ## 3. 模块边界与目录
@@ -70,6 +72,8 @@ Python 负责推理、分组、预算、证据加工与裁决。Java 负责 Git 
 - `observability/`：真实节点、模型决策、工具引用与状态轨迹，不补画不存在的 Plan/Summary。
 
 `services/gateway/` 包含 shared、tool-server、ci-webhook、llm-proxy 四个 Maven 模块。tool-server 会话只注册三个工具：ReadSymbolTool、QueryRelationsTool、ResolveChangeContextTool。历史 `legacy/` 不参与构建或打包。
+
+Java HTTP 使用 Spring Boot 3.5 / Spring MVC / Tomcat，已移除 Javalin。`Main` 启动三个独立 Boot 上下文，配置类为 `CiServerConfiguration`、`ToolServerConfiguration`、`ProxyConfiguration`；只显式装配本服务控制器，禁止全包扫描导致工具接口暴露到公共端口。`@Bean` 管理依赖与生命周期，JobScheduler 只关闭自身工作线程，JobRepository 由其创建方（生产为 Spring）在调度结束后关闭。配置仍复用 GatewaySettings / ProxyConfig，JDBC/MySQL 不变；没有引入 JPA 或声明式事务。说明见 `services/gateway/SPRING_BOOT.md`。
 
 ## 4. 结果与评测
 
@@ -95,8 +99,8 @@ conda run -n codeguard python -m evals.runner --profile eval-codeguard-full --ju
 # 消融对照:分别用 eval-direct-diff / eval-source-only / eval-no-evidence 换掉上面 profile 名
 
 # —— Java Gateway(services/gateway 工具服务)——
-mvn package                # 跑单测 + 出 fat jar
-mvn test                   # 只跑单测
+.\mvnw.cmd package          # 跑单测 + 出 Spring Boot 可执行 jar，JDK 21 / Maven 3.9.9
+.\mvnw.cmd test             # 只跑单测；Linux/macOS 使用 sh ./mvnw
 java -jar ci-webhook/target/codeguard-gateway.jar  # 同 JVM 启动 CI(8080)/工具(9090)/LLM Proxy(9091)
 
 # —— 真实受控审查(默认模式;工具开档:先起 Java 工具服务,再设 URL)——

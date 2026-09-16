@@ -124,9 +124,9 @@ final class ProjectSnapshotBuilder {
     }
 
     /**
-     * 构建懒查询使用的轻量索引。这里只做源码读取和无符号 AST parse，绝不调用
-     * {@code resolve()}；语义边由 {@link #expand(ProjectSnapshot, String, String)} 按查询
-     * 局部补齐。这样大型仓库的会话创建和变更定位不再依赖全项目符号求解。
+     * 构建懒查询使用的项目轻量索引。
+     *
+     * 读取源码并解析声明 AST，不执行符号求解；语义关系由查询阶段按需扩展。
      */
     static ProjectSnapshot buildIndex(ProjectKey key) {
         Path root = key.repoRoot();
@@ -310,11 +310,9 @@ final class ProjectSnapshotBuilder {
     }
 
     /**
-     * Index symbol ids are generated without symbol solving, while a lazily parsed file can
-     * produce the same declaration through the resolver. JavaParser may differ only in
-     * whitespace inside a method signature (for example {@code (String, int)} versus
-     * {@code (String,int)}). Treat those forms as the same project symbol and keep the index's
-     * spelling as the canonical endpoint in the expanded graph.
+     * 统一轻量索引与语义解析产生的方法签名格式。
+     *
+     * 只消除参数列表中的空白差异，并使用轻量索引中的符号标识作为图谱端点。
      */
     private static String canonicalNodeId(ProjectSnapshot index, String requested) {
         if (requested == null || requested.isBlank()) {
@@ -345,7 +343,7 @@ final class ProjectSnapshotBuilder {
         if (!value.startsWith("java:")) {
             return value;
         }
-        // Package names distinguish overloads; never erase them to guess identity.
+        // 包名用于区分重载，不得删除包名后猜测符号身份。
         return value.replaceAll("\\s+", "");
     }
 
@@ -462,12 +460,7 @@ final class ProjectSnapshotBuilder {
             }
         });
 
-        // Resolve override edges only after every method node has been indexed.
-        // The previous inline resolution depended on filesystem iteration
-        // order: when a subclass file was visited before its parent file, an
-        // otherwise valid parent method was permanently marked UNRESOLVED.
-        // That hid the parent endpoint from the graph projection and blocked
-        // the controlled replan from reading the actual implementation.
+        // 全部方法节点建立后再解析重写关系，避免文件遍历顺序影响父方法定位。
         units.forEach((file, unit) -> {
             for (MethodDeclaration method : unit.findAll(MethodDeclaration.class)) {
                 if (method.isStatic() || method.isPrivate()) {
@@ -768,9 +761,7 @@ final class ProjectSnapshotBuilder {
                 continue;
             }
             if (relation.equals("entrypoints")) {
-                // Framework entrypoint edges are emitted from annotations on the
-                // target method itself.  They therefore have one deterministic
-                // candidate file and do not need a repository-wide lexical scan.
+                // 框架入口关系由目标方法的注解生成，只需解析目标文件，无需扫描整个仓库。
                 candidate = targetNode.kind() == GraphNodeKind.METHOD
                         || targetNode.kind() == GraphNodeKind.CONSTRUCTOR;
             } else if (targetNode.kind() == GraphNodeKind.CONSTRUCTOR) {
@@ -817,9 +808,7 @@ final class ProjectSnapshotBuilder {
             } catch (InterruptedException interrupted) {
                 throw interrupted;
             } catch (Exception ignored) {
-                // A file that cannot be semantically parsed must not consume
-                // the reverse-query file budget; continue to the next lexical
-                // candidate just as the old resolvedUnits path did.
+                // 语义解析失败的文件不占反向查询的有效文件预算，继续处理下一个候选。
                 continue;
             }
             edges.stream()
@@ -833,10 +822,10 @@ final class ProjectSnapshotBuilder {
     }
 
     /**
-     * inspect_structure 只需要确认候选调用点是否指向目标方法。
-     * 不重新解析候选文件中的所有方法调用、字段访问和类型引用，避免一次一跳查询
-     * 退化成完整文件语义图构建。输出边仍由 JavaParser Symbol Solver 确认，词法索引
-     * 只负责筛选候选文件，不会制造 RESOLVED 关系。
+     * 解析候选文件中是否存在指向目标符号的调用。
+     *
+     * 词法索引负责筛选候选文件，具体关系由 Symbol Solver 确认，
+     * 不额外构建候选文件中所有无关的语义关系。
      */
     private static List<GraphEdge> resolveTargetMethodEdges(
             ProjectSnapshot index,
@@ -971,11 +960,9 @@ final class ProjectSnapshotBuilder {
     }
 
     /**
-     * A lazy expansion parses one source file at a time, so an override edge
-     * cannot rely on the nodes collected by that file-local extraction. The
-     * lightweight index already contains all project declarations; use it to
-     * upgrade an exact override target from UNRESOLVED to RESOLVED without
-     * inventing a symbol or re-scanning another file.
+     * 使用项目轻量索引确认单文件懒解析中的重写目标。
+     *
+     * 目标与索引中的声明精确匹配时，将关系标记为已解析；不额外扫描目标文件。
      */
     private static List<GraphEdge> resolveIndexedOverrideTargets(
             ProjectSnapshot index,
@@ -1097,8 +1084,7 @@ final class ProjectSnapshotBuilder {
         if (owner == null) {
             return;
         }
-        // @Override is optional in Java. Resolve actual inherited declarations
-        // rather than using the annotation as the existence test for an edge.
+        // Java 方法重写不要求声明 @Override，须解析实际继承关系。
         try {
             ResolvedMethodDeclaration implementation = method.resolve();
             boolean found = false;
@@ -1127,8 +1113,7 @@ final class ProjectSnapshotBuilder {
                 return;
             }
         } catch (Exception ignored) {
-            // Preserve explicit unresolved annotation evidence below; a failed
-            // solver must not invent an override for an unannotated method.
+            // 求解失败时，仅保留有显式注解依据的未解析关系，不推断无注解的方法重写。
             if (method.getAnnotationByName("Override").isEmpty()) {
                 return;
             }
@@ -1335,11 +1320,8 @@ final class ProjectSnapshotBuilder {
     }
 
     private static String resolvedMethodId(ResolvedMethodDeclaration method) {
-        // Both the lightweight index and semantic edges must name the same
-        // source declaration. The resolver's signature qualifies parameter
-        // types and retains type arguments whereas the AST signature does not.
-        // Use the resolved declaration (not the call site's spelling), so
-        // imports, overloads and generic specialization remain unambiguous.
+        // 使用解析后的声明统一源码索引和语义边的符号身份。
+        // 解析签名保留参数限定类型和泛型信息，以区分导入、重载和类型特化。
         var declaration = method.toAst();
         if (declaration.isPresent() && declaration.get() instanceof MethodDeclaration source) {
             return "java:" + method.declaringType().getQualifiedName()
@@ -1354,9 +1336,8 @@ final class ProjectSnapshotBuilder {
         if (ast.isEmpty() || !(ast.get() instanceof MethodDeclaration source)) return false;
         var owner = source.findAncestor(TypeDeclaration.class);
         if (owner.isEmpty()) return false;
-        // JavaParser can select either overload when parameter types have the
-        // same simple name in different packages. Do not publish that unstable
-        // choice as a resolved edge. Keep the callsite as an explicit gap.
+        // 参数简单名称相同但所属包不同的重载可能产生歧义。
+        // 无法唯一确认目标时保留未解析调用，不将不确定选择发布为已解析关系。
         String simple = simpleSignature(source);
         TypeDeclaration<?> declaration = owner.get();
         return declaration.getMethodsByName(source.getNameAsString()).stream()
@@ -1404,16 +1385,10 @@ final class ProjectSnapshotBuilder {
     }
 
     /**
-     * 项目感知 TypeSolver:第三方类型(非 JDK、非项目内)直接快速失败。
-     * <p>
-     * 背景:JavaParserTypeSolver 在类型解析未命中时会 {@code parseDirectory} 递归重扫
-     * 整个 source root 并重新 parse 全部文件;大 repo(main+test 数百文件)里测试代码对
-     * JUnit 等第三方依赖的解析**全部走这条失败路径**,每次失败都是 O(文件数) 级重复解析,
-     * 加上无失败缓存,堆被反复解析产物塞满触发 GC 风暴——这是大 repo 快照构建分钟级
-     * 超时的病态根源(基准实测:333 文件全量解析 >19 分钟,分层后 4.6 秒)。
-     * <p>
-     * 本项目 Repo Map 只需要"是否指向项目内部类/内部定义在哪个文件";
-     * 对第三方方法做完整符号解析没有价值,直接短路。
+     * 限定解析范围的项目类型求解器。
+     *
+     * 处理 JDK 和项目内类型；对范围之外的第三方类型直接返回未解析结果，
+     * 避免对不在源码索引中的类型反复扫描目录。
      */
     private static final class ProjectAwareTypeSolver implements TypeSolver {
         private final Set<String> projectTypes;

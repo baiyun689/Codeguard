@@ -25,10 +25,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * GitHub API 客户端: App 安装令牌管理 + Check Runs API + PR 行内评论。
- * 使用 Java 11 内置 HttpClient,无需额外依赖。
- */
+/** GitHub API 客户端，管理安装令牌、检查运行和 PR 行级评论；使用 JDK 内置 HttpClient。 */
 public class GitHubClient {
 
     private static final Logger log = LoggerFactory.getLogger(GitHubClient.class);
@@ -153,11 +150,11 @@ public class GitHubClient {
     private static byte[] convertPkcs1ToPkcs8(byte[] pkcs1) throws Exception {
         byte[] octetString = wrapDer((byte) 0x04, pkcs1);
 
-        int innerLen = 3 + RSA_ALG_ID.length + octetString.length; // INTEGER 0 + algId + octetString
+        int innerLen = 3 + RSA_ALG_ID.length + octetString.length; // 依次编码整数版本号、算法标识和私钥字节串。
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.write(0x30); // SEQUENCE
+        out.write(0x30); // 构造 ASN.1 序列。
         writeDerLength(out, innerLen);
-        out.write(new byte[] {0x02, 0x01, 0x00}); // INTEGER 0 (version)
+        out.write(new byte[] {0x02, 0x01, 0x00}); // 编码值为 0 的版本号。
         out.write(RSA_ALG_ID);
         out.write(octetString);
 
@@ -221,7 +218,7 @@ public class GitHubClient {
         return token;
     }
 
-    // ── Check Runs ──
+    // GitHub 检查运行接口。
 
     /**
      * 创建 Check Run,状态设为 in_progress。

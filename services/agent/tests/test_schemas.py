@@ -1,8 +1,4 @@
-"""数据模型与 mock 流程的基础测试。
-
-阶段 1 先覆盖最核心的数据结构。路线图提醒:测试是活文档,
-看不懂某个模块时,它的测试会告诉你输入输出长什么样。
-"""
+"""验证审查数据模型及模拟模式下的基础流程。"""
 
 from codeguard_agent.llm.client import mock_review_result
 from codeguard_agent.models.schemas import Issue, Severity

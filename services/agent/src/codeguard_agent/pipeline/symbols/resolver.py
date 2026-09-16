@@ -83,7 +83,7 @@ def _parse_symbol(item: Any) -> ResolvedSymbol:
 
 
 def _parse_references(item: Any) -> tuple[ResolvedReference, ...]:
-    """Parse only concrete changed-line references emitted by Gateway."""
+    """只解析 Gateway 返回的具体变更行引用。"""
     if not isinstance(item, dict):
         return ()
     raw = item.get("references", [])
@@ -94,8 +94,7 @@ def _parse_references(item: Any) -> tuple[ResolvedReference, ...]:
         try:
             parsed.append(ResolvedReference.model_validate(reference))
         except ValidationError:
-            # A malformed optional reference must not invalidate the enclosing
-            # symbol; it simply cannot be used as a navigation root.
+            # 可选引用格式错误时跳过该引用，保留所属符号，但不将其作为导航入口。
             continue
     return tuple(parsed)
 
@@ -129,11 +128,9 @@ def _limit_references(
     references: Sequence[ResolvedReference],
     max_count: int = _MAX_REFERENCES_PER_TASK,
 ) -> tuple[tuple[ResolvedReference, ...], bool]:
-    """Bound navigation metadata without dropping the enclosing symbols."""
+    """在保留所属符号的前提下限制导航元数据的大小。"""
 
-    # Keep the first occurrence of a concrete edge.  Gateway already emits a
-    # stable order; this also protects compatibility responses that repeat an
-    # edge for several AST nodes on the same changed line.
+    # 相同关系只保留首次出现的记录，并沿用 Gateway 返回顺序。
     unique: list[ResolvedReference] = []
     seen: set[tuple[str, str, str, int]] = set()
     for reference in references:

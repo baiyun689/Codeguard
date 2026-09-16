@@ -1,4 +1,4 @@
-"""One decision per model response, exercised through the real agent and SDK."""
+"""通过实际 Agent 和 SDK 验证每次模型响应只包含一次决策。"""
 
 import json
 from types import SimpleNamespace

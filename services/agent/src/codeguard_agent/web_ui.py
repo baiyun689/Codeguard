@@ -155,7 +155,7 @@ class UIHandler(BaseHTTPRequestHandler):
     def _json(self, payload: object, status: int = HTTPStatus.OK) -> None:
         self._send(status, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
-    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_GET(self) -> None:  # noqa: N802 - 沿用 BaseHTTPRequestHandler 的接口命名
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self._send(HTTPStatus.OK, UI_HTML.encode("utf-8"), "text/html")
@@ -193,7 +193,7 @@ class UIHandler(BaseHTTPRequestHandler):
         content_type = "text/markdown" if kind == "report" else "text/html"
         self._send(HTTPStatus.OK, path.read_bytes(), content_type)
 
-    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+    def do_POST(self) -> None:  # noqa: N802 - 沿用 BaseHTTPRequestHandler 的接口命名
         if urlparse(self.path).path == "/api/review":
             self._start_review()
         else:

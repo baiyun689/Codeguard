@@ -1,8 +1,4 @@
-"""工具使用画像 summarize_tool_usage 的单测(纯函数,不碰网络/管线)。
-
-重点验证 ADR-022 关心的判别力:能否如实区分"真调工具导航(读到了 diff 之外的文件)"
-与"只看了普通内容/没调工具"。
-"""
+"""验证工具使用统计，区分实际跨 diff 源码访问与普通内容读取。"""
 
 from __future__ import annotations
 from dataclasses import dataclass

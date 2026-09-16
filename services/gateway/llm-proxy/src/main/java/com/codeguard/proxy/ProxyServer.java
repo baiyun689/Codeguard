@@ -4,7 +4,7 @@ import com.codeguard.common.GatewayApplication;
 import com.codeguard.proxy.config.ProxyConfig;
 import java.util.Map;
 
-/** Standalone or combined Boot LLM proxy, keeping the existing 9091 endpoint. */
+/** 模型代理服务入口，支持独立或组合启动，默认监听 9091 端口。 */
 public final class ProxyServer {
     private final ProxyConfig config;
     private GatewayApplication application;

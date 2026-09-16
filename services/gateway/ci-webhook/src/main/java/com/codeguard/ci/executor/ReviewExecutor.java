@@ -7,6 +7,6 @@ public interface ReviewExecutor {
     ReviewExecutionOutcome execute(ReviewJob job);
 
     default void cleanup(ReviewJob job) {
-        // Executors without a workspace have nothing to clean.
+        // 未分配工作区的执行器无需清理资源。
     }
 }

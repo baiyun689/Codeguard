@@ -1,8 +1,4 @@
-"""配置加载。
-
-阶段 1 保持极简:所有配置从环境变量读取(可配合 .env 文件)。
-后续阶段需要更复杂的配置(YAML、多层覆盖)时再演进,现在不要过度设计。
-"""
+"""从环境变量加载 Agent 配置，并支持通过 .env 文件提供默认值。"""
 
 from __future__ import annotations
 import logging
@@ -36,12 +32,7 @@ def _nonnegative_int_env(name: str, default: int) -> int:
 
 
 def _load_dotenv() -> None:
-    """从项目里就近向上查找并加载 .env 文件。
-
-    设计要点:
-    - override=False:已显式设置的环境变量优先于 .env,方便临时覆盖。
-    - 没装 python-dotenv 时静默跳过,不影响"纯环境变量"用法。
-    """
+    """向上查找并加载 .env 文件；已有环境变量优先。未安装 python-dotenv 时跳过文件加载。"""
     try:
         from dotenv import find_dotenv, load_dotenv
     except ImportError:
@@ -200,19 +191,10 @@ class Settings:
 
     @classmethod
     def judge_from_env(cls) -> "Settings":
-        """评测裁判模型的配置:优先读 CODEGUARD_JUDGE_*,未设则回退主 CODEGUARD_*。
+        """加载裁决模型配置，优先使用 CODEGUARD_JUDGE_*。
 
-        评测应尽量用与被测审查器**不同/更强**的模型当裁判,降低"自己评自己"的偏差
-        (见 DECISIONS.md ADR-005)。典型用法:审查器用 DeepSeek,裁判另配一家:
-            CODEGUARD_JUDGE_PROVIDER=claude
-            CODEGUARD_JUDGE_MODEL=claude-sonnet-4-20250514
-            CODEGUARD_JUDGE_API_KEY=sk-ant-...
-        只设了 JUDGE_PROVIDER 而没给 MODEL 时,回退到该 provider 的默认模型。
-
-        注意"同端点"而非"同 provider":DeepSeek 和通义千问都借 `provider=openai` 这条路,
-        但 base_url 不同、是两家厂商。只有 provider **且** base_url 都与主配置一致时,才算同一个
-        端点、才沿用主配置的密钥/地址/thinking 开关;否则密钥必须单独给,thinking 默认关
-        (那个 `disable_thinking` 的 extra_body 是 DeepSeek 专用,塞给千问会出错)。
+        服务商与端点地址均相同时，未指定的模型、密钥和推理开关沿用主配置。
+        端点不同时，使用独立密钥、服务商默认模型及单独配置的推理开关。
         """
         base = cls.from_env()
         provider = (

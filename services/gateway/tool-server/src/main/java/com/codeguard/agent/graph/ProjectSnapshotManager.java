@@ -24,7 +24,7 @@ public final class ProjectSnapshotManager {
     private final int maximumSnapshots;
     private final Duration cacheTtl;
 
-    /** CompletableFuture whose cancellation is propagated to the actual expansion task. */
+    /** 取消时会同步取消实际语义扩展任务的 CompletableFuture。 */
     static final class CancellableFuture<T> extends CompletableFuture<T> {
         private volatile Future<?> task;
 
@@ -104,9 +104,9 @@ public final class ProjectSnapshotManager {
     }
 
     /**
-     * 获取不包含全量语义边的轻量源码索引。该 Future 只做 plain AST parse；工具查询
-     * 通过 {@link #lazyProvider(ProjectKey)} 在此索引上按 symbol 扩展关系。即使索引
-     * 被多个 session 共享，也不会触发旧的全项目 symbol-solver 构图。
+     * 获取不包含全量语义关系的项目轻量源码索引。
+     *
+     * 索引仅解析 AST，并可由同版本会话共享；工具通过 lazyProvider 按符号扩展关系。
      */
     public CompletableFuture<ProjectSnapshot> getOrBuildIndex(ProjectKey key) {
         try {
@@ -141,8 +141,7 @@ public final class ProjectSnapshotManager {
                     Math.max(256, 256 * maximumSnapshots),
                     cacheTtl));
         } catch (Exception exception) {
-            // Cache construction is deterministic and should not fail in normal
-            // operation; keep a usable per-call cache if a cache loader is rejected.
+            // 共享缓存加载失败时，为本次调用创建可用的独立缓存。
             return new ProjectSemanticCache(256, buildTimeout);
         }
     }
@@ -169,9 +168,7 @@ public final class ProjectSnapshotManager {
     }
 
     public void release(ProjectKey key) {
-        // Session 持有直接引用；此方法是生命周期语义接缝。semanticCache 不主动
-        // invalidate，刻意让同一 revision 的后续 session 复用已解析文件边，最终由
-        // LRU/TTL 回收，避免 session 销毁导致下一次审查重新做语义解析。
+        // 会话关闭时保留同版本语义缓存，供其他会话复用；缓存按容量和过期策略回收。
         cache.cleanUp();
         indexCache.cleanUp();
         semanticCache.cleanUp();

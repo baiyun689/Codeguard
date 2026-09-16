@@ -1,4 +1,4 @@
-"""Phase 5B evidence model contracts."""
+"""验证证据模型的数据结构与约束。"""
 
 from codeguard_agent.models import council
 from codeguard_agent.models.council import Verdict

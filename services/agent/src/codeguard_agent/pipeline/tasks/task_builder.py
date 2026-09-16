@@ -145,10 +145,7 @@ def _is_comment_or_blank(line: str) -> bool:
 
 
 def classify_task_route(task: ReviewTask) -> TaskRoute:
-    """确定性判断 task 是否可以走无工具 Direct 路径。
-
-    规则故意保守：无法证明是文档/注释/空白变更时一律 Full。
-    """
+    """确定任务是否走无工具直审；明确属于文档、注释或空白变更时选 Direct，其余选 Full。"""
     normalized_path = task.file.replace("\\", "/").lower()
     patch_lower = task.patch.lower()
     if task.patch.count("\n") > 80:
@@ -177,7 +174,7 @@ def classify_task_routes(tasks: list[ReviewTask]) -> dict[str, TaskRoute]:
     return {task.id: classify_task_route(task) for task in tasks}
 
 
-# @@ -oldStart[,oldLen] +newStart[,newLen] @@ [section heading]
+# 统一 diff 变更块头格式：@@ -旧起点[,旧行数] +新起点[,新行数] @@。
 _HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 
 
@@ -191,11 +188,7 @@ def _basename(path: str) -> str:
 
 
 def file_matches_task(file: str, task: ReviewTask) -> bool:
-    """候选文件是否属于该 task 的文件（全路径精确匹配优先，退化到 basename）。
-
-    单 task 调用不再做行号级映射（prompt 只含这一个 task），但仍需要
-    这道最基本的一致性校验，防止模型报告了完全无关的文件却被直接绑定到该 task。
-    """
+    """判断候选文件是否属于当前任务，优先匹配完整路径，其次匹配文件名。"""
     return _norm(file) == _norm(task.file) or _basename(file) == _basename(task.file)
 
 
@@ -225,12 +218,9 @@ def _old_path(block: list[str]) -> str | None:
 
 
 def _fallback_targets(diff_text: str) -> dict[str, str]:
-    """扫描 split_diff_by_file 会漏掉的块，返回需要文件级 fallback 的 {path: section}。
+    """补充没有 +++ b/ 文件头的文件级变更。
 
-    覆盖两类 split_diff_by_file 刻意跳过（无 `+++ b/`）的变更：
-    - 删除文件（`+++ /dev/null` / `deleted file mode`）→ 取旧路径。
-    - 纯重命名（有 `rename to` 且无 `+++ b/`，即无内容变更）→ 取新路径。
-    删除鉴权/校验/事务代码时，reviewer 仍能把候选绑定到该文件（spec §4.2）。
+    删除文件使用旧路径，纯重命名使用新路径，均保留完整 diff 片段。
     """
     targets: dict[str, str] = {}
     for block in _iter_diff_blocks(diff_text):

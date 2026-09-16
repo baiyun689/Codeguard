@@ -1,8 +1,4 @@
-"""Evidence Ledger 模型的统一导出入口。
-
-按职责拆分为 Artifact、Verification、Judge 三个模块；保留旧的导入入口，
-避免调用方因为内部文件拆分而发生接口迁移。
-"""
+"""统一导出证据原文、引用、验证结果和裁决模型。"""
 
 from codeguard_agent.models.evidence.artifact import (
     ArtifactAvailability,

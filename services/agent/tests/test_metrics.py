@@ -116,7 +116,7 @@ def test_既有指标口径不变():
         _clean(reported_total=2, false_positives=2),
     ]
     m = aggregate([run])
-    assert m.precision == 0.4                             # TP 2 / (TP 2 + FP 3:vuln 1 + clean 2)
+    assert m.precision == 0.4                             # 精确率为 2 / (2 + 3)，误报包含缺陷用例中的 1 条和正常用例中的 2 条。
     assert round(m.recall, 3) == 0.667
     assert m.false_positives_on_clean == 2.0
     assert round(m.localization_accuracy, 3) == 1.0      # 2 命中 / 2 TP
@@ -162,7 +162,7 @@ def test_vuln噪音每条与膨胀比():
     ]
     m = aggregate([run])
     assert m.vuln_noise_per_case == 1.0          # (2+0)/2 条
-    assert m.report_inflation == 1.5             # mean(4/2, 1/1) = mean(2,1)
+    assert m.report_inflation == 1.5             # 报告膨胀比取各用例比值的均值：(4/2 + 1/1) / 2。
 
 
 def test_主次项recall分层():

@@ -1,8 +1,4 @@
-"""把 ToolClient 的能力封装成 LangChain 工具,供 ReAct Agent 调用。
-
-每个工具 = 一个绑定了 ToolClient 的函数 + 一段给模型看的 description。
-新增工具时在这里加一个 make_*_tool 工厂即可(扩展接缝)。
-"""
+"""将 ToolClient 方法封装为 LangChain 工具，提供参数结构和模型可读的用途说明。"""
 
 from __future__ import annotations
 
@@ -14,7 +10,7 @@ from codeguard_agent.tools.tool_client import ToolClient
 
 
 def make_read_symbol_tool(client: ToolClient):
-    """Construct the stable symbol-only source reader."""
+    """构建按符号读取源码的模型工具。"""
     from langchain_core.tools import StructuredTool
 
     def _read_symbol(
@@ -44,7 +40,7 @@ def make_read_symbol_tool(client: ToolClient):
 
 
 def make_query_relations_tool(client: ToolClient):
-    """Construct the typed relation navigator."""
+    """构建按关系类型查询图谱的模型工具。"""
     from langchain_core.tools import StructuredTool
 
     def _query_relations(

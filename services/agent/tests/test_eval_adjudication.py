@@ -50,7 +50,7 @@ def test_rejects_tampering_and_incomplete_review(mutation):
     elif mutation == "gold":
         form["cases"][0]["gold_issue_ids"].pop()
     elif mutation == "report":
-        # Clone to avoid changing the archive held by prepare.
+        # 复制归档对象，避免修改准备阶段持有的原始数据。
         form = deepcopy(form)
         form["cases"][0]["reports"][0]["report"]["message"] = "edited"
     elif mutation == "pending":

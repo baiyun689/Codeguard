@@ -5,7 +5,7 @@ import com.codeguard.agent.core.AgentTool;
 import com.codeguard.agent.core.ToolResult;
 import com.codeguard.agent.graph.ProjectSnapshotProvider;
 
-/** Reads bounded source for a resolved symbol through the session sandbox. */
+/** 通过会话沙箱读取已解析符号的有界源码。 */
 public final class ReadSymbolTool implements AgentTool {
     private final SymbolSourceReader delegate;
 

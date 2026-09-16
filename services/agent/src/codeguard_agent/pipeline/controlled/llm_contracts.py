@@ -1,12 +1,7 @@
-"""Provider-facing schemas for controlled structured-output calls.
+"""定义模型服务使用的受控输出结构。
 
-OpenAI-compatible providers sometimes append display-only fields to otherwise
-valid objects (for example ``confidence_note`` or an alternate location
-label).  The internal controlled models deliberately keep ``extra=forbid`` so
-runtime code cannot silently consume an unowned field.  These small transport
-subclasses are the only tolerant boundary: unknown metadata is ignored by the
-provider parser, then the parsed object is converted back to the strict model
-before any routing or execution occurs.
+传输层忽略模型附加的展示字段，解析后转换为严格的内部模型，
+再执行路由和工具调用，附加字段不会进入运行时状态。
 """
 
 from __future__ import annotations
@@ -20,13 +15,9 @@ from codeguard_agent.models.tasks import (
 
 
 class _ProviderEnvelope:
-    """Tolerate JSON null for fields that have a model-side default.
+    """将带默认值的可选字段中的 null 按未提供处理。
 
-    OpenAI-compatible providers frequently serialize an omitted optional field
-    as ``null``.  Pydantic would normally reject that before the controlled
-    boundary can apply its per-row salvage.  Removing only non-required fields
-    keeps claims, routing discriminators, and other semantic requirements
-    strict while treating null exactly like omission.
+    必填字段、主张和路由判别字段仍按内部模型进行严格校验。
     """
 
     @model_validator(mode="before")

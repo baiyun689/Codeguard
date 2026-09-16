@@ -3,7 +3,7 @@ package com.codeguard.toolserver;
 import com.codeguard.common.GatewayApplication;
 import java.util.Map;
 
-/** Tool-only Boot context, isolated from the public webhook port. */
+/** 工具服务的独立 Spring Boot 上下文，与公共 Webhook 端口隔离。 */
 public final class ToolServerApp {
     private final GatewaySettings settings;
     private GatewayApplication application;

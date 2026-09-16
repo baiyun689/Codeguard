@@ -110,7 +110,7 @@ def _load_repo_backed_cases(root: Path) -> list[EvalCase]:
             raise ValueError(f"repo-backed 用例缺少 {_REPO_SUBDIR}/ 快照目录:{case_dir}")
         raw["repo_path"] = str(snapshot.resolve())
 
-        # 未标注能力时,repo-backed 用例默认按 file 能力归类(造它就是为了让工具读文件);
+        # 未标注能力时，带仓库的用例默认归入源码读取能力。
         # 已显式标注则尊重标注。
         raw.setdefault("capability", ["file"])
 
@@ -125,8 +125,7 @@ def _load_repo_benchmark_suite(root: Path) -> list[EvalCase] | None:
     if not manifest_file.is_file() or not cases_root.is_dir():
         return None
 
-    # manifest 的 cases 列表是 benchmark 的活动白名单。这样可以在保留历史
-    # case 目录的同时缩小当前评测集，不会因为目录扫描把排除项重新纳入。
+    # manifest 中的 cases 列表决定本次启用的用例范围。
     manifest = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
     declared_ids = {
         str(item.get("id"))

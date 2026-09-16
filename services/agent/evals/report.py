@@ -1,9 +1,6 @@
-"""把聚合指标与历史归档渲染成 Markdown 评测报告。
+"""将评测指标和归档结果渲染为 Markdown 报告。
 
-两部分:
-  - render_report:单次运行的详细报告(核心指标 + 逐用例明细 + 诊断)。
-  - render_history_views:从历史归档渲染趋势 / profile 对照 / 能力切片三类视图,
-    构成"系统怎么演进都能纵向比、横向比"的回归基建视图(纯函数,吃归档 dict)。
+提供单轮详细报告，以及跨归档的趋势、配置对照和能力切片视图。
 """
 
 from __future__ import annotations
@@ -21,11 +18,7 @@ def _fmt(x, nd: int = 3) -> str:
 
 
 def render_history_views(records: list[dict], trend_limit: int = 8) -> str:
-    """从历史归档记录渲染三类视图:趋势 / profile 对照 / 能力切片。
-
-    records:archive.load_archives() 读出的归档 dict 列表(已按时间升序)。
-    这是统一标准下的回归视图——数据集与指标固定,任意 profile(工具/编排/未来规则)同框比较。
-    """
+    """根据按时间排序的归档记录生成趋势、配置对照和能力切片视图。"""
     if not records:
         return "## 趋势 / 对照 / 能力切片\n\n_(暂无历史归档,跑一次评测后即可生成)_\n"
     lines: list[str] = []

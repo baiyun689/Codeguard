@@ -1,10 +1,7 @@
-"""query_relations 图响应的确定性处理:结构化压缩 + 完整性护栏。
+"""对 query_relations 响应进行结构化压缩与协议校验。
 
-压缩与护栏自旧 verifier 迁移(Evidence Ledger 切换后保留,源文档 §7.3):
-- 14KB 图 JSON 不能全文进 LLM 载荷,确定性结构化压缩保留
-  schema/outcome/coverage/scope/subject/relationships/limitations;
-- subject/source_scope/outcome 护栏是图工具调用正确性的关键检查
-  (历史教训:该校验缺失导致过整档评测作废)。
+投影保留协议版本、结果状态、覆盖范围、查询主体、关系及限制，
+并校验主体、源码范围和结果状态是否与工具请求一致。
 """
 
 from __future__ import annotations
@@ -60,7 +57,7 @@ class GraphValidation:
 
 @dataclass(frozen=True)
 class GraphProjectionFocus:
-    """Task-local relevance facts used by deterministic graph projection."""
+    """图谱确定性投影使用的任务级相关性信息。"""
 
     changed_file: str | None = None
     changed_lines: tuple[int, ...] = ()
@@ -220,7 +217,7 @@ def summarize_graph(
 def _attach_source_excerpts(
     summary: dict[str, Any], payload: dict[str, Any], *, max_chars: int
 ) -> None:
-    """Spend remaining space on whole excerpts, never displace graph paths."""
+    """用剩余空间补充完整源码片段，不挤占已选图谱路径。"""
     excerpts = {
         symbol["id"]: symbol["source_excerpt"]
         for symbol in payload.get("symbols", ())
@@ -557,7 +554,7 @@ def _classify_edges(
     arguments: Mapping[str, Any] | None,
     subject_kind: str,
 ) -> tuple[list[tuple[_GraphEdge, str, str]], list[_GraphEdge]]:
-    """Return traversal edges as (edge, from, to), plus non-expanding facts."""
+    """返回可遍历关系的边、起点与终点，并区分不扩展的事实。"""
     traversal: list[tuple[_GraphEdge, str, str]] = []
     attached: list[_GraphEdge] = []
     for edge in edges:
@@ -593,7 +590,7 @@ def _classify_edges(
 def _reachable_traversal_edges(
     traversal: list[tuple[_GraphEdge, str, str]], subject: str
 ) -> list[tuple[_GraphEdge, str, str]]:
-    """Keep only edges reachable from subject in the returned Gateway facts."""
+    """只保留工具返回事实中从查询主体可达的关系。"""
     adjacency: dict[str, list[tuple[_GraphEdge, str]]] = {}
     for edge, source, target in traversal:
         adjacency.setdefault(source, []).append((edge, target))
@@ -710,14 +707,9 @@ def _path_priority(
 
 
 def _path_lifecycle_rank(path: _GraphPath) -> int:
-    """Prefer entry/open lifecycle callbacks when semantic branches compete.
+    """相关性相同时，优先保留入口和初始化生命周期回调。
 
-    A bounded graph commonly contains sibling ``open``, ``onSuccess``,
-    ``onError`` and ``close`` callbacks.  They are all useful, but an ``open``
-    path is the first observer of newly-created state and is therefore the
-    shortest proof for registration/initialisation timing changes.  This rank
-    only breaks ties after changed-line and symbol focus; it never overrides a
-    path explicitly anchored by the task's changed line.
+    该排序仅用于变更行和符号相关性相同的路径，不覆盖变更行明确指向的路径。
     """
     targets = " ".join((edge.target.lower() for edge in path.edges))
     if "#open(" in targets or "#open" in targets:
@@ -771,7 +763,7 @@ def _path_hits_changed_fact(
 
 
 def _path_family_key(path: _GraphPath) -> tuple[tuple[str, str, str], ...]:
-    """Collapse duplicate paths that differ only by call-site metadata."""
+    """合并仅调用位置元数据不同的重复路径。"""
     return tuple(((edge.source, edge.target, edge.kind) for edge in path.edges))
 
 
@@ -791,7 +783,7 @@ def _path_has_semantic_target(
 def _path_target_family(
     path: _GraphPath, attached: list[_GraphEdge], subject: str
 ) -> str:
-    """Return a stable semantic target class for coverage reservation."""
+    """为覆盖保留规则生成稳定的语义目标分类。"""
     targets = [edge.target.lower() for edge in path.edges]
     target_groups: set[str] = set()
     for target in targets:
@@ -817,7 +809,7 @@ def _path_target_family(
 def _path_semantic_rank(
     path: _GraphPath, attached: list[_GraphEdge], subject: str
 ) -> int:
-    """Rank downstream semantic targets without letting subject metadata win."""
+    """按下游目标的语义相关性排序，不将查询主体的元数据作为优先依据。"""
     best = 2
     for edge in path.edges:
         if edge.kind in _SEMANTIC_EDGE_KINDS:
@@ -990,7 +982,7 @@ def _candidate_summary(
 def validate_graph_payload(
     raw: str, *, tool: str, expected_subject: str = ""
 ) -> GraphValidation:
-    """验证 v2 图响应；旧 status 合同直接判为协议不兼容。"""
+    """校验第二版图谱协议，不接受基于 status 字段的其他协议格式。"""
     try:
         payload = json.loads(raw)
     except (TypeError, ValueError, json.JSONDecodeError):

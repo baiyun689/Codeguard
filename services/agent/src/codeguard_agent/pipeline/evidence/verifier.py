@@ -1,11 +1,7 @@
-"""Evidence Ledger 验证节点:Artifact 健康检查 + 图护栏 + 异常重放。
+"""确定性校验证据的可用性、版本和可见范围，并处理可恢复失败的重放。
 
-正常路径零 LLM、零重放:只证明 Artifact 真实、可用、属于候选可见范围,
-不判断 candidate claim 是否成立——支持/反驳判定整体移交批量 EvidenceJudge。
-仅异常 Artifact(未知/失败/revision 不一致/响应不可解析)进入重放队列,
-并受 enabled_evidence_tools 白名单约束。
-
-设计依据:docs/superpowers/plans/2026-08-17-evidence-ledger-refactor.md §7。
+正常验证不调用模型、不重放工具。重放受工具白名单约束；
+证据是否支持候选主张由后续裁决模型判断。
 """
 
 from __future__ import annotations
@@ -51,7 +47,7 @@ def _stable_json(value: object) -> str:
 
 
 def _replay_allowed(tool: str, enabled_replay_tools: list[str] | None) -> bool:
-    """重放白名单:None 沿用发现工具;空列表禁止重放(源文档 §7.4)。"""
+    """确定重放工具白名单：None 沿用发现工具，空列表禁止重放。"""
     allowed = _DISCOVERY_TOOLS if enabled_replay_tools is None else enabled_replay_tools
     return tool in allowed
 

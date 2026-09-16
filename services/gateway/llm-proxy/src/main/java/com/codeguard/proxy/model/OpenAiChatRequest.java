@@ -37,7 +37,7 @@ public record OpenAiChatRequest(
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Message(
         String role,
-        Object content,          // String or List<ContentPart>
+        Object content,          // 消息内容可以是字符串或内容块列表。
         @JsonProperty("tool_calls") List<ToolCall> toolCalls,
         @JsonProperty("tool_call_id") String toolCallId
     ) {}

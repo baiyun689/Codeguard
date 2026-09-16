@@ -28,10 +28,10 @@ class ResolvedSymbol(BaseModel):
 
 
 class ResolvedReference(BaseModel):
-    """A concrete symbol referenced at a changed line.
+    """变更行引用的具体符号。
 
-    The enclosing symbol and the referenced target are both resolved by the
-    Gateway.  This inventory is navigation context, not a finding or proof.
+    所属声明与引用目标均由 Gateway 解析，作为后续工具导航入口，
+    不直接表示缺陷或证明候选成立。
     """
 
     symbol_id: str

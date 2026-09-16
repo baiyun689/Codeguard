@@ -318,11 +318,10 @@ class SubtaskReactEngine:
 
     @staticmethod
     def _record_is_usable_source(record: DiscoveryToolRecord) -> bool:
-        """Return whether a record contains source that can support a negative.
+        """判断工具记录是否包含可用于否定猜想的源码。
 
-        A relationship or empty page alone cannot refute a claim. Accept real
-        source reads and complete source excerpts embedded in a validated graph
-        page, without requiring a redundant call to a particular tool name.
+        接受实际源码读取结果或经验证图谱中的完整源码片段；
+        单独的关系边或空页不能证明猜想不成立。
         """
         if str(getattr(record, "tool", "")) == "query_relations":
             if not SubtaskReactEngine._record_contains_fact(record):
@@ -359,13 +358,10 @@ class SubtaskReactEngine:
 
     @staticmethod
     def _record_contains_fact(record: DiscoveryToolRecord) -> bool:
-        """Return whether a successful tool record contains usable facts.
+        """判断成功的工具记录是否包含可用事实。
 
-        A non-empty serialized value is not enough: ``{}``, ``null`` and
-        malformed graph payloads are execution artifacts, not observations
-        that can support a negative conclusion.  Source reads are accepted
-        when they contain text; graph reads must carry the v2 contract and at
-        least one resolved symbol or relationship.
+        源码结果须包含文本；图谱结果须满足第二版协议并包含已解析符号或关系。
+        空对象、null 和格式错误的图谱不作为有效观察。
         """
         if str(getattr(record, "status", "")) not in {
             "complete",
@@ -700,13 +696,10 @@ class SubtaskReactEngine:
     def _result_contract_error(
         result: InvestigationResult, *, allow_patch_only: bool = False
     ) -> str:
-        """Reject contradictory terminal payloads before they enter State.
+        """校验终止结果的跨字段约束。
 
-        Pydantic validates field shapes, but the cross-field meaning is part of
-        the React protocol: ``findings`` must contain evidence-bearing entries,
-        and non-finding outcomes must not smuggle findings that the coordinator
-        would silently ignore.  Failing here keeps the state machine explicit
-        and makes malformed provider output visible in Trace.
+        findings 状态必须包含带证据的候选；其他状态不能附带候选。
+        不符合协议的输出记录为失败，避免将矛盾结果写入状态。
         """
         if result.outcome == "findings":
             if not result.findings:

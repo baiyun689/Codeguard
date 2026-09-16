@@ -25,11 +25,10 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * 读取已由项目图解析出的 symbol 源码片段。
+ * 读取已解析符号的源码片段。
  *
- * <p>该工具故意不接受文件路径。调用方必须先通过 SymbolResolution 或图谱工具
- * 获得稳定 {@code symbol_id}，Gateway 再从同一份 ProjectSnapshot 解析声明范围。
- * 这样既避免 LLM 猜测路径，也避免把整个源码文件重复放入 ReAct 上下文。</p>
+ * 调用方提供符号解析或图谱查询返回的 symbol_id，服务在同一版本快照中
+ * 确定声明范围，并通过会话沙箱读取有界源码；不接受任意文件路径。
  */
 public final class SymbolSourceReader {
 
@@ -88,10 +87,7 @@ public final class SymbolSourceReader {
             if (requestedStart <= 0 && cursor > 0) {
                 requestedStart = cursor;
             }
-            // A continuation cursor beyond the declaration is a normal end
-            // condition, not a malformed range.  Returning a small terminal
-            // marker lets a bounded React stop instead of retrying the same
-            // impossible read with larger ranges/cursors.
+            // 分页游标超过声明末尾时返回结束标记，表示源码已读取完毕。
             if (cursor > 0 && cursor > fullRange.endLine()) {
                 StringBuilder terminal = new StringBuilder();
                 terminal.append("symbol_id: ").append(symbol.id()).append('\n');
@@ -103,12 +99,8 @@ public final class SymbolSourceReader {
             boolean ranged = requestedStart > 0 || requestedEnd > 0 || cursor > 0;
             SourceRange range = fullRange;
             if (ranged) {
-                // Models sometimes infer a stale line range that ends just
-                // before a declaration (for example 1-69 for a method whose
-                // declaration starts at 70).  Treat that as a request for the
-                // first bounded portion of the known symbol, not as a
-                // transport failure.  The source reader remains symbol-scoped
-                // and never falls back to an arbitrary file read.
+                // 请求行范围位于声明之前时，返回已知符号的首个有界源码片段。
+                // 读取范围始终限制在符号声明内，不退化为任意文件读取。
                 if (requestedEnd > 0 && requestedEnd < fullRange.startLine()
                         && requestedStart <= fullRange.startLine()) {
                     int end = Math.min(
@@ -131,8 +123,7 @@ public final class SymbolSourceReader {
             if (range.endLine() < range.startLine()) {
                 return ToolResult.error("symbol_range_unavailable: " + symbolId);
             }
-            // Return a useful first page instead of making the agent guess
-            // a member or line range after symbol_too_large.
+            // 符号内容超过单页限制时返回首个有效源码页。
             if (range.endLine() - range.startLine() + 1 > MAX_SOURCE_LINES) {
                 range = SourceRange.fromLines(range.startLine(), range.startLine() + MAX_SOURCE_LINES - 1);
             }
@@ -337,10 +328,8 @@ public final class SymbolSourceReader {
             Node declaration,
             GraphNode symbol
     ) {
-        // Member declarations must be proven to belong to the graph symbol's
-        // owner.  Do not fail open when the owner node or AST range is absent:
-        // returning an unrelated declaration would make this source tool
-        // contradict the graph ground truth.
+        // 成员声明必须与图谱中所属类型及 AST 范围匹配。
+        // 缺少所属类型或声明范围时拒绝读取，防止返回无关声明。
         if (symbol.ownerId().isBlank()) {
             return false;
         }

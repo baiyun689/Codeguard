@@ -1,8 +1,4 @@
-"""核心数据结构定义。
-
-这是整个项目的"地基":所有阶段(读取 diff、LLM 审查、聚合、输出)
-都围绕这里定义的数据模型流转。阶段 0 的关键思考点就是把 Issue 设计好。
-"""
+"""定义审查问题、严重级别、证据位置及完整审查结果等对外数据结构。"""
 
 from __future__ import annotations
 
@@ -13,10 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class Severity(str, Enum):
-    """问题严重级别。
-
-    用枚举而非裸字符串,是为了约束 LLM 的输出范围、避免出现五花八门的级别名。
-    """
+    """审查问题的严重级别，限定结构化输出可使用的取值。"""
 
     CRITICAL = "CRITICAL"  # 严重:必须修复(如 SQL 注入、鉴权绕过)
     WARNING = "WARNING"    # 警告:建议修复(如空指针风险、资源未释放)
@@ -24,7 +17,7 @@ class Severity(str, Enum):
 
 
 class EvidenceRole(str, Enum):
-    """发现者对证据用途的声明(仅提示,不构成可信 relation,见 Evidence Ledger §4.2)。"""
+    """候选对证据用途的声明；仅作为提示，不代表经过验证的图谱关系。"""
 
     LOCATION = "location"
     MECHANISM = "mechanism"
@@ -63,18 +56,11 @@ class EvidenceLocation(BaseModel):
 
 
 class Issue(BaseModel):
-    """单条审查问题。
+    """对外发布的单条审查问题。
 
-    这是 Codeguard 最核心的输出单元。字段设计原则:
-    - 必须有的:定位信息(file/line)+ 是什么问题(severity/type/message)
-    - 用户可读证据:root_cause(为什么发生)、evidence_locations(来源文件/symbol/行号/关系)
-    - 锦上添花:suggestion(怎么改)、confidence(LLM 对自己判断的置信度)
-
-    confidence 的用途:后续阶段(误报过滤、排序)可以用它做阈值过滤,
-    把低置信度的问题降级或丢弃,从而控制误报率。
-
-    evidence_locations 是 Evidence Ledger 的用户可读投影，不暴露内部 Txx/Cxx
-    编号；完整原文和账本仍只在 Trace 中保留。
+    包含文件与行号、严重级别、问题说明、修复建议及模型置信度。
+    root_cause 描述根因，evidence_locations 给出可核对的源码位置，
+    不暴露内部证据编号；证据原文通过账本与 Trace 查询。
     """
 
     severity: Severity = Field(description="严重级别")

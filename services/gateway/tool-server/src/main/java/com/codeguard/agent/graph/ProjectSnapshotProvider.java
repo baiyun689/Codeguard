@@ -1,11 +1,9 @@
 package com.codeguard.agent.graph;
 
 /**
- * 为工具提供版本固定的快照。
+ * 为工具提供固定版本的项目快照。
  *
- * <p>普通测试可以把一个已经构建的 {@link ProjectSnapshot} 包装进该接口；生产会话则
- * 使用按工具查询懒解析的实现。接口故意只暴露一个查询接缝，避免工具自行触发全项目
- * 图谱构建。</p>
+ * 支持已构建的快照或按查询懒解析的实现，工具统一通过该接口获取所需图谱。
  */
 @FunctionalInterface
 public interface ProjectSnapshotProvider {

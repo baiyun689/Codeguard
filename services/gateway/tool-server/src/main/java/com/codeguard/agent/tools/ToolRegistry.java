@@ -6,13 +6,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/**
- * 按名注册/查找工具的注册表。
- * <p>
- * 通用分发路由凭工具名在这里查到对应 {@link AgentTool} 实例后执行。
- * "加一个工具"只需 {@link #register} 一次,分发逻辑与 Python 客户端协议都不必改
- * (扩展接缝,见 design.md D2)。
- */
+/** 按名称注册和查找工具实例，供 HTTP 分发接口调用。 */
 public final class ToolRegistry {
 
     private final Map<String, AgentTool> tools = new LinkedHashMap<>();

@@ -1,10 +1,7 @@
-"""命令行入口。
+"""命令行审查入口。采集 Git 变更，执行审查管线，并输出结构化结果或报告。
 
-可跑闭环:
-    git diff → 多阶段管线(摘要 → 并行审查 → 聚合 → 误报过滤)→ 结构化 issues → 终端打印
-
-用法:
-    python -m codeguard_agent review            # 审查当前仓库工作区改动
+用法：
+    python -m codeguard_agent review
     python -m codeguard_agent review --repo /path/to/repo --base main
 """
 

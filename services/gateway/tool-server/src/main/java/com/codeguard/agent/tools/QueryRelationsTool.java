@@ -20,12 +20,10 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Unified, typed relation query used by the controlled reviewer.
+ * 为受控审查提供按类型查询的统一关系工具。
  *
- * <p>The operation intentionally exposes relation intent instead of a free-form
- * graph query.  A request expands one relation family from one subject; callers
- * can continue the same page with {@code cursor} or explicitly expand a symbol
- * returned by a previous page.</p>
+ * 每次请求查询一个主体的一类关系，可通过 cursor 翻页，
+ * 或使用结果中返回的符号标识继续查询。
  */
 public final class QueryRelationsTool implements AgentTool {
     private static final int DEFAULT_DEPTH = 1;
@@ -285,7 +283,7 @@ public final class QueryRelationsTool implements AgentTool {
         }
     }
 
-    /** Source facts only: bounded excerpts of direct endpoints on this page. */
+    /** 提取本页直接关系端点的有界源码片段。 */
     private static void addEndpointSource(ObjectNode root, ProjectSnapshot value) {
         String subject = root.path("subject_symbol_id").asText();
         java.util.Map<String, Integer> endpoints = new java.util.LinkedHashMap<>();
@@ -293,8 +291,8 @@ public final class QueryRelationsTool implements AgentTool {
             if (!edge.path("resolution").asText().equals("RESOLVED")) continue;
             String from = edge.path("sourceId").asText();
             String to = edge.path("targetId").asText();
-            // Callers/readers/writers: center on their use of the subject.
-            // Callees/parent declarations: begin at the endpoint declaration.
+            // 调用方及字段读写方以使用主体的位置为中心提取源码。
+            // 被调用方和父声明从目标声明的起始位置提取源码。
             if (subject.equals(to) && !subject.equals(from)) {
                 endpoints.putIfAbsent(from, edge.path("line").asInt());
             } else if (subject.equals(from) && !subject.equals(to)) {

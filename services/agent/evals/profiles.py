@@ -105,16 +105,10 @@ def tools_effective(profile: Profile, *, has_llm: bool, tool_server_url: str) ->
 
 
 def case_repo_root(case_repo_path: str | None, repo_base: str | None) -> str | None:
-    """该用例供工具读取的**真实** repo 根;没有则返回 None(=本条不建工具会话)。
+    """返回用例对应的真实仓库路径，供工具创建查询会话。
 
-    - repo-backed 用例自带 `repo_path`(磁盘上的工程快照)→ 直接用它。
-    - 合成内联用例无 `repo_path`:**仅当**用户显式传了 `--repo-base`(断言这些 diff 对应某真实
-      工程)才用它;否则返回 None。
-
-    绝不隐式回退到 cwd:cwd 是 agent 自己的源码树(且恰好含 `evals/dataset/repo/**` 夹具),
-    对它建工具会话会让图谱/源码工具返回**真实但与本 diff 完全无关**的内容,
-    诱使 ReAct 审查员在无关文件间无界乱逛、永不收尾,直到撞 `recursion_limit` 失败——这正是
-    ADR-016 里 clean/complex 合成用例在工具档下 ~40% 审查员失败、recall 崩塌的根因。
+    优先使用用例的 repo_path；内联用例仅在显式指定 repo_base 时使用该目录。
+    缺少仓库路径时返回 None，不回退到当前工作目录。
     """
     if case_repo_path:
         return case_repo_path

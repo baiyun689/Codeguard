@@ -83,7 +83,7 @@ public final class AlertEvaluator implements AutoCloseable {
             positiveInt(e, "CODEGUARD_SLO_NO_REVIEW_CRITICAL_MINUTES", 30));
     }
 
-    // ---- public API ----
+    // 公共接口。
 
     public void start() {
         if (started) return;
@@ -281,16 +281,16 @@ public final class AlertEvaluator implements AutoCloseable {
 
     private static CounterAndLast extractCounterAndLast(String line) {
         try {
-            // line: codeguard_review_duration_seconds_sum{...} 123.45 1735567890
+            // 解析示例：codeguard_review_duration_seconds_sum{...} 123.45 1735567890。
             String[] parts = line.trim().split("\\s+");
-            // parts[0] = metric{tags}, parts[1] = value, parts[2] = timestamp (optional)
+            // 三个部分依次为指标及标签、数值和可选时间戳。
             double value = Double.parseDouble(parts[parts.length > 2 ? parts.length - 2 : parts.length - 1]);
             double last = parts.length > 2 ? Double.parseDouble(parts[parts.length - 1]) : -1;
             return new CounterAndLast(value, last);
         } catch (Exception ignored) { return new CounterAndLast(0, -1); }
     }
 
-    // ---- env helpers ----
+    // 环境变量读取辅助方法。
 
     private static int positiveInt(Map<String, String> env, String name, int fallback) {
         try {

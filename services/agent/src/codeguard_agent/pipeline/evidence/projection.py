@@ -80,7 +80,7 @@ def project_tool_payload(
 def graph_projection_focus(
     task: Any, symbol_context: Any = None
 ) -> GraphProjectionFocus:
-    """Build task-only focus facts; tool arguments remain the source of truth."""
+    """从任务内容生成投影关注范围，实际查询仍以工具参数为准。"""
     symbols = (
         getattr(symbol_context, "symbols", ()) if symbol_context is not None else ()
     )

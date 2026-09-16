@@ -1,12 +1,7 @@
-"""评测框架的数据结构。
+"""定义评测用例、标准答案、匹配结果及聚合指标。
 
-三组模型:
-    - ExpectedIssue / EvalCase：数据集这一侧(我已经知道答案的样本)
-    - MatchOutcome：单条用例跑完后的判定结果(TP/FP/FN 明细)
-    - CaseMetrics / AggregateMetrics：由判定结果聚合出来的指标
-
-设计要点:expected 用"关键词列表 + 行号 + 容差"做弱约束,而不是要求 LLM 一字不差。
-代码审查的"对错"本身有模糊地带,过严的匹配会把指标做成噪音。
+标准答案使用文件、行号容差和类型关键词描述预期问题；
+匹配结果记录真阳性、误报和漏报，供指标模块聚合。
 """
 
 from __future__ import annotations
@@ -210,7 +205,7 @@ class CaseJudgement(BaseModel):
 
 
 class JudgeScore(BaseModel):
-    """LLM-as-judge 对一条"命中的报告"的质量打分(旧逐对打分模型,暂留作兼容)。"""
+    """模型对匹配问题给出的质量评分，用于读取带此字段的归档数据。"""
 
     semantic_match: bool = Field(description="语义上是否真的命中了这条标准答案")
     message_quality: int = Field(ge=1, le=5, description="问题描述质量 1~5")
@@ -221,13 +216,10 @@ class JudgeScore(BaseModel):
 
 
 class ToolUsage(BaseModel):
-    """一条用例一次审查里,审查员实际发起的工具调用画像(可观测性,不参与判分)。
+    """记录单次审查的工具使用情况，不参与缺陷判分。
 
-    源数据是编排器从证据 Artifact 派生的工具画像(仅首次真实执行的 TOOL_CALL、
-    按(工具,参数)去重),故 tool_calls 是"去重后取得有效上下文的调用条数",不是原始调用次数。
-
-    存在意义(ADR-022):before/after 都 3/3 时,要能分辨审查员是**真调工具导航**、
-    还是**纯靠 diff 推理蒙对**(是否有 diff 之外的文件被实际读取)。
+    从首次实际执行的工具证据中提取，按工具和参数去重；
+    tool_calls 表示去重后的有效上下文调用数，不代表全部请求尝试次数。
     """
 
     tool_calls: int = Field(default=0, description="去重后取得有效上下文的工具调用条数")
@@ -241,7 +233,7 @@ class ToolUsage(BaseModel):
 
 
 class CouncilTraceStats(BaseModel):
-    """ADR-032/Phase 5 ReviewCouncil 过程统计(可观测性,不参与判分)。"""
+    """审查管线过程统计，用于观测和诊断，不参与缺陷判分。"""
 
     candidate_count: int = 0
     candidate_count_by_agent: dict[str, int] = Field(default_factory=dict)

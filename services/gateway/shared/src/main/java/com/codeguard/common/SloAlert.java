@@ -3,7 +3,7 @@ package com.codeguard.common;
 /** SLO 告警事件。 */
 public record SloAlert(
     String name,
-    String severity,      // critical / warning
+    String severity,      // 告警级别：严重或警告。
     String summary,
     String detail,
     long timestampEpochMs

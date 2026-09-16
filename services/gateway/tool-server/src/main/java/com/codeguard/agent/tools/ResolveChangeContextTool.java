@@ -22,8 +22,7 @@ import java.util.concurrent.CompletableFuture;
 
 /** 将 diff 文件/行批量解析为真实、稳定的图谱符号。 */
 public final class ResolveChangeContextTool implements AgentTool {
-    /** Keep changed-line navigation useful without allowing metadata to grow
-     * unboundedly when a generated/large hunk contains many references. */
+    /** 限制变更行导航条目数量，控制大型或生成代码变更的元数据大小。 */
     private static final int MAX_REFERENCES_PER_CONTEXT = 32;
 
     private final ProjectSnapshotProvider snapshot;
@@ -142,11 +141,10 @@ public final class ResolveChangeContextTool implements AgentTool {
     }
 
     /**
-     * Emits resolved symbols used directly on changed lines.  The enclosing
-     * symbol remains the primary context, while these targets provide stable
-     * navigation roots for a later bounded investigation (for example a newly
-     * added call to f()).  Unresolved edges are deliberately omitted: a name
-     * that cannot be resolved is not a safe symbol_id for a tool call.
+     * 提取变更行直接引用的已解析符号。
+     *
+     * 所属声明作为主要上下文，引用目标作为后续调查的导航入口。
+     * 无法解析的目标不提供给模型作为工具调用标识。
      */
     private static ArrayNode referencesAt(
             ProjectSnapshot snapshot,

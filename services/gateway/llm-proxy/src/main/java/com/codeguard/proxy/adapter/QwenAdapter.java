@@ -38,7 +38,7 @@ public final class QwenAdapter implements LlmAdapter {
     public HttpRequest translateRequest(OpenAiChatRequest request) {
         try {
             byte[] body = MAPPER.writeValueAsBytes(request);
-            // DashScope compatible-mode endpoint is OpenAI-compatible
+            // 使用 DashScope 的 OpenAI 兼容接口。
             String url = baseUrl.contains("/chat/completions") ? baseUrl : baseUrl + "/chat/completions";
             return HttpRequest.newBuilder()
                 .uri(URI.create(url))

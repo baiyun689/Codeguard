@@ -3,13 +3,7 @@ package com.codeguard.agent.core;
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * 一次审查会话的运行上下文,供工具执行时读取。
- * <p>
- * 只承载"事实"性的会话状态:仓库根目录和调用计数。
- * 它不知道"在审查什么问题"——按职责边界(design.md D0 不变量④),
- * "是不是问题"的判断永远在 Python 侧,Java 只提供事实与护栏。
- */
+/** 工具执行使用的审查会话上下文，保存仓库范围和调用计数，不执行缺陷判断。 */
 public final class AgentContext {
 
     private final Path repoRoot;

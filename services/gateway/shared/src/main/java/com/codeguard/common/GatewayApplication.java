@@ -7,7 +7,7 @@ import org.springframework.context.ConfigurableApplicationContext;
 
 import java.util.Map;
 
-/** Starts an isolated Boot servlet context; each port exposes only its own controllers. */
+/** 启动独立的 Spring Boot Servlet 上下文，每个端口仅注册所属服务的控制器。 */
 public final class GatewayApplication implements AutoCloseable {
     private final ConfigurableApplicationContext context;
 

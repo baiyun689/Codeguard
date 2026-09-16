@@ -461,7 +461,7 @@ def test_controlled_trace_keeps_dynamic_tool_owned_by_subtask():
 
 
 def test_controlled_trace_does_not_merge_same_query_from_two_subtasks():
-    """Equal query arguments still keep each bounded React owner visible."""
+    """验证相同参数的查询仍能关联到各自的调查组。"""
     report = _controlled_review_report_fixture()
     output = report.events[1].detail["output"]
     output["controlled_execution_mode"] = "subtask_react"

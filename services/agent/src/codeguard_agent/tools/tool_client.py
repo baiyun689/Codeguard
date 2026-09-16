@@ -1,10 +1,6 @@
-"""Java 工具服务的同步 HTTP 客户端 + 会话生命周期。
+"""Java 工具服务的同步 HTTP 客户端与会话管理。
 
-保持**同步**(httpx.Client 而非 AsyncClient):阶段 3 的 ReAct 在现有线程池里 fan-out,
-不引入 async(见 ROADMAP "async 留到 chunking 再切" 的岔路口、design.md D4)。
-
-职责边界:本模块只发请求、解析统一信封;真正的 symbol 源码读取与安全护栏都在 Java 侧
-(design.md D0:Python 编排、Java 护栏)。
+负责发送请求和解析响应；源码读取、图谱计算与访问范围校验由 Java 服务执行。
 """
 
 from __future__ import annotations
@@ -61,7 +57,7 @@ class ToolClient:
 
     @property
     def revision(self) -> str:
-        """本会话绑定的仓库 revision(证据账本据此做内容寻址,见 Evidence Ledger 设计)。"""
+        """返回工具会话绑定的仓库版本，供证据内容寻址和版本校验使用。"""
         return self._revision
 
     def _post_tool(self, name: str, payload: dict) -> ToolResponse:
@@ -94,7 +90,7 @@ class ToolClient:
         end_line: int | None = None,
         cursor: str | None = None,
     ) -> ToolResponse:
-        """Read a known symbol through the stable controlled-review endpoint."""
+        """通过受控工具接口读取已知符号的源码。"""
         query: dict[str, object] = {"symbol_id": unescape(symbol_id)}
         if start_line is not None:
             query["start_line"] = start_line
@@ -117,7 +113,7 @@ class ToolClient:
         include_callsite: bool = True,
         include_context: bool = True,
     ) -> ToolResponse:
-        """Query one typed relation family from a known symbol."""
+        """查询已知符号的一类图谱关系。"""
         query: dict[str, object] = {
             "subject_symbol_id": unescape(subject_symbol_id),
             "relation": relation,

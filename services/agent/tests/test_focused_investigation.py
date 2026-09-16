@@ -1,4 +1,4 @@
-"""Offline regressions extracted from the failed Spring Retry trace; no API calls."""
+"""验证聚焦调查的协议与失败处理，不调用模型服务。"""
 
 import json
 from types import SimpleNamespace

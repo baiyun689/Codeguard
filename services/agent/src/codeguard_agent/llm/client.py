@@ -49,14 +49,10 @@ def _is_non_retryable(exc: Exception) -> bool:
 
 
 def _disable_thinking_body(api_base_url: str) -> dict[str, Any]:
-    """按厂商返回"关闭 thinking"的请求体字段——格式厂商相关,塞错家会被无视(关不掉)或报错。
+    """按模型端点生成关闭推理模式的请求参数。
 
-    DeepSeek 与通义千问都借 `provider=openai` 这条路,但 base_url 不同、是两家:
-    - 通义千问 / dashscope:``{"enable_thinking": false}``
-    - DeepSeek(及默认):``{"thinking": {"type": "disabled"}}``
-
-    背景:千问推理模型在 thinking 模式下不支持 ``tool_choice=required``(会 400),
-    评测裁判走结构化输出必须先关 thinking;早先发的是 DeepSeek 格式,千问无视 → 关不掉 → 裁判全挂回退规则尺。
+    通义千问使用 enable_thinking=false；其他端点使用 thinking.type=disabled。
+    该参数用于需要关闭推理模式才能进行强制工具调用的服务。
     """
     if "dashscope" in (api_base_url or "").lower():
         return {"enable_thinking": False}
@@ -64,21 +60,15 @@ def _disable_thinking_body(api_base_url: str) -> dict[str, Any]:
 
 
 def build_llm(settings: Settings, temperature: float | None = None) -> Any:
-    """根据配置创建一个 LangChain Chat 模型。
+    """按配置创建 LangChain 聊天模型，统一提供模型调用接口。
 
-    返回的对象都实现了 LangChain 的 BaseChatModel 接口,
-    因此上层代码无需关心底层到底是 Claude 还是 OpenAI。
-
-    provider='mock' 时返回 None,由调用方走假数据分支(见 reviewer.py)。
-
-    temperature:显式传入时透传给底层模型;评测裁判用 temperature=0 锁住确定性,
-        让"尺子"自身尽量不抖(见 ADR-005)。None 表示不设,用 provider 默认。
+    mock 模式返回 None，由调用方提供模拟结果。
+    temperature 为 None 时使用服务商默认值，否则显式传入采样温度。
     """
     if settings.provider == "mock":
         return None
 
-    # 调真实 API 前先校验密钥,缺失时给出清晰可操作的报错,
-    # 而不是等到 invoke 时才抛一个晦涩的 401。
+    # 请求模型前检查 API 密钥，缺失时返回配置错误。
     if settings.needs_api_key and not settings.api_key:
         raise ValueError(
             f"provider='{settings.provider}' 需要 API 密钥,但 CODEGUARD_API_KEY 为空。\n"
@@ -132,12 +122,10 @@ def build_llm(settings: Settings, temperature: float | None = None) -> Any:
 
 
 def invoke_with_retry(llm: Any, messages: list[tuple[str, str]], max_retries: int = 3) -> Any:
-    """带指数退避重试的 LLM 调用。
+    """调用模型并对可恢复错误执行指数退避重试。
 
-    客户端错误(400/401/402/422)不重试——立刻抛断，避免余额不足/密钥错误白白消耗。
-    429(限流)和 5xx/网络错误用指数退避重试(1s, 2s, 4s...)。
-
-    阶段 5 再升级成熔断/限流的完整韧性体系。
+    429、服务端错误及网络错误按 1 秒、2 秒、4 秒等间隔重试；
+    其他 4xx 客户端错误直接抛出，不进行重试。
     """
     last_error: Exception | None = None
     for attempt in range(max_retries):
@@ -160,11 +148,7 @@ def invoke_with_retry(llm: Any, messages: list[tuple[str, str]], max_retries: in
 
 
 def mock_review_result() -> ReviewResult:
-    """mock 模式下返回的假审查结果。
-
-    作用:让整条流水线在没有真实 API 密钥时也能跑通,
-    方便阶段 0/1 验证"读 diff → 审查 → 输出"的骨架是否打通。
-    """
+    """生成模拟审查结果，用于无模型密钥时验证变更采集、审查和结果输出流程。"""
     return ReviewResult(
         summary="【Mock 模式】这是一条假的审查结果,用于验证流水线是否打通。配置 CODEGUARD_API_KEY 后接入真实 LLM。",
         issues=[

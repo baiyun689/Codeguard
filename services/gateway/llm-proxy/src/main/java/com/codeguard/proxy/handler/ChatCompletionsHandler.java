@@ -44,7 +44,7 @@ public final class ChatCompletionsHandler {
 
     @PostMapping("/v1/chat/completions")
     public ResponseEntity<?> handle(@RequestBody(required = false) String rawBody) {
-        // 1. Parse request
+        // 解析请求。
         OpenAiChatRequest request;
         try {
             request = MAPPER.readValue(rawBody == null ? "" : rawBody, OpenAiChatRequest.class);
@@ -53,7 +53,7 @@ public final class ChatCompletionsHandler {
                 "Invalid JSON: " + e.getMessage(), "invalid_request_error", "400"));
         }
 
-        // 2. Validate
+        // 校验请求参数。
         if (request == null || request.model() == null || request.model().isBlank()) {
             return ResponseEntity.status(400).body(OpenAiChatResponse.error(
                 "model is required", "invalid_request_error", "400"));
@@ -63,14 +63,14 @@ public final class ChatCompletionsHandler {
                 "messages is required", "invalid_request_error", "400"));
         }
 
-        // 3. Route
+        // 匹配模型路由。
         List<RouteTarget> chain = router.resolveChain(request.model());
         if (chain.isEmpty()) {
             return ResponseEntity.status(404).body(OpenAiChatResponse.error(
                 "unknown model: " + request.model(), "invalid_request_error", "404"));
         }
 
-        // 4. Try chain with fallback
+        // 按顺序调用服务商，失败时尝试备用服务。
         Exception lastError = null;
         for (int targetIndex = 0; targetIndex < chain.size(); targetIndex++) {
             RouteTarget target = chain.get(targetIndex);
@@ -100,7 +100,7 @@ public final class ChatCompletionsHandler {
                     }
                 }, adapter.providerName());
 
-                // Success
+                // 返回成功响应。
                 log.debug("LLM 调用成功: model={} provider={}", request.model(), adapter.providerName());
                 return ResponseEntity.status(200).body(response);
 
@@ -111,7 +111,7 @@ public final class ChatCompletionsHandler {
                     resilience.recordFallback(adapter.providerName(), "circuit_open");
                 }
             } catch (AdapterException e) {
-                // Non-retryable client errors (4xx except 429)
+                // 除 429 外的客户端错误直接返回，不执行重试。
                 if (e.httpStatus() != 429 && e.httpStatus() >= 400 && e.httpStatus() < 500) {
                     log.error("客户端错误 [{}]: {} (provider={})", e.httpStatus(), e.getMessage(), adapter.providerName());
                     return ResponseEntity.status(e.httpStatus()).body(OpenAiChatResponse.error(
@@ -132,7 +132,7 @@ public final class ChatCompletionsHandler {
             }
         }
 
-        // 5. All providers failed
+        // 所有服务商均调用失败。
         String detail = lastError != null ? lastError.getMessage() : "all providers unavailable";
         log.error("所有 provider 尝试失败: model={}, chain={}",
             request.model(), chain.stream().map(target -> target.adapter().providerName()).toList());

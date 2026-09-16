@@ -28,8 +28,7 @@ final class GraphToolSupport {
     private static final int MAX_UNRESOLVED_RELATIONSHIPS = 20;
     private static final int SCHEMA_VERSION = 2;
 
-    /** Optional bounded continuation parameters used by the incremental tools.
-     *  Legacy plain symbol requests keep the existing limits and semantics. */
+    /** 增量查询使用的可选分页和范围参数；省略时采用默认限制。 */
     record QueryOptions(int maxDepth, int limit, int cursor) {
         static QueryOptions legacy() {
             return new QueryOptions(0, MAX_RELATIONSHIPS, 0);
@@ -93,10 +92,7 @@ final class GraphToolSupport {
         return value < 0 ? fallback : value;
     }
 
-    /**
-     * Resolves the whitespace-only signature variants emitted by different JavaParser paths.
-     * The lazy index remains the source of the canonical id used by all tool responses.
-     */
+    /** 统一 JavaParser 不同解析路径产生的签名空白差异，以懒索引中的符号标识为准。 */
     static String canonicalSymbol(ProjectSnapshot snapshot, String requested) {
         if (requested == null || requested.isBlank()
                 || snapshot.graph().node(requested).isPresent()) {
@@ -121,7 +117,7 @@ final class GraphToolSupport {
         return edge.sourceSet() == sourceScope;
     }
 
-    /** Parses the strict symbol-only request used by the source reader. */
+    /** 解析源码工具使用的严格符号查询参数。 */
     static String symbolIdOnly(String input) {
         if (input == null || input.isBlank()) {
             return "";

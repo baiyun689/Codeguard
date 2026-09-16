@@ -4,7 +4,7 @@ import com.codeguard.ci.CiServerApp;
 import com.codeguard.proxy.ProxyServer;
 import com.codeguard.toolserver.ToolServerApp;
 
-/** Launch three isolated Spring Boot contexts without exposing internal routes on the public port. */
+/** 启动三个独立的 Spring Boot 服务上下文，将内部接口与公共端口隔离。 */
 public final class Main {
     private Main() {}
     public static void main(String[] args) {
@@ -21,6 +21,6 @@ public final class Main {
             tools.stop();
             throw failure;
         }
-        // Each Boot context registers its own shutdown hook and destroys dependent beans in order.
+        // 每个服务上下文注册独立的关闭钩子，并按依赖顺序销毁组件。
     }
 }

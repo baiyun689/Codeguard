@@ -78,7 +78,7 @@ def _context() -> TaskSymbolContext:
 
 
 def test_candidate_context_is_rehydrated_after_state_serialization():
-    """Excluded CandidateIssue fields remain available to the final Judge."""
+    """验证不对外序列化的候选字段仍可传入裁决阶段。"""
     task = ReviewTask(
         id="A.java#h0", file="A.java", patch="+return value;", changed_lines=[2]
     )

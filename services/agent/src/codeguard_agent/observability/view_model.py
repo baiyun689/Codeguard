@@ -36,7 +36,7 @@ _STATE_REF_UNSET = object()
 
 
 def _event_state_write(event: TraceEvent | None) -> Any:
-    """读取归一化 State patch，同时兼容尚未迁移的旧 Trace。"""
+    """读取节点写入的状态片段，支持 state_write 和输入载荷两种记录形式。"""
     if event is None:
         return None
     return event.detail.get("state_write", event.detail.get("output"))
@@ -239,10 +239,7 @@ def _controlled_review_summary(output: dict[str, Any]) -> str:
 
 
 def _evidence_batch_metrics(event: TraceEvent | None) -> dict[str, Any]:
-    """evidence_verifier 节点摘要:Evidence Ledger 验证指标事件。
-
-    兼容旧 trace 的 evidence_batch_metrics(键不同,由渲染侧条件分支处理)。
-    """
+    """从证据验证事件中提取节点摘要，支持两种指标事件的字段结构。"""
     if event is None:
         return {}
     output = _event_state_write(event)
@@ -673,11 +670,7 @@ def _direct_task_count_from_event(event: TraceEvent | None) -> int:
 
 
 def _decision_summary(events: Iterable[TraceEvent]) -> dict[str, Any]:
-    """从 Judge/因果合并节点的无损事件中派生总览统计。
-
-    详细裁决仍保留在原始 ``council_trace`` 中；这里只生成面向流程总览的
-    小型摘要，避免 Dashboard 为了显示几个数字重新理解业务 State。
-    """
+    """从裁决和因果合并事件提取流程总览统计；详细结论保留在 council_trace 中。"""
     event_list = list(events)
     judge = _judge_summary_data(event_list)
     causal = _causal_merge_summary_data(event_list)

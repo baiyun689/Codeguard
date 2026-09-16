@@ -150,7 +150,7 @@ def _response_status(response: ToolResponse) -> str:
 
 
 def _progress_scope(tool_name: str, arguments: dict[str, Any]) -> str:
-    """Return the logical frontier on which a tool response can make progress."""
+    """按工具、符号及关系类型确定无进展计数的查询范围。"""
     if tool_name == "query_relations":
         return "query_relations:" + json.dumps(
             {
@@ -171,7 +171,7 @@ def _progress_scope(tool_name: str, arguments: dict[str, Any]) -> str:
 def _progress_tokens(
     tool_name: str, arguments: dict[str, Any], response: ToolResponse
 ) -> tuple[str, ...]:
-    """Extract stable facts from a response, ignoring pagination metadata."""
+    """提取用于进展检测的稳定事实，忽略分页元数据。"""
     scope = _progress_scope(tool_name, arguments)
     if not response.success:
         return ()
@@ -214,7 +214,7 @@ def _progress_tokens(
 
 
 def _append_terminal_notice(response: ToolResponse, reason: str) -> ToolResponse:
-    """Append a human-readable stop notice without changing captured evidence."""
+    """为模型返回值附加停止提示，不修改已捕获的证据原文。"""
     if reason != "no_progress":
         return response
     if response.success:
@@ -677,7 +677,7 @@ class CoordinatedDiscoveryToolClient:
     def _repeat_view(
         self, tool_name: str, key: ToolKey, response: ToolResponse
     ) -> ToolResponse:
-        """Explain the exact reused page without creating a new evidence item."""
+        """说明本次复用的具体结果页，不创建重复证据。"""
         if not self._subtask_id:
             return response
         local_ids = {
@@ -730,15 +730,10 @@ class CoordinatedDiscoveryToolClient:
         response: ToolResponse,
         arguments: dict[str, Any] | None = None,
     ) -> list[str]:
-        """Extend the source-read allowlist with symbols visible to the reviewer.
+        """使用审查员可见的已解析符号扩充源码查询白名单。
 
-        The Gateway payload is retained separately as an Evidence Artifact, but
-        it is not the LLM-facing contract.  Only symbols that survive the same
-        deterministic projection shown to the reviewer may unlock a subsequent
-        source read.  In particular, a symbol present only in a truncated or
-        otherwise hidden raw ``symbols`` array must not become an implicit
-        source-read capability, and relationship endpoints without a resolved
-        symbol remain fail-closed.
+        只有保留在模型投影中的符号可以成为后续查询入口。
+        原始响应中被截断或隐藏的符号，以及未解析的关系端点，不开放查询权限。
         """
         if not response.success:
             return []
@@ -832,7 +827,7 @@ class CoordinatedDiscoveryToolClient:
     def _with_new_symbols(
         tool: str, response: ToolResponse, symbols: list[str]
     ) -> ToolResponse:
-        """Add group-local navigation, never mutate cached/ledger fact payloads."""
+        """附加本组新增的可查询符号，不修改缓存和账本中的原始事实。"""
         if tool != "query_relations" or not response.success:
             return response
         try:
@@ -899,13 +894,13 @@ class CoordinatedDiscoveryToolClient:
 
     @property
     def budget_exhausted(self) -> bool:
-        """Whether a tool call was rejected by this subtask's hard budget."""
+        """返回本组是否因达到硬预算而拒绝了工具调用。"""
         with self._lock:
             return self._budget_exhausted
 
     @property
     def no_progress_exhausted(self) -> bool:
-        """Whether repeated tool probes stopped this subtask at the same frontier."""
+        """返回本组是否因连续无进展而停止取证。"""
         with self._lock:
             return self._no_progress_exhausted
 
@@ -920,7 +915,7 @@ class CoordinatedDiscoveryToolClient:
             return dict(self._observation_aliases)
 
     def close(self) -> None:
-        """Prevent late React turns from issuing new Gateway calls after timeout."""
+        """关闭客户端，阻止超时后的模型轮次继续发起工具请求。"""
         with self._lock:
             self._closed = True
 
@@ -932,11 +927,9 @@ class CoordinatedDiscoveryToolClient:
         *,
         progressed: bool | None = None,
     ) -> bool:
-        """Track whether a call added facts and close after repeated no-progress calls.
+        """累计查询范围内和本组连续无进展次数，并在达到阈值时关闭查询。
 
-        The call itself is still captured before the gate fires.  Only future
-        tool calls are closed; the last real response remains available to the
-        React final structured-output turn.
+        当前响应先记录为证据，再限制后续调用；最后一份响应仍可用于无工具收口。
         """
         scope = _progress_scope(tool_name, arguments)
         if progressed is None:
@@ -1010,9 +1003,9 @@ class CoordinatedDiscoveryToolClient:
 
     @contextmanager
     def context_preparation(self):
-        """Charge prefetch normally, but do not count it as model no-progress.
+        """预取计入工具预算，但不累计模型探索的连续无进展次数。
 
-        Empty frontiers still close locally. Budget and timeout closure remain.
+        完整空关系仍可关闭对应查询范围，预算和超时限制仍然生效。
         """
         self._preparing_context = True
         try:
@@ -1030,7 +1023,7 @@ class CoordinatedDiscoveryToolClient:
         end_line: int | None = None,
         cursor: str | None = None,
     ) -> ToolResponse:
-        """Stable alias for the source reader with canonical cache arguments."""
+        """读取符号源码，并用规范参数生成缓存键。"""
         raw_symbol_id = self._resolve_symbol_ref(symbol_id)
         if raw_symbol_id is None:
             return ToolResponse(success=False, error="symbol_ref_not_in_review_context")
@@ -1081,7 +1074,7 @@ class CoordinatedDiscoveryToolClient:
         include_callsite: bool = True,
         include_context: bool = True,
     ) -> ToolResponse:
-        """Typed relation navigation; returned resolved symbols extend this subtask scope."""
+        """查询指定类型的关系，并将可见的已解析符号加入本组导航范围。"""
         raw_symbol_id = self._resolve_symbol_ref(subject_symbol_id)
         if raw_symbol_id is None:
             return ToolResponse(success=False, error="symbol_ref_not_in_review_context")

@@ -1,4 +1,4 @@
-"""Source content matters, not the name of the tool that delivered it."""
+"""验证源码证据按实际内容识别，而不依赖工具名称。"""
 
 import json
 import pytest

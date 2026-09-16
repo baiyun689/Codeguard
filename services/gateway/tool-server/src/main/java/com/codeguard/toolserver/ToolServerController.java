@@ -16,16 +16,10 @@ import org.slf4j.LoggerFactory;
 import java.nio.file.Path;
 
 /**
- * 工具服务的 HTTP 端点控制器。
- * <p>
- * 路由设计(design.md D2):
- * <ul>
- *   <li>{@code POST /api/v1/tools/session} 创建项目快照会话(repo 路径 + revision)→ session_id;</li>
- *   <li>{@code DELETE /api/v1/tools/session/{id}} 销毁会话;</li>
- *   <li>{@code POST /api/v1/tools/{name}} **通用分发**:凭 X-Session-Id 关联会话,按 name 查注册表执行。</li>
- * </ul>
- * 统一响应信封:成功 {@code {success:true, result:...}},失败 {@code {success:false, error:...}}。
- * 注意:{@code session} 是保留路径段,不会被当成工具名分发。
+ * 工具服务的 HTTP 控制器。
+ *
+ * 提供会话创建、销毁和按名称分发的工具调用接口，通过 X-Session-Id 关联会话。
+ * 成功响应包含 result，失败响应包含 error；session 为保留路径段。
  */
 @RestController
 public final class ToolServerController {
@@ -91,8 +85,7 @@ public final class ToolServerController {
 
         try {
             JsonNode body = mapper.readTree(rawBody == null ? "" : rawBody);
-            // 工具请求统一承载在 query 字符串中。源码工具已经是 symbol-only
-            // 契约，旧的 file_path 入参直接拒绝，避免协议表面上继续支持路径读取。
+            // 源码读取仅接受符号标识；含 file_path 的请求直接拒绝。
             if (toolName.equals("read_symbol") && body.has("file_path")) {
                 return ResponseEntity.ok(error("symbol_id_only"));
             }
@@ -112,7 +105,7 @@ public final class ToolServerController {
         }
     }
 
-    // --- helpers ---
+    // 辅助方法。
 
     private static String textOrEmpty(JsonNode node, String field) {
         JsonNode v = node.path(field);

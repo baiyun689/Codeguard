@@ -7,10 +7,7 @@ public final class ReviewGuard {
 
     private final RateLimiter rateLimiter;
 
-    /**
-     * @param permitsPerSecond 每秒许可数。Guava 平滑突发模式:允许短期 burst,长期平滑。
-     *                         默认 0.5(= 每 2 秒 1 个许可,单用户绰绰有余)。0 表示不限流。
-     */
+    /** @param permitsPerSecond 每秒许可数，支持短时突发；默认 0.5 表示每两秒一个许可，0 表示不限流。 */
     public ReviewGuard(double permitsPerSecond) {
         this.rateLimiter = permitsPerSecond > 0
             ? RateLimiter.create(permitsPerSecond)

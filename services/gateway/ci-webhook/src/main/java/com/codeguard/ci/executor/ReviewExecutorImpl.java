@@ -18,7 +18,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Executes one isolated review attempt. Persistence, retry and feedback belong to JobScheduler. */
+/** 执行一次隔离的代码审查；任务持久化、重试和结果回写由 JobScheduler 管理。 */
 public final class ReviewExecutorImpl implements ReviewExecutor {
     private static final Logger log = LoggerFactory.getLogger(ReviewExecutorImpl.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -195,7 +195,7 @@ public final class ReviewExecutorImpl implements ReviewExecutor {
                 try { Files.deleteIfExists(path); } catch (IOException ignored) { }
             });
         } catch (IOException ignored) {
-            // Best-effort cleanup; stale SHA-scoped workspaces cannot corrupt another review.
+            // 尽力清理工作区；按提交 SHA 隔离的残留目录不会影响其他审查。
         }
     }
 

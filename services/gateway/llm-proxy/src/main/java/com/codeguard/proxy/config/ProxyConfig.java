@@ -38,7 +38,7 @@ public final class ProxyConfig {
     public Map<String, RouteConfig> routes() { return routes; }
     public ResilienceConfig resilience() { return resilience; }
 
-    // ---- config records ----
+    // 配置数据结构。
 
     public record ProviderConfig(String url, String key) {}
 
@@ -62,7 +62,7 @@ public final class ProxyConfig {
         public record RetryConfig(int maxAttempts, int waitDurationMs) {}
     }
 
-    // ---- loader ----
+    // 配置加载。
 
     public static ProxyConfig load() {
         String configuredPath = System.getenv("CODEGUARD_LLM_CONFIG");
@@ -120,7 +120,7 @@ public final class ProxyConfig {
 
     @SuppressWarnings("unchecked")
     private static ProxyConfig parse(Map<String, Object> data) {
-        // providers
+        // 加载模型服务商。
         Map<String, ProviderConfig> providers = new LinkedHashMap<>();
         Map<String, Object> provData = (Map<String, Object>) data.getOrDefault("providers", Map.of());
         for (var entry : provData.entrySet()) {
@@ -130,7 +130,7 @@ public final class ProxyConfig {
             providers.put(entry.getKey(), new ProviderConfig(url, key));
         }
 
-        // routes
+        // 加载模型路由。
         Map<String, RouteConfig> routes = new LinkedHashMap<>();
         Map<String, Object> routeData = (Map<String, Object>) data.getOrDefault("routes", Map.of());
         for (var entry : routeData.entrySet()) {
@@ -143,7 +143,7 @@ public final class ProxyConfig {
             routes.put(entry.getKey(), new RouteConfig(chain));
         }
 
-        // resilience
+        // 加载限流、熔断和重试配置。
         Map<String, Object> resData = (Map<String, Object>) data.getOrDefault("resilience", Map.of());
         Map<String, Object> rl = (Map<String, Object>) resData.getOrDefault("rate-limit", Map.of());
         Map<String, Object> cb = (Map<String, Object>) resData.getOrDefault("circuit-breaker", Map.of());
